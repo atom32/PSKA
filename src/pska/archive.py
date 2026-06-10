@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import asdict
 import hashlib
 import json
 from pathlib import Path
@@ -8,6 +7,7 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 from pska.models import ArchiveRecord, MediaItem
+from pska.schema import comment_item
 
 
 class ArchiveBuilder:
@@ -27,7 +27,7 @@ class ArchiveBuilder:
             (tweet_dir / "screenshot.png").write_bytes(b"")
         (tweet_dir / "content.md").write_text(self.to_markdown(record), encoding="utf-8")
         (tweet_dir / "comments.json").write_text(
-            json.dumps([asdict(comment) for comment in record.replies], ensure_ascii=False, indent=2),
+            json.dumps([comment_item(comment) for comment in record.replies], ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
         (tweet_dir / "metadata.json").write_text(
@@ -38,7 +38,7 @@ class ArchiveBuilder:
 
     def to_markdown(self, record: ArchiveRecord) -> str:
         lines = [
-            "# Tweet",
+            "# X Article" if record.kind == "x_article" else "# Tweet",
             "",
             f"ID: {record.id}",
             f"Author: {record.author or ''}",

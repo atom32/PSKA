@@ -55,7 +55,16 @@ def test_archive_builder_writes_core_files(tmp_path, monkeypatch) -> None:
     assert "Nice post" in markdown
     comments = json.loads((tweet_dir / "comments.json").read_text(encoding="utf-8"))
     assert comments[0]["id"] == "456"
+    assert comments[0]["author"]["handle"] == "@bob"
+    assert comments[0]["content"]["text"] == "Nice post"
     assert comments[0]["source"] == "visible_dom"
     metadata = json.loads((tweet_dir / "metadata.json").read_text(encoding="utf-8"))
+    assert metadata["schema_version"] == "pska.archive.v1"
+    assert metadata["source"] == "twitter"
+    assert metadata["record_type"] == "tweet"
     assert metadata["id"] == "123"
+    assert metadata["author"]["handle"] == "@alice"
+    assert metadata["content"]["text"] == "Hello\nworld"
+    assert metadata["media"][0]["kind"] == "image"
+    assert metadata["comments"][0]["id"] == "456"
     assert "raw_html" not in metadata

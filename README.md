@@ -2,6 +2,8 @@
 
 Personal Social Knowledge Archive V1 for Twitter/X.
 
+Archives use the PSKA v1 metadata schema documented in `docs/schema.md`.
+
 ## Install
 
 ```bash

@@ -1,4 +1,5 @@
 const MAX_BATCH_ITEMS = 100;
+const SCHEMA_VERSION = "pska.archive.v1";
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -93,6 +94,64 @@ function markdown(record) {
   });
 
   return `${lines.join("\n").trim()}\n`;
+}
+
+function mediaItem(kind, url, localPath = null, contentType = null) {
+  return {
+    kind,
+    url,
+    local_path: localPath,
+    alt_text: null,
+    content_type: contentType
+  };
+}
+
+function commentItem(comment) {
+  return {
+    id: comment.id || null,
+    url: comment.url || null,
+    author: {
+      name: comment.author || null,
+      handle: comment.handle || null
+    },
+    content: {
+      text: comment.text || "",
+      raw_text: comment.raw_text || ""
+    },
+    created_at: comment.created_at || null,
+    media: [
+      ...(comment.images || []).map((url) => mediaItem("image", url)),
+      ...(comment.videos || []).map((url) => mediaItem("video", url))
+    ],
+    metrics: comment.metrics || {},
+    source: comment.source || "visible_dom"
+  };
+}
+
+function recordMetadata(record, mediaFiles) {
+  return {
+    schema_version: SCHEMA_VERSION,
+    source: "twitter",
+    record_type: record.kind || "tweet",
+    id: record.id,
+    url: record.url,
+    author: {
+      name: record.author || null,
+      handle: record.handle || null
+    },
+    content: {
+      text: record.content || ""
+    },
+    created_at: record.created_at || null,
+    captured_at: record.captured_at || null,
+    media: [
+      ...(record.images || []).map((url, index) => mediaItem("image", url, mediaFiles.images[index]?.path || null, mediaFiles.images[index]?.contentType || null)),
+      ...(record.videos || []).map((url) => mediaItem("video", url))
+    ],
+    comments: (record.replies || []).map(commentItem),
+    metrics: record.metrics || {},
+    extra: {}
+  };
 }
 
 async function downloadUrl(filename, url) {
@@ -238,12 +297,11 @@ async function archiveTab(tab, options = {}) {
   const screenshotUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" });
   const tweetId = sanitizeFilenamePart(record.id);
   const base = `${tweetId}`;
+  const mediaFiles = { images: [] };
   const files = [
     textFile(`${base}/raw.html`, record.raw_html || ""),
     { path: `${base}/screenshot.png`, bytes: bytesFromDataUrl(screenshotUrl) },
-    textFile(`${base}/content.md`, markdown(record)),
-    textFile(`${base}/comments.json`, JSON.stringify(record.replies || [], null, 2)),
-    textFile(`${base}/metadata.json`, JSON.stringify({ ...record, raw_html: undefined, replies: undefined }, null, 2))
+    textFile(`${base}/content.md`, markdown(record))
   ];
 
   for (const [index, url] of (record.images || []).entries()) {
@@ -252,13 +310,20 @@ async function archiveTab(tab, options = {}) {
     try {
       const image = await fetchRemoteBytes(url, "image/jpeg");
       files.push({ path: mediaPath, bytes: image.bytes });
+      mediaFiles.images[index] = { path: `media/image_${String(index + 1).padStart(2, "0")}${ext}`, contentType: image.contentType };
     } catch (error) {
+      const errorPath = `media/image_${String(index + 1).padStart(2, "0")}_download_error.txt`;
       files.push(textFile(
-        `${base}/media/image_${String(index + 1).padStart(2, "0")}_download_error.txt`,
+        `${base}/${errorPath}`,
         `Failed to download image into archive folder.\nURL: ${url}\nError: ${error.message || String(error)}\n`,
       ));
+      mediaFiles.images[index] = { path: errorPath, contentType: "text/plain" };
     }
   }
+
+  const metadata = recordMetadata(record, mediaFiles);
+  files.push(textFile(`${base}/comments.json`, JSON.stringify(metadata.comments, null, 2)));
+  files.push(textFile(`${base}/metadata.json`, JSON.stringify(metadata, null, 2)));
 
   const zipBytes = zipStore(files);
   await downloadUrl(`twitter_archive/${tweetId}.zip`, dataUrlFromBytes(zipBytes, "application/zip"));
