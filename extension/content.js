@@ -16,6 +16,23 @@
     return Array.from(new Set(values.filter(Boolean)));
   }
 
+  function originalImageUrl(src) {
+    try {
+      const url = new URL(src);
+      if (url.hostname.endsWith("twimg.com") && url.pathname.includes("/media/")) {
+        if (!url.searchParams.get("format")) {
+          const match = url.pathname.match(/\.(jpg|jpeg|png|webp)$/i);
+          url.searchParams.set("format", match ? match[1].toLowerCase() : "jpg");
+        }
+        url.searchParams.set("name", "orig");
+        return url.toString();
+      }
+    } catch (_error) {
+      return src;
+    }
+    return src;
+  }
+
   function textOf(node) {
     return node ? node.innerText.trim() : "";
   }
@@ -60,6 +77,7 @@
       Array.from(article.querySelectorAll("img[src]"))
         .map((img) => img.getAttribute("src"))
         .filter((src) => src && (src.includes("twimg.com/media") || src.includes("pbs.twimg.com/media")))
+        .map(originalImageUrl)
     );
   }
 

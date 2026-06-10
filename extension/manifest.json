@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "PSKA Twitter Archive",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Archive Twitter/X posts from your logged-in Chrome session.",
   "permissions": ["activeTab", "downloads", "scripting", "tabs"],
   "host_permissions": ["https://x.com/*", "https://twitter.com/*", "https://mobile.twitter.com/*", "https://*.twimg.com/*"],

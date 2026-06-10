@@ -44,7 +44,7 @@ batchButton.addEventListener("click", async () => {
   setStatus(`Archiving ${urls.length} URLs...`);
   try {
     const report = await send({ type: "PSKA_ARCHIVE_BATCH", urls });
-    setStatus(`Done\nSuccess: ${report.success.length}\nFailed: ${report.failed.length}\nDownloads/twitter_archive/batch_report.json`);
+    setStatus(`Done\nSuccess: ${report.success.length}\nFailed: ${report.failed.length}\nDownloads/twitter_archive/batch_report.zip`);
   } catch (error) {
     setStatus(error.message || String(error));
   } finally {

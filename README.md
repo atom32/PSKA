@@ -64,10 +64,16 @@ Usage:
 2. Click the PSKA Archive extension.
 3. Click Archive current Tweet, or paste multiple URLs into Batch URLs.
 
-Chrome downloads files under:
+Chrome downloads one ZIP per Tweet under:
 
 ```text
-Downloads/twitter_archive/<tweet_id>/
+Downloads/twitter_archive/<tweet_id>.zip
+```
+
+The ZIP contains:
+
+```text
+<tweet_id>/
   raw.html
   screenshot.png
   content.md
@@ -76,7 +82,7 @@ Downloads/twitter_archive/<tweet_id>/
   media/
 ```
 
-Batch mode also writes `Downloads/twitter_archive/batch_report.json`.
+Batch mode also writes `Downloads/twitter_archive/batch_report.zip`.
 
 The extension captures a visible tab screenshot after returning to the top of the
 page. It does not bypass Twitter/X media restrictions; videos are saved as links
