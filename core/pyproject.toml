@@ -1,0 +1,25 @@
+[project]
+name = "pska-core"
+version = "0.1.0"
+description = "PSKA core storage, ACL, memory, hypergraph, and retrieval services."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "psycopg[binary]>=3.2.0",
+]
+
+[project.scripts]
+pska-core = "pska_core.cli:main"
+
+[dependency-groups]
+dev = [
+  "pytest>=8.0.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

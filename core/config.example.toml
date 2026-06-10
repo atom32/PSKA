@@ -1,0 +1,19 @@
+# Example PSKA Core config. Copy to .pska/core.toml for local use.
+# Do not commit real names, secrets, private aliases, or machine-specific paths.
+
+[database]
+url = "postgresql://pska:pska@localhost:5432/pska"
+
+[storage]
+archive_root = "archive"
+
+[defaults]
+owner_user_id = "user_primary"
+private_space_id = "private_primary"
+review_space_id = "system_review"
+agent_space_id = "agent_workspace"
+team_shared_space_id = "team_shared_default"
+
+[embedding]
+provider = "disabled"
+model = "local-placeholder"
