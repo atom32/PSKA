@@ -16,10 +16,6 @@
     return Array.from(new Set(values.filter(Boolean)));
   }
 
-  function sleep(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-  }
-
   function textOf(node) {
     return node ? node.innerText.trim() : "";
   }
@@ -106,36 +102,7 @@
     };
   }
 
-  async function expandVisibleText() {
-    const labels = ["Show more", "显示更多", "查看更多", "More"];
-    for (const label of labels) {
-      for (const node of Array.from(document.querySelectorAll("span, div")).filter((item) => item.innerText?.trim() === label)) {
-        node.click();
-        await sleep(120);
-      }
-    }
-  }
-
-  async function preparePage(options = {}) {
-    const maxScrolls = Number(options.maxScrolls ?? 5);
-    const scrollDelayMs = Number(options.scrollDelayMs ?? 1200);
-    await expandVisibleText();
-    window.scrollTo({ top: 0, behavior: "auto" });
-    await sleep(350);
-    let previousHeight = 0;
-    for (let index = 0; index < maxScrolls; index += 1) {
-      window.scrollBy({ top: Math.max(1200, window.innerHeight * 1.4), behavior: "smooth" });
-      await sleep(scrollDelayMs);
-      await expandVisibleText();
-      const height = document.documentElement.scrollHeight;
-      if (height === previousHeight && index > 1) break;
-      previousHeight = height;
-    }
-    window.scrollTo({ top: 0, behavior: "auto" });
-    await sleep(350);
-  }
-
-  function extractTweet(options = {}) {
+  function extractTweet() {
     const tweetId = parseTweetId(location.href);
     if (!tweetId) throw new Error("Current page is not a Twitter/X status URL.");
 
@@ -153,7 +120,7 @@
       if (seen.has(key)) continue;
       seen.add(key);
       comments.push(comment);
-      if (comments.length >= Number(options.maxComments ?? 50)) break;
+      if (comments.length >= 50) break;
     }
 
     const images = imageUrls(mainArticle);
@@ -175,12 +142,11 @@
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type !== "PSKA_EXTRACT_TWEET") return false;
-    (async () => {
-      await preparePage(message.options || {});
-      return extractTweet(message.options || {});
-    })()
-      .then((record) => sendResponse({ ok: true, record }))
-      .catch((error) => sendResponse({ ok: false, error: error.message || String(error) }));
-    return true;
+    try {
+      sendResponse({ ok: true, record: extractTweet() });
+    } catch (error) {
+      sendResponse({ ok: false, error: error.message || String(error) });
+    }
+    return false;
   });
 })();
