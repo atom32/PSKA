@@ -25,8 +25,12 @@ function sanitizeFilenamePart(value) {
 
 function dataUrlFromText(text, mimeType) {
   const encoded = new TextEncoder().encode(text);
+  return dataUrlFromBytes(encoded, mimeType);
+}
+
+function dataUrlFromBytes(bytes, mimeType) {
   let binary = "";
-  for (const byte of encoded) binary += String.fromCharCode(byte);
+  for (const byte of bytes) binary += String.fromCharCode(byte);
   return `data:${mimeType};base64,${btoa(binary)}`;
 }
 
@@ -102,6 +106,14 @@ async function downloadUrl(filename, url) {
   });
 }
 
+async function downloadRemoteAsFile(filename, url, fallbackMimeType = "application/octet-stream") {
+  const response = await fetch(url, { credentials: "omit", cache: "force-cache" });
+  if (!response.ok) throw new Error(`HTTP ${response.status} while downloading ${url}`);
+  const contentType = response.headers.get("content-type") || fallbackMimeType;
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  return downloadUrl(filename, dataUrlFromBytes(bytes, contentType));
+}
+
 async function extractFromTab(tabId) {
   try {
     const response = await chrome.tabs.sendMessage(tabId, { type: "PSKA_EXTRACT_TWEET" });
@@ -130,7 +142,16 @@ async function archiveTab(tab, options = {}) {
 
   for (const [index, url] of (record.images || []).entries()) {
     const ext = extensionForUrl(url, ".jpg");
-    await downloadUrl(`${base}/media/image_${String(index + 1).padStart(2, "0")}${ext}`, url);
+    const mediaPath = `${base}/media/image_${String(index + 1).padStart(2, "0")}${ext}`;
+    try {
+      await downloadRemoteAsFile(mediaPath, url, "image/jpeg");
+    } catch (error) {
+      await downloadText(
+        `${base}/media/image_${String(index + 1).padStart(2, "0")}_download_error.txt`,
+        `Failed to download image into archive folder.\nURL: ${url}\nError: ${error.message || String(error)}\n`,
+        "text/plain;charset=utf-8"
+      );
+    }
   }
 
   if (!options.skipDelay) await sleep(300);
