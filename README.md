@@ -61,7 +61,7 @@ PSKA Core implements the knowledge model, storage, and services.
 - **LLM Integration**: Entity/hyperedge extraction, agentic search
 - **APIs**: CLI, HTTP, stdio MCP
 
-[→ PSKA Core README](core/README.md) | [→ MVP Status](core/docs/mvp-status.md)
+[→ PSKA Core README](core/README.md) | [→ MVP Status](core/docs/mvp-status.md) | [→ Roadmap TODO](core/docs/roadmap-todo-zh.md)
 
 ## Quick Start
 
@@ -114,7 +114,8 @@ PYTHONPATH=src python3 -m pska_core.cli \
 | Production UI | ❌ Not Started |
 | Async Jobs | ❌ Not Started |
 
-See [core/docs/mvp-status.md](core/docs/mvp-status.md) for detailed status.
+See [core/docs/mvp-status.md](core/docs/mvp-status.md) for detailed status and
+[core/docs/roadmap-todo-zh.md](core/docs/roadmap-todo-zh.md) for the next-stage TODO list.
 
 ## License
 

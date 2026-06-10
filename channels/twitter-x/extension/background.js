@@ -1,5 +1,12 @@
 const MAX_BATCH_ITEMS = 100;
-const SCHEMA_VERSION = "pska.archive.v1";
+const SCHEMA_VERSION = "pska.archive.v2";
+const EXTENSION_VERSION = "0.4.0";
+const DEFAULT_PSKA = {
+  owner_user_id: "user_primary",
+  space_id: "private_primary",
+  visibility: "private",
+  visible_team_ids: []
+};
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -96,13 +103,29 @@ function markdown(record) {
   return `${lines.join("\n").trim()}\n`;
 }
 
-function mediaItem(kind, url, localPath = null, contentType = null) {
+function canonicalStatusUrl(url, id) {
+  try {
+    const parsed = new URL(url);
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    const user = parts[0] || "i";
+    return `https://x.com/${user}/status/${id}`;
+  } catch (_error) {
+    return url;
+  }
+}
+
+function profileUrl(handle) {
+  return handle ? `https://x.com/${String(handle).replace(/^@/, "")}` : null;
+}
+
+function mediaItem(kind, url, localPath = null, contentType = null, downloadStatus = "remote_only") {
   return {
     kind,
     url,
     local_path: localPath,
     alt_text: null,
-    content_type: contentType
+    content_type: contentType,
+    download_status: downloadStatus
   };
 }
 
@@ -128,29 +151,105 @@ function commentItem(comment) {
   };
 }
 
-function recordMetadata(record, mediaFiles) {
+function artifacts() {
+  return {
+    metadata: "metadata.json",
+    markdown: "content.md",
+    comments: "comments.json",
+    raw_html: "raw.html",
+    screenshot: "screenshot.png",
+    media_dir: "media/"
+  };
+}
+
+function normalizePskaSettings(settings = {}) {
+  return {
+    owner_user_id: settings.owner_user_id || DEFAULT_PSKA.owner_user_id,
+    space_id: settings.space_id || DEFAULT_PSKA.space_id,
+    visibility: settings.visibility || DEFAULT_PSKA.visibility,
+    visible_team_ids: Array.isArray(settings.visible_team_ids) ? settings.visible_team_ids : []
+  };
+}
+
+function recordMetadata(record, mediaFiles, pskaSettings = {}) {
+  const pska = normalizePskaSettings(pskaSettings);
   return {
     schema_version: SCHEMA_VERSION,
     source: "twitter",
     record_type: record.kind || "tweet",
-    id: record.id,
+    source_id: record.id,
     url: record.url,
+    canonical_url: canonicalStatusUrl(record.url, record.id),
     author: {
       name: record.author || null,
-      handle: record.handle || null
+      handle: record.handle || null,
+      profile_url: profileUrl(record.handle)
     },
     content: {
-      text: record.content || ""
+      text: record.content || "",
+      raw_text: record.raw_text || record.content || "",
+      language: null
     },
     created_at: record.created_at || null,
     captured_at: record.captured_at || null,
+    capture: {
+      method: "chrome_extension",
+      extension_version: EXTENSION_VERSION,
+      page_url: record.url,
+      visible_comment_limit: 50
+    },
     media: [
-      ...(record.images || []).map((url, index) => mediaItem("image", url, mediaFiles.images[index]?.path || null, mediaFiles.images[index]?.contentType || null)),
+      ...(record.images || []).map((url, index) => mediaItem(
+        "image",
+        url,
+        mediaFiles.images[index]?.path || null,
+        mediaFiles.images[index]?.contentType || null,
+        mediaFiles.images[index]?.downloadStatus || "remote_only"
+      )),
       ...(record.videos || []).map((url) => mediaItem("video", url))
     ],
     comments: (record.replies || []).map(commentItem),
+    quoted_items: record.quoted_tweet ? [record.quoted_tweet] : [],
     metrics: record.metrics || {},
-    extra: {}
+    artifacts: artifacts(),
+    pska,
+    extraction: {
+      status: "ok",
+      warnings: [],
+      source: "visible_dom"
+    },
+    extra: {
+      legacy_id: record.id
+    }
+  };
+}
+
+function pskaPayloadFromMetadata(metadata) {
+  return {
+    schema_version: "pska.channel_ingest.v1",
+    source_channel: metadata.source,
+    record_type: metadata.record_type,
+    source_id: metadata.source_id,
+    url: metadata.canonical_url || metadata.url,
+    title: (metadata.content?.text || metadata.source_id || "").slice(0, 80),
+    author: metadata.author || {},
+    content: metadata.content || {},
+    created_at: metadata.created_at,
+    captured_at: metadata.captured_at,
+    media: metadata.media || [],
+    raw_paths: metadata.artifacts || {},
+    owner_user_id: metadata.pska?.owner_user_id || DEFAULT_PSKA.owner_user_id,
+    space_id: metadata.pska?.space_id || DEFAULT_PSKA.space_id,
+    visibility: metadata.pska?.visibility || DEFAULT_PSKA.visibility,
+    visible_team_ids: metadata.pska?.visible_team_ids || [],
+    extra: {
+      comments: metadata.comments || [],
+      metrics: metadata.metrics || {},
+      archive_schema_version: metadata.schema_version,
+      capture: metadata.capture || {},
+      extraction: metadata.extraction || {},
+      quoted_items: metadata.quoted_items || []
+    }
   };
 }
 
@@ -310,20 +409,21 @@ async function archiveTab(tab, options = {}) {
     try {
       const image = await fetchRemoteBytes(url, "image/jpeg");
       files.push({ path: mediaPath, bytes: image.bytes });
-      mediaFiles.images[index] = { path: `media/image_${String(index + 1).padStart(2, "0")}${ext}`, contentType: image.contentType };
+      mediaFiles.images[index] = { path: `media/image_${String(index + 1).padStart(2, "0")}${ext}`, contentType: image.contentType, downloadStatus: "ok" };
     } catch (error) {
       const errorPath = `media/image_${String(index + 1).padStart(2, "0")}_download_error.txt`;
       files.push(textFile(
         `${base}/${errorPath}`,
         `Failed to download image into archive folder.\nURL: ${url}\nError: ${error.message || String(error)}\n`,
       ));
-      mediaFiles.images[index] = { path: errorPath, contentType: "text/plain" };
+      mediaFiles.images[index] = { path: errorPath, contentType: "text/plain", downloadStatus: "failed" };
     }
   }
 
-  const metadata = recordMetadata(record, mediaFiles);
+  const metadata = recordMetadata(record, mediaFiles, options.pska || {});
   files.push(textFile(`${base}/comments.json`, JSON.stringify(metadata.comments, null, 2)));
   files.push(textFile(`${base}/metadata.json`, JSON.stringify(metadata, null, 2)));
+  files.push(textFile(`${base}/pska_payload.json`, JSON.stringify(pskaPayloadFromMetadata(metadata), null, 2)));
 
   const zipBytes = zipStore(files);
   await downloadUrl(`twitter_archive/${tweetId}.zip`, dataUrlFromBytes(zipBytes, "application/zip"));
@@ -346,7 +446,7 @@ async function waitForTabComplete(tabId) {
   throw new Error("Timed out waiting for tab load.");
 }
 
-async function archiveBatch(urls) {
+async function archiveBatch(urls, options = {}) {
   const cleanUrls = urls.map((url) => url.trim()).filter(Boolean).slice(0, MAX_BATCH_ITEMS);
   const report = { success: [], failed: [] };
 
@@ -361,7 +461,7 @@ async function archiveBatch(urls) {
       tab = await chrome.tabs.create({ url, active: true });
       await waitForTabComplete(tab.id);
       await sleep(2500);
-      const result = await archiveTab(tab, { skipDelay: true });
+      const result = await archiveTab(tab, { skipDelay: true, pska: options.pska || {} });
       report.success.push(result);
     } catch (error) {
       report.failed.push({ url, error: error.message || String(error) });
@@ -389,10 +489,10 @@ async function archiveBatch(urls) {
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   (async () => {
     if (message?.type === "PSKA_ARCHIVE_CURRENT") {
-      return archiveTab(await activeTab());
+      return archiveTab(await activeTab(), { pska: message.pska || {} });
     }
     if (message?.type === "PSKA_ARCHIVE_BATCH") {
-      return archiveBatch(message.urls || []);
+      return archiveBatch(message.urls || [], { pska: message.pska || {} });
     }
     throw new Error(`Unknown message type: ${message?.type}`);
   })()

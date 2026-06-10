@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 from pska.models import ArchiveRecord, MediaItem
-from pska.schema import comment_item
+from pska.schema import comment_item, pska_payload_from_metadata
 
 
 class ArchiveBuilder:
@@ -26,12 +26,15 @@ class ArchiveBuilder:
         else:
             (tweet_dir / "screenshot.png").write_bytes(b"")
         (tweet_dir / "content.md").write_text(self.to_markdown(record), encoding="utf-8")
-        (tweet_dir / "comments.json").write_text(
-            json.dumps([comment_item(comment) for comment in record.replies], ensure_ascii=False, indent=2),
+        comments = [comment_item(comment) for comment in record.replies]
+        (tweet_dir / "comments.json").write_text(json.dumps(comments, ensure_ascii=False, indent=2), encoding="utf-8")
+        metadata = record.metadata()
+        (tweet_dir / "metadata.json").write_text(
+            json.dumps(metadata, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-        (tweet_dir / "metadata.json").write_text(
-            json.dumps(record.metadata(), ensure_ascii=False, indent=2),
+        (tweet_dir / "pska_payload.json").write_text(
+            json.dumps(pska_payload_from_metadata(metadata), ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
         return tweet_dir

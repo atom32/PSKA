@@ -3,6 +3,7 @@
 PSKA Core 负责私有优先的知识模型、ACL 规则、记忆对象、超图原语和检索接口。
 
 当前 MVP 状态跟踪在 [`docs/mvp-status.md`](docs/mvp-status.md) 中。
+下一阶段实现 TODO 跟踪在 [`docs/roadmap-todo-zh.md`](docs/roadmap-todo-zh.md) 中。
 
 核心有意与通道采集器分离。`channels/twitter-x` 等通道项目采集和规范化原始素材；PSKA Core 注册、索引、搜索并治理对这些素材的访问。
 

@@ -4,6 +4,8 @@ PSKA Core owns the private-first knowledge model, ACL rules, memory objects,
 hypergraph primitives, and retrieval interfaces for the PSKA workspace.
 
 Current MVP status is tracked in [`docs/mvp-status.md`](docs/mvp-status.md).
+The next-stage implementation TODO is tracked in
+[`docs/roadmap-todo-zh.md`](docs/roadmap-todo-zh.md).
 
 The core is intentionally separate from channel collectors. Channel projects
 such as `channels/twitter-x` collect and normalize raw source material; PSKA

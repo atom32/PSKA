@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+from datetime import datetime, timezone
 from typing import Any, Protocol
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -24,6 +25,22 @@ class LLMResponseError(LLMError):
 class LLMClient(Protocol):
     def complete_json(self, *, system: str, prompt: str, temperature: float = 0.0) -> dict[str, Any]:
         ...
+
+
+def record_recovery_event(kind: str, detail: dict[str, Any]) -> None:
+    path = os.getenv("PSKA_LLM_RECOVERY_LOG")
+    if not path:
+        return
+    event = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "kind": kind,
+        "detail": detail,
+    }
+    try:
+        with Path(path).expanduser().open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(event, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
 
 
 @dataclass(slots=True)
@@ -97,6 +114,7 @@ class OpenAILLMClient:
             content = body["choices"][0]["message"]["content"]
             parsed = json.loads(content)
         except Exception as exc:  # noqa: BLE001
+            record_recovery_event("llm_json_repair", {"reason": type(exc).__name__, "model": self.model})
             parsed = self._repair_json_with_llm(system=system, invalid_content=str(body), temperature=temperature)
         if not isinstance(parsed, dict):
             raise LLMResponseError("LLM JSON response must be an object")

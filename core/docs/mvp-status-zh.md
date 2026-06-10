@@ -196,6 +196,8 @@ PYTHONPATH=src PSKA_LLM_API_KEY_FILE="$HOME/api_key.txt" python3 scripts/documen
 
 当前状态：此 MVP 定义已满足。
 
+详细的下一阶段 TODO 跟踪在 [`roadmap-todo-zh.md`](roadmap-todo-zh.md)。
+
 ## 下一阶段优先级
 
 1. 真实嵌入管道

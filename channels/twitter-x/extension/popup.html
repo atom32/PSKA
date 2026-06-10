@@ -15,6 +15,29 @@
 
       <button id="archive-current" type="button">Archive current Tweet</button>
 
+      <section class="settings">
+        <div>
+          <label for="owner-user-id">Owner</label>
+          <input id="owner-user-id" spellcheck="false" value="user_primary">
+        </div>
+        <div>
+          <label for="space-id">Space</label>
+          <input id="space-id" spellcheck="false" value="private_primary">
+        </div>
+        <div>
+          <label for="visibility">Visibility</label>
+          <select id="visibility">
+            <option value="private" selected>private</option>
+            <option value="team">team</option>
+          </select>
+        </div>
+      </section>
+
+      <section>
+        <label for="visible-team-ids">Visible team ids</label>
+        <input id="visible-team-ids" spellcheck="false" placeholder="team_default,team_project">
+      </section>
+
       <section>
         <label for="batch-urls">Batch URLs</label>
         <textarea id="batch-urls" spellcheck="false" placeholder="https://x.com/user/status/123&#10;https://twitter.com/user/status/456"></textarea>

@@ -211,6 +211,8 @@ remain true:
 
 Current status: this MVP definition is met.
 
+Detailed next-stage TODOs are tracked in [`roadmap-todo-zh.md`](roadmap-todo-zh.md).
+
 ## Next Stage Priorities
 
 1. Real embedding pipeline

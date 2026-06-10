@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 
-from pska_core.llm import LLMClient, LLMResponseError, OpenAILLMClient
+from pska_core.llm import LLMClient, LLMResponseError, OpenAILLMClient, record_recovery_event
 from pska_core.models import User
 from pska_core.retrieval import RetrievalResponse, RetrievalService
 
@@ -104,6 +104,7 @@ Do not answer the question. Plan only.
         try:
             return self._validate_plan(raw)
         except LLMResponseError as exc:
+            record_recovery_event("llm_agentic_plan_schema_repair", {"query": query, "error": str(exc)})
             repaired = self._repair_plan_schema(llm, raw, str(exc), query, max_iterations)
             return self._validate_plan(repaired)
 

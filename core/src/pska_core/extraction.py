@@ -5,7 +5,7 @@ from uuid import uuid5, NAMESPACE_URL
 
 from pska_core.enums import Directionality, ReviewType, Visibility
 from pska_core.hypergraph import HypergraphService
-from pska_core.llm import LLMClient, LLMResponseError, OpenAILLMClient
+from pska_core.llm import LLMClient, LLMResponseError, OpenAILLMClient, record_recovery_event
 from pska_core.models import Entity, ReviewItem, SourceItem, SourceRef
 from pska_core.store import KnowledgeStore
 
@@ -120,6 +120,7 @@ Document text:
         try:
             return self._validate_extraction(raw)
         except LLMResponseError as exc:
+            record_recovery_event("llm_extraction_schema_repair", {"source_item_id": item.source_item_id, "error": str(exc)})
             repaired = self._repair_extraction_schema(llm, raw, str(exc))
             return self._validate_extraction(repaired)
 
