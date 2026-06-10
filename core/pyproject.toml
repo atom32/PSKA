@@ -3,9 +3,22 @@ name = "pska-core"
 version = "0.1.0"
 description = "PSKA core storage, ACL, memory, hypergraph, and retrieval services."
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.13"
 dependencies = [
   "psycopg[binary]>=3.2.0",
+]
+
+[project.optional-dependencies]
+embeddings = [
+  "torch>=2.0",
+  "transformers>=4.44.2,<5",
+  "datasets>=2.19.0",
+  "accelerate>=0.20.1",
+  "sentence-transformers",
+  "peft",
+  "sentencepiece",
+  "protobuf",
+  "numpy<2",
 ]
 
 [project.scripts]

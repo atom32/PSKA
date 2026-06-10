@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 
 from pska_core.acl import ACLService
 from pska_core.agentic import AgenticSearchService
+from pska_core.embeddings import EmbeddingConfig, build_embedding_provider
 from pska_core.extraction import ExtractionService
 from pska_core.ingest import IngestService
 from pska_core.models import ChannelIngestPayload
@@ -19,9 +20,10 @@ from pska_core.store_postgres import PostgresKnowledgeStore
 class PSKAApi:
     def __init__(self, database_url: str) -> None:
         self.store = PostgresKnowledgeStore(database_url)
-        self.retrieval = RetrievalService(self.store, ACLService(self.store))
+        embedding_provider = build_embedding_provider(EmbeddingConfig.from_env())
+        self.retrieval = RetrievalService(self.store, ACLService(self.store), embedding_provider=embedding_provider)
         self.agentic = AgenticSearchService(self.retrieval)
-        self.ingest = IngestService(self.store)
+        self.ingest = IngestService(self.store, embedding_provider=embedding_provider)
         self.extraction = ExtractionService(self.store)
 
     def health(self) -> dict[str, Any]:

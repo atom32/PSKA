@@ -87,12 +87,12 @@ PSKA 现在将这些操作视为 LLM 必需：
 CLI：
 
 ```bash
-PYTHONPATH=src python3 -m pska_core.cli db-reset --name pska_smoke
-PYTHONPATH=src python3 -m pska_core.cli --database-url postgresql:///pska_smoke import-twitter-zips
-PYTHONPATH=src python3 -m pska_core.cli --database-url postgresql:///pska_smoke extract-all
-PYTHONPATH=src python3 -m pska_core.cli --database-url postgresql:///pska_smoke search --query "GitHub"
-PYTHONPATH=src python3 -m pska_core.cli --database-url postgresql:///pska_smoke agentic-search --query "GitHub"
-PYTHONPATH=src python3 -m pska_core.cli --database-url postgresql:///pska_smoke serve --port 8766
+./scripts/pska db-reset --name pska_smoke
+./scripts/pska --database-url postgresql:///pska_smoke import-twitter-zips
+./scripts/pska --database-url postgresql:///pska_smoke extract-all
+./scripts/pska --database-url postgresql:///pska_smoke search --query "GitHub"
+./scripts/pska --database-url postgresql:///pska_smoke agentic-search --query "GitHub"
+./scripts/pska --database-url postgresql:///pska_smoke serve --port 8766
 ```
 
 HTTP：
@@ -138,7 +138,7 @@ python3 -m pytest -q
 
 ```bash
 cd "/Users/xudawei/Documents/personal archive/core"
-PYTHONPATH=src python3 scripts/e2e_smoke.py
+.pska/venvs/pska-py312/bin/python core/scripts/e2e_smoke.py
 ```
 
 真实测试目前验证：
@@ -202,7 +202,7 @@ PYTHONPATH=src PSKA_LLM_API_KEY_FILE="$HOME/api_key.txt" python3 scripts/documen
 
 1. 真实嵌入管道
 
-   添加嵌入提供程序配置、批量回填、向量搜索质量测试和重新索引命令。
+   第一版已完成：本地 BGE-M3、1024 维 pgvector 存储、批量 backfill、query embedding、vector search 和 RRF 合并。下一步是用真实数据调参、增加 rerank 和报告级质量追踪。
 
 2. 异步摄入和提取作业
 

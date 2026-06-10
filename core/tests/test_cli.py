@@ -39,6 +39,8 @@ def test_cli_accepts_search_and_smoke() -> None:
     agentic = build_parser().parse_args(["agentic-search", "--query", "hello"])
     extract = build_parser().parse_args(["extract-all", "--owner-user-id", "user_primary"])
     serve = build_parser().parse_args(["serve", "--port", "8765"])
+    embed = build_parser().parse_args(["embed-backfill", "--embedding-provider", "bge-m3", "--limit", "10"])
+    mcp = build_parser().parse_args(["mcp-server"])
 
     assert search.command == "search"
     assert search.query == "hello"
@@ -47,3 +49,7 @@ def test_cli_accepts_search_and_smoke() -> None:
     assert agentic.command == "agentic-search"
     assert extract.command == "extract-all"
     assert serve.command == "serve"
+    assert embed.command == "embed-backfill"
+    assert embed.embedding_provider == "bge-m3"
+    assert embed.limit == 10
+    assert mcp.command == "mcp-server"

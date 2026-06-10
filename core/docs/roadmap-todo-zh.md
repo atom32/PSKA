@@ -8,6 +8,7 @@ PSKA 已完成初期 MVP 闭环：Twitter/X 归档、Postgres 存储、LLM 提�
 
 下一阶段重点不是继续堆演示，而是把 MVP 变成可长期使用的家庭服务器系统。核心方向是：
 
+- 统一使用 Python 3.12 wrapper/venv，避免宿主 Python、FlagEmbedding、PyTorch 版本漂移影响可安装性。
 - 让检索质量真实提升，而不是依赖占位 lexical/semantic 评分。
 - 让导入、抽取、索引成为可恢复的后台任务。
 - 让用户可以审核、批准、撤销和理解 Agent 写入的知识。
@@ -16,9 +17,19 @@ PSKA 已完成初期 MVP 闭环：Twitter/X 归档、Postgres 存储、LLM 提�
 
 ## P0: 下一阶段必须优先做
 
-### P0.1 真实 embedding pipeline
+### P0.1 真实 embedding pipeline（已验收）
 
 目的：让语义检索从 placeholder 变成真正可用的 hybrid retrieval。
+
+当前状态：已实现并完成本地验收。默认模型路线为本地 `BAAI/bge-m3`，schema 为 `vector(1024)`，提供导入时嵌入、批量 backfill、query embedding、Postgres/pgvector vector search 和 RRF 合并。真实模型运行需要安装 `FlagEmbedding`，本地 Python 3.12 wrapper 会安装 BGE-M3 推理依赖，并以 `--no-deps` 安装 `FlagEmbedding`，避免 `ir-datasets -> zlib-state` 在 macOS arm64 上的源码编译问题。
+
+验收记录（2026-06-11）：
+
+- `pska_smoke` 执行 `db-reset` 后应用 `002_bge_m3_embeddings.sql`，`chunks.embedding` 为 `vector(1024)`，pgvector 可用。
+- fresh import `~/Downloads/twitter_archive` 3 个 zip 时启用 `--embedding-provider bge-m3`，6/6 个 chunk 自动写入 `bge-m3 / BAAI/bge-m3 / 1024` embedding。
+- `embed-backfill --embedding-provider bge-m3` 对已嵌入数据幂等，重复运行 `embedded=0, failed=0`。
+- 概念查询在 `lexical_candidates=0` 时仍通过 vector 召回，`score_debug` 显示 `ranker=hybrid_rrf`、`vector_enabled=true`、`vector_candidates=6`。
+- 单元测试覆盖导入时嵌入、backfill 幂等和 vector-only retrieval debug；core `36 passed`，Twitter/X channel `9 passed`。
 
 要做：
 
@@ -30,7 +41,7 @@ PSKA 已完成初期 MVP 闭环：Twitter/X 归档、Postgres 存储、LLM 提�
 
 依赖：
 
-- 现有 `chunks.embedding vector(1536)` schema。
+- 现有 `chunks.embedding vector(1024)` schema。
 - LLM/API key 配置读取机制。
 
 验收：

@@ -2,26 +2,15 @@
 
 PSKA 的 Twitter/X 采集通道。
 
-归档使用 `docs/schema.md` 中记录的 PSKA v1 元数据 schema。
+归档使用 `docs/schema.md` 中记录的 PSKA archive v2 元数据 schema。
 
 ## 安装
 
 从仓库根目录：
 
 ```bash
-cd channels/twitter-x
-```
-
-```bash
-python3 -m pip install -e .
-python3 -m playwright install chromium
-```
-
-如果 `uv` 可用：
-
-```bash
-uv sync
-uv run playwright install chromium
+./scripts/bootstrap_pska_env
+.pska/venvs/pska-py312/bin/python -m playwright install chromium
 ```
 
 ## 使用方法
@@ -35,7 +24,7 @@ archive batch urls.txt
 等效的模块形式：
 
 ```bash
-PYTHONPATH=src python3 -m pska.cli save https://x.com/user/status/123456789
+PYTHONPATH=channels/twitter-x/src .pska/venvs/pska-py312/bin/python -m pska.cli save https://x.com/user/status/123456789
 ```
 
 归档写入到：

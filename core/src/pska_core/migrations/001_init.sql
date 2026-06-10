@@ -101,7 +101,10 @@ CREATE TABLE chunks (
   visible_team_ids text[] NOT NULL DEFAULT '{}',
   ordinal integer NOT NULL DEFAULT 0,
   text text NOT NULL DEFAULT '',
-  embedding vector(1536),
+  embedding vector(1024),
+  embedding_provider text,
+  embedding_model text,
+  embedding_created_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now()
 );
 

@@ -40,7 +40,7 @@ allowed recovery path: ask the LLM to repair its own JSON/schema output.
 | MCP boundary | MVP complete | PSKA exposes stdio MCP tools; Fastreact loads and calls them without importing PSKA internals. |
 | HTTP API | MVP functional | Local API supports health, ingest, search, agentic search, extraction, and review item listing. |
 | E2E smoke | MVP complete | Real local smoke covers DB reset, zip import, LLM extraction, search, MCP, HTTP, and Fastreact MCP load. |
-| Production readiness | Not complete | Needs async jobs, durable task state, embeddings, stronger review workflow, observability, and UI. |
+| Production readiness | Not complete | Needs async jobs, durable task state, stronger review workflow, observability, and UI. BGE-M3 embedding P0 is implemented but still needs real-data quality tuning. |
 
 ## Current Architecture
 
@@ -93,12 +93,12 @@ Disallowed recovery:
 CLI:
 
 ```bash
-PYTHONPATH=src python3 -m pska_core.cli db-reset --name pska_smoke
-PYTHONPATH=src python3 -m pska_core.cli --database-url postgresql:///pska_smoke import-twitter-zips
-PYTHONPATH=src python3 -m pska_core.cli --database-url postgresql:///pska_smoke extract-all
-PYTHONPATH=src python3 -m pska_core.cli --database-url postgresql:///pska_smoke search --query "GitHub"
-PYTHONPATH=src python3 -m pska_core.cli --database-url postgresql:///pska_smoke agentic-search --query "GitHub"
-PYTHONPATH=src python3 -m pska_core.cli --database-url postgresql:///pska_smoke serve --port 8766
+./scripts/pska db-reset --name pska_smoke
+./scripts/pska --database-url postgresql:///pska_smoke import-twitter-zips
+./scripts/pska --database-url postgresql:///pska_smoke extract-all
+./scripts/pska --database-url postgresql:///pska_smoke search --query "GitHub"
+./scripts/pska --database-url postgresql:///pska_smoke agentic-search --query "GitHub"
+./scripts/pska --database-url postgresql:///pska_smoke serve --port 8766
 ```
 
 HTTP:
@@ -144,7 +144,7 @@ Full real smoke:
 
 ```bash
 cd "/Users/xudawei/Documents/personal archive/core"
-PYTHONPATH=src python3 scripts/e2e_smoke.py
+.pska/venvs/pska-py312/bin/python core/scripts/e2e_smoke.py
 ```
 
 The real smoke currently verifies:
@@ -217,8 +217,9 @@ Detailed next-stage TODOs are tracked in [`roadmap-todo-zh.md`](roadmap-todo-zh.
 
 1. Real embedding pipeline
 
-   Add embedding provider configuration, batch backfill, vector search quality
-   tests, and reindex commands.
+   First pass complete with local BGE-M3, 1024-dimensional pgvector storage,
+   batch backfill, query embeddings, vector search, and RRF merge. Next work is
+   real-data tuning, reranking, and report-level quality tracking.
 
 2. Async ingestion and extraction jobs
 

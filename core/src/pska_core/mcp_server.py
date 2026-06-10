@@ -7,6 +7,7 @@ from typing import Any
 
 from pska_core.acl import ACLService
 from pska_core.agentic import AgenticSearchService
+from pska_core.embeddings import EmbeddingConfig, build_embedding_provider
 from pska_core.extraction import ExtractionService
 from pska_core.ingest import IngestService
 from pska_core.models import ChannelIngestPayload
@@ -82,9 +83,10 @@ def main() -> int:
 class MCPServer:
     def __init__(self, database_url: str, store: Any | None = None, llm: Any | None = None) -> None:
         self.store = store or PostgresKnowledgeStore(database_url)
-        self.retrieval = RetrievalService(self.store, ACLService(self.store))
+        embedding_provider = build_embedding_provider(EmbeddingConfig.from_env())
+        self.retrieval = RetrievalService(self.store, ACLService(self.store), embedding_provider=embedding_provider)
         self.agentic = AgenticSearchService(self.retrieval, llm=llm)
-        self.ingest = IngestService(self.store)
+        self.ingest = IngestService(self.store, embedding_provider=embedding_provider)
         self.extraction = ExtractionService(self.store, llm=llm)
 
     def run(self) -> int:

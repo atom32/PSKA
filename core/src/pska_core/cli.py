@@ -11,10 +11,12 @@ from typing import Sequence
 
 from pska_core.acl import ACLService
 from pska_core.api import serve
+from pska_core.embeddings import EmbeddingConfig, EmbeddingService, build_embedding_provider
 from pska_core.enums import Visibility
 from pska_core.extraction import ExtractionService
 from pska_core.importers.twitter_zip import TwitterZipImporter
 from pska_core.ingest import IngestService
+from pska_core.mcp_server import MCPServer
 from pska_core.models import ChannelIngestPayload
 from pska_core.agentic import AgenticSearchService
 from pska_core.retrieval import RetrievalService
@@ -50,17 +52,25 @@ def build_parser() -> argparse.ArgumentParser:
     import_parser.add_argument("--space-id", default="private_primary")
     import_parser.add_argument("--visibility", choices=[item.value for item in Visibility], default=Visibility.PRIVATE.value)
     import_parser.add_argument("--visible-team-ids", default="")
+    _add_embedding_args(import_parser, default_provider=os.environ.get("PSKA_EMBEDDING_PROVIDER", "disabled"))
 
     search_parser = subparsers.add_parser("search", help="Search PSKA Core")
     search_parser.add_argument("--query", required=True)
     search_parser.add_argument("--user-id", default="user_primary")
     search_parser.add_argument("--represented-user-id", default=None)
     search_parser.add_argument("--top-k", type=int, default=5)
+    _add_embedding_args(search_parser, default_provider=os.environ.get("PSKA_EMBEDDING_PROVIDER", "disabled"))
 
     agentic_parser = subparsers.add_parser("agentic-search", help="Run agentic PSKA search")
     agentic_parser.add_argument("--query", required=True)
     agentic_parser.add_argument("--user-id", default="user_primary")
     agentic_parser.add_argument("--represented-user-id", default=None)
+    _add_embedding_args(agentic_parser, default_provider=os.environ.get("PSKA_EMBEDDING_PROVIDER", "disabled"))
+
+    embed_parser = subparsers.add_parser("embed-backfill", help="Backfill missing chunk embeddings")
+    _add_embedding_args(embed_parser, default_provider=os.environ.get("PSKA_EMBEDDING_PROVIDER", "bge-m3"))
+    embed_parser.add_argument("--batch-size", type=int, default=int(os.environ.get("PSKA_EMBEDDING_BATCH_SIZE", "16")))
+    embed_parser.add_argument("--limit", type=int, default=None)
 
     ingest_parser = subparsers.add_parser("ingest-payload", help="Ingest a channel payload JSON file")
     ingest_parser.add_argument("payload", type=Path)
@@ -72,10 +82,13 @@ def build_parser() -> argparse.ArgumentParser:
     serve_parser.add_argument("--host", default="127.0.0.1")
     serve_parser.add_argument("--port", type=int, default=8765)
 
+    subparsers.add_parser("mcp-server", help="Start PSKA stdio MCP server")
+
     smoke_parser = subparsers.add_parser("smoke-twitter-import", help="Reset pska_smoke, import zips, and run a search smoke")
     smoke_parser.add_argument("--input", type=Path, default=Path.home() / "Downloads" / "twitter_archive")
     smoke_parser.add_argument("--archive-root", type=Path, default=Path("archive/imports"))
     smoke_parser.add_argument("--query", default="")
+    _add_embedding_args(smoke_parser, default_provider=os.environ.get("PSKA_EMBEDDING_PROVIDER", "disabled"))
     return parser
 
 
@@ -95,6 +108,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return search(args)
     if args.command == "agentic-search":
         return agentic_search(args)
+    if args.command == "embed-backfill":
+        return embed_backfill(args)
     if args.command == "ingest-payload":
         return ingest_payload(args)
     if args.command == "extract-all":
@@ -102,6 +117,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "serve":
         serve(args.host, args.port, args.database_url)
         return 0
+    if args.command == "mcp-server":
+        return MCPServer(args.database_url).run()
     if args.command == "smoke-twitter-import":
         return smoke_twitter_import(args)
     return 2
@@ -131,9 +148,15 @@ def db_check(database_url: str) -> int:
 
 def db_init(database_url: str) -> int:
     psql = _psql_path()
-    migration = Path(__file__).parent / "migrations" / "001_init.sql"
-    result = subprocess.run([psql, database_url, "-f", str(migration)], check=False)
-    return result.returncode
+    migration_dir = Path(__file__).parent / "migrations"
+    migrations = sorted(migration_dir.glob("*.sql"))
+    if _table_exists(database_url, "users"):
+        migrations = [migration for migration in migrations if not migration.name.startswith("001_")]
+    for migration in migrations:
+        result = subprocess.run([psql, database_url, "-f", str(migration)], check=False)
+        if result.returncode != 0:
+            return result.returncode
+    return 0
 
 
 def db_create(name: str) -> int:
@@ -178,6 +201,7 @@ def db_reset(name: str) -> int:
 
 def import_twitter_zips(args: argparse.Namespace) -> int:
     store = PostgresKnowledgeStore(args.database_url)
+    embedding_provider = _embedding_provider_from_args(args)
     importer = TwitterZipImporter(
         store,
         archive_root=args.archive_root,
@@ -185,6 +209,7 @@ def import_twitter_zips(args: argparse.Namespace) -> int:
         space_id=args.space_id,
         visibility=Visibility(args.visibility),
         visible_team_ids=[item.strip() for item in args.visible_team_ids.split(",") if item.strip()],
+        embedding_provider=embedding_provider,
     )
     result = importer.import_directory(args.input)
     print(dumps(asdict(result)))
@@ -194,7 +219,7 @@ def import_twitter_zips(args: argparse.Namespace) -> int:
 def search(args: argparse.Namespace) -> int:
     store = PostgresKnowledgeStore(args.database_url)
     user = store.get_user(args.user_id)
-    response = RetrievalService(store, ACLService(store)).search(
+    response = RetrievalService(store, ACLService(store), embedding_provider=_embedding_provider_from_args(args)).search(
         args.query,
         user,
         represented_user_id=args.represented_user_id,
@@ -207,13 +232,26 @@ def search(args: argparse.Namespace) -> int:
 def agentic_search(args: argparse.Namespace) -> int:
     store = PostgresKnowledgeStore(args.database_url)
     user = store.get_user(args.user_id)
-    response = AgenticSearchService(RetrievalService(store, ACLService(store))).search(
+    response = AgenticSearchService(
+        RetrievalService(store, ACLService(store), embedding_provider=_embedding_provider_from_args(args))
+    ).search(
         args.query,
         user,
         represented_user_id=args.represented_user_id,
     )
     print(dumps(response))
     return 0
+
+
+def embed_backfill(args: argparse.Namespace) -> int:
+    store = PostgresKnowledgeStore(args.database_url)
+    provider = _embedding_provider_from_args(args)
+    if provider is None:
+        print("Embedding provider is disabled; use --embedding-provider bge-m3", file=sys.stderr)
+        return 2
+    report = EmbeddingService(store, provider, batch_size=args.batch_size).backfill_missing(limit=args.limit)
+    print(dumps(report))
+    return 1 if report.failed else 0
 
 
 def ingest_payload(args: argparse.Namespace) -> int:
@@ -246,6 +284,9 @@ def smoke_twitter_import(args: argparse.Namespace) -> int:
         user_id="user_primary",
         represented_user_id=None,
         top_k=5,
+        embedding_provider=args.embedding_provider,
+        embedding_model=args.embedding_model,
+        embedding_dimensions=args.embedding_dimensions,
     )
     return search(search_args)
 
@@ -274,6 +315,39 @@ def _safe_database_name(name: str) -> bool:
 
 def _sql_literal(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
+
+
+def _table_exists(database_url: str, table: str) -> bool:
+    psql = _psql_path()
+    result = subprocess.run(
+        [
+            psql,
+            database_url,
+            "-Atc",
+            "select to_regclass(%s) is not null;" % _sql_literal(table),
+        ],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    return result.returncode == 0 and result.stdout.strip().lower() in {"t", "true"}
+
+
+def _add_embedding_args(parser: argparse.ArgumentParser, *, default_provider: str) -> None:
+    parser.add_argument("--embedding-provider", default=default_provider)
+    parser.add_argument("--embedding-model", default=os.environ.get("PSKA_EMBEDDING_MODEL", "BAAI/bge-m3"))
+    parser.add_argument("--embedding-dimensions", type=int, default=int(os.environ.get("PSKA_EMBEDDING_DIMENSIONS", "1024")))
+
+
+def _embedding_provider_from_args(args: argparse.Namespace):
+    config = EmbeddingConfig(
+        provider=getattr(args, "embedding_provider", os.environ.get("PSKA_EMBEDDING_PROVIDER", "disabled")),
+        model=getattr(args, "embedding_model", os.environ.get("PSKA_EMBEDDING_MODEL", "BAAI/bge-m3")),
+        dimensions=getattr(args, "embedding_dimensions", int(os.environ.get("PSKA_EMBEDDING_DIMENSIONS", "1024"))),
+        batch_size=getattr(args, "batch_size", int(os.environ.get("PSKA_EMBEDDING_BATCH_SIZE", "16"))),
+    )
+    return build_embedding_provider(config)
 
 
 def _sample_query(store: PostgresKnowledgeStore) -> str:

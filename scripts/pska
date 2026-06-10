@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+VENV="$ROOT/.pska/venvs/pska-py312"
+
+if [[ ! -x "$VENV/bin/python" ]]; then
+  echo "PSKA Python 3.12 venv not found at $VENV" >&2
+  echo "Create it with: ./scripts/bootstrap_pska_env" >&2
+  exit 1
+fi
+
+export PYTHONPATH="$ROOT/core/src${PYTHONPATH:+:$PYTHONPATH}"
+exec "$VENV/bin/python" -m pska_core.cli "$@"

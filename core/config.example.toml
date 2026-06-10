@@ -15,5 +15,7 @@ agent_space_id = "agent_workspace"
 team_shared_space_id = "team_shared_default"
 
 [embedding]
-provider = "disabled"
-model = "local-placeholder"
+provider = "bge-m3"
+model = "BAAI/bge-m3"
+dimensions = 1024
+batch_size = 16

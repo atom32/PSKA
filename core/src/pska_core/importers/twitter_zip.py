@@ -7,6 +7,7 @@ import shutil
 import zipfile
 
 from pska_core.adapters.twitter_archive import archive_metadata_to_payload
+from pska_core.embeddings import EmbeddingProvider
 from pska_core.enums import Visibility
 from pska_core.ingest import IngestService
 from pska_core.models import SourceItem
@@ -31,6 +32,7 @@ class TwitterZipImporter:
         space_id: str = "private_primary",
         visibility: Visibility = Visibility.PRIVATE,
         visible_team_ids: list[str] | None = None,
+        embedding_provider: EmbeddingProvider | None = None,
     ) -> None:
         self.store = store
         self.archive_root = archive_root
@@ -38,7 +40,7 @@ class TwitterZipImporter:
         self.space_id = space_id
         self.visibility = visibility
         self.visible_team_ids = visible_team_ids or []
-        self.ingest = IngestService(store)
+        self.ingest = IngestService(store, embedding_provider=embedding_provider)
 
     def import_directory(self, input_dir: Path) -> TwitterZipImportResult:
         result = TwitterZipImportResult()

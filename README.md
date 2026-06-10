@@ -65,12 +65,22 @@ PSKA Core implements the knowledge model, storage, and services.
 
 ## Quick Start
 
+### Runtime Setup
+
+PSKA standardizes on a local Python 3.12 virtual environment so the core,
+Twitter/X channel, and BGE-M3 embedding stack stay portable:
+
+```bash
+brew install python@3.12
+./scripts/bootstrap_pska_env
+./scripts/pska db-check
+```
+
 ### Twitter/X Archiving
 
 ```bash
 cd channels/twitter-x
-python3 -m pip install -e .
-python3 -m playwright install chromium
+../../.pska/venvs/pska-py312/bin/python -m playwright install chromium
 
 # Archive a tweet
 archive save https://x.com/user/status/123456789
@@ -85,10 +95,8 @@ Or use the Chrome extension:
 ### PSKA Core Ingestion
 
 ```bash
-cd core
-PYTHONPATH=src python3 -m pska_core.cli db-reset --name pska_smoke
-PYTHONPATH=src python3 -m pska_core.cli \
-  --database-url postgresql:///pska_smoke \
+./scripts/pska db-reset --name pska_smoke
+./scripts/pska --database-url postgresql:///pska_smoke \
   import-twitter-zips \
   --input ~/Downloads/twitter_archive
 ```
@@ -96,8 +104,7 @@ PYTHONPATH=src python3 -m pska_core.cli \
 ### Search
 
 ```bash
-PYTHONPATH=src python3 -m pska_core.cli \
-  --database-url postgresql:///pska_smoke \
+./scripts/pska --database-url postgresql:///pska_smoke \
   agentic-search --query "your question"
 ```
 

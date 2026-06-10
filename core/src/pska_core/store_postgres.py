@@ -129,9 +129,10 @@ class PostgresKnowledgeStore:
                 """
                 insert into chunks(
                     chunk_id, document_id, source_item_id, owner_user_id, space_id,
-                    visibility, visible_team_ids, ordinal, text
+                    visibility, visible_team_ids, ordinal, text, embedding,
+                    embedding_provider, embedding_model
                 )
-                values (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector, %s, %s)
                 on conflict (chunk_id) do nothing
                 """,
                 (
@@ -144,6 +145,9 @@ class PostgresKnowledgeStore:
                     chunk.visible_team_ids,
                     chunk.ordinal,
                     chunk.text,
+                    _vector_literal(chunk.embedding) if chunk.embedding else None,
+                    chunk.metadata.get("embedding_provider") if chunk.metadata else None,
+                    chunk.metadata.get("embedding_model") if chunk.metadata else None,
                 ),
             )
 
@@ -313,6 +317,52 @@ class PostgresKnowledgeStore:
             ).fetchall()
         return [self._chunk_from_row(row) for row in rows]
 
+    def list_chunks_missing_embedding(self, *, provider: str, model: str, limit: int | None = None) -> list[Chunk]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                select * from chunks
+                where embedding is null
+                   or embedding_provider is distinct from %s
+                   or embedding_model is distinct from %s
+                order by created_at, chunk_id
+                limit %s
+                """,
+                (provider, model, limit if limit is not None else 2147483647),
+            ).fetchall()
+        return [self._chunk_from_row(row) for row in rows]
+
+    def update_chunk_embedding(self, chunk_id: str, embedding: list[float], *, provider: str, model: str) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                update chunks
+                set embedding = %s::vector,
+                    embedding_provider = %s,
+                    embedding_model = %s,
+                    embedding_created_at = now()
+                where chunk_id = %s
+                """,
+                (_vector_literal(embedding), provider, model, chunk_id),
+            )
+
+    def vector_search_chunks(self, source_item_ids: set[str], query_embedding: list[float], *, top_k: int) -> list[tuple[Chunk, float]]:
+        if not source_item_ids:
+            return []
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                select *, (embedding <=> %s::vector) as distance
+                from chunks
+                where source_item_id = any(%s)
+                  and embedding is not null
+                order by embedding <=> %s::vector
+                limit %s
+                """,
+                (_vector_literal(query_embedding), list(source_item_ids), _vector_literal(query_embedding), top_k),
+            ).fetchall()
+        return [(self._chunk_from_row(row), max(0.0, 1.0 - float(row["distance"]))) for row in rows]
+
     def list_hyperedges_for_entities(self, entity_ids: set[str]) -> list[tuple[Hyperedge, list[HyperedgeMember]]]:
         if not entity_ids:
             return []
@@ -396,6 +446,11 @@ class PostgresKnowledgeStore:
             text=row["text"],
             ordinal=row["ordinal"],
             embedding=None,
+            metadata={
+                "embedding_provider": row.get("embedding_provider"),
+                "embedding_model": row.get("embedding_model"),
+                "embedding_created_at": row.get("embedding_created_at"),
+            },
         )
 
     def _hyperedge_from_row(self, row: dict[str, Any]) -> Hyperedge:
@@ -411,3 +466,9 @@ class PostgresKnowledgeStore:
             source_refs=[],
             confidence=row["confidence"],
         )
+
+
+def _vector_literal(vector: list[float] | None) -> str | None:
+    if vector is None:
+        return None
+    return "[" + ",".join(f"{float(value):.9g}" for value in vector) + "]"

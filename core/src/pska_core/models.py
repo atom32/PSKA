@@ -138,6 +138,7 @@ class Chunk:
     text: str
     ordinal: int = 0
     embedding: list[float] | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)

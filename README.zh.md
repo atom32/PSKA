@@ -65,12 +65,21 @@ PSKA Core 实现知识模型、存储和服务。
 
 ## 快速开始
 
+### 运行环境
+
+PSKA 统一使用本地 Python 3.12 虚拟环境，这样 core、Twitter/X channel 和 BGE-M3 embedding 栈保持可迁移：
+
+```bash
+brew install python@3.12
+./scripts/bootstrap_pska_env
+./scripts/pska db-check
+```
+
 ### Twitter/X 归档
 
 ```bash
 cd channels/twitter-x
-python3 -m pip install -e .
-python3 -m playwright install chromium
+../../.pska/venvs/pska-py312/bin/python -m playwright install chromium
 
 # 归档一条推文
 archive save https://x.com/user/status/123456789
@@ -85,10 +94,8 @@ archive save https://x.com/user/status/123456789
 ### PSKA Core 摄入
 
 ```bash
-cd core
-PYTHONPATH=src python3 -m pska_core.cli db-reset --name pska_smoke
-PYTHONPATH=src python3 -m pska_core.cli \
-  --database-url postgresql:///pska_smoke \
+./scripts/pska db-reset --name pska_smoke
+./scripts/pska --database-url postgresql:///pska_smoke \
   import-twitter-zips \
   --input ~/Downloads/twitter_archive
 ```
@@ -96,8 +103,7 @@ PYTHONPATH=src python3 -m pska_core.cli \
 ### 搜索
 
 ```bash
-PYTHONPATH=src python3 -m pska_core.cli \
-  --database-url postgresql:///pska_smoke \
+./scripts/pska --database-url postgresql:///pska_smoke \
   agentic-search --query "你的问题"
 ```
 

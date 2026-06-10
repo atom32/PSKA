@@ -97,3 +97,35 @@ def test_acl_filter_happens_before_retrieval_ranking() -> None:
     response = RetrievalService(store, ACLService(store)).search("rarekeyword", store.get_user("user_secondary"))
 
     assert [result.title for result in response.results] == ["shared rarekeyword"]
+
+
+def test_vector_search_recalls_semantic_match_without_lexical_overlap() -> None:
+    store = make_store()
+    provider = FakeEmbeddingProvider()
+    ingest = IngestService(store, embedding_provider=provider)
+    ingest.ingest_channel_payload(payload(source_id="alpha", title="Alpha note", content={"text": "alpha document"}))
+    ingest.ingest_channel_payload(payload(source_id="beta", title="Beta note", content={"text": "beta document"}))
+
+    response = RetrievalService(store, ACLService(store), embedding_provider=provider).search(
+        "semantic intent",
+        store.get_user("user_primary"),
+    )
+
+    assert response.results[0].title == "Alpha note"
+    assert response.results[0].score_debug["vector"] > 0.99
+    assert response.score_debug["vector_enabled"] is True
+
+
+class FakeEmbeddingProvider:
+    provider_name = "fake"
+    model_name = "fake-semantic"
+    dimensions = 2
+
+    def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        vectors = []
+        for text in texts:
+            if "alpha" in text or "semantic" in text:
+                vectors.append([1.0, 0.0])
+            else:
+                vectors.append([0.0, 1.0])
+        return vectors

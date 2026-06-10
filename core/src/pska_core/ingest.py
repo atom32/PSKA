@@ -6,14 +6,16 @@ from uuid import uuid5, NAMESPACE_URL
 
 from pska_core.models import ChannelIngestPayload, Chunk, Document, SourceItem
 from pska_core.store import KnowledgeStore
+from pska_core.embeddings import EmbeddingProvider
 
 
 class IngestService:
     """Converts channel payloads into source items, documents, and chunks."""
 
-    def __init__(self, store: KnowledgeStore, *, chunk_chars: int = 1200) -> None:
+    def __init__(self, store: KnowledgeStore, *, chunk_chars: int = 1200, embedding_provider: EmbeddingProvider | None = None) -> None:
         self.store = store
         self.chunk_chars = chunk_chars
+        self.embedding_provider = embedding_provider
 
     def ingest_channel_payload(self, payload: ChannelIngestPayload | dict) -> SourceItem:
         if isinstance(payload, dict):
@@ -60,7 +62,9 @@ class IngestService:
             metadata={"url": stored.url},
         )
         self.store.add_document(document)
-        for ordinal, chunk_text in enumerate(self._chunk_text(stored.content_text)):
+        chunk_texts = self._chunk_text(stored.content_text)
+        chunk_embeddings = self.embedding_provider.embed_texts(chunk_texts) if self.embedding_provider else [None] * len(chunk_texts)
+        for ordinal, (chunk_text, embedding) in enumerate(zip(chunk_texts, chunk_embeddings)):
             self.store.add_chunk(
                 Chunk(
                     chunk_id=f"chk_{source_item_id[4:]}_{ordinal}",
@@ -72,6 +76,11 @@ class IngestService:
                     visible_team_ids=stored.visible_team_ids,
                     text=chunk_text,
                     ordinal=ordinal,
+                    embedding=embedding,
+                    metadata={
+                        "embedding_provider": self.embedding_provider.provider_name if self.embedding_provider else None,
+                        "embedding_model": self.embedding_provider.model_name if self.embedding_provider else None,
+                    },
                 )
             )
         return stored

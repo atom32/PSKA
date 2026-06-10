@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+VENV="$ROOT/.pska/venvs/pska-py312"
+
+find_python() {
+  if [[ -n "${PSKA_PYTHON:-}" ]]; then
+    printf '%s\n' "$PSKA_PYTHON"
+    return 0
+  fi
+
+  local candidate
+  for candidate in \
+    /opt/homebrew/bin/python3.12 \
+    /usr/local/bin/python3.12 \
+    /Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12 \
+    python3.12
+  do
+    if command -v "$candidate" >/dev/null 2>&1; then
+      command -v "$candidate"
+      return 0
+    fi
+    if [[ -x "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+PYTHON_BIN="$(find_python || true)"
+if [[ -z "$PYTHON_BIN" || ! -x "$PYTHON_BIN" ]]; then
+  echo "Python 3.12 not found. Install it with: brew install python@3.12" >&2
+  echo "Or set PSKA_PYTHON=/path/to/python3.12" >&2
+  exit 1
+fi
+
+"$PYTHON_BIN" - <<'PY'
+import sys
+if sys.version_info[:2] != (3, 12):
+    raise SystemExit(f"Expected Python 3.12, got {sys.version.split()[0]}")
+PY
+
+if [[ "$(uname -m)" == "arm64" ]]; then
+  export ARCHFLAGS="-arch arm64"
+  export _PYTHON_HOST_PLATFORM="macosx-$(sw_vers -productVersion | awk -F. '{print $1 "." $2}')-arm64"
+fi
+
+rm -rf "$VENV"
+"$PYTHON_BIN" -m venv "$VENV"
+"$VENV/bin/python" -m pip install --upgrade pip setuptools wheel
+"$VENV/bin/python" -m pip install -e "$ROOT/core[embeddings]"
+"$VENV/bin/python" -m pip install --no-deps "FlagEmbedding>=1.3.0"
+"$VENV/bin/python" -m pip install -e "$ROOT/channels/twitter-x"
+
+echo "PSKA venv ready: $VENV"
+echo "Python: $("$VENV/bin/python" -c 'import platform, sys; print(sys.version.split()[0], platform.machine())')"
+echo "Run: ./scripts/pska db-check"

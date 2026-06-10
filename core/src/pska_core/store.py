@@ -33,6 +33,9 @@ class KnowledgeStore(Protocol):
     def list_entities(self) -> list[Entity]: ...
     def list_source_items(self) -> list[SourceItem]: ...
     def list_chunks_for_sources(self, source_item_ids: set[str]) -> list[Chunk]: ...
+    def list_chunks_missing_embedding(self, *, provider: str, model: str, limit: int | None = None) -> list[Chunk]: ...
+    def update_chunk_embedding(self, chunk_id: str, embedding: list[float], *, provider: str, model: str) -> None: ...
+    def vector_search_chunks(self, source_item_ids: set[str], query_embedding: list[float], *, top_k: int) -> list[tuple[Chunk, float]]: ...
     def list_hyperedges_for_entities(self, entity_ids: set[str]) -> list[tuple[Hyperedge, list[HyperedgeMember]]]: ...
 
 
@@ -107,6 +110,31 @@ class InMemoryKnowledgeStore:
     def list_chunks_for_sources(self, source_item_ids: set[str]) -> list[Chunk]:
         return [chunk for chunk in self.chunks.values() if chunk.source_item_id in source_item_ids]
 
+    def list_chunks_missing_embedding(self, *, provider: str, model: str, limit: int | None = None) -> list[Chunk]:
+        chunks = [
+            chunk
+            for chunk in self.chunks.values()
+            if chunk.embedding is None
+            or chunk.metadata.get("embedding_provider") != provider
+            or chunk.metadata.get("embedding_model") != model
+        ]
+        return chunks[:limit] if limit else chunks
+
+    def update_chunk_embedding(self, chunk_id: str, embedding: list[float], *, provider: str, model: str) -> None:
+        chunk = self.chunks[chunk_id]
+        chunk.embedding = list(embedding)
+        chunk.metadata["embedding_provider"] = provider
+        chunk.metadata["embedding_model"] = model
+
+    def vector_search_chunks(self, source_item_ids: set[str], query_embedding: list[float], *, top_k: int) -> list[tuple[Chunk, float]]:
+        scored: list[tuple[Chunk, float]] = []
+        for chunk in self.list_chunks_for_sources(source_item_ids):
+            if not chunk.embedding:
+                continue
+            score = _cosine_similarity(query_embedding, chunk.embedding)
+            scored.append((chunk, score))
+        return sorted(scored, key=lambda item: item[1], reverse=True)[:top_k]
+
     def list_hyperedges_for_entities(self, entity_ids: set[str]) -> list[tuple[Hyperedge, list[HyperedgeMember]]]:
         edge_ids = {
             member.hyperedge_id
@@ -118,3 +146,14 @@ class InMemoryKnowledgeStore:
             members = [member for member in self.hyperedge_members if member.hyperedge_id == edge_id]
             results.append((self.hyperedges[edge_id], members))
         return results
+
+
+def _cosine_similarity(left: list[float], right: list[float]) -> float:
+    if not left or not right or len(left) != len(right):
+        return 0.0
+    dot = sum(a * b for a, b in zip(left, right))
+    left_norm = sum(a * a for a in left) ** 0.5
+    right_norm = sum(b * b for b in right) ** 0.5
+    if left_norm == 0 or right_norm == 0:
+        return 0.0
+    return dot / (left_norm * right_norm)

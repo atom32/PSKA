@@ -2,26 +2,15 @@
 
 Twitter/X acquisition channel for PSKA.
 
-Archives use the PSKA v1 metadata schema documented in `docs/schema.md`.
+Archives use the PSKA archive v2 metadata schema documented in `docs/schema.md`.
 
 ## Install
 
 From the repository root:
 
 ```bash
-cd channels/twitter-x
-```
-
-```bash
-python3 -m pip install -e .
-python3 -m playwright install chromium
-```
-
-If `uv` is available:
-
-```bash
-uv sync
-uv run playwright install chromium
+./scripts/bootstrap_pska_env
+.pska/venvs/pska-py312/bin/python -m playwright install chromium
 ```
 
 ## Usage
@@ -35,7 +24,7 @@ archive batch urls.txt
 Equivalent module form:
 
 ```bash
-PYTHONPATH=src python3 -m pska.cli save https://x.com/user/status/123456789
+PYTHONPATH=channels/twitter-x/src .pska/venvs/pska-py312/bin/python -m pska.cli save https://x.com/user/status/123456789
 ```
 
 Archives are written to:

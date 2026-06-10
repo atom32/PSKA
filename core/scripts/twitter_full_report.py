@@ -56,6 +56,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--top-k", type=int, default=5)
     parser.add_argument("--api-port", type=int, default=8767)
     parser.add_argument("--fastreact-timeout", type=int, default=180)
+    parser.add_argument("--embedding-provider", default=os.environ.get("PSKA_EMBEDDING_PROVIDER", "disabled"))
+    parser.add_argument("--embedding-model", default=os.environ.get("PSKA_EMBEDDING_MODEL", "BAAI/bge-m3"))
+    parser.add_argument("--embedding-dimensions", type=int, default=int(os.environ.get("PSKA_EMBEDDING_DIMENSIONS", "1024")))
     return parser
 
 
@@ -64,6 +67,9 @@ class ReportRunner:
         self.args = args
         self.recovery_log = ROOT / "reports" / "pska_llm_recovery_events.jsonl"
         self.env = make_env(args.database_url, self.recovery_log)
+        self.env["PSKA_EMBEDDING_PROVIDER"] = args.embedding_provider
+        self.env["PSKA_EMBEDDING_MODEL"] = args.embedding_model
+        self.env["PSKA_EMBEDDING_DIMENSIONS"] = str(args.embedding_dimensions)
         self.pipeline_steps: list[dict[str, Any]] = []
         self.raw_debug: dict[str, Any] = {}
 
@@ -100,12 +106,38 @@ class ReportRunner:
                     str(self.args.archive_root),
                     "--owner-user-id",
                     self.args.owner_user_id,
+                    "--embedding-provider",
+                    self.args.embedding_provider,
+                    "--embedding-model",
+                    self.args.embedding_model,
+                    "--embedding-dimensions",
+                    str(self.args.embedding_dimensions),
                 ],
                 parse_json=True,
                 timeout=180,
             )
             import_summary = imported.get("json") or {}
             if imported["status"] == "passed":
+                if self.args.embedding_provider not in {"", "disabled", "none", "off"}:
+                    self.run_command(
+                        "embedding_backfill",
+                        [
+                            "python3",
+                            "-m",
+                            "pska_core.cli",
+                            "--database-url",
+                            self.args.database_url,
+                            "embed-backfill",
+                            "--embedding-provider",
+                            self.args.embedding_provider,
+                            "--embedding-model",
+                            self.args.embedding_model,
+                            "--embedding-dimensions",
+                            str(self.args.embedding_dimensions),
+                        ],
+                        parse_json=True,
+                        timeout=900,
+                    )
                 extracted = self.run_command(
                     "llm_extraction",
                     [
@@ -155,6 +187,11 @@ class ReportRunner:
                 "database_url": self.args.database_url,
                 "output": str(self.args.output),
                 "json_output": str(self.args.json_output),
+                "embedding": {
+                    "provider": self.args.embedding_provider,
+                    "model": self.args.embedding_model,
+                    "dimensions": self.args.embedding_dimensions,
+                },
             },
             "pipeline_steps": self.pipeline_steps,
             "database_summary": database_summary,
@@ -210,7 +247,9 @@ class ReportRunner:
     def database_counts(self) -> dict[str, int]:
         tables = ["source_items", "documents", "chunks", "entities", "hyperedges", "review_items"]
         with psycopg.connect(self.args.database_url, row_factory=dict_row) as conn:
-            return {table: int(conn.execute(f"select count(*) as count from {table}").fetchone()["count"]) for table in tables}
+            counts = {table: int(conn.execute(f"select count(*) as count from {table}").fetchone()["count"]) for table in tables}
+            counts["embedded_chunks"] = int(conn.execute("select count(*) as count from chunks where embedding is not null").fetchone()["count"])
+            return counts
 
     def source_summaries(self) -> list[dict[str, Any]]:
         with psycopg.connect(self.args.database_url, row_factory=dict_row) as conn:
@@ -279,6 +318,12 @@ class ReportRunner:
                 self.args.owner_user_id,
                 "--top-k",
                 str(self.args.top_k),
+                "--embedding-provider",
+                self.args.embedding_provider,
+                "--embedding-model",
+                self.args.embedding_model,
+                "--embedding-dimensions",
+                str(self.args.embedding_dimensions),
             ],
             parse_json=True,
             timeout=120,
@@ -297,6 +342,12 @@ class ReportRunner:
                 question,
                 "--user-id",
                 self.args.owner_user_id,
+                "--embedding-provider",
+                self.args.embedding_provider,
+                "--embedding-model",
+                self.args.embedding_model,
+                "--embedding-dimensions",
+                str(self.args.embedding_dimensions),
             ],
             parse_json=True,
             timeout=240,
@@ -353,7 +404,7 @@ class ReportRunner:
     def run_mcp_question(self, question: str) -> dict[str, Any]:
         started = time.time()
         process = subprocess.Popen(
-            ["python3", "-m", "pska_core.mcp_server"],
+            [str(ROOT.parent / "scripts" / "pska"), "mcp-server"],
             cwd=ROOT,
             env=self.env,
             text=True,
@@ -414,7 +465,7 @@ class ReportRunner:
         fast_env = self.env.copy()
         fast_env["PYTHONPATH"] = f"{SRC}:{FASTREACT_SRC}"
         fast_env["FASTRACT_MCP_SERVERS"] = json.dumps(
-            [{"name": "pska", "command": "python3", "args": ["-m", "pska_core.mcp_server"], "isolation": "shared"}]
+            [{"name": "pska", "command": str(ROOT.parent / "scripts" / "pska"), "args": ["mcp-server"], "isolation": "shared"}]
         )
         apply_fastreact_llm_env(fast_env)
         snippet = FASTREACT_SNIPPET.replace("__QUESTION_JSON__", json.dumps(question))
@@ -616,6 +667,7 @@ def render_html_report(report: dict[str, Any]) -> str:
         ("Overall", meta.get("overall_status")),
         ("ZIP files", meta.get("zip_count")),
         ("Sources", db.get("source_items", 0)),
+        ("Embedded chunks", db.get("embedded_chunks", 0)),
         ("Entities", db.get("entities", 0)),
         ("Hyperedges", db.get("hyperedges", 0)),
         ("Questions", len(report.get("questions", []))),

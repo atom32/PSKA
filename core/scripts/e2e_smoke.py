@@ -137,7 +137,7 @@ def _sample_query(env: dict[str, str]) -> str:
 
 def _mcp_call(env: dict[str, str], query: str) -> dict[str, Any]:
     process = subprocess.Popen(
-        ["python3", "-m", "pska_core.mcp_server"],
+        [str(ROOT.parent / "scripts" / "pska"), "mcp-server"],
         cwd=ROOT,
         env=env,
         text=True,
@@ -220,8 +220,8 @@ def _fastreact_mcp_smoke(env: dict[str, str], query: str) -> dict[str, Any]:
         [
             {
                 "name": "pska",
-                "command": "python3",
-                "args": ["-m", "pska_core.mcp_server"],
+                "command": str(ROOT.parent / "scripts" / "pska"),
+                "args": ["mcp-server"],
                 "isolation": "shared",
                 "description": "Read-only PSKA personal knowledge store tools.",
             }

@@ -31,8 +31,7 @@ integration.
 ## Local Smoke
 
 ```bash
-cd core
-PYTHONPATH=src python3 scripts/e2e_smoke.py
+./.pska/venvs/pska-py312/bin/python core/scripts/e2e_smoke.py
 ```
 
 The smoke script resets `pska_smoke`, imports `~/Downloads/twitter_archive/*.zip`,
@@ -42,9 +41,8 @@ checks, and Fastreact MCP loading.
 ## Twitter Zip Import
 
 ```bash
-PYTHONPATH=src python3 -m pska_core.cli db-reset --name pska_smoke
-PYTHONPATH=src python3 -m pska_core.cli \
-  --database-url postgresql:///pska_smoke \
+./scripts/pska db-reset --name pska_smoke
+./scripts/pska --database-url postgresql:///pska_smoke \
   import-twitter-zips \
   --input ~/Downloads/twitter_archive \
   --archive-root archive/imports
@@ -53,6 +51,40 @@ PYTHONPATH=src python3 -m pska_core.cli \
 Canonical new archives should use `pska.archive.v2`. Legacy Twitter zip metadata
 is accepted only as a compatibility path.
 
+## BGE-M3 Embeddings
+
+PSKA's P0 embedding path uses local BGE-M3 through `FlagEmbedding` and stores
+1024-dimensional vectors in PostgreSQL `pgvector`.
+
+Use the repository wrapper so the command runs inside the local Python 3.12
+environment:
+
+```bash
+brew install python@3.12
+./scripts/bootstrap_pska_env
+```
+
+Backfill imported chunks:
+
+```bash
+./scripts/pska --database-url postgresql:///pska_smoke \
+  embed-backfill \
+  --embedding-provider bge-m3
+```
+
+Run hybrid search with vector retrieval enabled:
+
+```bash
+./scripts/pska --database-url postgresql:///pska_smoke \
+  search \
+  --query "agentic coding automation" \
+  --embedding-provider bge-m3
+```
+
+When `PSKA_EMBEDDING_PROVIDER=bge-m3` is set, CLI/API/MCP retrieval uses the
+same BGE-M3 provider. If the provider cannot be loaded, the command fails
+explicitly rather than silently falling back to lexical search.
+
 ## Fastreact MCP Boundary
 
 Fastreact can load PSKA as a read-only stdio MCP server without importing PSKA
@@ -60,8 +92,7 @@ internals:
 
 ```bash
 export PSKA_DATABASE_URL=postgresql:///pska_smoke
-export PYTHONPATH="/Users/xudawei/Documents/personal archive/core/src"
-export FASTRACT_MCP_SERVERS='[{"name":"pska","command":"python3","args":["-m","pska_core.mcp_server"],"isolation":"shared"}]'
+export FASTRACT_MCP_SERVERS='[{"name":"pska","command":"./scripts/pska","args":["mcp-server"],"isolation":"shared"}]'
 ```
 
 API keys should be injected into the Fastreact process environment only. Do not
