@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "PSKA Twitter Archive",
+  "version": "0.1.0",
+  "description": "Archive Twitter/X posts from your logged-in Chrome session.",
+  "permissions": ["activeTab", "downloads", "scripting", "tabs"],
+  "host_permissions": ["https://x.com/*", "https://twitter.com/*", "https://mobile.twitter.com/*"],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Archive Tweet"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://x.com/*/status/*", "https://twitter.com/*/status/*", "https://mobile.twitter.com/*/status/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

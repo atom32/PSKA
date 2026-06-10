@@ -1,0 +1,25 @@
+[project]
+name = "pska"
+version = "0.1.0"
+description = "Personal Social Knowledge Archive CLI for Twitter/X."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "playwright>=1.44.0",
+]
+
+[project.scripts]
+archive = "pska.cli:main"
+
+[dependency-groups]
+dev = [
+  "pytest>=8.0.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
