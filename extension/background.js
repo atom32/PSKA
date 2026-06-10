@@ -53,7 +53,7 @@ function extensionForUrl(url, fallback) {
 
 function markdown(record) {
   const lines = [
-    "# Tweet",
+    record.kind === "x_article" ? "# X Article" : "# Tweet",
     "",
     `ID: ${record.id}`,
     `Author: ${record.author || ""}`,

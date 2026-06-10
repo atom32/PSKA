@@ -37,6 +37,15 @@
     return node ? node.innerText.trim() : "";
   }
 
+  function pageTitleParts() {
+    const title = document.title || "";
+    const match = title.match(new RegExp("X 上的 (.+?)：“(.+?)” / X"));
+    return {
+      author: match ? match[1] : null,
+      title: match ? match[2] : title.replace(new RegExp("\\s*/ X$"), "").trim()
+    };
+  }
+
   function hrefs(article) {
     return Array.from(article.querySelectorAll("a[href]")).map((a) => a.getAttribute("href"));
   }
@@ -75,6 +84,15 @@
   function imageUrls(article) {
     return unique(
       Array.from(article.querySelectorAll("img[src]"))
+        .map((img) => img.getAttribute("src"))
+        .filter((src) => src && (src.includes("twimg.com/media") || src.includes("pbs.twimg.com/media")))
+        .map(originalImageUrl)
+    );
+  }
+
+  function pageImageUrls() {
+    return unique(
+      Array.from(document.querySelectorAll("img[src]"))
         .map((img) => img.getAttribute("src"))
         .filter((src) => src && (src.includes("twimg.com/media") || src.includes("pbs.twimg.com/media")))
         .map(originalImageUrl)
@@ -120,9 +138,44 @@
     };
   }
 
+  function articleBlocks() {
+    const blocks = unique(
+      Array.from(document.querySelectorAll(".public-DraftStyleDefault-block"))
+        .map(textOf)
+        .map((text) => text.replace(/\s+\n/g, "\n").trim())
+        .filter((text) => text.length > 1)
+    );
+    return blocks.filter((text) => !/^\d+$/.test(text));
+  }
+
+  function extractArticle(tweetId) {
+    const blocks = articleBlocks();
+    if (blocks.length < 3) return null;
+
+    const { author, title } = pageTitleParts();
+    const contentParts = [title, ...blocks].filter(Boolean);
+    return {
+      id: tweetId,
+      url: location.href,
+      author,
+      handle: null,
+      content: unique(contentParts).join("\n\n"),
+      created_at: document.querySelector("time")?.getAttribute("datetime") || null,
+      images: pageImageUrls(),
+      videos: videoUrls(document),
+      replies: [],
+      raw_html: `<!doctype html>\n${document.documentElement.outerHTML}`,
+      captured_at: new Date().toISOString(),
+      kind: "x_article"
+    };
+  }
+
   function extractTweet() {
     const tweetId = parseTweetId(location.href);
     if (!tweetId) throw new Error("Current page is not a Twitter/X status URL.");
+
+    const articleRecord = extractArticle(tweetId);
+    if (articleRecord) return articleRecord;
 
     const mainArticle = findMainArticle(tweetId);
     if (!mainArticle) throw new Error("No tweet article found on the page.");
