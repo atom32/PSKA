@@ -18,7 +18,7 @@ async function send(message) {
   return response.result;
 }
 
-currentButton.addEventListener("click", async () => {
+async function archiveCurrentTweet() {
   setBusy(true);
   setStatus("Archiving current Tweet...");
   try {
@@ -29,7 +29,9 @@ currentButton.addEventListener("click", async () => {
   } finally {
     setBusy(false);
   }
-});
+}
+
+currentButton.addEventListener("click", archiveCurrentTweet);
 
 batchButton.addEventListener("click", async () => {
   const urls = batchUrls.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
@@ -49,3 +51,5 @@ batchButton.addEventListener("click", async () => {
     setBusy(false);
   }
 });
+
+archiveCurrentTweet();
