@@ -209,7 +209,7 @@ def _api_smoke(env: dict[str, str], query: str) -> dict[str, Any]:
 
 
 def _fastreact_mcp_smoke(env: dict[str, str], query: str) -> dict[str, Any]:
-    fastreact_src = Path.home() / "Fastreact" / "fastreact-nano" / "src"
+    fastreact_src = _resolve_fastreact_src(env)
     if not fastreact_src.exists():
         return {"ok": False, "error": f"Fastreact source not found: {fastreact_src}"}
 
@@ -301,6 +301,22 @@ def _scrub(text: str) -> str:
     if key:
         text = text.replace(key, "***")
     return text[-4000:]
+
+
+def _resolve_fastreact_src(env: dict[str, str]) -> Path:
+    configured = env.get("FASTREACT_SRC")
+    if configured:
+        return Path(configured).expanduser()
+
+    candidates = [
+        Path.home() / "FastReAct" / "fastreact-nano" / "src",
+        Path.home() / "Fastreact" / "fastreact-nano" / "src",
+        Path.home() / "FastReact" / "fastreact-nano" / "src",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
 
 
 if __name__ == "__main__":

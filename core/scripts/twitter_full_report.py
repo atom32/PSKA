@@ -26,7 +26,7 @@ DEFAULT_INPUT = Path.home() / "Downloads" / "twitter_archive"
 DEFAULT_OUTPUT = ROOT / "reports" / "pska_twitter_full_test.html"
 DEFAULT_JSON_OUTPUT = ROOT / "reports" / "pska_twitter_full_test.json"
 DEFAULT_HISTORY_DIR = ROOT / "reports" / "runs"
-FASTREACT_SRC = Path.home() / "Fastreact" / "fastreact-nano" / "src"
+FASTREACT_SRC = None
 
 FIXED_QUESTIONS = [
     "这些归档里提到了哪些 AI 编程工具或自动化工具？",
@@ -565,18 +565,30 @@ class ReportRunner:
                 {"role": "user", "content": question},
             ],
             "stream": True,
+            "user_key": f"pska:{self.args.owner_user_id}",
+            "caller": "pska",
+            "run_id": self.run_id,
+            "purpose": "report",
+            "pska_user_id": self.args.owner_user_id,
+            "metadata": {
+                "caller": "pska",
+                "run_id": self.run_id,
+                "purpose": "report",
+                "pska_user_id": self.args.owner_user_id,
+            },
         }
         if self.args.fastreact_model:
             payload["model"] = self.args.fastreact_model
         return payload
 
     def run_fastreact_local_question(self, question: str) -> dict[str, Any]:
-        if not FASTREACT_SRC.exists():
-            result = {"question": question, "status": "failed", "error": f"Fastreact source not found: {FASTREACT_SRC}"}
+        fastreact_src = resolve_fastreact_src()
+        if not fastreact_src.exists():
+            result = {"question": question, "status": "failed", "error": f"Fastreact source not found: {fastreact_src}"}
             self.pipeline_steps.append({"name": f"fastreact:{question[:30]}", **result})
             return result
         fast_env = self.env.copy()
-        fast_env["PYTHONPATH"] = f"{SRC}:{FASTREACT_SRC}"
+        fast_env["PYTHONPATH"] = f"{SRC}:{fastreact_src}"
         fast_env["FASTRACT_MCP_SERVERS"] = json.dumps(
             [{"name": "pska", "command": str(ROOT.parent / "scripts" / "pska"), "args": ["mcp-server"], "isolation": "shared"}]
         )
@@ -768,6 +780,10 @@ def parse_json_from_stdout(stdout: str) -> dict[str, Any]:
 def parse_sse_events(text: str) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     for block in text.split("\n\n"):
+        event_name = ""
+        for line in block.splitlines():
+            if line.startswith("event:"):
+                event_name = line.removeprefix("event:").strip()
         data_lines = [line.removeprefix("data:").strip() for line in block.splitlines() if line.startswith("data:")]
         if not data_lines:
             continue
@@ -779,6 +795,9 @@ def parse_sse_events(text: str) -> list[dict[str, Any]]:
         except json.JSONDecodeError:
             event = {"type": "invalid_sse_json", "content": data}
         if isinstance(event, dict):
+            event.setdefault("schema", "fastreact.agent_event.v1")
+            if event_name and "type" not in event:
+                event["type"] = event_name
             events.append(event)
     return events
 
@@ -807,7 +826,7 @@ def fastreact_agent_answer(payload: dict[str, Any]) -> str:
             continue
         event_type = str(event.get("type") or "").lower()
         content = str(event.get("content") or "").strip()
-        if content and ("session_end" in event_type or event_type.endswith("think")):
+        if content and ("session_end" in event_type or "final_answer" in event_type or event_type.endswith("think")):
             return content
     return ""
 
@@ -834,7 +853,7 @@ def fastreact_event_stream(payload: dict[str, Any]) -> list[dict[str, Any]]:
             kind = "tool_call"
         elif tool_name:
             kind = "tool_result"
-        elif "session_end" in event_type_lower:
+        elif "session_end" in event_type_lower or "final_answer" in event_type_lower:
             kind = "final_answer"
         elif "error" in event_type_lower:
             kind = "error"
@@ -1308,6 +1327,22 @@ def read_first_line(path: Path) -> str:
     except OSError:
         return ""
     return ""
+
+
+def resolve_fastreact_src() -> Path:
+    configured = os.environ.get("FASTREACT_SRC")
+    if configured:
+        return Path(configured).expanduser()
+
+    candidates = [
+        Path.home() / "FastReAct" / "fastreact-nano" / "src",
+        Path.home() / "Fastreact" / "fastreact-nano" / "src",
+        Path.home() / "FastReact" / "fastreact-nano" / "src",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
 
 
 def read_api_key_file(path: Path) -> tuple[str, str, str]:

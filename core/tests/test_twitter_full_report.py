@@ -87,14 +87,16 @@ def test_parse_json_from_stdout_uses_last_json_line() -> None:
 
 def test_parse_sse_events_reads_fastreact_agent_events() -> None:
     events = parse_sse_events(
-        'data: {"type":"tool_call","tool_name":"pska_search","content":""}\n\n'
-        'data: {"type":"session_end","content":"done"}\n\n'
+        'event: tool_call\n'
+        'data: {"schema":"fastreact.agent_event.v1","tool_name":"pska_search","content":""}\n\n'
+        'event: done\n'
+        'data: {"type":"final_answer","content":"done"}\n\n'
         "data: [DONE]\n\n"
     )
 
     assert events == [
-        {"type": "tool_call", "tool_name": "pska_search", "content": ""},
-        {"type": "session_end", "content": "done"},
+        {"schema": "fastreact.agent_event.v1", "tool_name": "pska_search", "content": "", "type": "tool_call"},
+        {"type": "final_answer", "content": "done", "schema": "fastreact.agent_event.v1"},
     ]
 
 
