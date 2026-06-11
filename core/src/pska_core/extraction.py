@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from uuid import uuid5, NAMESPACE_URL
 
 from pska_core.enums import Directionality, ReviewType, Visibility
@@ -71,7 +71,7 @@ class ExtractionService:
                 owner_user_id=item.owner_user_id,
                 review_type=ReviewType(str(review_spec["review_type"])),
                 title=str(review_spec["title"]),
-                proposal=dict(review_spec.get("proposal") or {}),
+                proposal=self._proposal_with_source_refs(item, review_spec, source_ref),
             )
             self.store.add_review_item(review)
             report.review_items_created.append(review.review_item_id)
@@ -111,6 +111,9 @@ source_item_id: {item.source_item_id}
 source_channel: {item.source_channel}
 record_type: {item.record_type}
 title: {item.title}
+
+For conversation records, preserve provenance by including proposal.message_ids
+for any review item grounded in specific messages.
 
 Document text:
 {item.content_text[:12000]}
@@ -200,6 +203,35 @@ Previous extraction:
             "hyperedges": normalized_edges,
             "review_items": normalized_reviews,
         }
+
+    def _proposal_with_source_refs(
+        self,
+        item: SourceItem,
+        review_spec: dict,
+        source_ref: SourceRef,
+    ) -> dict:
+        proposal = dict(review_spec.get("proposal") or {})
+        source_refs = proposal.get("source_refs")
+        if not isinstance(source_refs, list) or not source_refs:
+            proposal["source_refs"] = [asdict(source_ref)]
+
+        message_ids = proposal.get("message_ids")
+        if item.record_type == "conversation" and isinstance(message_ids, list):
+            refs = [ref for ref in proposal["source_refs"] if isinstance(ref, dict)]
+            for message_id in message_ids:
+                if not message_id:
+                    continue
+                refs.append(
+                    asdict(
+                        SourceRef(
+                            source_item_id=item.source_item_id,
+                            message_id=str(message_id),
+                            url=item.url,
+                        )
+                    )
+                )
+            proposal["source_refs"] = refs
+        return proposal
 
     def _create_entity(self, item: SourceItem, entity_type: str, label: str) -> Entity:
         entity = Entity(

@@ -149,12 +149,12 @@ PSKA 与 FastReAct 的并行开发基线见 [fastreact-protocol-zh.md](fastreact
 - 已定义 conversation/message channel payload adapter。
 - 已支持会话、消息、参与者、时间、工具调用、引用来源进入 payload metadata/content。
 - 已支持对话通过现有 ingest 进入 source_items/documents/chunks。
-- LLM 提取 memory/profile/hyperedge 时保留 message provenance。
+- 已支持对话抽取 review item 时保留 message provenance。
 
 验收：
 
 - 已验收：一段对话可导入为 source/document/chunk。
-- 用户偏好、项目事实、待办可以从对话中生成 review item。
+- 已验收：用户偏好可从对话中生成 review item，并引用具体 message id。
 - 回答能引用具体 conversation message。
 
 ### P1.2 Profile card 与 agent memory 生命周期
