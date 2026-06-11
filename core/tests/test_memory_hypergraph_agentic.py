@@ -8,6 +8,7 @@ from pska_core.ingest import IngestService
 from pska_core.memory import MemoryService
 from pska_core.models import Entity, SourceRef, User
 from pska_core.retrieval import RetrievalService
+from pska_core.review import ReviewService
 from pska_core.store import InMemoryKnowledgeStore
 from tests.fakes import FakeLLM, agentic_answer_response, agentic_plan_response
 
@@ -55,6 +56,28 @@ def test_agent_memory_can_be_verified_and_forgotten() -> None:
     forgotten = service.forget_agent_memory(memory.agent_memory_id)
     assert forgotten.confidence == 0.0
     assert forgotten.decay_policy == "forgotten"
+
+
+def test_sensitive_profile_update_proposal_applies_with_confidence() -> None:
+    store = make_store()
+    service = MemoryService(store)
+    review = service.propose_profile_update(
+        owner_user_id="user_primary",
+        profile_delta={"communication": {"style": "concise"}},
+        source_refs=[SourceRef(message_id="msg_profile")],
+        sensitivity="sensitive",
+        confidence=0.7,
+    )
+
+    assert review.review_type == ReviewType.PROFILE_UPDATE
+    assert review.proposal["confidence"] == 0.7
+    assert review.proposal["source_refs"][0]["message_id"] == "msg_profile"
+
+    ReviewService(store).approve_and_apply(review.review_item_id, actor_user_id="user_primary")
+    card = next(iter(store.profile_cards.values()))
+    assert card.profile == {"communication": {"style": "concise"}}
+    assert card.confidence == 0.7
+    assert card.source_refs == [SourceRef(message_id="msg_profile")]
 
 
 def test_high_sensitive_profile_update_creates_review_item() -> None:

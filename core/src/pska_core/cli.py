@@ -19,8 +19,9 @@ from pska_core.extraction import ExtractionService
 from pska_core.importers.twitter_zip import TwitterZipImporter
 from pska_core.ingest import IngestService
 from pska_core.jobs import JOB_TYPES, JobService
+from pska_core.memory import MemoryService
 from pska_core.mcp_server import MCPServer
-from pska_core.models import ChannelIngestPayload
+from pska_core.models import ChannelIngestPayload, ReviewItem, SourceRef
 from pska_core.agentic import AgenticSearchService
 from pska_core.retrieval import RetrievalService
 from pska_core.review import ReviewService
@@ -136,6 +137,13 @@ def build_parser() -> argparse.ArgumentParser:
     review_apply_parser.add_argument("--actor-user-id", default="user_primary")
     review_apply_parser.add_argument("--reason", default="")
 
+    profile_parser = subparsers.add_parser("profile-propose", help="Propose a profile card update")
+    profile_parser.add_argument("--owner-user-id", default="user_primary")
+    profile_parser.add_argument("--profile-delta-json", required=True)
+    profile_parser.add_argument("--source-ref-json", action="append", default=[])
+    profile_parser.add_argument("--sensitivity", default="normal")
+    profile_parser.add_argument("--confidence", type=float, default=0.8)
+
     return parser
 
 
@@ -186,6 +194,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return review_reject(args)
     if args.command == "review-apply":
         return review_apply(args)
+    if args.command == "profile-propose":
+        return profile_propose(args)
     return 2
 
 
@@ -448,6 +458,34 @@ def review_apply(args: argparse.Namespace) -> int:
         reason=args.reason,
     )
     print(dumps({"review_item": review_item}))
+    return 0
+
+
+def profile_propose(args: argparse.Namespace) -> int:
+    profile_delta = json.loads(args.profile_delta_json)
+    if not isinstance(profile_delta, dict) or not profile_delta:
+        raise ValueError("--profile-delta-json must be a non-empty JSON object")
+
+    source_refs = []
+    for raw_ref in args.source_ref_json:
+        ref = json.loads(raw_ref)
+        if not isinstance(ref, dict):
+            raise ValueError("--source-ref-json must be a JSON object")
+        allowed_keys = set(SourceRef.__dataclass_fields__)
+        source_refs.append(SourceRef(**{key: value for key, value in ref.items() if key in allowed_keys}))
+
+    store = PostgresKnowledgeStore(args.database_url)
+    result = MemoryService(store).propose_profile_update(
+        owner_user_id=args.owner_user_id,
+        profile_delta=profile_delta,
+        source_refs=source_refs,
+        sensitivity=args.sensitivity,
+        confidence=args.confidence,
+    )
+    if isinstance(result, ReviewItem):
+        print(dumps({"review_item": result}))
+    else:
+        print(dumps({"profile_card": result}))
     return 0
 
 

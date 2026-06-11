@@ -12,7 +12,8 @@ from pska_core.embeddings import EmbeddingConfig, build_embedding_provider
 from pska_core.extraction import ExtractionService
 from pska_core.ingest import IngestService
 from pska_core.jobs import JobService
-from pska_core.models import ChannelIngestPayload
+from pska_core.memory import MemoryService
+from pska_core.models import ChannelIngestPayload, ReviewItem, SourceRef
 from pska_core.retrieval import RetrievalService
 from pska_core.review import ReviewService
 from pska_core.serde import to_jsonable
@@ -29,6 +30,7 @@ class PSKAApi:
         self.extraction = ExtractionService(self.store)
         self.jobs = JobService(self.store)
         self.reviews = ReviewService(self.store)
+        self.memory = MemoryService(self.store)
 
     def health(self) -> dict[str, Any]:
         return {"ok": True, "database": self.store.database_url}
@@ -76,6 +78,22 @@ class PSKAApi:
 
     def review_items(self) -> dict[str, Any]:
         return {"review_items": to_jsonable(self.store.list_review_items())}
+
+    def propose_profile_update(self, payload: dict[str, Any]) -> dict[str, Any]:
+        profile_delta = payload.get("profile_delta") or payload.get("profile")
+        if not isinstance(profile_delta, dict) or not profile_delta:
+            raise ValueError("profile_delta must be a non-empty object")
+
+        result = self.memory.propose_profile_update(
+            owner_user_id=str(payload.get("owner_user_id") or "user_primary"),
+            profile_delta=profile_delta,
+            source_refs=_source_refs_from_payload(payload.get("source_refs")),
+            sensitivity=str(payload.get("sensitivity") or "normal"),
+            confidence=float(payload.get("confidence", 0.8)),
+        )
+        if isinstance(result, ReviewItem):
+            return {"review_item": to_jsonable(result)}
+        return {"profile_card": to_jsonable(result)}
 
     def approve_review_item(self, review_item_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         actor_user_id = str(payload.get("actor_user_id") or "user_primary")
@@ -155,6 +173,8 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
                 return self._json(200, self.api.agentic_search(payload))
             if path == "/extract/all":
                 return self._json(200, self.api.extract_all(payload))
+            if path == "/profile/update-proposals":
+                return self._json(200, self.api.propose_profile_update(payload))
             if path == "/jobs":
                 return self._json(200, self.api.submit_job(payload))
             if path == "/jobs/run":
@@ -205,3 +225,14 @@ def serve(host: str = "127.0.0.1", port: int = 8765, database_url: str | None = 
     server = ThreadingHTTPServer((host, port), Handler)
     print(f"PSKA Core listening on http://{host}:{port}")
     server.serve_forever()
+
+
+def _source_refs_from_payload(value: Any) -> list[SourceRef]:
+    if not isinstance(value, list):
+        return []
+    allowed_keys = set(SourceRef.__dataclass_fields__)
+    return [
+        SourceRef(**{key: item for key, item in ref.items() if key in allowed_keys})
+        for ref in value
+        if isinstance(ref, dict)
+    ]

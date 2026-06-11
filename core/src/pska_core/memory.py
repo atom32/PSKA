@@ -46,14 +46,20 @@ class MemoryService:
         profile_delta: dict,
         source_refs: list[SourceRef],
         sensitivity: str = "normal",
+        confidence: float = 0.8,
     ) -> UserProfileCard | ReviewItem:
+        confidence = _confidence(confidence)
         if sensitivity in {"high", "sensitive"}:
             review = ReviewItem(
                 review_item_id=f"rev_{uuid4().hex}",
                 owner_user_id=owner_user_id,
                 review_type=ReviewType.PROFILE_UPDATE,
                 title="Profile card update requires review",
-                proposal={"profile_delta": profile_delta, "source_refs": [asdict(ref) for ref in source_refs]},
+                proposal={
+                    "profile_delta": profile_delta,
+                    "source_refs": [asdict(ref) for ref in source_refs],
+                    "confidence": confidence,
+                },
             )
             self.store.add_review_item(review)
             return review
@@ -62,7 +68,7 @@ class MemoryService:
             owner_user_id=owner_user_id,
             profile=profile_delta,
             source_refs=source_refs,
-            confidence=0.8,
+            confidence=confidence,
         )
         self.store.add_profile_card(card)
         return card

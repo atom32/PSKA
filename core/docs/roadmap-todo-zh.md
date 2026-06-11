@@ -158,13 +158,13 @@ PSKA 与 FastReAct 的并行开发基线见 [fastreact-protocol-zh.md](fastreact
 - 已验收：用户偏好可从对话中生成 review item，并引用具体 message id。
 - 已验收：检索/回答链路可引用具体 conversation message。
 
-### P1.2 Profile card 与 agent memory 生命周期（第一步已实现）
+### P1.2 Profile card 与 agent memory 生命周期（proposal/API 第一版已实现）
 
 目的：让 Agent 对用户的长期理解可见、可改、可遗忘。
 
 要做：
 
-- Profile Agent 生成 profile card update proposal。
+- 已提供 profile card update proposal 生成入口，并接入 API/CLI 与 review apply。
 - Memory Agent 管理 working/episodic/semantic/procedural/profile 分层。
 - 已增加 memory confidence、last_verified_at、decay_policy 更新逻辑。
 - 用户可以 approve/reject/forget memory（review approve/reject 已有；forget memory 第一版已实现）。
