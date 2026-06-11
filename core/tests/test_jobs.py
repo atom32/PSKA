@@ -99,6 +99,28 @@ def test_import_job_retry_does_not_duplicate_source_document_or_chunk(tmp_path) 
     assert len(store.chunks) == 1
 
 
+def test_import_job_accepts_comma_separated_visible_team_ids(tmp_path) -> None:
+    archive_dir = tmp_path / "zips"
+    archive_dir.mkdir()
+    _write_twitter_zip(archive_dir / "tweet.zip")
+    store = _store()
+    service = JobService(store)
+
+    service.submit(
+        IMPORT_TWITTER_ZIPS,
+        {
+            "input": str(archive_dir),
+            "archive_root": str(tmp_path / "archive"),
+            "visible_team_ids": "team_a, team_b",
+        },
+    )
+    report = service.run_until_empty()
+    item = next(iter(store.source_items.values()))
+
+    assert report.succeeded == 1
+    assert item.visible_team_ids == ["team_a", "team_b"]
+
+
 def test_embed_backfill_job_retry_skips_already_embedded_chunks() -> None:
     store = _store()
     IngestService(store).ingest_channel_payload(
@@ -189,6 +211,8 @@ def test_job_service_runs_full_report_script_job(tmp_path) -> None:
     assert report.succeeded == 1
     assert completed.status == "succeeded"
     assert completed.result["returncode"] == 0
+    assert "command" not in completed.result
+    assert str(tmp_path) not in json.dumps(completed.result)
     assert json.loads((tmp_path / "report.json").read_text(encoding="utf-8")) == {"ok": True}
 
 

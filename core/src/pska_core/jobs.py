@@ -110,7 +110,7 @@ class JobService:
             owner_user_id=str(payload.get("owner_user_id") or "user_primary"),
             space_id=str(payload.get("space_id") or "private_primary"),
             visibility=Visibility(payload.get("visibility") or Visibility.PRIVATE.value),
-            visible_team_ids=list(payload.get("visible_team_ids") or []),
+            visible_team_ids=_visible_team_ids(payload.get("visible_team_ids")),
             embedding_provider=embedding_provider,
         )
         result = importer.import_directory(Path(payload.get("input") or Path.home() / "Downloads" / "twitter_archive"))
@@ -191,10 +191,10 @@ class JobService:
             check=False,
         )
         result = {
-            "command": command,
             "returncode": completed.returncode,
-            "output": output_path,
-            "json_output": json_output_path,
+            "script": script_path.name,
+            "output": _scrub_path(output_path),
+            "json_output": _scrub_path(json_output_path),
             "stdout_tail": completed.stdout[-4000:],
             "stderr_tail": completed.stderr[-4000:],
         }
@@ -212,3 +212,27 @@ class JobService:
             batch_size=int(payload.get("batch_size") or 16),
         )
         return build_embedding_provider(config)
+
+
+def _visible_team_ids(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    raise TypeError("visible_team_ids must be a list or comma-separated string")
+
+
+def _scrub_path(value: Any) -> str | None:
+    if value is None:
+        return None
+    path = Path(str(value))
+    try:
+        return str(path.resolve().relative_to(Path.cwd().resolve()))
+    except ValueError:
+        pass
+    try:
+        return "~/" + str(path.resolve().relative_to(Path.home().resolve()))
+    except ValueError:
+        return path.name

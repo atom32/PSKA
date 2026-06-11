@@ -19,7 +19,14 @@ def archive_metadata_to_payload(
     """Convert Twitter/X archive metadata.json to Core ingest payload v1."""
 
     if metadata.get("schema_version") == "pska.archive.v2":
-        return _v2_metadata_to_payload(metadata, archive_dir=archive_dir)
+        return _v2_metadata_to_payload(
+            metadata,
+            owner_user_id=owner_user_id,
+            space_id=space_id,
+            visibility=visibility,
+            visible_team_ids=visible_team_ids,
+            archive_dir=archive_dir,
+        )
 
     if _is_legacy_twitter_zip(metadata):
         metadata = _legacy_metadata_to_v1_shape(metadata)
@@ -59,7 +66,15 @@ def archive_metadata_to_payload(
     )
 
 
-def _v2_metadata_to_payload(metadata: dict[str, Any], *, archive_dir: Path | None = None) -> ChannelIngestPayload:
+def _v2_metadata_to_payload(
+    metadata: dict[str, Any],
+    *,
+    owner_user_id: str,
+    space_id: str,
+    visibility: Visibility,
+    visible_team_ids: list[str] | None = None,
+    archive_dir: Path | None = None,
+) -> ChannelIngestPayload:
     pska = metadata.get("pska") or {}
     content = dict(metadata.get("content") or {})
     raw_paths = dict(metadata.get("artifacts") or {})
@@ -82,10 +97,10 @@ def _v2_metadata_to_payload(metadata: dict[str, Any], *, archive_dir: Path | Non
         captured_at=metadata.get("captured_at"),
         media=list(metadata.get("media") or []),
         raw_paths=raw_paths,
-        owner_user_id=pska.get("owner_user_id") or "user_primary",
-        space_id=pska.get("space_id") or "private_primary",
-        visibility=Visibility(pska.get("visibility") or Visibility.PRIVATE),
-        visible_team_ids=list(pska.get("visible_team_ids") or []),
+        owner_user_id=owner_user_id or pska.get("owner_user_id") or "user_primary",
+        space_id=space_id or pska.get("space_id") or "private_primary",
+        visibility=visibility or Visibility(pska.get("visibility") or Visibility.PRIVATE),
+        visible_team_ids=visible_team_ids if visible_team_ids is not None else list(pska.get("visible_team_ids") or []),
         extra={
             "comments": metadata.get("comments") or [],
             "metrics": metadata.get("metrics") or {},

@@ -66,7 +66,7 @@ PSKA 已完成初期 MVP 闭环：Twitter/X 归档、Postgres 存储、LLM 提�
 - `job-recover` 可恢复中断后遗留的 stale running job，未超过 attempts 时重新排队，超过后标记 failed。
 - 单元测试覆盖 import/embed/extract job 重跑幂等：不会重复写入 source/document/chunk/entity/hyperedge/review item。
 - `job-status --job-id ...` 可查看 job 详情和事件时间线：queued、started、execute、succeeded。
-- 单元测试覆盖 job 成功、失败、手动 retry、full report job 执行器和 CLI parser；core `48 passed`，Twitter/X channel `9 passed`。
+- 单元测试覆盖 job 成功、失败、手动 retry、full report job 执行器和 CLI parser；core `49 passed`，Twitter/X channel `9 passed`。
 
 要做：
 
