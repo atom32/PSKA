@@ -6,6 +6,8 @@
 
 PSKA 已完成初期 MVP 闭环：Twitter/X 归档、Postgres 存储、LLM 提取、轻量超图、ACL 优先检索、agentic QA、MCP、Fastreact 联动和 HTML 验收报告都已经跑通。
 
+PSKA 与 FastReAct 的并行开发基线见 [fastreact-protocol-zh.md](fastreact-protocol-zh.md)。两边只通过 `/v1/chat/completions`、`fastreact.agent_event.v1` 事件和 PSKA MCP tools 互通，不依赖对方内部对象。
+
 下一阶段重点不是继续堆演示，而是把 MVP 变成可长期使用的家庭服务器系统。核心方向是：
 
 - 统一使用 Python 3.12 wrapper/venv，避免宿主 Python、FlagEmbedding、PyTorch 版本漂移影响可安装性。
