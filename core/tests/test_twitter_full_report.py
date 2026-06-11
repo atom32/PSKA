@@ -4,13 +4,20 @@ from pathlib import Path
 
 from scripts.twitter_full_report import (
     FIXED_QUESTIONS,
+    acceptance_section,
     build_questions,
+    build_parser,
+    default_technical_paths,
+    derive_acceptance_checks,
     parse_json_from_stdout,
     fastreact_payload_passed,
     recovery_section,
     render_html_report,
     render_svg_graph,
+    review_section,
     scrub_secrets,
+    technical_paths_section,
+    write_outputs,
 )
 
 
@@ -82,6 +89,69 @@ def test_fastreact_payload_requires_direct_and_full_agent_answers() -> None:
     assert not fastreact_payload_passed(0, payload)
     payload["agent_answer"] = "full"
     assert fastreact_payload_passed(0, payload)
+
+
+def test_report_parser_accepts_stage_selection_flags() -> None:
+    args = build_parser().parse_args(["--skip-import", "--only-fastreact"])
+    assert args.skip_import is True
+    assert args.only_fastreact is True
+
+
+def test_report_renders_technical_paths_acceptance_and_reviews() -> None:
+    report = minimal_report()
+    report["run_metadata"]["pipeline_steps"] = [
+        {"name": "db_reset", "status": "skipped", "reason": "--skip-import"},
+        {"name": "http_api_start", "status": "passed"},
+    ]
+    report["database_summary"]["embedded_chunks"] = 3
+    report["recovery_events"] = [{"kind": "llm_json_repair", "detail": {"reason": "bad json"}}]
+    report["review_items"] = [
+        {
+            "review_item_id": "rev_1",
+            "review_type": "share_proposal",
+            "status": "pending",
+            "title": "Share note",
+        }
+    ]
+
+    html = render_html_report(report)
+
+    assert "Technical Paths" in html
+    assert "PSKA direct" in html
+    assert "MCP direct" in html
+    assert "Fastreact full Agent" in html
+    assert "Acceptance Checks" in html
+    assert "Review Items" in html
+    assert "rev_1" in html
+    assert "pending" in html
+
+
+def test_write_outputs_adds_json_acceptance_metadata(tmp_path: Path) -> None:
+    report = minimal_report()
+    html_path = tmp_path / "report.html"
+    json_path = tmp_path / "report.json"
+
+    write_outputs(report, html_path, json_path)
+
+    assert html_path.exists()
+    written = json_path.read_text(encoding="utf-8")
+    assert "technical_paths" in written
+    assert "acceptance_checks" in written
+
+
+def test_acceptance_checks_track_failures_skips_and_recovery_events() -> None:
+    report = minimal_report()
+    report["run_metadata"]["pipeline_steps"] = [
+        {"name": "twitter_zip_import", "status": "failed"},
+        {"name": "mcp", "status": "skipped"},
+    ]
+    report["recovery_events"] = [{"kind": "llm_schema_repair"}]
+
+    checks = derive_acceptance_checks(report)
+
+    assert any(check["name"] == "Failure visibility" and check["status"] == "failed" for check in checks)
+    assert any(check["name"] == "Stage selection" and check["status"] == "skipped" for check in checks)
+    assert any(check["name"] == "LLM/schema repair visibility" and check["status"] == "passed" for check in checks)
 
 
 def minimal_report() -> dict:

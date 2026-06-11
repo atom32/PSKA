@@ -59,6 +59,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--embedding-provider", default=os.environ.get("PSKA_EMBEDDING_PROVIDER", "disabled"))
     parser.add_argument("--embedding-model", default=os.environ.get("PSKA_EMBEDDING_MODEL", "BAAI/bge-m3"))
     parser.add_argument("--embedding-dimensions", type=int, default=int(os.environ.get("PSKA_EMBEDDING_DIMENSIONS", "1024")))
+    parser.add_argument("--skip-import", action="store_true", help="Skip DB reset, Twitter ZIP import, embedding, and extraction.")
+    parser.add_argument("--only-fastreact", action="store_true", help="Only run Fastreact question paths after DB introspection.")
     return parser
 
 
@@ -83,6 +85,7 @@ class ReportRunner:
         extraction_summary = {}
         database_summary = {}
         graph = {"entities": [], "hyperedges": []}
+        review_items = []
         source_items = []
         questions: list[str] = []
         pska_results = []
@@ -159,16 +162,25 @@ class ReportRunner:
             database_summary = self.database_counts()
             source_items = self.source_summaries()
             graph = self.graph_summary()
+            review_items = self.review_item_summaries()
             questions = build_questions(source_items, graph["entities"])
         except Exception as exc:  # noqa: BLE001
             self.pipeline_steps.append(step_error("database_introspection", exc))
 
         if questions:
-            api_process = self.start_api()
+            api_process = None if self.args.only_fastreact else self.start_api()
             try:
                 for question in questions:
-                    pska_results.append(self.run_pska_question(question))
-                    mcp_results.append(self.run_mcp_question(question))
+                    if self.args.only_fastreact:
+                        self.pipeline_steps.append(
+                            {"name": f"pska_direct:{question[:30]}", "status": "skipped", "reason": "--only-fastreact"}
+                        )
+                        self.pipeline_steps.append(
+                            {"name": f"mcp:{question[:30]}", "status": "skipped", "reason": "--only-fastreact"}
+                        )
+                    else:
+                        pska_results.append(self.run_pska_question(question))
+                        mcp_results.append(self.run_mcp_question(question))
                     fastreact_results.append(self.run_fastreact_question(question))
             finally:
                 stop_process(api_process)
@@ -176,7 +188,7 @@ class ReportRunner:
             self.pipeline_steps.append({"name": "questions", "status": "failed", "error": "No questions generated."})
 
         recovery_events = read_recovery_events(self.recovery_log)
-        overall_status = "passed" if all(step["status"] == "passed" for step in self.pipeline_steps) else "failed"
+        overall_status = "passed" if all(step["status"] in {"passed", "skipped"} for step in self.pipeline_steps) else "failed"
         report = {
             "run_metadata": {
                 "started_at": started_at,
@@ -198,6 +210,7 @@ class ReportRunner:
             "import_summary": import_summary,
             "extraction_summary": extraction_summary,
             "graph": graph,
+            "review_items": review_items,
             "source_items": source_items,
             "questions": questions,
             "pska_results": pska_results,
@@ -216,6 +229,10 @@ class ReportRunner:
         parse_json: bool = False,
         timeout: int = 120,
     ) -> dict[str, Any]:
+        if self.args.skip_import and name in {"db_reset", "twitter_zip_import", "embedding_backfill", "llm_extraction"}:
+            step = {"name": name, "status": "skipped", "reason": "--skip-import"}
+            self.pipeline_steps.append(step)
+            return step
         started = time.time()
         result = subprocess.run(
             command,
@@ -300,6 +317,17 @@ class ReportRunner:
             "entities": [dict(row) for row in entities],
             "hyperedges": [dict(row) for row in edges],
         }
+
+    def review_item_summaries(self) -> list[dict[str, Any]]:
+        with psycopg.connect(self.args.database_url, row_factory=dict_row) as conn:
+            rows = conn.execute(
+                """
+                select review_item_id, owner_user_id, review_type, title, status, proposal, created_at
+                from review_items
+                order by created_at, review_item_id
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def run_pska_question(self, question: str) -> dict[str, Any]:
         result: dict[str, Any] = {"question": question}
@@ -614,6 +642,8 @@ def build_questions(source_items: list[dict[str, Any]], entities: list[dict[str,
 def write_outputs(report: dict[str, Any], output: Path, json_output: Path) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
     json_output.parent.mkdir(parents=True, exist_ok=True)
+    report.setdefault("technical_paths", default_technical_paths())
+    report.setdefault("acceptance_checks", derive_acceptance_checks(report))
     json_output.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     output.write_text(render_html_report(report), encoding="utf-8")
 
@@ -658,6 +688,120 @@ def fastreact_agent_answer(payload: dict[str, Any]) -> str:
     return str(payload.get("agent_answer") or "").strip()
 
 
+def technical_paths_section(report: dict[str, Any]) -> str:
+    paths = report.get("technical_paths") or default_technical_paths()
+    rows = "".join(
+        "<tr>"
+        f"<td>{esc(path.get('name'))}</td>"
+        f"<td>{esc(path.get('entrypoint'))}</td>"
+        f"<td>{esc(path.get('purpose'))}</td>"
+        f"<td>{esc(path.get('difference'))}</td>"
+        "</tr>"
+        for path in paths
+    )
+    return section(
+        "Technical Paths",
+        "<table><thead><tr><th>Path</th><th>Entrypoint</th><th>Purpose</th><th>Difference</th></tr></thead>"
+        f"<tbody>{rows}</tbody></table>",
+    )
+
+
+def acceptance_section(report: dict[str, Any]) -> str:
+    checks = report.get("acceptance_checks") or derive_acceptance_checks(report)
+    rows = "".join(
+        "<tr>"
+        f"<td>{esc(check.get('name'))}</td>"
+        f"<td class='{esc(check.get('status'))}'>{esc(check.get('status'))}</td>"
+        f"<td>{esc(check.get('detail'))}</td>"
+        "</tr>"
+        for check in checks
+    )
+    return section(
+        "Acceptance Checks",
+        "<table><thead><tr><th>Check</th><th>Status</th><th>Detail</th></tr></thead>"
+        f"<tbody>{rows}</tbody></table>",
+    )
+
+
+def review_section(report: dict[str, Any]) -> str:
+    reviews = report.get("review_items") or []
+    if not reviews:
+        return section("Review Items", "<p>No review items found.</p>")
+    rows = "".join(
+        "<tr>"
+        f"<td>{esc(item.get('review_item_id'))}</td>"
+        f"<td>{esc(item.get('review_type'))}</td>"
+        f"<td class='{esc(item.get('status'))}'>{esc(item.get('status'))}</td>"
+        f"<td>{esc(item.get('title'))}</td>"
+        "</tr>"
+        for item in reviews
+    )
+    return section(
+        "Review Items",
+        "<table><thead><tr><th>ID</th><th>Type</th><th>Status</th><th>Title</th></tr></thead>"
+        f"<tbody>{rows}</tbody></table>",
+    )
+
+
+def default_technical_paths() -> list[dict[str, str]]:
+    return [
+        {
+            "name": "PSKA direct",
+            "entrypoint": "pska_core.cli agentic-search + HTTP /agentic-search",
+            "purpose": "Validate local retrieval, ACL, embedding, hypergraph, and answer synthesis.",
+            "difference": "Runs PSKA directly without MCP agent orchestration.",
+        },
+        {
+            "name": "MCP direct",
+            "entrypoint": "pska mcp-server tools/call",
+            "purpose": "Validate the MCP protocol surface used by external agents.",
+            "difference": "Exercises tool schemas and JSON-RPC transport.",
+        },
+        {
+            "name": "Fastreact full Agent",
+            "entrypoint": "Fastreact agent with PSKA MCP server",
+            "purpose": "Validate external agent planning, tool calls, tool results, and final answer.",
+            "difference": "Includes full agent event stream and model behavior.",
+        },
+    ]
+
+
+def derive_acceptance_checks(report: dict[str, Any]) -> list[dict[str, str]]:
+    steps = report.get("run_metadata", {}).get("pipeline_steps", [])
+    failed_steps = [step.get("name", "unknown") for step in steps if step.get("status") == "failed"]
+    skipped_steps = [step.get("name", "unknown") for step in steps if step.get("status") == "skipped"]
+    recovery_events = report.get("recovery_events") or []
+    db = report.get("database_summary") or {}
+    checks = [
+        {
+            "name": "Artifacts generated",
+            "status": "passed",
+            "detail": "HTML and JSON report writers run even when individual stages fail.",
+        },
+        {
+            "name": "Failure visibility",
+            "status": "failed" if failed_steps else "passed",
+            "detail": ", ".join(failed_steps) if failed_steps else "No failed pipeline steps.",
+        },
+        {
+            "name": "Stage selection",
+            "status": "skipped" if skipped_steps else "passed",
+            "detail": ", ".join(skipped_steps) if skipped_steps else "All configured stages ran.",
+        },
+        {
+            "name": "LLM/schema repair visibility",
+            "status": "passed" if recovery_events else "skipped",
+            "detail": f"{len(recovery_events)} recovery event(s) captured.",
+        },
+        {
+            "name": "Embedding status",
+            "status": "passed" if int(db.get("embedded_chunks") or 0) else "skipped",
+            "detail": f"{db.get('embedded_chunks', 0)} embedded chunk(s).",
+        },
+    ]
+    return checks
+
+
 def render_html_report(report: dict[str, Any]) -> str:
     meta = report["run_metadata"]
     db = report.get("database_summary") or {}
@@ -680,9 +824,12 @@ def render_html_report(report: dict[str, Any]) -> str:
         "</style></head><body>",
         f"<header><h1>PSKA + Fastreact Twitter Archive Full Test</h1><p>{esc(meta.get('started_at'))} - {esc(meta.get('finished_at'))}</p></header>",
         "<section class='cards'>" + "".join(card(label, value) for label, value in cards) + "</section>",
+        technical_paths_section(report),
         section("Pipeline", pipeline_table(report.get("pipeline_steps", []))),
+        acceptance_section(report),
         section("Data", data_section(report)),
         section("Knowledge Graph", graph_section(graph)),
+        review_section(report),
         section("Question Answering", qa_section(report)),
         section("Recovery / Fallback", recovery_section(report)),
         section("Raw Evidence", details_json("Full JSON report", report)),
