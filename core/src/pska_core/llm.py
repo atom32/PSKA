@@ -9,6 +9,8 @@ from typing import Any, Protocol
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
+from pska_core.keyfile import read_api_key_file
+
 
 class LLMError(RuntimeError):
     pass
@@ -53,21 +55,14 @@ class OpenAILLMClient:
     @classmethod
     def from_env(cls) -> "OpenAILLMClient":
         api_key = os.getenv("PSKA_LLM_API_KEY")
-        file_model = None
-        file_base_url = None
+        file_model = ""
+        file_base_url = ""
         key_file = os.getenv("PSKA_LLM_API_KEY_FILE")
         if not api_key and key_file:
-            lines = [
-                line.strip()
-                for line in Path(key_file).expanduser().read_text(encoding="utf-8").splitlines()
-                if line.strip()
-            ]
-            if lines:
-                api_key = lines[0]
-            if len(lines) > 1:
-                file_model = lines[1]
-            if len(lines) > 2:
-                file_base_url = lines[2]
+            key_config = read_api_key_file(Path(key_file).expanduser())
+            api_key = key_config.api_key
+            file_model = key_config.model
+            file_base_url = key_config.base_url
         if not api_key:
             api_key = os.getenv("OPENAI_API_KEY") or os.getenv("FASTRACT_API_KEY")
         if not api_key:

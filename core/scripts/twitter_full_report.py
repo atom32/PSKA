@@ -19,6 +19,8 @@ from urllib.request import Request, urlopen
 import psycopg
 from psycopg.rows import dict_row
 
+from pska_core.keyfile import read_api_key_file as read_pska_api_key_file
+
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 DEFAULT_DATABASE_URL = "postgresql:///pska_smoke"
@@ -1355,15 +1357,8 @@ def resolve_fastreact_src() -> Path:
 
 
 def read_api_key_file(path: Path) -> tuple[str, str, str]:
-    try:
-        lines = [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    except OSError:
-        return "", "", ""
-    return (
-        lines[0] if len(lines) > 0 else "",
-        lines[1] if len(lines) > 1 else "",
-        lines[2] if len(lines) > 2 else "",
-    )
+    key_config = read_pska_api_key_file(path)
+    return key_config.api_key, key_config.model, key_config.base_url
 
 
 def database_name(database_url: str) -> str:

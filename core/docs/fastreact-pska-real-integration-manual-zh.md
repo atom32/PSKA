@@ -14,12 +14,24 @@
 test -f "$HOME/api_key.txt" && wc -c "$HOME/api_key.txt"
 ```
 
-当前约定 `~/api_key.txt` 为三行：
+推荐把 `~/api_key.txt` 写成 JSON：
+
+```json
+{
+  "api_key": "sk-...",
+  "model": "deepseek-v4-flash",
+  "base_url": "https://api.deepseek.com",
+  "service_token": "replace-with-local-service-token"
+}
+```
+
+PSKA 仍兼容旧三行格式：
 
 ```text
 line 1: LLM API key
 line 2: model，例如 deepseek-v4-flash
 line 3: OpenAI-compatible base URL，例如 https://api.deepseek.com
+line 4: 可选 FastReAct service token
 ```
 
 注意：实际文件名是 `api_key.txt`，不是 `api-key.txt`。
@@ -29,16 +41,41 @@ line 3: OpenAI-compatible base URL，例如 https://api.deepseek.com
 在一个 shell 中准备共享环境：
 
 ```bash
-export KEY=$(sed -n '1p' "$HOME/api_key.txt")
-export MODEL=$(sed -n '2p' "$HOME/api_key.txt")
-export BASE=$(sed -n '3p' "$HOME/api_key.txt")
+eval "$(
+python3 - <<'PY'
+import json
+import shlex
+from pathlib import Path
+
+path = Path.home() / "api_key.txt"
+text = path.read_text(encoding="utf-8").strip()
+if text.startswith("{"):
+    data = json.loads(text)
+    key = data.get("api_key") or data.get("key") or ""
+    model = data.get("model") or ""
+    base = data.get("base_url") or data.get("api_base") or ""
+    service_token = data.get("service_token") or data.get("fastreact_service_token") or "replace-with-local-service-token"
+else:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    key = lines[0] if len(lines) > 0 else ""
+    model = lines[1] if len(lines) > 1 else ""
+    base = lines[2] if len(lines) > 2 else ""
+    service_token = lines[3] if len(lines) > 3 else "replace-with-local-service-token"
+
+for name, value in {
+    "KEY": key,
+    "MODEL": model,
+    "BASE": base,
+    "FASTREACT_SERVICE_TOKEN": service_token,
+}.items():
+    print(f"export {name}={shlex.quote(value)}")
+PY
+)"
 
 export FASTRACT_API_KEY="$KEY"
 export FASTRACT_MODEL="$MODEL"
 export FASTRACT_API_BASE="$BASE"
 export OPENAI_API_KEY="$KEY"
-
-export FASTREACT_SERVICE_TOKEN="replace-with-local-service-token"
 
 export PSKA_LLM_API_KEY_FILE="$HOME/api_key.txt"
 export SSL_CERT_FILE=$("/Users/xudawei/Documents/personal archive/.pska/venvs/pska-py312/bin/python" -c 'import certifi; print(certifi.where())')
@@ -142,9 +179,6 @@ FastReAct LLM smoke：
 ```bash
 cd /Users/xudawei/FastReAct/fastreact-nano
 
-export KEY=$(sed -n '1p' "$HOME/api_key.txt")
-export MODEL=$(sed -n '2p' "$HOME/api_key.txt")
-export BASE=$(sed -n '3p' "$HOME/api_key.txt")
 export SSL_CERT_FILE=$(python3 -c 'import certifi; print(certifi.where())')
 
 python3 - <<'PY'
@@ -234,11 +268,9 @@ export SSL_CERT_FILE=$("/Users/xudawei/Documents/personal archive/.pska/venvs/ps
 
 显式设置：
 
-```bash
-export FASTRACT_MODEL=$(sed -n '2p' "$HOME/api_key.txt")
-export FASTRACT_API_BASE=$(sed -n '3p' "$HOME/api_key.txt")
-export FASTRACT_API_KEY=$(sed -n '1p' "$HOME/api_key.txt")
-```
+重新执行本文档“环境变量”一节的 `eval "$(python3 ...)"` 代码块，确保
+`FASTRACT_MODEL`、`FASTRACT_API_BASE`、`FASTRACT_API_KEY` 都来自同一份
+`~/api_key.txt`。
 
 对底层 LiteLLM smoke，最好显式传 `api_base`，避免走默认 OpenAI endpoint。
 
