@@ -92,9 +92,10 @@ def test_fastreact_payload_requires_direct_and_full_agent_answers() -> None:
 
 
 def test_report_parser_accepts_stage_selection_flags() -> None:
-    args = build_parser().parse_args(["--skip-import", "--only-fastreact"])
+    args = build_parser().parse_args(["--skip-import", "--only-fastreact", "--run-id", "run_test"])
     assert args.skip_import is True
     assert args.only_fastreact is True
+    assert args.run_id == "run_test"
 
 
 def test_report_renders_technical_paths_acceptance_and_reviews() -> None:
@@ -128,12 +129,16 @@ def test_report_renders_technical_paths_acceptance_and_reviews() -> None:
 
 def test_write_outputs_adds_json_acceptance_metadata(tmp_path: Path) -> None:
     report = minimal_report()
+    report["run_metadata"]["run_id"] = "run/test"
+    report["run_metadata"]["history_dir"] = str(tmp_path / "runs")
     html_path = tmp_path / "report.html"
     json_path = tmp_path / "report.json"
 
     write_outputs(report, html_path, json_path)
 
     assert html_path.exists()
+    assert (tmp_path / "runs" / "run_test" / "report.html").exists()
+    assert (tmp_path / "runs" / "run_test" / "report.json").exists()
     written = json_path.read_text(encoding="utf-8")
     assert "technical_paths" in written
     assert "acceptance_checks" in written

@@ -119,13 +119,13 @@ PSKA 已完成初期 MVP 闭环：Twitter/X 归档、Postgres 存储、LLM 提�
 - 报告自动标出失败步骤、skipped 阶段、LLM/schema repair 事件和 embedding 状态。
 - 支持阶段选择参数：`--skip-import`、`--only-fastreact`。
 - HTML/JSON artifact 都写入 `technical_paths` 和 `acceptance_checks`。
+- 增加 run id 和历史报告目录，固定输出之外也会写入 `reports/runs/<run_id>/`。
 - HTML 报告展示 review item 的 pending/approved/rejected/applied 等状态。
 - 任一步失败仍可生成 HTML/JSON 的报告结构已由单元测试覆盖。
 
 仍待做：
 
 - Fastreact event stream 深度展示 tool call、tool result、final answer。
-- 增加历史报告目录和 run id。
 - 报告中进一步展示耗时瓶颈排行。
 - 支持会话、消息、参与者、时间、工具调用、引用来源的完整 provenance 视图。
 - LLM 提取 memory/profile/hyperedge 时保留 message provenance。

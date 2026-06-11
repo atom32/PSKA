@@ -25,6 +25,7 @@ DEFAULT_DATABASE_URL = "postgresql:///pska_smoke"
 DEFAULT_INPUT = Path.home() / "Downloads" / "twitter_archive"
 DEFAULT_OUTPUT = ROOT / "reports" / "pska_twitter_full_test.html"
 DEFAULT_JSON_OUTPUT = ROOT / "reports" / "pska_twitter_full_test.json"
+DEFAULT_HISTORY_DIR = ROOT / "reports" / "runs"
 FASTREACT_SRC = Path.home() / "Fastreact" / "fastreact-nano" / "src"
 
 FIXED_QUESTIONS = [
@@ -52,6 +53,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--archive-root", type=Path, default=ROOT / "archive" / "imports")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--json-output", type=Path, default=DEFAULT_JSON_OUTPUT)
+    parser.add_argument("--history-dir", type=Path, default=DEFAULT_HISTORY_DIR)
+    parser.add_argument("--run-id", default="")
     parser.add_argument("--owner-user-id", default="user_primary")
     parser.add_argument("--top-k", type=int, default=5)
     parser.add_argument("--api-port", type=int, default=8767)
@@ -67,6 +70,7 @@ def build_parser() -> argparse.ArgumentParser:
 class ReportRunner:
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
+        self.run_id = args.run_id or make_run_id()
         self.recovery_log = ROOT / "reports" / "pska_llm_recovery_events.jsonl"
         self.env = make_env(args.database_url, self.recovery_log)
         self.env["PSKA_EMBEDDING_PROVIDER"] = args.embedding_provider
@@ -193,6 +197,8 @@ class ReportRunner:
             "run_metadata": {
                 "started_at": started_at,
                 "finished_at": utc_now(),
+                "run_id": self.run_id,
+                "history_dir": str(self.args.history_dir),
                 "overall_status": overall_status,
                 "input_dir": str(self.args.input),
                 "zip_count": len(zip_files),
@@ -644,8 +650,19 @@ def write_outputs(report: dict[str, Any], output: Path, json_output: Path) -> No
     json_output.parent.mkdir(parents=True, exist_ok=True)
     report.setdefault("technical_paths", default_technical_paths())
     report.setdefault("acceptance_checks", derive_acceptance_checks(report))
-    json_output.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-    output.write_text(render_html_report(report), encoding="utf-8")
+    json_text = json.dumps(report, ensure_ascii=False, indent=2)
+    html_text = render_html_report(report)
+    json_output.write_text(json_text, encoding="utf-8")
+    output.write_text(html_text, encoding="utf-8")
+
+    meta = report.get("run_metadata") or {}
+    run_id = meta.get("run_id")
+    history_dir = meta.get("history_dir")
+    if run_id and history_dir:
+        run_dir = Path(str(history_dir)) / safe_filename(str(run_id))
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "report.json").write_text(json_text, encoding="utf-8")
+        (run_dir / "report.html").write_text(html_text, encoding="utf-8")
 
 
 def parse_json_from_stdout(stdout: str) -> dict[str, Any]:
@@ -1086,6 +1103,16 @@ def tail(text: str, limit: int) -> str:
 
 def compact(text: str, limit: int) -> str:
     return tail(re.sub(r"\s+", " ", text or "").strip(), limit)
+
+
+def make_run_id() -> str:
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return f"run_{timestamp}"
+
+
+def safe_filename(value: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("._")
+    return cleaned or "run"
 
 
 def utc_now() -> str:
