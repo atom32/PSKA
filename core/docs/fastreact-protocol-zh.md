@@ -225,18 +225,42 @@ PSKA 必须自己决定：
 - review item 能否 approve/reject/apply
 - 哪些 citation/source ids 可以返回
 
-## FastReAct Health
+## FastReAct Health / Readiness / Auth
 
-PSKA 可以读取 FastReAct `/health` 做 readiness 判断：
+`GET /health` 是公开轻量健康检查，只保证 HTTP service 存活，并返回
+`service_contract=fastreact.agent_event.v1`。
 
-- service contract version
-- agent readiness
-- model name
-- MCP loaded state
-- MCP server status
-- loaded MCP tools
+`GET /ready` 是部署 readiness contract。部署设置 `FASTREACT_SERVICE_TOKEN`
+后，PSKA 必须携带以下任一 header：
 
-该接口只用于诊断，不用于 PSKA ACL。
+```http
+Authorization: Bearer <token>
+X-FastReAct-Service-Token: <token>
+```
+
+`/ready` 必须主动确认：
+
+- `agent_ready=true`
+- `service_contract=fastreact.agent_event.v1`
+- `auth.required`
+- `model.name`、`model.api_base_configured`、`model.api_key_configured`
+- `mcp.ready`
+- `mcp.servers[].name/alive`
+- `mcp.tools` 包含 PSKA 工具，例如 `pska_pska_search`
+
+`POST /v1/chat/completions` 在设置 `FASTREACT_SERVICE_TOKEN` 后也必须要求
+同一 service token。管理面 admin key 不等同于 PSKA service token。
+
+真实 E2E 验收命令：
+
+```bash
+cd core
+python3 scripts/fastreact_http_sse_e2e.py --python ../.pska/venvs/pska-py312/bin/python
+```
+
+该脚本启动真实 FastReAct localhost HTTP/SSE service、真实 PSKA MCP JSON-RPC
+子进程，验证 `/ready`、service auth、SSE `tool_call/tool_result/session_end/done`
+和 PSKA MCP evidence 返回。
 
 ## Versioning
 

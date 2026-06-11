@@ -61,6 +61,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--fastreact-timeout", type=int, default=180)
     parser.add_argument("--fastreact-mode", choices=["auto", "api", "local"], default="auto")
     parser.add_argument("--fastreact-api-url", default=os.environ.get("FASTREACT_API_URL", "http://127.0.0.1:8000"))
+    parser.add_argument("--fastreact-service-token", default=os.environ.get("FASTREACT_SERVICE_TOKEN"))
     parser.add_argument("--fastreact-model", default=os.environ.get("FASTRACT_MODEL", ""))
     parser.add_argument("--embedding-provider", default=os.environ.get("PSKA_EMBEDDING_PROVIDER", "disabled"))
     parser.add_argument("--embedding-model", default=os.environ.get("PSKA_EMBEDDING_MODEL", "BAAI/bge-m3"))
@@ -519,7 +520,7 @@ class ReportRunner:
             request = Request(
                 f"{self.args.fastreact_api_url.rstrip('/')}/v1/chat/completions",
                 data=json.dumps(payload).encode("utf-8"),
-                headers={"content-type": "application/json"},
+                headers=self._fastreact_api_headers(),
             )
             with urlopen(request, timeout=self.args.fastreact_timeout) as response:
                 events = parse_sse_events(response.read().decode("utf-8"))
@@ -553,6 +554,14 @@ class ReportRunner:
                 }
             )
             return {"question": question, "status": status, "transport": "api", "error": str(exc), "payload": {}}
+
+    def _fastreact_api_headers(self) -> dict[str, str]:
+        headers = {"content-type": "application/json"}
+        token = (self.args.fastreact_service_token or "").strip()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+            headers["X-FastReAct-Service-Token"] = token
+        return headers
 
     def _fastreact_api_payload(self, question: str) -> dict[str, Any]:
         prompt = (
