@@ -140,7 +140,7 @@ PSKA 与 FastReAct 的并行开发基线见 [fastreact-protocol-zh.md](fastreact
 - 已验收：Fastreact event stream 展示 tool call、tool result、final answer。
 - 已验收：报告不泄露 API key/home path 的 scrubber 仍由测试覆盖。
 
-### P1.1 Conversation ingestion（第一步已实现）
+### P1.1 Conversation ingestion（第一版已验收）
 
 目的：用户长期对话也应成为知识来源，不只依赖文件和 Twitter/X。
 
@@ -150,12 +150,13 @@ PSKA 与 FastReAct 的并行开发基线见 [fastreact-protocol-zh.md](fastreact
 - 已支持会话、消息、参与者、时间、工具调用、引用来源进入 payload metadata/content。
 - 已支持对话通过现有 ingest 进入 source_items/documents/chunks。
 - 已支持对话抽取 review item 时保留 message provenance。
+- 已支持 conversation 检索 citation 返回具体 message_ids。
 
 验收：
 
 - 已验收：一段对话可导入为 source/document/chunk。
 - 已验收：用户偏好可从对话中生成 review item，并引用具体 message id。
-- 回答能引用具体 conversation message。
+- 已验收：检索/回答链路可引用具体 conversation message。
 
 ### P1.2 Profile card 与 agent memory 生命周期
 

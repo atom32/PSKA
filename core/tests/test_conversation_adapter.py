@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from pska_core.adapters.conversation import conversation_to_payload
+from pska_core.acl import ACLService
 from pska_core.enums import UserRole
 from pska_core.ingest import IngestService
 from pska_core.models import User
+from pska_core.retrieval import RetrievalService
 from pska_core.store import InMemoryKnowledgeStore
 
 
@@ -56,3 +58,26 @@ def test_conversation_payload_requires_non_empty_messages() -> None:
         assert "messages" in str(exc)
     else:
         raise AssertionError("expected ValueError")
+
+
+def test_conversation_search_citation_includes_message_id() -> None:
+    store = InMemoryKnowledgeStore()
+    user = User("user_primary", "primary", UserRole.ADMIN)
+    store.add_user(user)
+    payload = conversation_to_payload(
+        {
+            "id": "conv_search",
+            "messages": [
+                {"id": "msg_pref", "role": "user", "content": "I prefer concise project updates."},
+                {"id": "msg_noise", "role": "assistant", "content": "Understood."},
+            ],
+        },
+        owner_user_id="user_primary",
+        space_id="private_primary",
+    )
+    IngestService(store).ingest_channel_payload(payload)
+
+    response = RetrievalService(store, ACLService(store)).search("concise project updates", user)
+
+    assert response.results
+    assert "msg_pref" in response.results[0].citation["message_ids"]

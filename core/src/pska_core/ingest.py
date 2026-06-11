@@ -42,6 +42,7 @@ class IngestService:
                 "author": payload.author,
                 "created_at": payload.created_at,
                 "captured_at": payload.captured_at,
+                "content": payload.content,
                 "media": payload.media,
                 "raw_paths": payload.raw_paths,
                 "extra": payload.extra,

@@ -122,18 +122,22 @@ class RetrievalService:
         }
 
     def _result_for_chunk(self, chunk: Chunk, item: SourceItem, score: float, score_debug: dict[str, float]) -> RetrievalResult:
+        citation = {
+            "source_item_id": item.source_item_id,
+            "chunk_id": chunk.chunk_id,
+            "url": item.url,
+            "title": item.title,
+        }
+        message_ids = _conversation_message_ids(item, chunk.text)
+        if message_ids:
+            citation["message_ids"] = message_ids
         return RetrievalResult(
             result_id=chunk.chunk_id,
             source_item_id=item.source_item_id,
             title=item.title,
             snippet=chunk.text[:240],
             score=score,
-            citation={
-                "source_item_id": item.source_item_id,
-                "chunk_id": chunk.chunk_id,
-                "url": item.url,
-                "title": item.title,
-            },
+            citation=citation,
             score_debug=score_debug,
         )
 
@@ -241,3 +245,20 @@ class RetrievalService:
                 for member in members
             ],
         }
+
+
+def _conversation_message_ids(item: SourceItem, text: str) -> list[str]:
+    if item.record_type != "conversation":
+        return []
+    content = item.metadata.get("content") or {}
+    messages = content.get("messages") if isinstance(content, dict) else []
+    if not isinstance(messages, list):
+        return []
+    message_ids: list[str] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        message_id = message.get("message_id")
+        if message_id and str(message_id) in text:
+            message_ids.append(str(message_id))
+    return message_ids
