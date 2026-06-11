@@ -15,6 +15,8 @@ from pska_core.models import (
     Entity,
     Hyperedge,
     HyperedgeMember,
+    Job,
+    JobEvent,
     ReviewItem,
     SourceItem,
     TeamMembership,
@@ -398,6 +400,183 @@ class PostgresKnowledgeStore:
             )
         return [(self._hyperedge_from_row(row), members_by_edge.get(row["hyperedge_id"], [])) for row in edge_rows]
 
+    def create_job(self, job_type: str, payload: dict[str, Any], *, max_attempts: int = 3) -> Job:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                insert into jobs(job_type, payload, max_attempts)
+                values (%s, %s, %s)
+                returning *
+                """,
+                (job_type, Jsonb(to_jsonable(payload)), max_attempts),
+            ).fetchone()
+            job = self._job_from_row(row)
+        self.add_job_event(job.job_id, "queued", f"Queued {job_type} job", {"payload": payload})
+        return job
+
+    def get_job(self, job_id: str) -> Job:
+        with self.connect() as conn:
+            row = conn.execute("select * from jobs where job_id = %s", (job_id,)).fetchone()
+        if not row:
+            raise KeyError(job_id)
+        return self._job_from_row(row)
+
+    def list_jobs(self, *, status: str | None = None, limit: int = 50) -> list[Job]:
+        with self.connect() as conn:
+            if status:
+                rows = conn.execute(
+                    "select * from jobs where status = %s order by created_at desc, job_id desc limit %s",
+                    (status, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "select * from jobs order by created_at desc, job_id desc limit %s",
+                    (limit,),
+                ).fetchall()
+        return [self._job_from_row(row) for row in rows]
+
+    def list_job_events(self, job_id: str) -> list[JobEvent]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "select * from job_events where job_id = %s order by created_at, job_event_id",
+                (job_id,),
+            ).fetchall()
+        return [self._job_event_from_row(row) for row in rows]
+
+    def add_job_event(
+        self,
+        job_id: str,
+        event_type: str,
+        message: str,
+        detail: dict[str, Any] | None = None,
+    ) -> JobEvent:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                insert into job_events(job_id, event_type, message, detail)
+                values (%s, %s, %s, %s)
+                returning *
+                """,
+                (job_id, event_type, message, Jsonb(to_jsonable(detail or {}))),
+            ).fetchone()
+        return self._job_event_from_row(row)
+
+    def claim_next_job(self) -> Job | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                update jobs
+                set status = 'running',
+                    attempts = attempts + 1,
+                    started_at = now(),
+                    finished_at = null,
+                    error = null,
+                    updated_at = now()
+                where job_id = (
+                    select job_id
+                    from jobs
+                    where status = 'queued'
+                    order by created_at, job_id
+                    for update skip locked
+                    limit 1
+                )
+                returning *
+                """
+            ).fetchone()
+        if not row:
+            return None
+        job = self._job_from_row(row)
+        self.add_job_event(job.job_id, "started", f"Started attempt {job.attempts}")
+        return job
+
+    def finish_job(self, job_id: str, result: dict[str, Any]) -> Job:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                update jobs
+                set status = 'succeeded',
+                    result = %s,
+                    error = null,
+                    finished_at = now(),
+                    updated_at = now()
+                where job_id = %s
+                returning *
+                """,
+                (Jsonb(to_jsonable(result)), job_id),
+            ).fetchone()
+        job = self._job_from_row(row)
+        self.add_job_event(job.job_id, "succeeded", "Job succeeded", {"result": result})
+        return job
+
+    def fail_job(self, job_id: str, error: str, *, retryable: bool = True) -> Job:
+        current = self.get_job(job_id)
+        status = "queued" if retryable and current.attempts < current.max_attempts else "failed"
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                update jobs
+                set status = %s,
+                    error = %s,
+                    finished_at = case when %s = 'failed' then now() else finished_at end,
+                    updated_at = now()
+                where job_id = %s
+                returning *
+                """,
+                (status, error, status, job_id),
+            ).fetchone()
+        job = self._job_from_row(row)
+        event_type = "retry_queued" if status == "queued" else "failed"
+        self.add_job_event(job.job_id, event_type, error)
+        return job
+
+    def retry_job(self, job_id: str) -> Job:
+        current = self.get_job(job_id)
+        if current.status not in {"failed", "canceled"}:
+            raise ValueError(f"Only failed or canceled jobs can be retried, got {current.status}")
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                update jobs
+                set status = 'queued',
+                    error = null,
+                    finished_at = null,
+                    updated_at = now()
+                where job_id = %s
+                returning *
+                """,
+                (job_id,),
+            ).fetchone()
+        job = self._job_from_row(row)
+        self.add_job_event(job.job_id, "retry_queued", "Job manually queued for retry")
+        return job
+
+    def recover_stale_jobs(self, *, max_age_seconds: int) -> list[Job]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                update jobs
+                set status = case when attempts < max_attempts then 'queued' else 'failed' end,
+                    error = case
+                        when attempts < max_attempts then 'Recovered stale running job'
+                        else 'Stale running job exceeded max attempts'
+                    end,
+                    finished_at = case when attempts < max_attempts then null else now() end,
+                    updated_at = now()
+                where status = 'running'
+                  and started_at is not null
+                  and started_at < now() - (%s * interval '1 second')
+                returning *
+                """,
+                (max_age_seconds,),
+            ).fetchall()
+        jobs = [self._job_from_row(row) for row in rows]
+        for job in jobs:
+            if job.status == "queued":
+                self.add_job_event(job.job_id, "stale_requeued", job.error or "Recovered stale running job")
+            else:
+                self.add_job_event(job.job_id, "stale_failed", job.error or "Stale running job exceeded max attempts")
+        return jobs
+
     def count_table(self, table: str) -> int:
         if table not in {
             "source_items",
@@ -410,6 +589,8 @@ class PostgresKnowledgeStore:
             "review_items",
             "agent_memories",
             "user_profile_cards",
+            "jobs",
+            "job_events",
         }:
             raise ValueError(f"Unsupported table: {table}")
         with self.connect() as conn:
@@ -465,6 +646,32 @@ class PostgresKnowledgeStore:
             evidence_text=row["evidence_text"],
             source_refs=[],
             confidence=row["confidence"],
+        )
+
+    def _job_from_row(self, row: dict[str, Any]) -> Job:
+        return Job(
+            job_id=row["job_id"],
+            job_type=row["job_type"],
+            payload=dict(row["payload"] or {}),
+            status=row["status"],
+            attempts=int(row["attempts"]),
+            max_attempts=int(row["max_attempts"]),
+            error=row["error"],
+            result=dict(row["result"] or {}),
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+            started_at=row["started_at"],
+            finished_at=row["finished_at"],
+        )
+
+    def _job_event_from_row(self, row: dict[str, Any]) -> JobEvent:
+        return JobEvent(
+            job_event_id=row["job_event_id"],
+            job_id=row["job_id"],
+            event_type=row["event_type"],
+            message=row["message"],
+            detail=dict(row["detail"] or {}),
+            created_at=row["created_at"],
         )
 
 

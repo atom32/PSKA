@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Protocol
+from uuid import uuid4
 
 from pska_core.models import (
     AgentMemory,
@@ -9,11 +10,14 @@ from pska_core.models import (
     Entity,
     Hyperedge,
     HyperedgeMember,
+    Job,
+    JobEvent,
     ReviewItem,
     SourceItem,
     TeamMembership,
     User,
     UserProfileCard,
+    utc_now,
 )
 
 
@@ -55,6 +59,8 @@ class InMemoryKnowledgeStore:
         self.hyperedges: dict[str, Hyperedge] = {}
         self.hyperedge_members: list[HyperedgeMember] = []
         self.review_items: dict[str, ReviewItem] = {}
+        self.jobs: dict[str, Job] = {}
+        self.job_events: list[JobEvent] = []
 
     def add_user(self, user: User) -> None:
         self.users[user.user_id] = user
@@ -146,6 +152,103 @@ class InMemoryKnowledgeStore:
             members = [member for member in self.hyperedge_members if member.hyperedge_id == edge_id]
             results.append((self.hyperedges[edge_id], members))
         return results
+
+    def create_job(self, job_type: str, payload: dict, *, max_attempts: int = 3) -> Job:
+        job = Job(job_id=f"job_{uuid4().hex}", job_type=job_type, payload=dict(payload), max_attempts=max_attempts)
+        self.jobs[job.job_id] = job
+        self.add_job_event(job.job_id, "queued", f"Queued {job_type} job", {"payload": payload})
+        return job
+
+    def get_job(self, job_id: str) -> Job:
+        return self.jobs[job_id]
+
+    def list_jobs(self, *, status: str | None = None, limit: int = 50) -> list[Job]:
+        jobs = list(self.jobs.values())
+        if status:
+            jobs = [job for job in jobs if job.status == status]
+        return sorted(jobs, key=lambda job: (job.created_at, job.job_id), reverse=True)[:limit]
+
+    def list_job_events(self, job_id: str) -> list[JobEvent]:
+        return [event for event in self.job_events if event.job_id == job_id]
+
+    def add_job_event(self, job_id: str, event_type: str, message: str, detail: dict | None = None) -> JobEvent:
+        event = JobEvent(
+            job_event_id=f"evt_{uuid4().hex}",
+            job_id=job_id,
+            event_type=event_type,
+            message=message,
+            detail=dict(detail or {}),
+        )
+        self.job_events.append(event)
+        return event
+
+    def claim_next_job(self) -> Job | None:
+        queued = sorted((job for job in self.jobs.values() if job.status == "queued"), key=lambda job: job.created_at)
+        if not queued:
+            return None
+        job = queued[0]
+        job.status = "running"
+        job.attempts += 1
+        job.error = None
+        job.started_at = utc_now()
+        job.finished_at = None
+        job.updated_at = utc_now()
+        self.add_job_event(job.job_id, "started", f"Started attempt {job.attempts}")
+        return job
+
+    def finish_job(self, job_id: str, result: dict) -> Job:
+        job = self.jobs[job_id]
+        job.status = "succeeded"
+        job.result = dict(result)
+        job.error = None
+        job.finished_at = utc_now()
+        job.updated_at = utc_now()
+        self.add_job_event(job.job_id, "succeeded", "Job succeeded", {"result": result})
+        return job
+
+    def fail_job(self, job_id: str, error: str, *, retryable: bool = True) -> Job:
+        job = self.jobs[job_id]
+        job.status = "queued" if retryable and job.attempts < job.max_attempts else "failed"
+        job.error = error
+        if job.status == "failed":
+            job.finished_at = utc_now()
+        job.updated_at = utc_now()
+        event_type = "retry_queued" if job.status == "queued" else "failed"
+        self.add_job_event(job.job_id, event_type, error)
+        return job
+
+    def retry_job(self, job_id: str) -> Job:
+        job = self.jobs[job_id]
+        if job.status not in {"failed", "canceled"}:
+            raise ValueError(f"Only failed or canceled jobs can be retried, got {job.status}")
+        job.status = "queued"
+        job.error = None
+        job.finished_at = None
+        job.updated_at = utc_now()
+        self.add_job_event(job.job_id, "retry_queued", "Job manually queued for retry")
+        return job
+
+    def recover_stale_jobs(self, *, max_age_seconds: int) -> list[Job]:
+        now = utc_now()
+        recovered: list[Job] = []
+        for job in self.jobs.values():
+            if job.status != "running" or job.started_at is None:
+                continue
+            if (now - job.started_at).total_seconds() < max_age_seconds:
+                continue
+            if job.attempts < job.max_attempts:
+                job.status = "queued"
+                job.error = "Recovered stale running job"
+                event_type = "stale_requeued"
+            else:
+                job.status = "failed"
+                job.error = "Stale running job exceeded max attempts"
+                job.finished_at = now
+                event_type = "stale_failed"
+            job.updated_at = now
+            recovered.append(job)
+            self.add_job_event(job.job_id, event_type, job.error)
+        return recovered
 
 
 def _cosine_similarity(left: list[float], right: list[float]) -> float:

@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict
+import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
 import sys
+import time
 from typing import Sequence
 
 from pska_core.acl import ACLService
@@ -16,6 +18,7 @@ from pska_core.enums import Visibility
 from pska_core.extraction import ExtractionService
 from pska_core.importers.twitter_zip import TwitterZipImporter
 from pska_core.ingest import IngestService
+from pska_core.jobs import JOB_TYPES, JobService
 from pska_core.mcp_server import MCPServer
 from pska_core.models import ChannelIngestPayload
 from pska_core.agentic import AgenticSearchService
@@ -89,6 +92,33 @@ def build_parser() -> argparse.ArgumentParser:
     smoke_parser.add_argument("--archive-root", type=Path, default=Path("archive/imports"))
     smoke_parser.add_argument("--query", default="")
     _add_embedding_args(smoke_parser, default_provider=os.environ.get("PSKA_EMBEDDING_PROVIDER", "disabled"))
+
+    submit_parser = subparsers.add_parser("job-submit", help="Queue a durable local job")
+    submit_parser.add_argument("job_type", choices=sorted(JOB_TYPES))
+    submit_parser.add_argument("--payload", type=Path, help="JSON file with job payload")
+    submit_parser.add_argument("--max-attempts", type=int, default=3)
+    submit_parser.add_argument("--run-now", action="store_true", help="Run queued jobs in this process after submit")
+
+    run_parser = subparsers.add_parser("job-run", help="Run queued durable jobs in this process")
+    run_parser.add_argument("--limit", type=int, default=1)
+    run_parser.add_argument("--until-empty", action="store_true")
+
+    worker_parser = subparsers.add_parser("job-worker", help="Continuously poll and run durable jobs")
+    worker_parser.add_argument("--poll-interval", type=float, default=5.0)
+    worker_parser.add_argument("--max-jobs", type=int, default=0, help="Stop after this many jobs; 0 means no limit")
+    worker_parser.add_argument("--idle-limit", type=int, default=0, help="Stop after this many idle polls; 0 means no limit")
+    worker_parser.add_argument("--recover-stale-seconds", type=int, default=0)
+
+    status_parser = subparsers.add_parser("job-status", help="Show durable jobs and events")
+    status_parser.add_argument("--job-id")
+    status_parser.add_argument("--status")
+    status_parser.add_argument("--limit", type=int, default=50)
+
+    retry_parser = subparsers.add_parser("job-retry", help="Queue a failed or canceled job for retry")
+    retry_parser.add_argument("job_id")
+
+    recover_parser = subparsers.add_parser("job-recover", help="Recover stale running jobs")
+    recover_parser.add_argument("--max-age-seconds", type=int, default=3600)
     return parser
 
 
@@ -121,6 +151,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         return MCPServer(args.database_url).run()
     if args.command == "smoke-twitter-import":
         return smoke_twitter_import(args)
+    if args.command == "job-submit":
+        return job_submit(args)
+    if args.command == "job-run":
+        return job_run(args)
+    if args.command == "job-worker":
+        return job_worker(args)
+    if args.command == "job-status":
+        return job_status(args)
+    if args.command == "job-retry":
+        return job_retry(args)
+    if args.command == "job-recover":
+        return job_recover(args)
     return 2
 
 
@@ -266,6 +308,82 @@ def extract_all(args: argparse.Namespace) -> int:
     store = PostgresKnowledgeStore(args.database_url)
     reports = ExtractionService(store).extract_all_visible(owner_user_id=args.owner_user_id)
     print(dumps({"reports": reports}))
+    return 0
+
+
+def job_submit(args: argparse.Namespace) -> int:
+    store = PostgresKnowledgeStore(args.database_url)
+    payload = json.loads(args.payload.read_text(encoding="utf-8")) if args.payload else {}
+    service = JobService(store)
+    job = service.submit(args.job_type, payload, max_attempts=args.max_attempts)
+    result: dict[str, object] = {"job": job}
+    if args.run_now:
+        result["run"] = service.run_available(limit=1)
+    print(dumps(result))
+    return 0
+
+
+def job_run(args: argparse.Namespace) -> int:
+    store = PostgresKnowledgeStore(args.database_url)
+    service = JobService(store)
+    report = service.run_until_empty(limit=args.limit if args.limit > 0 else None) if args.until_empty else service.run_available(limit=args.limit)
+    print(dumps(report))
+    return 1 if report.failed else 0
+
+
+def job_worker(args: argparse.Namespace) -> int:
+    store = PostgresKnowledgeStore(args.database_url)
+    service = JobService(store)
+    if args.recover_stale_seconds:
+        recovered = service.recover_stale(max_age_seconds=args.recover_stale_seconds)
+        if recovered:
+            print(dumps({"recovered": recovered}), flush=True)
+    processed = 0
+    idle_polls = 0
+    failed = 0
+    while True:
+        job = service.run_next()
+        if job is None:
+            idle_polls += 1
+            if args.idle_limit and idle_polls >= args.idle_limit:
+                break
+            time.sleep(args.poll_interval)
+            continue
+        idle_polls = 0
+        processed += 1
+        if job.status == "failed":
+            failed += 1
+        print(dumps({"job": job}), flush=True)
+        if args.max_jobs and processed >= args.max_jobs:
+            break
+    print(dumps({"processed": processed, "failed": failed}))
+    return 1 if failed else 0
+
+
+def job_status(args: argparse.Namespace) -> int:
+    store = PostgresKnowledgeStore(args.database_url)
+    if args.job_id:
+        payload = {
+            "job": store.get_job(args.job_id),
+            "events": store.list_job_events(args.job_id),
+        }
+    else:
+        payload = {"jobs": store.list_jobs(status=args.status, limit=args.limit)}
+    print(dumps(payload))
+    return 0
+
+
+def job_retry(args: argparse.Namespace) -> int:
+    store = PostgresKnowledgeStore(args.database_url)
+    job = store.retry_job(args.job_id)
+    print(dumps({"job": job}))
+    return 0
+
+
+def job_recover(args: argparse.Namespace) -> int:
+    store = PostgresKnowledgeStore(args.database_url)
+    jobs = JobService(store).recover_stale(max_age_seconds=args.max_age_seconds)
+    print(dumps({"recovered": jobs}))
     return 0
 
 

@@ -51,9 +51,22 @@ PSKA 已完成初期 MVP 闭环：Twitter/X 归档、Postgres 存储、LLM 提�
 - 概念查询不含精确关键词时也能召回相关 chunk。
 - E2E 报告显示 vector search 生效，而不是 `semantic_placeholder`。
 
-### P0.2 异步 job system
+### P0.2 异步 job system（第一版已实现）
 
 目的：导入 zip、LLM 提取、embedding、报告生成都不应长期阻塞 CLI/API 请求。
+
+当前状态：已实现第一版 durable local job system。`jobs` / `job_events` 持久化任务和事件，CLI 提供 `job-submit`、`job-run`、`job-status`、`job-retry`、`job-recover`、`job-worker`，HTTP API 提供 `/jobs`、`/jobs/run`、`/jobs/recover`、`/jobs/{id}`、`/jobs/{id}/retry`。import、extract、embed、full report 均可作为 job 执行。`job-run --until-empty` 可一次性清空当前队列，`job-worker` 可常驻轮询执行；stale running job 可按 max age 恢复为 queued 或 failed。下一步可把 worker 接入 launchd/systemd 或 UI 控制台。
+
+验收记录（2026-06-11）：
+
+- `003_jobs.sql` 在 `pska_smoke` 上创建 `jobs` / `job_events`。
+- `job-submit extract_all` 可创建 queued job。
+- `job-run --limit 1` 可 claim 并执行 queued job，状态变为 `succeeded`，attempts 递增。
+- `job-run --until-empty` 可 drain 队列，`job-worker` 可按 poll interval 持续消费任务。
+- `job-recover` 可恢复中断后遗留的 stale running job，未超过 attempts 时重新排队，超过后标记 failed。
+- 单元测试覆盖 import/embed/extract job 重跑幂等：不会重复写入 source/document/chunk/entity/hyperedge/review item。
+- `job-status --job-id ...` 可查看 job 详情和事件时间线：queued、started、execute、succeeded。
+- 单元测试覆盖 job 成功、失败、手动 retry、full report job 执行器和 CLI parser；core `48 passed`，Twitter/X channel `9 passed`。
 
 要做：
 

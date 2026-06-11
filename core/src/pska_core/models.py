@@ -227,6 +227,32 @@ class ReviewItem:
 
 
 @dataclass(slots=True)
+class Job:
+    job_id: str
+    job_type: str
+    payload: dict[str, Any]
+    status: str = "queued"
+    attempts: int = 0
+    max_attempts: int = 3
+    error: str | None = None
+    result: dict[str, Any] = field(default_factory=dict)
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+
+
+@dataclass(slots=True)
+class JobEvent:
+    job_event_id: str
+    job_id: str
+    event_type: str
+    message: str
+    detail: dict[str, Any] = field(default_factory=dict)
+    created_at: datetime = field(default_factory=utc_now)
+
+
+@dataclass(slots=True)
 class AuditEvent:
     audit_event_id: str
     actor_user_id: str

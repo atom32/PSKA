@@ -53,3 +53,35 @@ def test_cli_accepts_search_and_smoke() -> None:
     assert embed.embedding_provider == "bge-m3"
     assert embed.limit == 10
     assert mcp.command == "mcp-server"
+def test_cli_accepts_job_commands() -> None:
+    submit = build_parser().parse_args(["job-submit", "extract_all", "--max-attempts", "2", "--run-now"])
+    run = build_parser().parse_args(["job-run", "--limit", "5"])
+    status = build_parser().parse_args(["job-status", "--status", "failed"])
+    retry = build_parser().parse_args(["job-retry", "job_123"])
+
+    assert submit.command == "job-submit"
+    assert submit.job_type == "extract_all"
+    assert submit.max_attempts == 2
+    assert submit.run_now is True
+    assert run.limit == 5
+    assert status.status == "failed"
+    assert retry.job_id == "job_123"
+
+
+def test_cli_accepts_job_worker_commands() -> None:
+    run = build_parser().parse_args(["job-run", "--until-empty", "--limit", "0"])
+    worker = build_parser().parse_args(
+        ["job-worker", "--poll-interval", "0.1", "--max-jobs", "2", "--idle-limit", "1", "--recover-stale-seconds", "60"]
+    )
+    recover = build_parser().parse_args(["job-recover", "--max-age-seconds", "120"])
+
+    assert run.command == "job-run"
+    assert run.until_empty is True
+    assert run.limit == 0
+    assert worker.command == "job-worker"
+    assert worker.poll_interval == 0.1
+    assert worker.max_jobs == 2
+    assert worker.idle_limit == 1
+    assert worker.recover_stale_seconds == 60
+    assert recover.command == "job-recover"
+    assert recover.max_age_seconds == 120

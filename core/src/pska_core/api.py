@@ -11,6 +11,7 @@ from pska_core.agentic import AgenticSearchService
 from pska_core.embeddings import EmbeddingConfig, build_embedding_provider
 from pska_core.extraction import ExtractionService
 from pska_core.ingest import IngestService
+from pska_core.jobs import JobService
 from pska_core.models import ChannelIngestPayload
 from pska_core.retrieval import RetrievalService
 from pska_core.serde import to_jsonable
@@ -25,6 +26,7 @@ class PSKAApi:
         self.agentic = AgenticSearchService(self.retrieval)
         self.ingest = IngestService(self.store, embedding_provider=embedding_provider)
         self.extraction = ExtractionService(self.store)
+        self.jobs = JobService(self.store)
 
     def health(self) -> dict[str, Any]:
         return {"ok": True, "database": self.store.database_url}
@@ -37,6 +39,7 @@ class PSKAApi:
             "entities": self.store.count_table("entities"),
             "hyperedges": self.store.count_table("hyperedges"),
             "review_items": self.store.count_table("review_items"),
+            "jobs": self.store.count_table("jobs"),
         }
 
     def ingest_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -72,6 +75,33 @@ class PSKAApi:
     def review_items(self) -> dict[str, Any]:
         return {"review_items": to_jsonable(self.store.list_review_items())}
 
+    def submit_job(self, payload: dict[str, Any]) -> dict[str, Any]:
+        job = self.jobs.submit(
+            str(payload["job_type"]),
+            dict(payload.get("payload") or {}),
+            max_attempts=int(payload.get("max_attempts") or 3),
+        )
+        return {"job": to_jsonable(job)}
+
+    def run_jobs(self, payload: dict[str, Any]) -> dict[str, Any]:
+        report = self.jobs.run_available(limit=int(payload.get("limit") or 1))
+        return {"run": to_jsonable(report)}
+
+    def job_status(self, job_id: str | None = None) -> dict[str, Any]:
+        if job_id:
+            return {
+                "job": to_jsonable(self.store.get_job(job_id)),
+                "events": to_jsonable(self.store.list_job_events(job_id)),
+            }
+        return {"jobs": to_jsonable(self.store.list_jobs())}
+
+    def retry_job(self, job_id: str) -> dict[str, Any]:
+        return {"job": to_jsonable(self.store.retry_job(job_id))}
+
+    def recover_jobs(self, payload: dict[str, Any]) -> dict[str, Any]:
+        jobs = self.jobs.recover_stale(max_age_seconds=int(payload.get("max_age_seconds") or 3600))
+        return {"recovered": to_jsonable(jobs)}
+
 
 class PSKARequestHandler(BaseHTTPRequestHandler):
     api: PSKAApi
@@ -84,6 +114,10 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
             return self._json(200, self.api.index_status())
         if path == "/review-items":
             return self._json(200, self.api.review_items())
+        if path == "/jobs":
+            return self._json(200, self.api.job_status())
+        if path.startswith("/jobs/"):
+            return self._json(200, self.api.job_status(path.removeprefix("/jobs/")))
         self._json(404, {"error": f"not found: {path}"})
 
     def do_POST(self) -> None:  # noqa: N802 - stdlib handler API
@@ -98,6 +132,15 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
                 return self._json(200, self.api.agentic_search(payload))
             if path == "/extract/all":
                 return self._json(200, self.api.extract_all(payload))
+            if path == "/jobs":
+                return self._json(200, self.api.submit_job(payload))
+            if path == "/jobs/run":
+                return self._json(200, self.api.run_jobs(payload))
+            if path == "/jobs/recover":
+                return self._json(200, self.api.recover_jobs(payload))
+            if path.startswith("/jobs/") and path.endswith("/retry"):
+                job_id = path.removeprefix("/jobs/").removesuffix("/retry")
+                return self._json(200, self.api.retry_job(job_id))
             self._json(404, {"error": f"not found: {path}"})
         except Exception as exc:  # noqa: BLE001 - local API should report JSON errors.
             self._json(500, {"error": f"{type(exc).__name__}: {exc}"})
