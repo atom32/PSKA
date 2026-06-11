@@ -14,6 +14,7 @@ from scripts.twitter_full_report import (
     fastreact_event_stream_section,
     parse_json_from_stdout,
     fastreact_payload_passed,
+    provenance_section,
     recovery_section,
     render_html_report,
     render_svg_graph,
@@ -206,6 +207,35 @@ def test_bottleneck_section_orders_steps_by_duration() -> None:
 
     assert "Duration Bottlenecks" in html
     assert html.index("slow") < html.index("medium") < html.index("fast")
+
+
+def test_provenance_section_shows_participant_time_and_source_refs() -> None:
+    report = minimal_report()
+    report["source_items"] = [
+        {
+            "source_id": "tweet-1",
+            "source_channel": "twitter",
+            "record_type": "tweet",
+            "author": {"handle": "@alice"},
+            "source_created_at": "2026-06-01T00:00:00Z",
+            "captured_at": "2026-06-02T00:00:00Z",
+            "url": "https://x.com/alice/status/1",
+        }
+    ]
+    report["graph"]["hyperedges"] = [
+        {
+            "relation_type": "mentions",
+            "evidence_text": "Alice mentioned Codex.",
+            "source_refs": [{"source_item_id": "src_1", "url": "https://x.com/alice/status/1"}],
+        }
+    ]
+
+    html = provenance_section(report)
+
+    assert "@alice" in html
+    assert "2026-06-01T00:00:00Z" in html
+    assert "Alice mentioned Codex." in html
+    assert "src_1" in html
 
 
 def minimal_report() -> dict:

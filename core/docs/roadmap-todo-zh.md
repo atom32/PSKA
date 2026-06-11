@@ -122,11 +122,11 @@ PSKA 已完成初期 MVP 闭环：Twitter/X 归档、Postgres 存储、LLM 提�
 - HTML/JSON artifact 都写入 `technical_paths` 和 `acceptance_checks`。
 - 增加 run id 和历史报告目录，固定输出之外也会写入 `reports/runs/<run_id>/`。
 - HTML 报告展示 review item 的 pending/approved/rejected/applied 等状态。
+- HTML 报告展示 source/session participant、时间、URL、hyperedge evidence 和 source_refs 的 provenance 视图。
 - 任一步失败仍可生成 HTML/JSON 的报告结构已由单元测试覆盖。
 
 仍待做：
 
-- 支持会话、消息、参与者、时间、工具调用、引用来源的完整 provenance 视图。
 - LLM 提取 memory/profile/hyperedge 时保留 message provenance。
 
 入口：

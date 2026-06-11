@@ -278,7 +278,7 @@ class ReportRunner:
         with psycopg.connect(self.args.database_url, row_factory=dict_row) as conn:
             rows = conn.execute(
                 """
-                select source_item_id, source_channel, record_type, source_id, title, url, content_text, metadata
+                select source_item_id, source_channel, record_type, source_id, title, url, content_text, metadata, created_at
                 from source_items
                 order by created_at, source_item_id
                 """
@@ -291,6 +291,10 @@ class ReportRunner:
                 "source_id": row["source_id"],
                 "title": row["title"],
                 "url": row["url"],
+                "created_at": row["created_at"],
+                "source_created_at": (row["metadata"] or {}).get("created_at"),
+                "captured_at": (row["metadata"] or {}).get("captured_at"),
+                "author": dict((row["metadata"] or {}).get("author") or {}),
                 "snippet": compact(row["content_text"], 420),
                 "raw_paths": dict((row["metadata"] or {}).get("raw_paths") or {}),
             }
@@ -304,7 +308,7 @@ class ReportRunner:
             ).fetchall()
             edges = conn.execute(
                 """
-                select h.hyperedge_id, h.relation_type, h.directionality, h.evidence_text, h.confidence,
+                select h.hyperedge_id, h.relation_type, h.directionality, h.evidence_text, h.confidence, h.source_refs,
                        coalesce(json_agg(json_build_object(
                            'entity_id', e.entity_id,
                            'label', e.label,
@@ -945,6 +949,7 @@ def render_html_report(report: dict[str, Any]) -> str:
         bottleneck_section(report),
         acceptance_section(report),
         section("Data", data_section(report)),
+        section("Provenance", provenance_section(report)),
         section("Knowledge Graph", graph_section(graph)),
         review_section(report),
         section("Question Answering", qa_section(report)),
@@ -1009,6 +1014,37 @@ def data_section(report: dict[str, Any]) -> str:
         + "</table>"
         + details_json("Import summary", report.get("import_summary"))
         + details_json("Extraction summary", report.get("extraction_summary"))
+    )
+
+
+def provenance_section(report: dict[str, Any]) -> str:
+    source_rows = "".join(
+        "<tr>"
+        f"<td>{esc(item.get('source_id'))}</td>"
+        f"<td>{esc(item.get('source_channel'))}/{esc(item.get('record_type'))}</td>"
+        f"<td>{esc((item.get('author') or {}).get('handle') or (item.get('author') or {}).get('name'))}</td>"
+        f"<td>{esc(item.get('source_created_at') or item.get('created_at'))}</td>"
+        f"<td>{esc(item.get('captured_at'))}</td>"
+        f"<td>{link(item.get('url'))}</td>"
+        "</tr>"
+        for item in report.get("source_items", [])[:120]
+    )
+    edge_rows = "".join(
+        "<tr>"
+        f"<td>{esc(edge.get('relation_type'))}</td>"
+        f"<td>{esc(edge.get('evidence_text'))}</td>"
+        f"<td>{details_json('source_refs', edge.get('source_refs') or [])}</td>"
+        "</tr>"
+        for edge in (report.get("graph") or {}).get("hyperedges", [])[:120]
+    )
+    return (
+        "<h3>Source provenance</h3>"
+        "<table><tr><th>Source ID</th><th>Channel/type</th><th>Participant</th><th>Source time</th><th>Captured</th><th>URL</th></tr>"
+        + source_rows
+        + "</table><h3>Extraction evidence</h3>"
+        + "<table><tr><th>Relation</th><th>Evidence</th><th>Source refs</th></tr>"
+        + edge_rows
+        + "</table>"
     )
 
 
