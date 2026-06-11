@@ -117,7 +117,7 @@ PSKA 已完成初期 MVP 闭环：Twitter/X 归档、Postgres 存储、LLM 提�
 
 - 报告里明确显示 PSKA direct、MCP direct、Fastreact full Agent 的技术路径和差异。
 - Fastreact event stream 第一版展示 tool call、tool result、final answer。
-- 报告自动标出失败步骤、skipped 阶段、LLM/schema repair 事件和 embedding 状态。
+- 报告自动标出失败步骤、skipped 阶段、LLM/schema repair 事件、embedding 状态和耗时瓶颈排行。
 - 支持阶段选择参数：`--skip-import`、`--only-fastreact`。
 - HTML/JSON artifact 都写入 `technical_paths` 和 `acceptance_checks`。
 - 增加 run id 和历史报告目录，固定输出之外也会写入 `reports/runs/<run_id>/`。
@@ -126,7 +126,6 @@ PSKA 已完成初期 MVP 闭环：Twitter/X 归档、Postgres 存储、LLM 提�
 
 仍待做：
 
-- 报告中进一步展示耗时瓶颈排行。
 - 支持会话、消息、参与者、时间、工具调用、引用来源的完整 provenance 视图。
 - LLM 提取 memory/profile/hyperedge 时保留 message provenance。
 

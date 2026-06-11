@@ -814,6 +814,31 @@ def acceptance_section(report: dict[str, Any]) -> str:
     )
 
 
+def bottleneck_section(report: dict[str, Any], *, limit: int = 5) -> str:
+    steps = report.get("pipeline_steps") or report.get("run_metadata", {}).get("pipeline_steps", [])
+    timed_steps = [
+        step
+        for step in steps
+        if isinstance(step.get("duration_seconds"), (int, float)) and step.get("duration_seconds", 0) > 0
+    ]
+    if not timed_steps:
+        return section("Duration Bottlenecks", "<p>No timed pipeline steps recorded.</p>")
+    rows = "".join(
+        "<tr>"
+        f"<td>{index}</td>"
+        f"<td>{esc(step.get('name'))}</td>"
+        f"<td>{esc(step.get('status'))}</td>"
+        f"<td>{esc(step.get('duration_seconds'))}</td>"
+        "</tr>"
+        for index, step in enumerate(sorted(timed_steps, key=lambda item: item.get("duration_seconds", 0), reverse=True)[:limit], start=1)
+    )
+    return section(
+        "Duration Bottlenecks",
+        "<table><thead><tr><th>#</th><th>Step</th><th>Status</th><th>Seconds</th></tr></thead>"
+        f"<tbody>{rows}</tbody></table>",
+    )
+
+
 def review_section(report: dict[str, Any]) -> str:
     reviews = report.get("review_items") or []
     if not reviews:
@@ -917,6 +942,7 @@ def render_html_report(report: dict[str, Any]) -> str:
         "<section class='cards'>" + "".join(card(label, value) for label, value in cards) + "</section>",
         technical_paths_section(report),
         section("Pipeline", pipeline_table(report.get("pipeline_steps", []))),
+        bottleneck_section(report),
         acceptance_section(report),
         section("Data", data_section(report)),
         section("Knowledge Graph", graph_section(graph)),

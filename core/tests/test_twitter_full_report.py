@@ -5,6 +5,7 @@ from pathlib import Path
 from scripts.twitter_full_report import (
     FIXED_QUESTIONS,
     acceptance_section,
+    bottleneck_section,
     build_questions,
     build_parser,
     default_technical_paths,
@@ -132,8 +133,8 @@ def test_report_parser_accepts_stage_selection_flags() -> None:
 def test_report_renders_technical_paths_acceptance_and_reviews() -> None:
     report = minimal_report()
     report["run_metadata"]["pipeline_steps"] = [
-        {"name": "db_reset", "status": "skipped", "reason": "--skip-import"},
-        {"name": "http_api_start", "status": "passed"},
+        {"name": "db_reset", "status": "skipped", "reason": "--skip-import", "duration_seconds": 1.0},
+        {"name": "http_api_start", "status": "passed", "duration_seconds": 2.5},
     ]
     report["database_summary"]["embedded_chunks"] = 3
     report["recovery_events"] = [{"kind": "llm_json_repair", "detail": {"reason": "bad json"}}]
@@ -153,6 +154,8 @@ def test_report_renders_technical_paths_acceptance_and_reviews() -> None:
     assert "MCP direct" in html
     assert "Fastreact full Agent" in html
     assert "Acceptance Checks" in html
+    assert "Duration Bottlenecks" in html
+    assert "http_api_start" in html
     assert "Review Items" in html
     assert "rev_1" in html
     assert "pending" in html
@@ -188,6 +191,21 @@ def test_acceptance_checks_track_failures_skips_and_recovery_events() -> None:
     assert any(check["name"] == "Failure visibility" and check["status"] == "failed" for check in checks)
     assert any(check["name"] == "Stage selection" and check["status"] == "skipped" for check in checks)
     assert any(check["name"] == "LLM/schema repair visibility" and check["status"] == "passed" for check in checks)
+
+
+def test_bottleneck_section_orders_steps_by_duration() -> None:
+    html = bottleneck_section(
+        {
+            "pipeline_steps": [
+                {"name": "fast", "status": "passed", "duration_seconds": 0.1},
+                {"name": "slow", "status": "passed", "duration_seconds": 3.2},
+                {"name": "medium", "status": "passed", "duration_seconds": 1.5},
+            ]
+        }
+    )
+
+    assert "Duration Bottlenecks" in html
+    assert html.index("slow") < html.index("medium") < html.index("fast")
 
 
 def minimal_report() -> dict:
