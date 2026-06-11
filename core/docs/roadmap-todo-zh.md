@@ -183,7 +183,7 @@ PSKA 与 FastReAct 的并行开发基线见 [fastreact-protocol-zh.md](fastreact
 
 - 加入 reranker。
 - 支持 query rewrite 和多轮检索策略。
-- 支持 graph-global 查询，而不是只靠 chunk 命中触发一跳图扩展。
+- 已支持 graph-global 查询第一版，不再只靠 chunk 命中触发一跳图扩展。
 - 增加 conflict search。
 - 已实现文件/URL/标题精确查找与 RAG 分流第一版。
 

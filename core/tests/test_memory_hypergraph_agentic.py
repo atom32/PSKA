@@ -116,6 +116,30 @@ def test_binary_relation_is_size_two_hyperedge() -> None:
     assert {member.role for member in members} == {"recommender", "object"}
 
 
+def test_graph_global_query_returns_visible_hypergraph_context_without_chunk_hit() -> None:
+    store = make_store()
+    graph = HypergraphService(store)
+    graph.create_entity(Entity("ent_a", "person", "A", "user_primary", "private_primary", Visibility.PRIVATE))
+    graph.create_entity(Entity("ent_b", "book", "B", "user_primary", "private_primary", Visibility.PRIVATE))
+    graph.create_hyperedge(
+        relation_type="recommended",
+        owner_user_id="user_primary",
+        space_id="private_primary",
+        visibility=Visibility.PRIVATE,
+        directionality=Directionality.DIRECTED,
+        members=[("ent_a", "recommender"), ("ent_b", "object")],
+        evidence_text="A recommended B.",
+    )
+
+    response = RetrievalService(store, ACLService(store)).search("列出重要实体和关系", store.get_user("user_primary"))
+
+    assert response.results == []
+    assert response.gaps == []
+    assert response.score_debug["graph_context_used"] is True
+    assert response.hypergraph_context[0]["relation_type"] == "recommended"
+    assert {member["label"] for member in response.hypergraph_context[0]["members"]} == {"A", "B"}
+
+
 def test_multi_party_relation_preserves_member_roles_and_ambiguous_direction() -> None:
     store = make_store()
     graph = HypergraphService(store)

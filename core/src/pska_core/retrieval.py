@@ -71,6 +71,7 @@ class RetrievalService:
             represented_user_id=represented_user_id,
         )
         ranker = "exact_source" if rank_debug.get("exact_candidates", 0) else "hybrid_rrf"
+        graph_context_used = bool(hypergraph_context)
         return RetrievalResponse(
             query=query,
             request_user_id=represented_user_id or user.user_id,
@@ -79,8 +80,13 @@ class RetrievalService:
             results=ranked,
             citations=citations,
             hypergraph_context=hypergraph_context,
-            gaps=[] if ranked else ["insufficient_evidence"],
-            score_debug={"ranker": ranker, "top_k": top_k, **rank_debug},
+            gaps=[] if ranked or graph_context_used else ["insufficient_evidence"],
+            score_debug={
+                "ranker": ranker,
+                "top_k": top_k,
+                "graph_context_used": graph_context_used,
+                **rank_debug,
+            },
         )
 
     def _rank(
@@ -241,6 +247,8 @@ class RetrievalService:
         represented_user_id: str | None,
     ) -> list[dict[str, Any]]:
         entities = self._matching_entities(query, ranked)
+        if _is_graph_global_query(query):
+            entities = self.store.list_entities()
         visible_entities = [
             entity
             for entity in entities
@@ -249,7 +257,7 @@ class RetrievalService:
         edges = self.store.list_hyperedges_for_entities({entity.entity_id for entity in visible_entities})
         context = []
         entity_by_id = {entity.entity_id: entity for entity in self.store.list_entities()}
-        for edge, members in edges:
+        for edge, members in sorted(edges, key=lambda item: item[0].hyperedge_id):
             if not self._can_read_graph_object(user, edge.owner_user_id, edge.visibility, edge.visible_team_ids, represented_user_id):
                 continue
             context.append(self._edge_context(edge, members, entity_by_id))
@@ -323,3 +331,11 @@ def _conversation_message_ids(item: SourceItem, text: str) -> list[str]:
 
 def _normalize_exact(value: str) -> str:
     return value.strip().lower()
+
+
+def _is_graph_global_query(query: str) -> bool:
+    normalized = query.lower()
+    terms = set(re.findall(r"[\w\u4e00-\u9fff]+", normalized))
+    graph_terms = {"graph", "knowledge", "entity", "entities", "relation", "relations", "relationship", "relationships"}
+    graph_terms_zh = ("图谱", "实体", "关系", "关联")
+    return bool(terms.intersection(graph_terms)) or any(term in normalized for term in graph_terms_zh)
