@@ -31,6 +31,15 @@ class KnowledgeStore(Protocol):
     def add_document(self, document: Document) -> None: ...
     def add_chunk(self, chunk: Chunk) -> None: ...
     def add_agent_memory(self, memory: AgentMemory) -> None: ...
+    def get_agent_memory(self, agent_memory_id: str) -> AgentMemory: ...
+    def update_agent_memory_lifecycle(
+        self,
+        agent_memory_id: str,
+        *,
+        confidence: float,
+        decay_policy: str,
+        last_verified_at,
+    ) -> AgentMemory: ...
     def add_profile_card(self, profile_card: UserProfileCard) -> None: ...
     def add_entity(self, entity: Entity) -> None: ...
     def add_hyperedge(self, hyperedge: Hyperedge, members: list[HyperedgeMember]) -> None: ...
@@ -105,6 +114,23 @@ class InMemoryKnowledgeStore:
 
     def add_agent_memory(self, memory: AgentMemory) -> None:
         self.agent_memories[memory.agent_memory_id] = memory
+
+    def get_agent_memory(self, agent_memory_id: str) -> AgentMemory:
+        return self.agent_memories[agent_memory_id]
+
+    def update_agent_memory_lifecycle(
+        self,
+        agent_memory_id: str,
+        *,
+        confidence: float,
+        decay_policy: str,
+        last_verified_at,
+    ) -> AgentMemory:
+        memory = self.agent_memories[agent_memory_id]
+        memory.confidence = confidence
+        memory.decay_policy = decay_policy
+        memory.last_verified_at = last_verified_at
+        return memory
 
     def add_profile_card(self, profile_card: UserProfileCard) -> None:
         self.profile_cards[profile_card.profile_card_id] = profile_card

@@ -19,6 +19,7 @@ from pska_core.models import (
     JobEvent,
     AuditEvent,
     ReviewItem,
+    SourceRef,
     SourceItem,
     TeamMembership,
     User,
@@ -177,6 +178,35 @@ class PostgresKnowledgeStore:
                     memory.last_verified_at,
                 ),
             )
+
+    def get_agent_memory(self, agent_memory_id: str) -> AgentMemory:
+        with self.connect() as conn:
+            row = conn.execute("select * from agent_memories where agent_memory_id = %s", (agent_memory_id,)).fetchone()
+        if not row:
+            raise KeyError(agent_memory_id)
+        return self._agent_memory_from_row(row)
+
+    def update_agent_memory_lifecycle(
+        self,
+        agent_memory_id: str,
+        *,
+        confidence: float,
+        decay_policy: str,
+        last_verified_at,
+    ) -> AgentMemory:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                update agent_memories
+                set confidence = %s, decay_policy = %s, last_verified_at = %s, updated_at = now()
+                where agent_memory_id = %s
+                returning *
+                """,
+                (confidence, decay_policy, last_verified_at, agent_memory_id),
+            ).fetchone()
+        if not row:
+            raise KeyError(agent_memory_id)
+        return self._agent_memory_from_row(row)
 
     def add_profile_card(self, profile_card: UserProfileCard) -> None:
         with self.connect() as conn:
@@ -739,6 +769,19 @@ class PostgresKnowledgeStore:
             evidence_text=row["evidence_text"],
             source_refs=[],
             confidence=row["confidence"],
+        )
+
+    def _agent_memory_from_row(self, row: dict[str, Any]) -> AgentMemory:
+        return AgentMemory(
+            agent_memory_id=row["agent_memory_id"],
+            owner_user_id=row["owner_user_id"],
+            layer=MemoryLayer(row["layer"]),
+            text=row["text"],
+            confidence=float(row["confidence"]),
+            source_refs=[SourceRef(**item) for item in row["source_refs"]],
+            decay_policy=row["decay_policy"],
+            last_verified_at=row["last_verified_at"],
+            created_by_user_id=row["created_by_user_id"],
         )
 
     def _job_from_row(self, row: dict[str, Any]) -> Job:

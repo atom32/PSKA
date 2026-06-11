@@ -34,6 +34,29 @@ def test_agent_memory_belongs_to_represented_user() -> None:
     assert memory.created_by_user_id == "agent_service"
 
 
+def test_agent_memory_can_be_verified_and_forgotten() -> None:
+    store = make_store()
+    service = MemoryService(store)
+    memory = service.write_agent_memory(
+        owner_user_id="user_primary",
+        layer=MemoryLayer.EPISODIC,
+        text="Temporary preference.",
+        confidence=0.3,
+        source_refs=[SourceRef(message_id="msg_lifecycle")],
+        created_by_user_id="agent_service",
+        decay_policy="decay",
+    )
+
+    verified = service.verify_agent_memory(memory.agent_memory_id, confidence=0.85, decay_policy="manual")
+    assert verified.confidence == 0.85
+    assert verified.decay_policy == "manual"
+    assert verified.last_verified_at is not None
+
+    forgotten = service.forget_agent_memory(memory.agent_memory_id)
+    assert forgotten.confidence == 0.0
+    assert forgotten.decay_policy == "forgotten"
+
+
 def test_high_sensitive_profile_update_creates_review_item() -> None:
     store = make_store()
     result = MemoryService(store).propose_profile_update(

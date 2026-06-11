@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from datetime import datetime, timezone
 from uuid import uuid4
 
 from pska_core.enums import MemoryLayer, ReviewType
@@ -65,3 +66,33 @@ class MemoryService:
         )
         self.store.add_profile_card(card)
         return card
+
+    def verify_agent_memory(
+        self,
+        agent_memory_id: str,
+        *,
+        confidence: float,
+        decay_policy: str | None = None,
+        verified_at: datetime | None = None,
+    ) -> AgentMemory:
+        memory = self.store.get_agent_memory(agent_memory_id)
+        return self.store.update_agent_memory_lifecycle(
+            agent_memory_id,
+            confidence=_confidence(confidence),
+            decay_policy=decay_policy or memory.decay_policy,
+            last_verified_at=verified_at or datetime.now(timezone.utc),
+        )
+
+    def forget_agent_memory(self, agent_memory_id: str) -> AgentMemory:
+        return self.store.update_agent_memory_lifecycle(
+            agent_memory_id,
+            confidence=0.0,
+            decay_policy="forgotten",
+            last_verified_at=datetime.now(timezone.utc),
+        )
+
+
+def _confidence(value: float) -> float:
+    if value < 0 or value > 1:
+        raise ValueError("confidence must be between 0 and 1")
+    return float(value)
