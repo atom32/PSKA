@@ -9,6 +9,8 @@ from scripts.twitter_full_report import (
     build_parser,
     default_technical_paths,
     derive_acceptance_checks,
+    fastreact_event_stream,
+    fastreact_event_stream_section,
     parse_json_from_stdout,
     fastreact_payload_passed,
     recovery_section,
@@ -89,6 +91,35 @@ def test_fastreact_payload_requires_direct_and_full_agent_answers() -> None:
     assert not fastreact_payload_passed(0, payload)
     payload["agent_answer"] = "full"
     assert fastreact_payload_passed(0, payload)
+
+
+def test_fastreact_event_stream_normalizes_tools_and_final_answer() -> None:
+    payload = {
+        "direct_search": {"results": [{"snippet": "direct search result"}]},
+        "direct_agentic_search": {"answer": "direct agentic result"},
+        "agent_answer": "",
+        "events": [
+            {
+                "type": "TOOL_CALL",
+                "tool_name": "pska_pska_search",
+                "tool_args": {"query": "Q"},
+                "content": "",
+            },
+            {
+                "type": "SESSION_END",
+                "content": "final answer from event stream",
+            },
+        ],
+    }
+
+    events = fastreact_event_stream(payload)
+    html = fastreact_event_stream_section(payload)
+
+    assert fastreact_payload_passed(0, payload)
+    assert {event["kind"] for event in events} >= {"tool_call", "tool_result", "final_answer"}
+    assert "Fastreact Event Stream" in html
+    assert "pska_pska_search" in html
+    assert "final answer from event stream" in html
 
 
 def test_report_parser_accepts_stage_selection_flags() -> None:

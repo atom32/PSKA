@@ -702,7 +702,81 @@ def fastreact_direct_answer(payload: dict[str, Any]) -> str:
 
 
 def fastreact_agent_answer(payload: dict[str, Any]) -> str:
-    return str(payload.get("agent_answer") or "").strip()
+    answer = str(payload.get("agent_answer") or "").strip()
+    if answer:
+        return answer
+    for event in reversed(payload.get("events") or []):
+        if not isinstance(event, dict):
+            continue
+        event_type = str(event.get("type") or "").lower()
+        content = str(event.get("content") or "").strip()
+        if content and ("session_end" in event_type or event_type.endswith("think")):
+            return content
+    return ""
+
+
+def fastreact_event_stream(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    if not payload:
+        return []
+
+    events: list[dict[str, Any]] = []
+    for name, key in (("pska_pska_search", "direct_search"), ("pska_pska_agentic_search", "direct_agentic_search")):
+        value = payload.get(key)
+        if value:
+            events.append({"kind": "tool_call", "tool_name": name, "summary": "Fastreact direct MCP call"})
+            events.append({"kind": "tool_result", "tool_name": name, "summary": compact(json.dumps(value, ensure_ascii=False), 500)})
+
+    for event in payload.get("events") or []:
+        if not isinstance(event, dict):
+            continue
+        event_type = str(event.get("type") or "")
+        event_type_lower = event_type.lower()
+        tool_name = event.get("tool_name")
+        content = str(event.get("content") or "").strip()
+        if tool_name and event.get("tool_args"):
+            kind = "tool_call"
+        elif tool_name:
+            kind = "tool_result"
+        elif "session_end" in event_type_lower:
+            kind = "final_answer"
+        elif "error" in event_type_lower:
+            kind = "error"
+        else:
+            kind = "agent_event"
+        events.append(
+            {
+                "kind": kind,
+                "type": event_type,
+                "tool_name": tool_name,
+                "tool_args": event.get("tool_args"),
+                "summary": compact(content or json.dumps(event.get("metadata") or {}, ensure_ascii=False), 500),
+            }
+        )
+
+    agent_answer = fastreact_agent_answer(payload)
+    if agent_answer and not any(event.get("kind") == "final_answer" for event in events):
+        events.append({"kind": "final_answer", "summary": agent_answer})
+    return events
+
+
+def fastreact_event_stream_section(payload: dict[str, Any]) -> str:
+    events = fastreact_event_stream(payload)
+    if not events:
+        return "<p>No Fastreact event stream captured.</p>"
+    rows = "".join(
+        "<tr>"
+        f"<td>{index}</td>"
+        f"<td>{esc(event.get('kind'))}</td>"
+        f"<td>{esc(event.get('tool_name') or event.get('type'))}</td>"
+        f"<td>{esc(event.get('summary'))}</td>"
+        "</tr>"
+        for index, event in enumerate(events, start=1)
+    )
+    return (
+        "<h4>Fastreact Event Stream</h4>"
+        "<table><thead><tr><th>#</th><th>Event</th><th>Tool/Type</th><th>Summary</th></tr></thead>"
+        f"<tbody>{rows}</tbody></table>"
+    )
 
 
 def technical_paths_section(report: dict[str, Any]) -> str:
@@ -980,6 +1054,7 @@ def qa_section(report: dict[str, Any]) -> str:
             + details_json("Citations", ((agentic.get("retrieval") or {}).get("citations") or []))
             + details_json("Hypergraph context", ((agentic.get("retrieval") or {}).get("hypergraph_context") or []))
             + details_json("MCP responses", mcp)
+            + fastreact_event_stream_section(fast_payload)
             + details_json("Fastreact raw", fast)
             + "</div>"
         )
