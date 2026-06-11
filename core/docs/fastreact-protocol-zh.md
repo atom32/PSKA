@@ -7,6 +7,9 @@ FastReAct 事件 schema：`fastreact.agent_event.v1`
 FastReAct 当作 headless agentic service layer；FastReAct 把 PSKA 当作
 独立知识系统和 MCP 工具提供方。
 
+真实端口、真实 LLM API、PSKA MCP 与 FastReAct HTTP/SSE 的操作手册见
+[fastreact-pska-real-integration-manual-zh.md](fastreact-pska-real-integration-manual-zh.md)。
+
 ## 边界原则
 
 PSKA 负责：
