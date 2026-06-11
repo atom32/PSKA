@@ -138,20 +138,20 @@ PSKA 已完成初期 MVP 闭环：Twitter/X 归档、Postgres 存储、LLM 提�
 - 已验收：Fastreact event stream 展示 tool call、tool result、final answer。
 - 已验收：报告不泄露 API key/home path 的 scrubber 仍由测试覆盖。
 
-### P1.1 Conversation ingestion
+### P1.1 Conversation ingestion（第一步已实现）
 
 目的：用户长期对话也应成为知识来源，不只依赖文件和 Twitter/X。
 
 要做：
 
-- 定义 conversation/message channel payload。
-- 支持会话、消息、参与者、时间、工具调用、引用来源。
-- 对话进入 source_items/documents/chunks。
+- 已定义 conversation/message channel payload adapter。
+- 已支持会话、消息、参与者、时间、工具调用、引用来源进入 payload metadata/content。
+- 已支持对话通过现有 ingest 进入 source_items/documents/chunks。
 - LLM 提取 memory/profile/hyperedge 时保留 message provenance。
 
 验收：
 
-- 一段对话可导入为 source。
+- 已验收：一段对话可导入为 source/document/chunk。
 - 用户偏好、项目事实、待办可以从对话中生成 review item。
 - 回答能引用具体 conversation message。
 
