@@ -70,6 +70,7 @@ class RetrievalService:
             user=user,
             represented_user_id=represented_user_id,
         )
+        ranker = "exact_source" if rank_debug.get("exact_candidates", 0) else "hybrid_rrf"
         return RetrievalResponse(
             query=query,
             request_user_id=represented_user_id or user.user_id,
@@ -79,7 +80,7 @@ class RetrievalService:
             citations=citations,
             hypergraph_context=hypergraph_context,
             gaps=[] if ranked else ["insufficient_evidence"],
-            score_debug={"ranker": "hybrid_rrf", "top_k": top_k, **rank_debug},
+            score_debug={"ranker": ranker, "top_k": top_k, **rank_debug},
         )
 
     def _rank(
@@ -92,6 +93,7 @@ class RetrievalService:
         top_k: int,
     ) -> tuple[list[RetrievalResult], dict[str, Any]]:
         item_by_id = {item.source_item_id: item for item in items}
+        exact_ranked = self._exact_source_results(query, items, chunks, item_by_id, top_k=top_k)
         query_terms = self._terms(query)
         lexical_results: list[RetrievalResult] = []
         for chunk in chunks:
@@ -113,13 +115,49 @@ class RetrievalService:
                     continue
                 vector_ranked.append(self._result_for_chunk(chunk, item, vector_score, {"lexical": 0.0, "vector": vector_score}))
 
-        combined = self._rrf_merge(lexical_ranked, vector_ranked, top_k=top_k)
+        combined = self._merge_exact_then_rrf(exact_ranked, lexical_ranked, vector_ranked, top_k=top_k)
         return combined, {
+            "exact_candidates": len(exact_ranked),
             "lexical_candidates": len(lexical_ranked),
             "vector_enabled": vector_enabled,
             "vector_candidates": len(vector_ranked),
             "embedding_model": self.embedding_provider.model_name if self.embedding_provider else None,
         }
+
+    def _exact_source_results(
+        self,
+        query: str,
+        items: list[SourceItem],
+        chunks: list[Chunk],
+        item_by_id: dict[str, SourceItem],
+        *,
+        top_k: int,
+    ) -> list[RetrievalResult]:
+        normalized_query = _normalize_exact(query)
+        if not normalized_query:
+            return []
+
+        exact_source_ids = {
+            item.source_item_id
+            for item in items
+            if normalized_query in {
+                _normalize_exact(item.source_item_id),
+                _normalize_exact(item.source_id),
+                _normalize_exact(item.title),
+                _normalize_exact(item.url or ""),
+            }
+        }
+        exact_results = [
+            self._result_for_chunk(
+                chunk,
+                item_by_id[chunk.source_item_id],
+                1.0,
+                {"exact_source": 1.0, "lexical": 0.0, "vector": 0.0},
+            )
+            for chunk in chunks
+            if chunk.source_item_id in exact_source_ids
+        ]
+        return exact_results[:top_k]
 
     def _result_for_chunk(self, chunk: Chunk, item: SourceItem, score: float, score_debug: dict[str, float]) -> RetrievalResult:
         citation = {
@@ -174,6 +212,25 @@ class RetrievalService:
         for result in merged:
             result.score = scores.get(result.result_id, result.score)
         return sorted(merged, key=lambda result: result.score, reverse=True)[:top_k]
+
+    def _merge_exact_then_rrf(
+        self,
+        exact_ranked: list[RetrievalResult],
+        lexical_ranked: list[RetrievalResult],
+        vector_ranked: list[RetrievalResult],
+        *,
+        top_k: int,
+    ) -> list[RetrievalResult]:
+        if not exact_ranked:
+            return self._rrf_merge(lexical_ranked, vector_ranked, top_k=top_k)
+
+        exact_ids = {result.result_id for result in exact_ranked}
+        remainder = self._rrf_merge(
+            [result for result in lexical_ranked if result.result_id not in exact_ids],
+            [result for result in vector_ranked if result.result_id not in exact_ids],
+            top_k=max(top_k - len(exact_ranked), 0),
+        )
+        return [*exact_ranked, *remainder][:top_k]
 
     def _hypergraph_context(
         self,
@@ -262,3 +319,7 @@ def _conversation_message_ids(item: SourceItem, text: str) -> list[str]:
         if message_id and str(message_id) in text:
             message_ids.append(str(message_id))
     return message_ids
+
+
+def _normalize_exact(value: str) -> str:
+    return value.strip().lower()

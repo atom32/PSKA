@@ -39,7 +39,7 @@ def _store() -> InMemoryKnowledgeStore:
     return store
 
 
-def _payload(source_id: str, text: str) -> dict:
+def _payload(source_id: str, text: str, *, title: str | None = None, url: str | None = None) -> dict:
     return {
         "schema_version": "pska.channel_ingest.v1",
         "source_channel": "manual",
@@ -48,7 +48,8 @@ def _payload(source_id: str, text: str) -> dict:
         "owner_user_id": "user_primary",
         "space_id": "private_primary",
         "visibility": "private",
-        "title": source_id,
+        "title": title or source_id,
+        "url": url,
         "content": {"text": text},
     }
 
@@ -104,3 +105,34 @@ def test_retrieval_uses_vector_results_when_lexical_has_no_match() -> None:
     assert response.score_debug["vector_enabled"] is True
     assert response.score_debug["vector_candidates"] == 1
     assert response.results[0].score_debug["vector_rank"] == 1.0
+
+
+def test_retrieval_prefers_exact_url_and_title_matches() -> None:
+    store = _store()
+    ingest = IngestService(store)
+    ingest.ingest_channel_payload(
+        _payload(
+            "noisy-note",
+            "browser browser browser exact target phrase appears many times",
+            title="Noisy note",
+        )
+    )
+    ingest.ingest_channel_payload(
+        _payload(
+            "target-note",
+            "short body",
+            title="Exact Target",
+            url="https://example.test/exact-target",
+        )
+    )
+    user = store.get_user("user_primary")
+
+    title_response = RetrievalService(store, ACLService(store)).search("Exact Target", user, top_k=1)
+    url_response = RetrievalService(store, ACLService(store)).search("https://example.test/exact-target", user, top_k=1)
+
+    assert title_response.results[0].title == "Exact Target"
+    assert title_response.score_debug["ranker"] == "exact_source"
+    assert title_response.score_debug["exact_candidates"] == 1
+    assert title_response.results[0].score_debug["exact_source"] == 1.0
+    assert url_response.results[0].title == "Exact Target"
+    assert url_response.score_debug["ranker"] == "exact_source"
