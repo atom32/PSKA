@@ -59,6 +59,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--top-k", type=int, default=5)
     parser.add_argument("--api-port", type=int, default=8767)
     parser.add_argument("--fastreact-timeout", type=int, default=180)
+    parser.add_argument("--fastreact-mode", choices=["auto", "api", "local"], default="auto")
+    parser.add_argument("--fastreact-api-url", default=os.environ.get("FASTREACT_API_URL", "http://127.0.0.1:8000"))
+    parser.add_argument("--fastreact-model", default=os.environ.get("FASTRACT_MODEL", ""))
     parser.add_argument("--embedding-provider", default=os.environ.get("PSKA_EMBEDDING_PROVIDER", "disabled"))
     parser.add_argument("--embedding-model", default=os.environ.get("PSKA_EMBEDDING_MODEL", "BAAI/bge-m3"))
     parser.add_argument("--embedding-dimensions", type=int, default=int(os.environ.get("PSKA_EMBEDDING_DIMENSIONS", "1024")))
@@ -496,6 +499,78 @@ class ReportRunner:
             stop_process(process)
 
     def run_fastreact_question(self, question: str) -> dict[str, Any]:
+        if self.args.fastreact_mode in {"auto", "api"}:
+            api_result = self.run_fastreact_api_question(question, required=self.args.fastreact_mode == "api")
+            if api_result["status"] == "passed" or self.args.fastreact_mode == "api":
+                return api_result
+            self.pipeline_steps.append(
+                {
+                    "name": f"fastreact_api_fallback:{question[:30]}",
+                    "status": "skipped",
+                    "reason": api_result.get("error", "Fastreact API unavailable"),
+                }
+            )
+        return self.run_fastreact_local_question(question)
+
+    def run_fastreact_api_question(self, question: str, *, required: bool) -> dict[str, Any]:
+        started = time.time()
+        try:
+            payload = self._fastreact_api_payload(question)
+            request = Request(
+                f"{self.args.fastreact_api_url.rstrip('/')}/v1/chat/completions",
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"content-type": "application/json"},
+            )
+            with urlopen(request, timeout=self.args.fastreact_timeout) as response:
+                events = parse_sse_events(response.read().decode("utf-8"))
+            agent_answer = fastreact_agent_answer({"events": events})
+            normalized_payload = {"events": events, "agent_answer": agent_answer, "transport": "api"}
+            status = "passed" if agent_answer else "failed" if required else "skipped"
+            self.pipeline_steps.append(
+                {
+                    "name": f"fastreact_api:{question[:30]}",
+                    "status": status,
+                    "duration_seconds": round(time.time() - started, 2),
+                    "endpoint": "/v1/chat/completions",
+                }
+            )
+            return {
+                "question": question,
+                "status": status,
+                "transport": "api",
+                "direct_mcp_status": "unknown",
+                "full_agent_status": "passed" if agent_answer else "failed",
+                "payload": normalized_payload,
+            }
+        except Exception as exc:  # noqa: BLE001
+            status = "failed" if required else "skipped"
+            self.pipeline_steps.append(
+                {
+                    "name": f"fastreact_api:{question[:30]}",
+                    "status": status,
+                    "duration_seconds": round(time.time() - started, 2),
+                    "error": str(exc),
+                }
+            )
+            return {"question": question, "status": status, "transport": "api", "error": str(exc), "payload": {}}
+
+    def _fastreact_api_payload(self, question: str) -> dict[str, Any]:
+        prompt = (
+            "You are running as the Fastreact agentic service layer for PSKA. "
+            "Use the configured PSKA MCP tools when available, cite evidence, and return the final answer."
+        )
+        payload = {
+            "messages": [
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": question},
+            ],
+            "stream": True,
+        }
+        if self.args.fastreact_model:
+            payload["model"] = self.args.fastreact_model
+        return payload
+
+    def run_fastreact_local_question(self, question: str) -> dict[str, Any]:
         if not FASTREACT_SRC.exists():
             result = {"question": question, "status": "failed", "error": f"Fastreact source not found: {FASTREACT_SRC}"}
             self.pipeline_steps.append({"name": f"fastreact:{question[:30]}", **result})
@@ -690,6 +765,24 @@ def parse_json_from_stdout(stdout: str) -> dict[str, Any]:
     raise json.JSONDecodeError("No JSON object found in stdout", text, 0)
 
 
+def parse_sse_events(text: str) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    for block in text.split("\n\n"):
+        data_lines = [line.removeprefix("data:").strip() for line in block.splitlines() if line.startswith("data:")]
+        if not data_lines:
+            continue
+        data = "\n".join(data_lines).strip()
+        if not data or data == "[DONE]":
+            continue
+        try:
+            event = json.loads(data)
+        except json.JSONDecodeError:
+            event = {"type": "invalid_sse_json", "content": data}
+        if isinstance(event, dict):
+            events.append(event)
+    return events
+
+
 def fastreact_payload_passed(returncode: int, payload: dict[str, Any]) -> bool:
     return returncode == 0 and bool(fastreact_direct_answer(payload)) and bool(fastreact_agent_answer(payload))
 
@@ -879,9 +972,9 @@ def default_technical_paths() -> list[dict[str, str]]:
         },
         {
             "name": "Fastreact full Agent",
-            "entrypoint": "Fastreact agent with PSKA MCP server",
-            "purpose": "Validate external agent planning, tool calls, tool results, and final answer.",
-            "difference": "Includes full agent event stream and model behavior.",
+            "entrypoint": "Fastreact HTTP /v1/chat/completions SSE with PSKA MCP server configured by Fastreact",
+            "purpose": "Validate external agent service planning, tool calls, tool results, and final answer.",
+            "difference": "Uses Fastreact as an agentic service boundary; local import is only a fallback for offline reports.",
         },
     ]
 

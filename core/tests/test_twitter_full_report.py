@@ -13,6 +13,7 @@ from scripts.twitter_full_report import (
     fastreact_event_stream,
     fastreact_event_stream_section,
     parse_json_from_stdout,
+    parse_sse_events,
     fastreact_payload_passed,
     provenance_section,
     recovery_section,
@@ -84,6 +85,19 @@ def test_parse_json_from_stdout_uses_last_json_line() -> None:
     assert payload == {"ok": True}
 
 
+def test_parse_sse_events_reads_fastreact_agent_events() -> None:
+    events = parse_sse_events(
+        'data: {"type":"tool_call","tool_name":"pska_search","content":""}\n\n'
+        'data: {"type":"session_end","content":"done"}\n\n'
+        "data: [DONE]\n\n"
+    )
+
+    assert events == [
+        {"type": "tool_call", "tool_name": "pska_search", "content": ""},
+        {"type": "session_end", "content": "done"},
+    ]
+
+
 def test_fastreact_payload_requires_direct_and_full_agent_answers() -> None:
     payload = {
         "direct_agentic_search": {"answer": "direct"},
@@ -125,10 +139,13 @@ def test_fastreact_event_stream_normalizes_tools_and_final_answer() -> None:
 
 
 def test_report_parser_accepts_stage_selection_flags() -> None:
-    args = build_parser().parse_args(["--skip-import", "--only-fastreact", "--run-id", "run_test"])
+    args = build_parser().parse_args(
+        ["--skip-import", "--only-fastreact", "--run-id", "run_test", "--fastreact-mode", "api"]
+    )
     assert args.skip_import is True
     assert args.only_fastreact is True
     assert args.run_id == "run_test"
+    assert args.fastreact_mode == "api"
 
 
 def test_report_renders_technical_paths_acceptance_and_reviews() -> None:

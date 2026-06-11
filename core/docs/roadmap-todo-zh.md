@@ -116,6 +116,7 @@ PSKA 已完成初期 MVP 闭环：Twitter/X 归档、Postgres 存储、LLM 提�
 已完成：
 
 - 报告里明确显示 PSKA direct、MCP direct、Fastreact full Agent 的技术路径和差异。
+- PSKA full report 以 Fastreact HTTP `/v1/chat/completions` SSE API 为优先集成方式，本地 import 只作为 offline fallback。
 - Fastreact event stream 第一版展示 tool call、tool result、final answer。
 - 报告自动标出失败步骤、skipped 阶段、LLM/schema repair 事件、embedding 状态和耗时瓶颈排行。
 - 支持阶段选择参数：`--skip-import`、`--only-fastreact`。
