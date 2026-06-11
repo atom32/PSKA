@@ -68,6 +68,25 @@ def test_cli_accepts_job_commands() -> None:
     assert retry.job_id == "job_123"
 
 
+def test_cli_accepts_review_commands() -> None:
+    approve = build_parser().parse_args(
+        ["review-approve", "rev_123", "--actor-user-id", "user_primary", "--reason", "ok", "--apply"]
+    )
+    assert approve.command == "review-approve"
+    assert approve.review_item_id == "rev_123"
+    assert approve.actor_user_id == "user_primary"
+    assert approve.reason == "ok"
+    assert approve.apply is True
+
+    reject = build_parser().parse_args(["review-reject", "rev_123", "--reason", "no"])
+    assert reject.command == "review-reject"
+    assert reject.reason == "no"
+
+    apply = build_parser().parse_args(["review-apply", "rev_123"])
+    assert apply.command == "review-apply"
+    assert apply.review_item_id == "rev_123"
+
+
 def test_cli_accepts_job_worker_commands() -> None:
     run = build_parser().parse_args(["job-run", "--until-empty", "--limit", "0"])
     worker = build_parser().parse_args(

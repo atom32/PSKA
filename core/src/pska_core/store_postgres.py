@@ -17,6 +17,7 @@ from pska_core.models import (
     HyperedgeMember,
     Job,
     JobEvent,
+    AuditEvent,
     ReviewItem,
     SourceItem,
     TeamMembership,
@@ -268,20 +269,112 @@ class PostgresKnowledgeStore:
                 ),
             )
 
+    def get_review_item(self, review_item_id: str) -> ReviewItem:
+        with self.connect() as conn:
+            row = conn.execute("select * from review_items where review_item_id = %s", (review_item_id,)).fetchone()
+        if not row:
+            raise KeyError(review_item_id)
+        return self._review_item_from_row(row)
+
     def list_review_items(self) -> list[ReviewItem]:
         with self.connect() as conn:
             rows = conn.execute("select * from review_items order by created_at, review_item_id").fetchall()
+        return [self._review_item_from_row(row) for row in rows]
+
+    def update_review_item_status(self, review_item_id: str, status: str) -> ReviewItem:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                update review_items
+                set status = %s, updated_at = now()
+                where review_item_id = %s
+                returning *
+                """,
+                (status, review_item_id),
+            ).fetchone()
+        if not row:
+            raise KeyError(review_item_id)
+        return self._review_item_from_row(row)
+
+    def add_audit_event(self, event: AuditEvent) -> AuditEvent:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                insert into audit_events(audit_event_id, actor_user_id, action, target_type, target_id, decision, metadata)
+                values (%s, %s, %s, %s, %s, %s, %s)
+                on conflict (audit_event_id) do nothing
+                """,
+                (
+                    event.audit_event_id,
+                    event.actor_user_id,
+                    event.action,
+                    event.target_type,
+                    event.target_id,
+                    event.decision,
+                    Jsonb(to_jsonable(event.metadata)),
+                ),
+            )
+        return event
+
+    def list_audit_events(self, target_type: str | None = None, target_id: str | None = None) -> list[AuditEvent]:
+        clauses: list[str] = []
+        params: list[str] = []
+        if target_type is not None:
+            clauses.append("target_type = %s")
+            params.append(target_type)
+        if target_id is not None:
+            clauses.append("target_id = %s")
+            params.append(target_id)
+        where = f"where {' and '.join(clauses)}" if clauses else ""
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"select * from audit_events {where} order by created_at, audit_event_id",
+                tuple(params),
+            ).fetchall()
         return [
-            ReviewItem(
-                review_item_id=row["review_item_id"],
-                owner_user_id=row["owner_user_id"],
-                review_type=ReviewType(row["review_type"]),
-                title=row["title"],
-                proposal=dict(row["proposal"] or {}),
-                status=row["status"],
+            AuditEvent(
+                audit_event_id=row["audit_event_id"],
+                actor_user_id=row["actor_user_id"],
+                action=row["action"],
+                target_type=row["target_type"],
+                target_id=row["target_id"],
+                decision=row["decision"],
+                metadata=dict(row["metadata"] or {}),
             )
             for row in rows
         ]
+
+    def update_visibility(
+        self,
+        *,
+        target_type: str,
+        target_id: str,
+        visibility: str,
+        visible_team_ids: list[str],
+    ) -> None:
+        tables = {
+            "source_item": ("source_items", "source_item_id"),
+            "document": ("documents", "document_id"),
+            "chunk": ("chunks", "chunk_id"),
+            "entity": ("entities", "entity_id"),
+            "hyperedge": ("hyperedges", "hyperedge_id"),
+        }
+        table_info = tables.get(target_type)
+        if table_info is None:
+            raise ValueError(f"Unsupported visibility target_type: {target_type}")
+        table, id_column = table_info
+        with self.connect() as conn:
+            row = conn.execute(
+                f"""
+                update {table}
+                set visibility = %s, visible_team_ids = %s
+                where {id_column} = %s
+                returning {id_column}
+                """,
+                (visibility, visible_team_ids, target_id),
+            ).fetchone()
+        if not row:
+            raise KeyError(target_id)
 
     def list_source_items(self) -> list[SourceItem]:
         with self.connect() as conn:
@@ -662,6 +755,16 @@ class PostgresKnowledgeStore:
             updated_at=row["updated_at"],
             started_at=row["started_at"],
             finished_at=row["finished_at"],
+        )
+
+    def _review_item_from_row(self, row: dict[str, Any]) -> ReviewItem:
+        return ReviewItem(
+            review_item_id=row["review_item_id"],
+            owner_user_id=row["owner_user_id"],
+            review_type=ReviewType(row["review_type"]),
+            title=row["title"],
+            proposal=dict(row["proposal"] or {}),
+            status=row["status"],
         )
 
     def _job_event_from_row(self, row: dict[str, Any]) -> JobEvent:

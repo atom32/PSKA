@@ -14,6 +14,7 @@ from pska_core.ingest import IngestService
 from pska_core.jobs import JobService
 from pska_core.models import ChannelIngestPayload
 from pska_core.retrieval import RetrievalService
+from pska_core.review import ReviewService
 from pska_core.serde import to_jsonable
 from pska_core.store_postgres import PostgresKnowledgeStore
 
@@ -27,6 +28,7 @@ class PSKAApi:
         self.ingest = IngestService(self.store, embedding_provider=embedding_provider)
         self.extraction = ExtractionService(self.store)
         self.jobs = JobService(self.store)
+        self.reviews = ReviewService(self.store)
 
     def health(self) -> dict[str, Any]:
         return {"ok": True, "database": self.store.database_url}
@@ -74,6 +76,27 @@ class PSKAApi:
 
     def review_items(self) -> dict[str, Any]:
         return {"review_items": to_jsonable(self.store.list_review_items())}
+
+    def approve_review_item(self, review_item_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        actor_user_id = str(payload.get("actor_user_id") or "user_primary")
+        reason = str(payload.get("reason") or "")
+        if payload.get("apply"):
+            review_item = self.reviews.approve_and_apply(review_item_id, actor_user_id=actor_user_id, reason=reason)
+        else:
+            review_item = self.reviews.approve(review_item_id, actor_user_id=actor_user_id, reason=reason)
+        return {"review_item": to_jsonable(review_item)}
+
+    def reject_review_item(self, review_item_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        actor_user_id = str(payload.get("actor_user_id") or "user_primary")
+        reason = str(payload.get("reason") or "")
+        review_item = self.reviews.reject(review_item_id, actor_user_id=actor_user_id, reason=reason)
+        return {"review_item": to_jsonable(review_item)}
+
+    def apply_review_item(self, review_item_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        actor_user_id = str(payload.get("actor_user_id") or "user_primary")
+        reason = str(payload.get("reason") or "")
+        review_item = self.reviews.apply(review_item_id, actor_user_id=actor_user_id, reason=reason)
+        return {"review_item": to_jsonable(review_item)}
 
     def submit_job(self, payload: dict[str, Any]) -> dict[str, Any]:
         job = self.jobs.submit(
@@ -138,6 +161,15 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
                 return self._json(200, self.api.run_jobs(payload))
             if path == "/jobs/recover":
                 return self._json(200, self.api.recover_jobs(payload))
+            if path.startswith("/review-items/") and path.endswith("/approve"):
+                review_item_id = path.removeprefix("/review-items/").removesuffix("/approve")
+                return self._json(200, self.api.approve_review_item(review_item_id, payload))
+            if path.startswith("/review-items/") and path.endswith("/reject"):
+                review_item_id = path.removeprefix("/review-items/").removesuffix("/reject")
+                return self._json(200, self.api.reject_review_item(review_item_id, payload))
+            if path.startswith("/review-items/") and path.endswith("/apply"):
+                review_item_id = path.removeprefix("/review-items/").removesuffix("/apply")
+                return self._json(200, self.api.apply_review_item(review_item_id, payload))
             if path.startswith("/jobs/") and path.endswith("/retry"):
                 job_id = path.removeprefix("/jobs/").removesuffix("/retry")
                 return self._json(200, self.api.retry_job(job_id))

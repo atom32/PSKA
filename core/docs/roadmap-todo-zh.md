@@ -87,29 +87,27 @@ PSKA 已完成初期 MVP 闭环：Twitter/X 归档、Postgres 存储、LLM 提�
 - 单个 source LLM 失败不会让整个导入批次不可用。
 - 报告能展示 job timeline 和失败原因。
 
-### P0.3 Review / approval 工作流
+### P0.3 Review / approval 工作流（第一版已验收）
 
 目的：共享、敏感记忆、profile 更新、实体合并和删除不能直接落库生效。
 
-要做：
+- 已完成 review item 状态机：pending、approved、rejected、applied、expired。
+- 已增加 approve/reject/apply decision API 和 CLI。
+- team visibility 变更通过 share proposal review 显式 apply，不允许 LLM 建议直接共享。
+- 高敏 profile update 通过 review approval 后才写入 profile card。
+- 每次 approve/reject/apply/expire 都写入 audit event。
 
-- 完善 review item 状态机：pending、approved、rejected、applied、expired。
-- 增加 apply/reject decision API 和 CLI。
-- team visibility 变更必须走 review。
-- 高敏感 profile/memory 更新必须走 review。
-- 每个决策写入 audit event。
+当前基础：
 
-依赖：
-
-- 当前 `review_items` 和 `audit_events` 表。
+- `review_items` 和 `audit_events` 表。
 - 用户/team/visibility 模型。
 
 验收：
 
-- LLM 提出共享建议时只生成 review，不直接共享。
-- approval 后才改变 visibility 或写入 profile。
-- reject 后不改变知识对象。
-- HTML 报告展示 pending/approved/rejected review。
+- 已验收：LLM 提出共享建议时只生成 review，不直接共享。
+- 已验收：approval/apply 后才改变 visibility 或写入 profile。
+- 已验收：reject 后不改变知识对象。
+- 待接入报告侧：HTML 报告展示 pending/approved/rejected review。
 
 ### P0.4 Full report 改进为正式验收套件
 

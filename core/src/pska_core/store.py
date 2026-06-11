@@ -12,6 +12,7 @@ from pska_core.models import (
     HyperedgeMember,
     Job,
     JobEvent,
+    AuditEvent,
     ReviewItem,
     SourceItem,
     TeamMembership,
@@ -19,6 +20,7 @@ from pska_core.models import (
     UserProfileCard,
     utc_now,
 )
+from pska_core.enums import Visibility
 
 
 class KnowledgeStore(Protocol):
@@ -33,7 +35,19 @@ class KnowledgeStore(Protocol):
     def add_entity(self, entity: Entity) -> None: ...
     def add_hyperedge(self, hyperedge: Hyperedge, members: list[HyperedgeMember]) -> None: ...
     def add_review_item(self, review_item: ReviewItem) -> None: ...
+    def get_review_item(self, review_item_id: str) -> ReviewItem: ...
     def list_review_items(self) -> list[ReviewItem]: ...
+    def update_review_item_status(self, review_item_id: str, status: str) -> ReviewItem: ...
+    def add_audit_event(self, event: AuditEvent) -> AuditEvent: ...
+    def list_audit_events(self, target_type: str | None = None, target_id: str | None = None) -> list[AuditEvent]: ...
+    def update_visibility(
+        self,
+        *,
+        target_type: str,
+        target_id: str,
+        visibility: str,
+        visible_team_ids: list[str],
+    ) -> None: ...
     def list_entities(self) -> list[Entity]: ...
     def list_source_items(self) -> list[SourceItem]: ...
     def list_chunks_for_sources(self, source_item_ids: set[str]) -> list[Chunk]: ...
@@ -59,6 +73,7 @@ class InMemoryKnowledgeStore:
         self.hyperedges: dict[str, Hyperedge] = {}
         self.hyperedge_members: list[HyperedgeMember] = []
         self.review_items: dict[str, ReviewItem] = {}
+        self.audit_events: list[AuditEvent] = []
         self.jobs: dict[str, Job] = {}
         self.job_events: list[JobEvent] = []
 
@@ -104,8 +119,50 @@ class InMemoryKnowledgeStore:
     def add_review_item(self, review_item: ReviewItem) -> None:
         self.review_items[review_item.review_item_id] = review_item
 
+    def get_review_item(self, review_item_id: str) -> ReviewItem:
+        return self.review_items[review_item_id]
+
     def list_review_items(self) -> list[ReviewItem]:
         return list(self.review_items.values())
+
+    def update_review_item_status(self, review_item_id: str, status: str) -> ReviewItem:
+        review_item = self.review_items[review_item_id]
+        review_item.status = status
+        return review_item
+
+    def add_audit_event(self, event: AuditEvent) -> AuditEvent:
+        self.audit_events.append(event)
+        return event
+
+    def list_audit_events(self, target_type: str | None = None, target_id: str | None = None) -> list[AuditEvent]:
+        events = self.audit_events
+        if target_type is not None:
+            events = [event for event in events if event.target_type == target_type]
+        if target_id is not None:
+            events = [event for event in events if event.target_id == target_id]
+        return list(events)
+
+    def update_visibility(
+        self,
+        *,
+        target_type: str,
+        target_id: str,
+        visibility: str,
+        visible_team_ids: list[str],
+    ) -> None:
+        targets = {
+            "source_item": self.source_items,
+            "document": self.documents,
+            "chunk": self.chunks,
+            "entity": self.entities,
+            "hyperedge": self.hyperedges,
+        }
+        target_map = targets.get(target_type)
+        if target_map is None:
+            raise ValueError(f"Unsupported visibility target_type: {target_type}")
+        target = target_map[target_id]
+        target.visibility = Visibility(visibility)
+        target.visible_team_ids = list(visible_team_ids)
 
     def list_entities(self) -> list[Entity]:
         return list(self.entities.values())

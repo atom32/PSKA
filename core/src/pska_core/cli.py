@@ -23,6 +23,7 @@ from pska_core.mcp_server import MCPServer
 from pska_core.models import ChannelIngestPayload
 from pska_core.agentic import AgenticSearchService
 from pska_core.retrieval import RetrievalService
+from pska_core.review import ReviewService
 from pska_core.serde import dumps
 from pska_core.store_postgres import PostgresKnowledgeStore
 
@@ -119,6 +120,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     recover_parser = subparsers.add_parser("job-recover", help="Recover stale running jobs")
     recover_parser.add_argument("--max-age-seconds", type=int, default=3600)
+    review_approve_parser = subparsers.add_parser("review-approve", help="Approve a pending review item")
+    review_approve_parser.add_argument("review_item_id")
+    review_approve_parser.add_argument("--actor-user-id", default="user_primary")
+    review_approve_parser.add_argument("--reason", default="")
+    review_approve_parser.add_argument("--apply", action="store_true")
+
+    review_reject_parser = subparsers.add_parser("review-reject", help="Reject a pending review item")
+    review_reject_parser.add_argument("review_item_id")
+    review_reject_parser.add_argument("--actor-user-id", default="user_primary")
+    review_reject_parser.add_argument("--reason", default="")
+
+    review_apply_parser = subparsers.add_parser("review-apply", help="Apply an approved review item")
+    review_apply_parser.add_argument("review_item_id")
+    review_apply_parser.add_argument("--actor-user-id", default="user_primary")
+    review_apply_parser.add_argument("--reason", default="")
+
     return parser
 
 
@@ -163,6 +180,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         return job_retry(args)
     if args.command == "job-recover":
         return job_recover(args)
+    if args.command == "review-approve":
+        return review_approve(args)
+    if args.command == "review-reject":
+        return review_reject(args)
+    if args.command == "review-apply":
+        return review_apply(args)
     return 2
 
 
@@ -384,6 +407,47 @@ def job_recover(args: argparse.Namespace) -> int:
     store = PostgresKnowledgeStore(args.database_url)
     jobs = JobService(store).recover_stale(max_age_seconds=args.max_age_seconds)
     print(dumps({"recovered": jobs}))
+    return 0
+
+
+def review_approve(args: argparse.Namespace) -> int:
+    store = PostgresKnowledgeStore(args.database_url)
+    service = ReviewService(store)
+    if args.apply:
+        review_item = service.approve_and_apply(
+            args.review_item_id,
+            actor_user_id=args.actor_user_id,
+            reason=args.reason,
+        )
+    else:
+        review_item = service.approve(
+            args.review_item_id,
+            actor_user_id=args.actor_user_id,
+            reason=args.reason,
+        )
+    print(dumps({"review_item": review_item}))
+    return 0
+
+
+def review_reject(args: argparse.Namespace) -> int:
+    store = PostgresKnowledgeStore(args.database_url)
+    review_item = ReviewService(store).reject(
+        args.review_item_id,
+        actor_user_id=args.actor_user_id,
+        reason=args.reason,
+    )
+    print(dumps({"review_item": review_item}))
+    return 0
+
+
+def review_apply(args: argparse.Namespace) -> int:
+    store = PostgresKnowledgeStore(args.database_url)
+    review_item = ReviewService(store).apply(
+        args.review_item_id,
+        actor_user_id=args.actor_user_id,
+        reason=args.reason,
+    )
+    print(dumps({"review_item": review_item}))
     return 0
 
 
