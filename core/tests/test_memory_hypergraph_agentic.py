@@ -45,6 +45,7 @@ def test_high_sensitive_profile_update_creates_review_item() -> None:
 
     assert result.review_type == ReviewType.PROFILE_UPDATE
     assert result.status == "pending"
+    assert result.proposal["source_refs"][0]["message_id"] == "msg_2"
     assert store.review_items[result.review_item_id] == result
 
 

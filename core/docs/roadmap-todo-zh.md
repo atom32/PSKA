@@ -109,7 +109,7 @@ PSKA 已完成初期 MVP 闭环：Twitter/X 归档、Postgres 存储、LLM 提�
 - 已验收：reject 后不改变知识对象。
 - 待接入报告侧：HTML 报告展示 pending/approved/rejected review。
 
-### P0.4 Full report 改进为正式验收套件（第一版已验收）
+### P0.4 Full report 改进为正式验收套件（已验收）
 
 目的：把 `twitter_full_report.py` 从调试脚本升级成长期验收工具。
 
@@ -124,10 +124,7 @@ PSKA 已完成初期 MVP 闭环：Twitter/X 归档、Postgres 存储、LLM 提�
 - HTML 报告展示 review item 的 pending/approved/rejected/applied 等状态。
 - HTML 报告展示 source/session participant、时间、URL、hyperedge evidence 和 source_refs 的 provenance 视图。
 - 任一步失败仍可生成 HTML/JSON 的报告结构已由单元测试覆盖。
-
-仍待做：
-
-- LLM 提取 memory/profile/hyperedge 时保留 message provenance。
+- LLM/agent 写入 profile/hyperedge 时保留 source_refs/message provenance，并由测试覆盖。
 
 入口：
 

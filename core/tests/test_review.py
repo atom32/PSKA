@@ -44,6 +44,7 @@ def test_profile_update_applies_only_after_approval() -> None:
     assert len(store.profile_cards) == 1
     card = next(iter(store.profile_cards.values()))
     assert card.profile == {"communication": "concise"}
+    assert card.source_refs[0].message_id == "msg_2"
     assert [event.decision for event in store.list_audit_events("review_item", review.review_item_id)] == [
         "approved",
         "applied",
