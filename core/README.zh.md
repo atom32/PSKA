@@ -1,5 +1,7 @@
 # PSKA Core
 
+长期愿景见 [`docs/vision-zh.md`](docs/vision-zh.md)，下一阶段路线见 [`docs/roadmap-todo-zh.md`](docs/roadmap-todo-zh.md)。
+
 PSKA Core 负责私有优先的知识模型、ACL 规则、记忆对象、超图原语和检索接口。
 
 当前 MVP 状态跟踪在 [`docs/mvp-status.md`](docs/mvp-status.md) 中。

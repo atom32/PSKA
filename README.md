@@ -61,7 +61,7 @@ PSKA Core implements the knowledge model, storage, and services.
 - **LLM Integration**: Entity/hyperedge extraction, agentic search
 - **APIs**: CLI, HTTP, stdio MCP
 
-[→ PSKA Core README](core/README.md) | [→ MVP Status](core/docs/mvp-status.md) | [→ Roadmap TODO](core/docs/roadmap-todo-zh.md)
+[→ PSKA Core README](core/README.md) | [→ Vision](core/docs/vision-zh.md) | [→ MVP Status](core/docs/mvp-status.md) | [→ Roadmap TODO](core/docs/roadmap-todo-zh.md)
 
 ## Quick Start
 

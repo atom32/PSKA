@@ -1,313 +1,274 @@
 # PSKA Roadmap / TODO
 
-日期: 2026-06-10
+日期：2026-06-12
+
+长期愿景见 [vision-zh.md](vision-zh.md)。
 
 ## 当前判断
 
-PSKA 已完成初期 MVP 闭环：Twitter/X 归档、Postgres 存储、LLM 提取、轻量超图、ACL 优先检索、agentic QA、MCP、Fastreact 联动和 HTML 验收报告都已经跑通。
+PSKA 已完成初期 MVP 闭环：
 
-PSKA 与 FastReAct 的并行开发基线见 [fastreact-protocol-zh.md](fastreact-protocol-zh.md)。两边只通过 `/v1/chat/completions`、`/ready`、service token、`fastreact.agent_event.v1` 事件和 PSKA MCP tools 互通，不依赖对方内部对象。
+```text
+Twitter/X 归档 -> PostgreSQL + pgvector schema -> LLM 提取 -> 轻量超图
+-> ACL-first retrieval -> agentic QA -> CLI / HTTP API / stdio MCP
+-> FastReAct 通过服务边界调用 PSKA
+```
 
-下一阶段重点不是继续堆演示，而是把 MVP 变成可长期使用的家庭服务器系统。核心方向是：
+这证明了 PSKA 可以作为私有优先知识库运行，但还不是长期愿景里的 online personal context service。下一阶段主线应该从“单次导入和问答”转向：
 
-- 统一使用 Python 3.12 wrapper/venv，避免宿主 Python、FlagEmbedding、PyTorch 版本漂移影响可安装性。
-- 让检索质量真实提升，而不是依赖占位 lexical/semantic 评分。
-- 让导入、抽取、索引成为可恢复的后台任务。
-- 让用户可以审核、批准、撤销和理解 Agent 写入的知识。
-- 把对话、文件和未来 channel 都纳入同一数据/权限/记忆体系。
-- 给 PSKA 一个本地 UI，让系统可观察、可管理、可纠错。
+```text
+online service -> background jobs -> idle digest -> multi-source connectors -> proactive agentic service
+```
 
-## P0: 下一阶段必须优先做
+## 设计边界
 
-### P0.1 真实 embedding pipeline（已验收）
+- PSKA 是个人知识基础设施和机制层，拥有知识存储、ACL、connector、digest job、memory graph、review、jobs、citations 和 audit。
+- FastReAct 是 agentic 公用服务层，负责所有 agentic loop 行为：planning、工具编排、模型调用、session runtime、事件流和多步任务执行。
+- FastReAct 或其他 agentic layer 只能通过 PSKA HTTP API / MCP tools 使用 PSKA 能力，不能直接访问 PSKA DB，不能绕过 PSKA ACL。
+- Agent service 身份必须带 represented user / service identity / scope 访问 PSKA，权限判断由 PSKA 统一执行。
+- 长任务必须任务化，不能阻塞在线请求。
+- 所有 digest、memory 和主动建议都必须保留 source refs。
+- 未来其他系统接入 PSKA 时，也应复用同一套 API/MCP 契约，而不是依赖 FastReAct 或 PSKA 的内部实现。
 
-目的：让语义检索从 placeholder 变成真正可用的 hybrid retrieval。
+## P0: Online Service Foundation
 
-当前状态：已实现并完成本地验收。默认模型路线为本地 `BAAI/bge-m3`，schema 为 `vector(1024)`，提供导入时嵌入、批量 backfill、query embedding、Postgres/pgvector vector search 和 RRF 合并。真实模型运行需要安装 `FlagEmbedding`，本地 Python 3.12 wrapper 会安装 BGE-M3 推理依赖，并以 `--no-deps` 安装 `FlagEmbedding`，避免 `ir-datasets -> zlib-state` 在 macOS arm64 上的源码编译问题。
+目标：让 PSKA 从本地 CLI/MCP 工具变成可常驻、可健康检查、可被多个 client 依赖的 online service。
 
-验收记录（2026-06-11）：
+### P0.1 Service contract
 
-- `pska_smoke` 执行 `db-reset` 后应用 `002_bge_m3_embeddings.sql`，`chunks.embedding` 为 `vector(1024)`，pgvector 可用。
-- fresh import `~/Downloads/twitter_archive` 3 个 zip 时启用 `--embedding-provider bge-m3`，6/6 个 chunk 自动写入 `bge-m3 / BAAI/bge-m3 / 1024` embedding。
-- `embed-backfill --embedding-provider bge-m3` 对已嵌入数据幂等，重复运行 `embedded=0, failed=0`。
-- 概念查询在 `lexical_candidates=0` 时仍通过 vector 召回，`score_debug` 显示 `ranker=hybrid_rrf`、`vector_enabled=true`、`vector_candidates=6`。
-- 单元测试覆盖导入时嵌入、backfill 幂等和 vector-only retrieval debug；core `36 passed`，Twitter/X channel `9 passed`。
-
-要做：
-
-- 增加 embedding provider 配置，支持本地配置文件和环境变量。
-- 为 `chunks.embedding` 写入真实向量。
-- 增加批量 backfill/reindex 命令。
-- 搜索时使用 FTS + vector + RRF 合并。
-- 报告里显示 lexical/vector/combined 分数。
-
-依赖：
-
-- 现有 `chunks.embedding vector(1024)` schema。
-- LLM/API key 配置读取机制。
-
-验收：
-
-- 新导入文档自动生成 embedding。
-- 老数据可通过命令 backfill。
-- 概念查询不含精确关键词时也能召回相关 chunk。
-- E2E 报告显示 vector search 生效，而不是 `semantic_placeholder`。
-
-### P0.2 异步 job system（第一版已实现）
-
-目的：导入 zip、LLM 提取、embedding、报告生成都不应长期阻塞 CLI/API 请求。
-
-当前状态：已实现第一版 durable local job system。`jobs` / `job_events` 持久化任务和事件，CLI 提供 `job-submit`、`job-run`、`job-status`、`job-retry`、`job-recover`、`job-worker`，HTTP API 提供 `/jobs`、`/jobs/run`、`/jobs/recover`、`/jobs/{id}`、`/jobs/{id}/retry`。import、extract、embed、full report 均可作为 job 执行。`job-run --until-empty` 可一次性清空当前队列，`job-worker` 可常驻轮询执行；stale running job 可按 max age 恢复为 queued 或 failed。下一步可把 worker 接入 launchd/systemd 或 UI 控制台。
-
-验收记录（2026-06-11）：
-
-- `003_jobs.sql` 在 `pska_smoke` 上创建 `jobs` / `job_events`。
-- `job-submit extract_all` 可创建 queued job。
-- `job-run --limit 1` 可 claim 并执行 queued job，状态变为 `succeeded`，attempts 递增。
-- `job-run --until-empty` 可 drain 队列，`job-worker` 可按 poll interval 持续消费任务。
-- `job-recover` 可恢复中断后遗留的 stale running job，未超过 attempts 时重新排队，超过后标记 failed。
-- 单元测试覆盖 import/embed/extract job 重跑幂等：不会重复写入 source/document/chunk/entity/hyperedge/review item。
-- `job-status --job-id ...` 可查看 job 详情和事件时间线：queued、started、execute、succeeded。
-- 单元测试覆盖 job 成功、失败、手动 retry、full report job 执行器和 CLI parser；core `49 passed`，Twitter/X channel `9 passed`。
-
-要做：
-
-- 新增 `jobs` / `job_events` 表或等价任务存储。
-- 将 import、extract、embed、report 拆成可重试 job。
-- 每个 job 记录 status、started_at、finished_at、error、attempts。
-- CLI/API 能查看 job 状态。
-- 失败任务可重试，不重复写入 source/document/chunk/entity/hyperedge。
-
-依赖：
-
-- 当前 import idempotency。
-- LLM extraction schema repair telemetry。
+- 明确 PSKA online API：
+  - `GET /health`
+  - `GET /ready`
+  - `GET /index-status`
+  - `POST /search`
+  - `POST /agentic-search`
+  - `POST /ingest/channel-payload`
+  - `POST /jobs`
+  - `GET /jobs/{job_id}`
+  - `GET /review-items`
+  - `POST /review/{id}/approve`
+  - `POST /review/{id}/reject`
+- 为 FastReAct / 其他 agent 提供 HTTP MCP endpoint：
+  - `POST /mcp`
+  - JSON-RPC `initialize`
+  - JSON-RPC `tools/list`
+  - JSON-RPC `tools/call`
+- 产出 OpenAPI 或等价 contract 文档。
 
 验收：
 
-- 中断一次 extraction 后可恢复。
+- service 可常驻启动。
+- `/ready` 能报告 DB、migration、embedding、LLM、worker、index counts。
+- FastReAct 可通过 `transport=http` 使用 PSKA MCP。
+
+### P0.2 Auth and ACL request context
+
+- 定义请求身份：
+  - user token
+  - service token
+  - agent_service caller
+  - represented_user_id
+- API、MCP、job worker 使用统一 request context。
+- 所有 search、agentic-search、digest、review 查询都走 ACL-first。
+- source item 继承 connector 授权范围和 visibility。
+
+验收：
+
+- agent_service 没有 represented_user_id 时不能读私有知识。
+- represented_user_id 只能读该用户本来可见的内容。
+- public/private/team 三类 source item 有覆盖测试。
+
+### P0.3 Job system and workers
+
+- 新增或完善 `jobs` / `job_events` 表。
+- 将这些操作任务化：
+  - import
+  - extract
+  - embed
+  - digest
+  - report
+  - review apply
+- job 记录 status、started_at、finished_at、error、attempts、source refs。
+- 支持 retry、recover stale、until-empty worker。
+- 幂等写入 source/document/chunk/entity/hyperedge/memory。
+
+验收：
+
+- 中断 extraction 后可恢复。
 - 单个 source LLM 失败不会让整个导入批次不可用。
-- 报告能展示 job timeline 和失败原因。
+- API 提交 job 后立即返回 job id。
 
-### P0.3 Review / approval 工作流（第一版已验收）
+### P0.4 Background digest loop
 
-目的：共享、敏感记忆、profile 更新、实体合并和删除不能直接落库生效。
+目标：PSKA 提供 digest 机制、任务状态和受控工具；FastReAct worker 负责执行具体 agentic digest loop。
 
-- 已完成 review item 状态机：pending、approved、rejected、applied、expired。
-- 已增加 approve/reject/apply decision API 和 CLI。
-- team visibility 变更通过 share proposal review 显式 apply，不允许 LLM 建议直接共享。
-- 高敏 profile update 通过 review approval 后才写入 profile card。
-- 每次 approve/reject/apply/expire 都写入 audit event。
+PSKA 侧：
 
-当前基础：
+- `jobs` 类型支持 `digest`。
+- `POST /jobs` 可创建 digest job，支持 scope、source refs、priority、lease ttl。
+- `POST /jobs/{job_id}/lease` 原子领取任务，返回 represented user、scope、allowed tools 和 batch cursor。
+- `GET /digest/batches/{batch_id}` 返回待处理 source/chunk/context，但必须先经过 ACL 和 scope 过滤。
+- `POST /digest/candidates` 写入 summary、entity、relationship、event、project、person、place、memory candidates。
+- `POST /review-items` 写入需要用户确认的摘要、提醒或 action candidate。
+- `POST /jobs/{job_id}/complete` 和 `POST /jobs/{job_id}/fail` 支持幂等完成、失败、retry/backoff。
+- 所有候选结果必须带 source refs、confidence、producer、schema version、request id 和 audit event。
 
-- `review_items` 和 `audit_events` 表。
-- 用户/team/visibility 模型。
+FastReAct 侧：
 
-验收：
+- 增加 PSKA digest worker skill/workflow。
+- worker 从 PSKA lease job，不从 PSKA DB 取数据。
+- worker 调用 PSKA tools 获取上下文、执行 LLM 推理、写回 candidates/review items。
+- worker 输出 FastReAct agent event stream，PSKA 只保存必要 audit 和结果引用。
+- worker 失败时返回结构化错误，PSKA 决定 retry、降级或进入 review。
 
-- 已验收：LLM 提出共享建议时只生成 review，不直接共享。
-- 已验收：approval/apply 后才改变 visibility 或写入 profile。
-- 已验收：reject 后不改变知识对象。
-- 待接入报告侧：HTML 报告展示 pending/approved/rejected review。
+策略：
 
-### P0.4 Full report 改进为正式验收套件（已验收）
-
-目的：把 `twitter_full_report.py` 从调试脚本升级成长期验收工具。
-
-已完成：
-
-- 报告里明确显示 PSKA direct、MCP direct、Fastreact full Agent 的技术路径和差异。
-- PSKA full report 以 Fastreact HTTP `/v1/chat/completions` SSE API 为优先集成方式，本地 import 只作为 offline fallback。
-- Fastreact event stream 第一版展示 tool call、tool result、final answer。
-- 报告自动标出失败步骤、skipped 阶段、LLM/schema repair 事件、embedding 状态和耗时瓶颈排行。
-- 支持阶段选择参数：`--skip-import`、`--only-fastreact`。
-- HTML/JSON artifact 都写入 `technical_paths` 和 `acceptance_checks`。
-- 增加 run id 和历史报告目录，固定输出之外也会写入 `reports/runs/<run_id>/`。
-- HTML 报告展示 review item 的 pending/approved/rejected/applied 等状态。
-- HTML 报告展示 source/session participant、时间、URL、hyperedge evidence 和 source_refs 的 provenance 视图。
-- 任一步失败仍可生成 HTML/JSON 的报告结构已由单元测试覆盖。
-- LLM/agent 写入 profile/hyperedge 时保留 source_refs/message provenance，并由测试覆盖。
-
-入口：
-
-- `core/scripts/twitter_full_report.py`。
+- 新数据优先。
+- 低成本轻 digest 先行，高成本 LLM digest 延后。
+- backoff、quota 和 idle window 由 PSKA 调度策略控制。
+- 高影响 action 默认进入 review，不自动执行。
 
 验收：
 
-- 已验收：一次报告可以复盘 direct/API、MCP、Fastreact 三类关键路径。
-- 已验收：任一步失败或阶段跳过仍生成 HTML/JSON 结构。
-- 已验收：Fastreact event stream 展示 tool call、tool result、final answer。
-- 已验收：报告不泄露 API key/home path 的 scrubber 仍由测试覆盖。
+- 导入数据后 worker 能自动生成 digest candidates。
+- digest candidates 都带 source refs。
+- 低置信或高影响内容进入 review。
+- 停掉 FastReAct 后 PSKA service 仍能启动、检索和管理 job backlog。
+- 换成其他 agentic executor 时，只要实现同一套 job/tool contract，就能继续消费 PSKA digest job。
 
-### P1.1 Conversation ingestion（第一版已验收）
+### P0.5 Observability and operations
 
-目的：用户长期对话也应成为知识来源，不只依赖文件和 Twitter/X。
-
-要做：
-
-- 已定义 conversation/message channel payload adapter。
-- 已支持会话、消息、参与者、时间、工具调用、引用来源进入 payload metadata/content。
-- 已支持对话通过现有 ingest 进入 source_items/documents/chunks。
-- 已支持对话抽取 review item 时保留 message provenance。
-- 已支持 conversation 检索 citation 返回具体 message_ids。
-
-验收：
-
-- 已验收：一段对话可导入为 source/document/chunk。
-- 已验收：用户偏好可从对话中生成 review item，并引用具体 message id。
-- 已验收：检索/回答链路可引用具体 conversation message。
-
-### P1.2 Profile card 与 agent memory 生命周期（proposal/API 第一版已实现）
-
-目的：让 Agent 对用户的长期理解可见、可改、可遗忘。
-
-要做：
-
-- 已提供 profile card update proposal 生成入口，并接入 API/CLI 与 review apply。
-- Memory Agent 管理 working/episodic/semantic/procedural/profile 分层。
-- 已增加 memory confidence、last_verified_at、decay_policy 更新逻辑。
-- 用户可以 approve/reject/forget memory（review approve/reject 已有；forget memory 第一版已实现）。
+- API/worker 日志包含 request id、job id、source id。
+- 提供 basic metrics：
+  - index counts
+  - pending/running/failed jobs
+  - digest backlog
+  - embedding coverage
+  - last successful connector scan
+- 提供 manual：
+  - 本地启动
+  - service 启动
+  - worker 启动
+  - FastReAct HTTP MCP 配置
+  - 常见故障
 
 验收：
 
-- Agent 不能直接把高敏感事实写入 profile。
-- 所有 profile 更新有 source_refs。
-- 低置信/过期 memory 不自动提升为 profile。
+- 用户能用一组命令启动 PSKA service + worker。
+- 失败时能从 `/ready` 和 job status 定位问题。
 
-### P1.3 Retrieval quality upgrade
+## P1: Connector Architecture
 
-目的：让 RAG 和 GraphRAG 在真实问题上更稳。
+目标：把 Twitter/X 从一个特例变成 connector 体系中的一个实现。
 
-要做：
+### P1.1 Connector contract
 
-- 加入 reranker。
-- 支持 query rewrite 和多轮检索策略。
-- 已支持 graph-global 查询第一版，不再只靠 chunk 命中触发一跳图扩展。
-- 增加 conflict search。
-- 已实现文件/URL/标题精确查找与 RAG 分流第一版。
+- 定义 connector 输出：
+  - connector_id
+  - external_id
+  - source_uri
+  - title
+  - body / artifact refs
+  - timestamps
+  - owner_user_id
+  - visibility
+  - permission metadata
+  - content hash
+- 支持 scan cursor 和增量同步。
+- 支持 connector-level enable/disable 和授权范围。
 
-验收：
+### P1.2 Files connector
 
-- “列出最重要实体和关系”不再因为 chunk 检索 miss 而失败。
-- exact URL/title/person 查询稳定命中。
-- 概念查询能召回跨文档证据。
+文件是 PSKA 最基础的管理目标。
 
-### P1.4 Local management UI
+- 本机目录授权。
+- 文件 metadata 扫描。
+- 文本抽取。
+- content hash 去重。
+- 文件移动/改名检测。
+- ignore rules。
 
-目的：没有 UI，PSKA 很难长期使用和维护。
+### P1.3 Browser and web connector
 
-要做：
+- 当前页面保存。
+- 书签/阅读列表导入。
+- 网页正文抽取。
+- source refs 指向 URL 和 capture time。
 
-- 本地控制台显示 source、documents、chunks、entities、hyperedges。
-- Review queue 页面支持 approve/reject。
-- Profile/memory 页面支持查看、编辑、遗忘。
-- Search/QA 页面显示 answer、citations、graph context。
-- System health 页面显示 jobs、LLM repair、失败任务、索引状态。
+### P1.4 Git repo connector
 
-验收：
+- repo metadata、commit、branch、tag。
+- README/docs/issues/PR 本地或远端摘要。
+- 项目实体和时间线。
 
-- 用户无需看数据库即可理解系统状态。
-- 可在 UI 中完成 review 决策。
-- 可从答案跳回 source/document/chunk/artifact。
+### P1.5 Mail, photos, NAS, Home Assistant, conversations
 
-### P1.5 Channel ingestion framework
+按授权范围逐步接入，先 contract 后实现。
 
-目的：未来不止 Twitter/X，要接文件、网页、浏览器剪藏、对话等来源。
+## P2: Memory Model and Retrieval Quality
 
-要做：
+- 强化 people/project/place/event/timeline schema。
+- 将 digest candidates 转为 reviewable memory。
+- 改进 hybrid retrieval：
+  - exact source
+  - lexical
+  - vector
+  - graph one-hop
+  - recency
+  - source authority
+- 明确 gap/conflict/sensitivity 输出。
+- 支持 profile context 和 memory context 的可解释引用。
 
-- 抽象 channel payload validation。
-- 每个 channel 有 schema version、source_channel、artifact policy。
-- 插件/CLI 统一使用 `pska.archive.v2` 或 channel payload。
-- 增加 channel registry 和 importer registry。
+## P3: Proactive Agentic Service
 
-验收：
+目标：PSKA 不只被动回答，也能主动服务。
 
-- 新增一个 channel 不需要改核心 ingest 流程。
-- source_channel 可以驱动不同 extraction prompt 和 artifact 展示。
-
-## P2: 生产化和高级智能
-
-### P2.1 Audit coverage
-
-目的：所有写入、共享、删除、profile/memory 变更都可追溯。
-
-要做：
-
-- 所有 mutating API 写 audit_events。
-- 报告展示最近 audit 摘要。
-- 支持按用户/source/review item 查询审计。
-
-验收：
-
-- 任一重要状态变化都能追到 actor、time、before/after、reason。
-
-### P2.2 Backup / export / restore
-
-目的：家庭服务器必须能备份和恢复。
-
-要做：
-
-- PostgreSQL dump 脚本。
-- Archive artifact 校验。
-- JSON export for selected user/team/space。
-- Restore smoke。
+- 每日/每周 briefing。
+- 项目雷达。
+- 文件整理建议。
+- 邮件/对话待办候选。
+- 照片/事件 digest。
+- 关系和上下文提醒。
+- 主动事件统一进入 notification/review channel。
 
 验收：
 
-- 新机器可从 backup 恢复 pska_smoke/pska。
-- artifact hash 校验能发现丢失文件。
+- 主动建议不直接执行高影响动作。
+- 每条建议可追溯 source refs。
+- 用户可以 approve/reject/snooze。
 
-### P2.3 Multi-user / team hardening
+## P4: Product UI
 
-目的：多用户和 team 不是只在 schema 里存在，要实际可靠。
+- Review console。
+- Source/connector 管理。
+- Job dashboard。
+- Search and citation viewer。
+- Memory graph explorer。
+- Proactive briefing inbox。
 
-要做：
+## FastReAct Integration Track
 
-- 用户切换和 represented_user_id 测试。
-- team membership 管理。
-- agent_service 不能绕过 ACL。
-- team-visible 数据泄露测试。
+FastReAct 仍然是重要消费者，但不应主导 PSKA 架构。
 
-验收：
+近期目标：
 
-- 私有内容只对 owner/admin 可见。
-- team 内容只对 selected teams 可见。
-- hypergraph expansion 不泄露 private/team-restricted 节点。
+- 保持当前 stdio MCP 可用。
+- 增加 PSKA HTTP MCP endpoint 后，让 FastReAct 通过 `transport=http` 使用 PSKA。
+- FastReAct service auth 与 PSKA service auth 分离。
+- FastReAct 不直接访问 PSKA DB。
 
-### P2.4 HippoRAG / GraphRAG v2
+相关文档：
 
-目的：在轻量超图基础上探索更强的图检索。
+- [fastreact-protocol-zh.md](fastreact-protocol-zh.md)
+- [fastreact-pska-real-integration-manual-zh.md](fastreact-pska-real-integration-manual-zh.md)
 
-要做：
+## 当前优先级建议
 
-- 在现有 entities/hyperedges 上增加 graph algorithms。
-- 评估 PPR、recognition memory、open KG merge。
-- 保持 source-grounded，不能让图谱变成无证据幻觉层。
+下一步优先做：
 
-验收：
+1. P0.1 Service contract。
+2. P0.2 Auth and ACL request context。
+3. P0.3 Job system and workers。
+4. P0.4 Background digest loop。
 
-- 图检索能改善多跳问题。
-- 每个图结论仍可追溯到 source_refs。
-
-## 当前风险清单
-
-- LLM 抽取质量不稳定：需要更强 schema constraints、prompt versioning 和 eval dataset。
-- 检索仍偏弱：embedding/rerank 未完成前，复杂问题会 miss。
-- 同步 LLM 调用太慢：必须 job 化和缓存。
-- Review 未产品化：共享/记忆/profile 仍缺少可操作界面。
-- Fastreact full Agent 依赖模型配置：报告已修复 key/model/base_url 注入，但长期应有 config health check。
-- HTML 报告很有用，但不是 UI：不能替代日常管理控制台。
-
-## 建议执行顺序
-
-1. P0.1 embedding pipeline。
-2. P0.2 job system。
-3. P0.3 review approval。
-4. P1.3 retrieval quality upgrade。
-5. P1.1 conversation ingestion。
-6. P1.2 profile/memory lifecycle。
-7. P1.4 local UI。
-
-理由：先解决“搜得准”和“跑得稳”，再解决“记得住”和“管得好”，最后做 UI 承载日常使用。
+这些完成后，PSKA 才真正从“可用 MVP”进入“可常驻、可主动、可扩展的数据底座”。
