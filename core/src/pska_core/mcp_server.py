@@ -7,6 +7,8 @@ from typing import Any
 
 from pska_core.acl import ACLService
 from pska_core.agentic import AgenticSearchService
+from pska_core.auth import RequestContext
+from pska_core.candidates import CandidateWriteService
 from pska_core.embeddings import EmbeddingConfig, build_embedding_provider
 from pska_core.extraction import ExtractionService
 from pska_core.ingest import IngestService
@@ -72,6 +74,37 @@ TOOLS = [
         "description": "List PSKA review items.",
         "inputSchema": {"type": "object", "properties": {}, "required": []},
     },
+    {
+        "name": "pska_write_candidates",
+        "description": "Write Fastreact-generated PSKA candidates with required source refs.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "owner_user_id": {"type": "string"},
+                "job_id": {"type": "string"},
+                "request_id": {"type": "string"},
+                "source_refs": {"type": "array", "items": {"type": "object"}},
+                "entities": {"type": "array", "items": {"type": "object"}},
+                "hyperedges": {"type": "array", "items": {"type": "object"}},
+                "review_items": {"type": "array", "items": {"type": "object"}},
+                "memory_candidates": {"type": "array", "items": {"type": "object"}},
+            },
+            "required": ["source_refs"],
+        },
+    },
+    {
+        "name": "pska_job_context",
+        "description": "Return source/chunk context for a PSKA job within the represented user's scope.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "job_id": {"type": "string"},
+                "user_id": {"type": "string", "default": "user_primary"},
+                "represented_user_id": {"type": "string"},
+            },
+            "required": ["job_id"],
+        },
+    },
 ]
 
 
@@ -88,6 +121,7 @@ class MCPServer:
         self.agentic = AgenticSearchService(self.retrieval, llm=llm)
         self.ingest = IngestService(self.store, embedding_provider=embedding_provider)
         self.extraction = ExtractionService(self.store, llm=llm)
+        self.candidates = CandidateWriteService(self.store)
 
     def run(self) -> int:
         for line in sys.stdin:
@@ -107,7 +141,7 @@ class MCPServer:
                 self.write(self.error(request_id, -32000, f"{type(exc).__name__}: {exc}"))
         return 0
 
-    def handle(self, request: dict[str, Any]) -> dict[str, Any] | None:
+    def handle(self, request: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any] | None:
         method = request.get("method")
         request_id = request.get("id")
         if method == "initialize":
@@ -125,10 +159,11 @@ class MCPServer:
             return self.result(request_id, {"tools": TOOLS})
         if method == "tools/call":
             params = request.get("params") or {}
-            return self.result(request_id, self.call_tool(params.get("name"), params.get("arguments") or {}))
+            return self.result(request_id, self.call_tool(params.get("name"), params.get("arguments") or {}, context=context))
         return self.error(request_id, -32601, f"Unknown method: {method}")
 
-    def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    def call_tool(self, name: str, arguments: dict[str, Any], *, context: RequestContext | None = None) -> dict[str, Any]:
+        arguments = context.apply_to_payload(arguments) if context else arguments
         if name == "pska_search":
             payload = self.pska_search(arguments)
         elif name == "pska_agentic_search":
@@ -141,6 +176,10 @@ class MCPServer:
             payload = self.pska_extract_all(arguments)
         elif name == "pska_review_items":
             payload = self.pska_review_items()
+        elif name == "pska_write_candidates":
+            payload = self.pska_write_candidates(arguments)
+        elif name == "pska_job_context":
+            payload = self.pska_job_context(arguments)
         else:
             raise ValueError(f"Unknown tool: {name}")
         return {"content": [{"type": "text", "text": json.dumps(to_jsonable(payload), ensure_ascii=False)}]}
@@ -182,6 +221,26 @@ class MCPServer:
     def pska_review_items(self) -> Any:
         return {"review_items": self.store.list_review_items()}
 
+    def pska_write_candidates(self, arguments: dict[str, Any]) -> Any:
+        return {"summary": self.candidates.write_candidates(arguments)}
+
+    def pska_job_context(self, arguments: dict[str, Any]) -> Any:
+        job = self.store.get_job(str(arguments["job_id"]))
+        request_user_id = str(arguments.get("represented_user_id") or arguments.get("user_id") or "user_primary")
+        source_item_ids = _job_source_item_ids(job)
+        source_items = [
+            item
+            for item in self.store.list_source_items()
+            if item.source_item_id in source_item_ids and item.owner_user_id == request_user_id
+        ]
+        chunks = self.store.list_chunks_for_sources({item.source_item_id for item in source_items})
+        return {
+            "job": job,
+            "request_user_id": request_user_id,
+            "source_items": source_items,
+            "chunks": chunks,
+        }
+
     def result(self, request_id: Any, result: Any) -> dict[str, Any]:
         return {"jsonrpc": "2.0", "id": request_id, "result": result}
 
@@ -191,6 +250,23 @@ class MCPServer:
     def write(self, response: dict[str, Any]) -> None:
         sys.stdout.write(json.dumps(response, ensure_ascii=False) + "\n")
         sys.stdout.flush()
+
+
+def _job_source_item_ids(job) -> set[str]:
+    ids = {ref.source_item_id for ref in job.source_refs if ref.source_item_id}
+    payload = job.payload if isinstance(job.payload, dict) else {}
+    raw_ids = payload.get("source_item_ids")
+    if isinstance(raw_ids, list):
+        ids.update(str(item) for item in raw_ids if item)
+    scope = payload.get("scope")
+    if isinstance(scope, dict) and isinstance(scope.get("source_item_ids"), list):
+        ids.update(str(item) for item in scope["source_item_ids"] if item)
+    raw_refs = payload.get("source_refs")
+    if isinstance(raw_refs, list):
+        for ref in raw_refs:
+            if isinstance(ref, dict) and ref.get("source_item_id"):
+                ids.add(str(ref["source_item_id"]))
+    return ids
 
 
 if __name__ == "__main__":

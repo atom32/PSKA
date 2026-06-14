@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Protocol
 from uuid import uuid4
 
@@ -14,6 +15,7 @@ from pska_core.models import (
     JobEvent,
     AuditEvent,
     ReviewItem,
+    SourceRef,
     SourceItem,
     TeamMembership,
     User,
@@ -64,6 +66,10 @@ class KnowledgeStore(Protocol):
     def update_chunk_embedding(self, chunk_id: str, embedding: list[float], *, provider: str, model: str) -> None: ...
     def vector_search_chunks(self, source_item_ids: set[str], query_embedding: list[float], *, top_k: int) -> list[tuple[Chunk, float]]: ...
     def list_hyperedges_for_entities(self, entity_ids: set[str]) -> list[tuple[Hyperedge, list[HyperedgeMember]]]: ...
+    def count_table(self, table: str) -> int: ...
+    def claim_next_job(self, *, worker_id: str | None = None, lease_seconds: int | None = None) -> Job | None: ...
+    def lease_job(self, job_id: str, *, worker_id: str | None = None, lease_seconds: int | None = None) -> Job: ...
+    def heartbeat_job(self, job_id: str, *, worker_id: str | None = None, lease_seconds: int | None = None, external_run_id: str | None = None) -> Job: ...
 
 
 class InMemoryKnowledgeStore:
@@ -237,7 +243,13 @@ class InMemoryKnowledgeStore:
         return results
 
     def create_job(self, job_type: str, payload: dict, *, max_attempts: int = 3) -> Job:
-        job = Job(job_id=f"job_{uuid4().hex}", job_type=job_type, payload=dict(payload), max_attempts=max_attempts)
+        job = Job(
+            job_id=f"job_{uuid4().hex}",
+            job_type=job_type,
+            payload=dict(payload),
+            max_attempts=max_attempts,
+            source_refs=_source_refs_from_payload(payload.get("source_refs")),
+        )
         self.jobs[job.job_id] = job
         self.add_job_event(job.job_id, "queued", f"Queued {job_type} job", {"payload": payload})
         return job
@@ -265,7 +277,7 @@ class InMemoryKnowledgeStore:
         self.job_events.append(event)
         return event
 
-    def claim_next_job(self) -> Job | None:
+    def claim_next_job(self, *, worker_id: str | None = None, lease_seconds: int | None = None) -> Job | None:
         queued = sorted((job for job in self.jobs.values() if job.status == "queued"), key=lambda job: job.created_at)
         if not queued:
             return None
@@ -275,8 +287,65 @@ class InMemoryKnowledgeStore:
         job.error = None
         job.started_at = utc_now()
         job.finished_at = None
+        job.worker_id = worker_id
+        job.heartbeat_at = utc_now()
+        job.leased_until = job.heartbeat_at + timedelta(seconds=lease_seconds) if lease_seconds else None
         job.updated_at = utc_now()
-        self.add_job_event(job.job_id, "started", f"Started attempt {job.attempts}")
+        self.add_job_event(
+            job.job_id,
+            "started",
+            f"Started attempt {job.attempts}",
+            {"worker_id": worker_id, "leased_until": job.leased_until.isoformat() if job.leased_until else None},
+        )
+        return job
+
+    def lease_job(self, job_id: str, *, worker_id: str | None = None, lease_seconds: int | None = None) -> Job:
+        job = self.jobs[job_id]
+        now = utc_now()
+        if job.status == "queued":
+            job.status = "running"
+            job.attempts += 1
+            job.started_at = now
+            job.finished_at = None
+            job.error = None
+        elif job.status == "running":
+            if job.worker_id and worker_id and job.worker_id != worker_id and job.leased_until and job.leased_until > now:
+                raise ValueError(f"Job {job_id} is already leased by {job.worker_id}")
+        else:
+            raise ValueError(f"Only queued or running jobs can be leased, got {job.status}")
+        job.worker_id = worker_id or job.worker_id
+        job.heartbeat_at = now
+        job.leased_until = now + timedelta(seconds=lease_seconds) if lease_seconds else None
+        job.updated_at = now
+        self.add_job_event(
+            job.job_id,
+            "leased",
+            "Job leased",
+            {"worker_id": job.worker_id, "leased_until": job.leased_until.isoformat() if job.leased_until else None},
+        )
+        return job
+
+    def heartbeat_job(self, job_id: str, *, worker_id: str | None = None, lease_seconds: int | None = None, external_run_id: str | None = None) -> Job:
+        job = self.jobs[job_id]
+        if job.status != "running":
+            raise ValueError(f"Only running jobs can heartbeat, got {job.status}")
+        now = utc_now()
+        job.worker_id = worker_id or job.worker_id
+        job.heartbeat_at = now
+        job.leased_until = now + timedelta(seconds=lease_seconds) if lease_seconds else job.leased_until
+        if external_run_id:
+            job.external_run_id = external_run_id
+        job.updated_at = now
+        self.add_job_event(
+            job.job_id,
+            "heartbeat",
+            "Worker heartbeat",
+            {
+                "worker_id": job.worker_id,
+                "leased_until": job.leased_until.isoformat() if job.leased_until else None,
+                "external_run_id": job.external_run_id,
+            },
+        )
         return job
 
     def finish_job(self, job_id: str, result: dict) -> Job:
@@ -285,6 +354,7 @@ class InMemoryKnowledgeStore:
         job.result = dict(result)
         job.error = None
         job.finished_at = utc_now()
+        job.leased_until = None
         job.updated_at = utc_now()
         self.add_job_event(job.job_id, "succeeded", "Job succeeded", {"result": result})
         return job
@@ -295,6 +365,9 @@ class InMemoryKnowledgeStore:
         job.error = error
         if job.status == "failed":
             job.finished_at = utc_now()
+        job.worker_id = None
+        job.leased_until = None
+        job.heartbeat_at = None
         job.updated_at = utc_now()
         event_type = "retry_queued" if job.status == "queued" else "failed"
         self.add_job_event(job.job_id, event_type, error)
@@ -307,6 +380,10 @@ class InMemoryKnowledgeStore:
         job.status = "queued"
         job.error = None
         job.finished_at = None
+        job.worker_id = None
+        job.leased_until = None
+        job.heartbeat_at = None
+        job.external_run_id = None
         job.updated_at = utc_now()
         self.add_job_event(job.job_id, "retry_queued", "Job manually queued for retry")
         return job
@@ -328,10 +405,31 @@ class InMemoryKnowledgeStore:
                 job.error = "Stale running job exceeded max attempts"
                 job.finished_at = now
                 event_type = "stale_failed"
+            job.worker_id = None
+            job.leased_until = None
+            job.heartbeat_at = None
             job.updated_at = now
             recovered.append(job)
             self.add_job_event(job.job_id, event_type, job.error)
         return recovered
+
+    def count_table(self, table: str) -> int:
+        tables = {
+            "source_items": self.source_items,
+            "documents": self.documents,
+            "chunks": self.chunks,
+            "users": self.users,
+            "entities": self.entities,
+            "hyperedges": self.hyperedges,
+            "review_items": self.review_items,
+            "agent_memories": self.agent_memories,
+            "user_profile_cards": self.profile_cards,
+            "jobs": self.jobs,
+            "job_events": self.job_events,
+        }
+        if table not in tables:
+            raise ValueError(f"Unsupported table: {table}")
+        return len(tables[table])
 
 
 def _cosine_similarity(left: list[float], right: list[float]) -> float:
@@ -343,3 +441,14 @@ def _cosine_similarity(left: list[float], right: list[float]) -> float:
     if left_norm == 0 or right_norm == 0:
         return 0.0
     return dot / (left_norm * right_norm)
+
+
+def _source_refs_from_payload(value) -> list[SourceRef]:
+    if not isinstance(value, list):
+        return []
+    allowed_keys = set(SourceRef.__dataclass_fields__)
+    return [
+        SourceRef(**{key: item for key, item in ref.items() if key in allowed_keys})
+        for ref in value
+        if isinstance(ref, dict)
+    ]

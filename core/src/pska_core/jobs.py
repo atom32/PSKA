@@ -7,9 +7,11 @@ import subprocess
 import sys
 from typing import Any
 
+from pska_core.candidates import CandidateWriteService
 from pska_core.embeddings import EmbeddingConfig, EmbeddingProvider, EmbeddingService, build_embedding_provider
 from pska_core.enums import Visibility
 from pska_core.extraction import ExtractionService
+from pska_core.fastreact_client import FastreactClient, HttpFastreactClient
 from pska_core.importers.twitter_zip import TwitterZipImporter
 from pska_core.models import Job
 from pska_core.serde import to_jsonable
@@ -18,10 +20,21 @@ from pska_core.store_postgres import PostgresKnowledgeStore
 
 IMPORT_TWITTER_ZIPS = "import_twitter_zips"
 EXTRACT_ALL = "extract_all"
+EXTRACT_VIA_FASTREACT = "extract_via_fastreact"
+DIGEST_VIA_FASTREACT = "digest_via_fastreact"
 EMBED_BACKFILL = "embed_backfill"
+REVIEW_APPLY = "review_apply"
 FULL_REPORT = "full_report"
 
-JOB_TYPES = {IMPORT_TWITTER_ZIPS, EXTRACT_ALL, EMBED_BACKFILL, FULL_REPORT}
+JOB_TYPES = {
+    IMPORT_TWITTER_ZIPS,
+    EXTRACT_ALL,
+    EXTRACT_VIA_FASTREACT,
+    DIGEST_VIA_FASTREACT,
+    EMBED_BACKFILL,
+    REVIEW_APPLY,
+    FULL_REPORT,
+}
 
 
 @dataclass(slots=True)
@@ -39,10 +52,16 @@ class JobService:
         *,
         embedding_provider: EmbeddingProvider | None = None,
         llm: LLMClient | None = None,
+        fastreact: FastreactClient | None = None,
+        worker_id: str | None = None,
+        lease_seconds: int | None = None,
     ) -> None:
         self.store = store
         self.embedding_provider = embedding_provider
         self.llm = llm
+        self.fastreact = fastreact
+        self.worker_id = worker_id
+        self.lease_seconds = lease_seconds
 
     def submit(self, job_type: str, payload: dict[str, Any] | None = None, *, max_attempts: int = 3) -> Job:
         if job_type not in JOB_TYPES:
@@ -50,7 +69,7 @@ class JobService:
         return self.store.create_job(job_type, payload or {}, max_attempts=max_attempts)
 
     def run_next(self) -> Job | None:
-        job = self.store.claim_next_job()
+        job = self.store.claim_next_job(worker_id=self.worker_id, lease_seconds=self.lease_seconds)
         if job is None:
             return None
         try:
@@ -96,8 +115,14 @@ class JobService:
             return self._import_twitter_zips(job.payload)
         if job.job_type == EXTRACT_ALL:
             return self._extract_all(job.payload)
+        if job.job_type == EXTRACT_VIA_FASTREACT:
+            return self._extract_via_fastreact(job)
+        if job.job_type == DIGEST_VIA_FASTREACT:
+            return self._digest_via_fastreact(job)
         if job.job_type == EMBED_BACKFILL:
             return self._embed_backfill(job.payload)
+        if job.job_type == REVIEW_APPLY:
+            return self._review_apply(job.payload)
         if job.job_type == FULL_REPORT:
             return self._full_report(job)
         raise ValueError(f"Unsupported job type: {job.job_type}")
@@ -119,6 +144,123 @@ class JobService:
     def _extract_all(self, payload: dict[str, Any]) -> dict[str, Any]:
         reports = ExtractionService(self.store, llm=self.llm).extract_all_visible(owner_user_id=payload.get("owner_user_id"))
         return {"reports": to_jsonable(reports)}
+
+    def _extract_via_fastreact(self, job: Job) -> dict[str, Any]:
+        payload = job.payload
+        owner_user_id = str(payload.get("owner_user_id") or "user_primary")
+        top_k = int(payload.get("top_k") or 20)
+        source_items = [
+            {
+                "source_item_id": item.source_item_id,
+                "source_channel": item.source_channel,
+                "record_type": item.record_type,
+                "source_id": item.source_id,
+                "title": item.title,
+                "url": item.url,
+                "content_text": item.content_text[:4000],
+            }
+            for item in self.store.list_source_items()
+            if item.owner_user_id == owner_user_id
+        ][:top_k]
+        prompt = (
+            "Run PSKA extraction for the provided source items. "
+            "Use PSKA MCP tools when available. Return JSON-compatible candidate "
+            "entities, hyperedges, review_items, cited_source_ids, and gaps. "
+            "Do not invent facts beyond the provided source refs.\n\n"
+            f"Source items:\n{to_jsonable(source_items)}"
+        )
+        response = self._call_fastreact(
+            job=job,
+            purpose="extract",
+            user_id=owner_user_id,
+            prompt=prompt,
+            scope={"source_item_ids": [item["source_item_id"] for item in source_items]},
+        )
+        return {"fastreact": response, "candidate_write": self._write_fastreact_candidates(job, owner_user_id, response)}
+
+    def _digest_via_fastreact(self, job: Job) -> dict[str, Any]:
+        payload = job.payload
+        owner_user_id = str(payload.get("owner_user_id") or "user_primary")
+        scope = dict(payload.get("scope") or {})
+        prompt = (
+            "Run a PSKA digest pass. Use PSKA MCP tools to retrieve allowed context, "
+            "then return JSON-compatible summaries, memory_candidates, review_candidates, "
+            "cited_source_ids, and gaps. High-impact or low-confidence suggestions must "
+            "be review candidates, not applied changes."
+        )
+        response = self._call_fastreact(
+            job=job,
+            purpose="digest",
+            user_id=owner_user_id,
+            prompt=prompt,
+            scope=scope,
+        )
+        return {"fastreact": response, "candidate_write": self._write_fastreact_candidates(job, owner_user_id, response)}
+
+    def _review_apply(self, payload: dict[str, Any]) -> dict[str, Any]:
+        from pska_core.review import ReviewService
+
+        review_item_id = str(payload["review_item_id"])
+        actor_user_id = str(payload.get("actor_user_id") or "user_primary")
+        reason = str(payload.get("reason") or "applied by review_apply job")
+        review_item = ReviewService(self.store).apply(review_item_id, actor_user_id=actor_user_id, reason=reason)
+        return {"review_item": to_jsonable(review_item)}
+
+    def _call_fastreact(
+        self,
+        *,
+        job: Job,
+        purpose: str,
+        user_id: str,
+        prompt: str,
+        scope: dict[str, Any],
+    ) -> dict[str, Any]:
+        client = self.fastreact or HttpFastreactClient()
+        response = client.chat_completion(
+            messages=[
+                {"role": "system", "content": "You are Fastreact executing a PSKA knowledge job. Use PSKA MCP tools and cite evidence."},
+                {"role": "user", "content": prompt},
+            ],
+            user_id=user_id,
+            purpose=purpose,
+            stream=False,
+            job_id=job.job_id,
+            scope=scope,
+        )
+        run_id = response.get("run_id")
+        self.store.add_job_event(
+            job.job_id,
+            "fastreact_submitted",
+            "Submitted PSKA job to Fastreact",
+            {"run_id": run_id, "purpose": purpose},
+        )
+        if run_id:
+            self.store.heartbeat_job(
+                job.job_id,
+                worker_id=self.worker_id,
+                lease_seconds=self.lease_seconds,
+                external_run_id=str(run_id),
+            )
+        return to_jsonable(response)
+
+    def _write_fastreact_candidates(self, job: Job, owner_user_id: str, response: dict[str, Any]) -> dict[str, Any]:
+        candidate_keys = {"entities", "hyperedges", "review_items", "memory_candidates"}
+        if not candidate_keys.intersection(response.keys()):
+            return {"skipped": True, "reason": "no_candidate_keys"}
+        payload = {
+            "owner_user_id": owner_user_id,
+            "job_id": job.job_id,
+            "request_id": response.get("request_id") or response.get("run_id"),
+            "producer": "fastreact",
+            "source_refs": response.get("source_refs") or [to_jsonable(ref) for ref in job.source_refs],
+            "entities": response.get("entities") or [],
+            "hyperedges": response.get("hyperedges") or [],
+            "review_items": response.get("review_items") or [],
+            "memory_candidates": response.get("memory_candidates") or response.get("memory") or [],
+        }
+        summary = CandidateWriteService(self.store).write_candidates(payload)
+        self.store.add_job_event(job.job_id, "candidates_written", "Wrote Fastreact candidates to PSKA", summary)
+        return summary
 
     def _embed_backfill(self, payload: dict[str, Any]) -> dict[str, Any]:
         provider = self._embedding_provider(payload)

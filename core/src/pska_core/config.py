@@ -1,0 +1,220 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+import json
+import os
+from pathlib import Path
+from typing import Any
+
+from pska_core.keyfile import read_api_key_file
+
+
+DEFAULT_DATABASE_URL = "postgresql:///pska"
+
+
+def expand_path(value: str | Path) -> Path:
+    if isinstance(value, Path):
+        return value.expanduser()
+    return Path(os.path.expandvars(value)).expanduser()
+
+
+@dataclass(frozen=True, slots=True)
+class DatabaseConfig:
+    url: str = DEFAULT_DATABASE_URL
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> "DatabaseConfig":
+        data = data or {}
+        return cls(url=str(data.get("url") or data.get("database_url") or DEFAULT_DATABASE_URL))
+
+
+@dataclass(frozen=True, slots=True)
+class ServiceConfig:
+    host: str = "127.0.0.1"
+    port: int = 8765
+    service_token: str | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None, *, api_key_file: Path | None = None) -> "ServiceConfig":
+        data = data or {}
+        token = data.get("service_token") or data.get("token") or _service_token_from_key_file(api_key_file)
+        return cls(
+            host=str(data.get("host") or "127.0.0.1"),
+            port=int(data.get("port") or 8765),
+            service_token=str(token).strip() if token else None,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class LLMConfig:
+    api_key_file: Path | None = None
+    model: str | None = None
+    base_url: str | None = None
+    timeout_seconds: int | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> "LLMConfig":
+        data = data or {}
+        api_key_file = data.get("api_key_file") or data.get("key_file")
+        return cls(
+            api_key_file=expand_path(api_key_file) if api_key_file else None,
+            model=str(data["model"]) if data.get("model") else None,
+            base_url=str(data.get("base_url") or data.get("api_base")) if data.get("base_url") or data.get("api_base") else None,
+            timeout_seconds=int(data["timeout_seconds"]) if data.get("timeout_seconds") else None,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class FastreactConfig:
+    url: str = "http://127.0.0.1:8000"
+    service_token: str | None = None
+    timeout_seconds: float | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None, *, api_key_file: Path | None = None) -> "FastreactConfig":
+        data = data or {}
+        token = data.get("service_token") or data.get("token") or _fastreact_token_from_key_file(api_key_file)
+        return cls(
+            url=str(data.get("url") or "http://127.0.0.1:8000").rstrip("/"),
+            service_token=str(token).strip() if token else None,
+            timeout_seconds=float(data["timeout_seconds"]) if data.get("timeout_seconds") else None,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class EmbeddingConfigFile:
+    provider: str = "disabled"
+    model: str | None = None
+    dimensions: int | None = None
+    batch_size: int | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> "EmbeddingConfigFile":
+        data = data or {}
+        return cls(
+            provider=str(data.get("provider") or "disabled"),
+            model=str(data["model"]) if data.get("model") else None,
+            dimensions=int(data["dimensions"]) if data.get("dimensions") else None,
+            batch_size=int(data["batch_size"]) if data.get("batch_size") else None,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class PSKAConfig:
+    database: DatabaseConfig = field(default_factory=DatabaseConfig)
+    service: ServiceConfig = field(default_factory=ServiceConfig)
+    llm: LLMConfig = field(default_factory=LLMConfig)
+    fastreact: FastreactConfig = field(default_factory=FastreactConfig)
+    embedding: EmbeddingConfigFile = field(default_factory=EmbeddingConfigFile)
+
+    @classmethod
+    def load(cls, config_path: str | Path | None = None) -> "PSKAConfig":
+        path = _find_config_path(config_path)
+        if path is None:
+            return cls.from_env(cls())
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("PSKA config must be a JSON object")
+        config = cls.from_dict(data)
+        return cls.from_env(config)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "PSKAConfig":
+        llm = LLMConfig.from_dict(data.get("llm"))
+        return cls(
+            database=DatabaseConfig.from_dict(data.get("database")),
+            service=ServiceConfig.from_dict(data.get("service"), api_key_file=llm.api_key_file),
+            llm=llm,
+            fastreact=FastreactConfig.from_dict(data.get("fastreact"), api_key_file=llm.api_key_file),
+            embedding=EmbeddingConfigFile.from_dict(data.get("embedding")),
+        )
+
+    @classmethod
+    def from_env(cls, base: "PSKAConfig | None" = None) -> "PSKAConfig":
+        base = base or cls()
+        return cls(
+            database=DatabaseConfig(url=os.getenv("PSKA_DATABASE_URL", base.database.url)),
+            service=ServiceConfig(
+                host=os.getenv("PSKA_SERVICE_HOST", base.service.host),
+                port=int(os.getenv("PSKA_SERVICE_PORT", str(base.service.port))),
+                service_token=os.getenv("PSKA_SERVICE_TOKEN") or base.service.service_token,
+            ),
+            llm=LLMConfig(
+                api_key_file=expand_path(os.getenv("PSKA_LLM_API_KEY_FILE")) if os.getenv("PSKA_LLM_API_KEY_FILE") else base.llm.api_key_file,
+                model=os.getenv("PSKA_LLM_MODEL") or base.llm.model,
+                base_url=os.getenv("PSKA_LLM_BASE_URL") or base.llm.base_url,
+                timeout_seconds=int(os.getenv("PSKA_LLM_TIMEOUT_SECONDS")) if os.getenv("PSKA_LLM_TIMEOUT_SECONDS") else base.llm.timeout_seconds,
+            ),
+            fastreact=FastreactConfig(
+                url=os.getenv("PSKA_FASTREACT_URL", base.fastreact.url).rstrip("/"),
+                service_token=os.getenv("PSKA_FASTREACT_SERVICE_TOKEN") or base.fastreact.service_token,
+                timeout_seconds=float(os.getenv("PSKA_FASTREACT_TIMEOUT_SECONDS")) if os.getenv("PSKA_FASTREACT_TIMEOUT_SECONDS") else base.fastreact.timeout_seconds,
+            ),
+            embedding=EmbeddingConfigFile(
+                provider=os.getenv("PSKA_EMBEDDING_PROVIDER", base.embedding.provider),
+                model=os.getenv("PSKA_EMBEDDING_MODEL") or base.embedding.model,
+                dimensions=int(os.getenv("PSKA_EMBEDDING_DIMENSIONS")) if os.getenv("PSKA_EMBEDDING_DIMENSIONS") else base.embedding.dimensions,
+                batch_size=int(os.getenv("PSKA_EMBEDDING_BATCH_SIZE")) if os.getenv("PSKA_EMBEDDING_BATCH_SIZE") else base.embedding.batch_size,
+            ),
+        )
+
+    def apply_to_env(self) -> None:
+        _setdefault("PSKA_DATABASE_URL", self.database.url)
+        _setdefault("PSKA_SERVICE_HOST", self.service.host)
+        _setdefault("PSKA_SERVICE_PORT", str(self.service.port))
+        if self.service.service_token:
+            _setdefault("PSKA_SERVICE_TOKEN", self.service.service_token)
+        if self.llm.api_key_file:
+            _setdefault("PSKA_LLM_API_KEY_FILE", str(self.llm.api_key_file))
+        if self.llm.model:
+            _setdefault("PSKA_LLM_MODEL", self.llm.model)
+        if self.llm.base_url:
+            _setdefault("PSKA_LLM_BASE_URL", self.llm.base_url.rstrip("/"))
+        if self.llm.timeout_seconds:
+            _setdefault("PSKA_LLM_TIMEOUT_SECONDS", str(self.llm.timeout_seconds))
+        _setdefault("PSKA_FASTREACT_URL", self.fastreact.url.rstrip("/"))
+        if self.fastreact.service_token:
+            _setdefault("PSKA_FASTREACT_SERVICE_TOKEN", self.fastreact.service_token)
+        if self.fastreact.timeout_seconds:
+            _setdefault("PSKA_FASTREACT_TIMEOUT_SECONDS", str(self.fastreact.timeout_seconds))
+        _setdefault("PSKA_EMBEDDING_PROVIDER", self.embedding.provider)
+        if self.embedding.model:
+            _setdefault("PSKA_EMBEDDING_MODEL", self.embedding.model)
+        if self.embedding.dimensions:
+            _setdefault("PSKA_EMBEDDING_DIMENSIONS", str(self.embedding.dimensions))
+        if self.embedding.batch_size:
+            _setdefault("PSKA_EMBEDDING_BATCH_SIZE", str(self.embedding.batch_size))
+
+
+def _find_config_path(config_path: str | Path | None) -> Path | None:
+    if config_path:
+        path = expand_path(config_path)
+        if not path.exists():
+            raise FileNotFoundError(path)
+        return path
+    for path in [
+        Path.home() / ".pska" / "config.json",
+        Path.cwd() / ".pska" / "config.json",
+        Path.cwd() / "config.pska.json",
+    ]:
+        if path.exists():
+            return path
+    return None
+
+
+def _setdefault(key: str, value: str) -> None:
+    if value and not os.getenv(key):
+        os.environ[key] = value
+
+
+def _service_token_from_key_file(path: Path | None) -> str | None:
+    if path is None:
+        return None
+    return read_api_key_file(path).service_token or None
+
+
+def _fastreact_token_from_key_file(path: Path | None) -> str | None:
+    if path is None:
+        return None
+    key_file = read_api_key_file(path)
+    return key_file.service_token or None

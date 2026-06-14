@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Write a local FastReAct config that binds PSKA through MCP stdio."""
+"""Write a local FastReAct config that binds PSKA through MCP."""
 
 from __future__ import annotations
 
@@ -41,6 +41,30 @@ def build_config(args: argparse.Namespace) -> dict:
     if ssl_cert_file:
         env["SSL_CERT_FILE"] = ssl_cert_file
 
+    mcp_server = {
+        "name": "pska",
+        "isolation": "shared",
+        "description": "PSKA personal knowledge store tools.",
+    }
+    if args.mcp_transport == "http":
+        mcp_server.update(
+            {
+                "transport": "http",
+                "url": args.pska_http_url,
+            }
+        )
+        if args.mcp_auth_token_ref:
+            mcp_server["auth_token_ref"] = args.mcp_auth_token_ref
+    else:
+        mcp_server.update(
+            {
+                "transport": "stdio",
+                "command": str(ROOT / "scripts" / "pska"),
+                "args": ["mcp-server"],
+                "env": env,
+            }
+        )
+
     return {
         "llm": {
             "api_key_file": str(args.api_key_file),
@@ -51,16 +75,24 @@ def build_config(args: argparse.Namespace) -> dict:
             "log_level": args.log_level,
         },
         "mcp": {
-            "servers": [
-                {
-                    "name": "pska",
-                    "command": str(ROOT / "scripts" / "pska"),
-                    "args": ["mcp-server"],
-                    "isolation": "shared",
-                    "description": "PSKA tools",
-                    "env": env,
+            "servers": [mcp_server]
+        },
+        "policy": {
+            "default_action": "caution",
+            "tenant_rules": {
+                "pska": {
+                    "tools": {
+                        "pska_pska_search": "allow",
+                        "pska_pska_agentic_search": "allow",
+                        "pska_pska_index_status": "allow",
+                        "pska_pska_job_context": "allow",
+                        "pska_pska_review_items": "allow",
+                        "pska_pska_write_candidates": "allow",
+                        "pska_pska_ingest_channel_payload": "require_approval",
+                        "pska_pska_extract_all": "require_approval"
+                    }
                 }
-            ]
+            }
         },
     }
 
@@ -74,6 +106,9 @@ def main() -> None:
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--log-level", default="info")
+    parser.add_argument("--mcp-transport", choices=["stdio", "http"], default="stdio")
+    parser.add_argument("--pska-http-url", default="http://127.0.0.1:8765/mcp")
+    parser.add_argument("--mcp-auth-token-ref", default="mcp_api_keys.pska")
     parser.add_argument("--print", action="store_true", help="Print config instead of writing it")
     args = parser.parse_args()
 

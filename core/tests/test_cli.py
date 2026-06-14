@@ -7,7 +7,7 @@ def test_cli_accepts_db_check() -> None:
     args = build_parser().parse_args(["db-check"])
 
     assert args.command == "db-check"
-    assert args.database_url == "postgresql:///pska"
+    assert args.database_url is None
 
 
 def test_cli_accepts_database_url_override() -> None:
@@ -15,6 +15,13 @@ def test_cli_accepts_database_url_override() -> None:
 
     assert args.command == "db-init"
     assert args.database_url == "postgresql:///example"
+
+
+def test_cli_accepts_config_path() -> None:
+    args = build_parser().parse_args(["--config", "config.pska.json", "db-check"])
+
+    assert args.command == "db-check"
+    assert str(args.config) == "config.pska.json"
 
 
 def test_cli_accepts_import_twitter_zips() -> None:
@@ -39,6 +46,7 @@ def test_cli_accepts_search_and_smoke() -> None:
     agentic = build_parser().parse_args(["agentic-search", "--query", "hello"])
     extract = build_parser().parse_args(["extract-all", "--owner-user-id", "user_primary"])
     serve = build_parser().parse_args(["serve", "--port", "8765"])
+    service_check = build_parser().parse_args(["service-check", "--url", "http://127.0.0.1:8765", "--timeout-seconds", "1"])
     embed = build_parser().parse_args(["embed-backfill", "--embedding-provider", "bge-m3", "--limit", "10"])
     mcp = build_parser().parse_args(["mcp-server"])
 
@@ -49,18 +57,27 @@ def test_cli_accepts_search_and_smoke() -> None:
     assert agentic.command == "agentic-search"
     assert extract.command == "extract-all"
     assert serve.command == "serve"
+    assert service_check.command == "service-check"
+    assert service_check.url == "http://127.0.0.1:8765"
+    assert service_check.timeout_seconds == 1
     assert embed.command == "embed-backfill"
     assert embed.embedding_provider == "bge-m3"
     assert embed.limit == 10
     assert mcp.command == "mcp-server"
 def test_cli_accepts_job_commands() -> None:
     submit = build_parser().parse_args(["job-submit", "extract_all", "--max-attempts", "2", "--run-now"])
+    fastreact_extract = build_parser().parse_args(["job-submit", "extract_via_fastreact"])
+    fastreact_digest = build_parser().parse_args(["job-submit", "digest_via_fastreact"])
+    review_apply = build_parser().parse_args(["job-submit", "review_apply"])
     run = build_parser().parse_args(["job-run", "--limit", "5"])
     status = build_parser().parse_args(["job-status", "--status", "failed"])
     retry = build_parser().parse_args(["job-retry", "job_123"])
 
     assert submit.command == "job-submit"
     assert submit.job_type == "extract_all"
+    assert fastreact_extract.job_type == "extract_via_fastreact"
+    assert fastreact_digest.job_type == "digest_via_fastreact"
+    assert review_apply.job_type == "review_apply"
     assert submit.max_attempts == 2
     assert submit.run_now is True
     assert run.limit == 5
@@ -88,19 +105,37 @@ def test_cli_accepts_review_commands() -> None:
 
 
 def test_cli_accepts_job_worker_commands() -> None:
-    run = build_parser().parse_args(["job-run", "--until-empty", "--limit", "0"])
+    run = build_parser().parse_args(["job-run", "--until-empty", "--limit", "0", "--worker-id", "worker_a", "--lease-seconds", "45"])
     worker = build_parser().parse_args(
-        ["job-worker", "--poll-interval", "0.1", "--max-jobs", "2", "--idle-limit", "1", "--recover-stale-seconds", "60"]
+        [
+            "job-worker",
+            "--poll-interval",
+            "0.1",
+            "--max-jobs",
+            "2",
+            "--idle-limit",
+            "1",
+            "--recover-stale-seconds",
+            "60",
+            "--worker-id",
+            "worker_b",
+            "--lease-seconds",
+            "90",
+        ]
     )
     recover = build_parser().parse_args(["job-recover", "--max-age-seconds", "120"])
 
     assert run.command == "job-run"
     assert run.until_empty is True
     assert run.limit == 0
+    assert run.worker_id == "worker_a"
+    assert run.lease_seconds == 45
     assert worker.command == "job-worker"
     assert worker.poll_interval == 0.1
     assert worker.max_jobs == 2
     assert worker.idle_limit == 1
     assert worker.recover_stale_seconds == 60
+    assert worker.worker_id == "worker_b"
+    assert worker.lease_seconds == 90
     assert recover.command == "job-recover"
     assert recover.max_age_seconds == 120

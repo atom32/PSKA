@@ -52,7 +52,7 @@ def _write_twitter_zip(zip_path) -> None:
 
 def test_job_service_runs_extract_all_job_and_records_events() -> None:
     store = _store()
-    service = JobService(store)
+    service = JobService(store, worker_id="worker_a", lease_seconds=60)
     job = service.submit(EXTRACT_ALL, {"owner_user_id": "user_primary"})
 
     report = service.run_available(limit=1)
@@ -63,6 +63,9 @@ def test_job_service_runs_extract_all_job_and_records_events() -> None:
     assert report.succeeded == 1
     assert completed.status == "succeeded"
     assert completed.attempts == 1
+    assert completed.worker_id == "worker_a"
+    assert completed.heartbeat_at is not None
+    assert completed.leased_until is None
     assert completed.result == {"reports": []}
     assert event_types == ["queued", "started", "execute", "succeeded"]
 
@@ -247,14 +250,17 @@ def test_stale_running_jobs_are_requeued_before_max_attempts() -> None:
     store = _store()
     service = JobService(store)
     job = service.submit(EXTRACT_ALL, {"owner_user_id": "user_primary"}, max_attempts=2)
-    running = store.claim_next_job()
+    running = store.claim_next_job(worker_id="stale_worker", lease_seconds=60)
     assert running is not None
     running.started_at = utc_now() - timedelta(hours=2)
 
     recovered = service.recover_stale(max_age_seconds=60)
 
     assert [job.job_id for job in recovered] == [job.job_id]
-    assert store.get_job(job.job_id).status == "queued"
+    recovered_job = store.get_job(job.job_id)
+    assert recovered_job.status == "queued"
+    assert recovered_job.worker_id is None
+    assert recovered_job.leased_until is None
     assert store.list_job_events(job.job_id)[-1].event_type == "stale_requeued"
 
 
@@ -271,3 +277,61 @@ def test_stale_running_jobs_fail_after_max_attempts() -> None:
     assert [job.job_id for job in recovered] == [job.job_id]
     assert store.get_job(job.job_id).status == "failed"
     assert store.list_job_events(job.job_id)[-1].event_type == "stale_failed"
+
+
+def test_job_heartbeat_extends_lease_and_records_external_run() -> None:
+    store = _store()
+    service = JobService(store, worker_id="worker_heartbeat", lease_seconds=30)
+    job = service.submit(EXTRACT_ALL, {"owner_user_id": "user_primary"})
+
+    running = store.claim_next_job(worker_id="worker_heartbeat", lease_seconds=30)
+    heartbeat = store.heartbeat_job(
+        running.job_id,
+        worker_id="worker_heartbeat",
+        lease_seconds=90,
+        external_run_id="run_abc",
+    )
+
+    assert heartbeat.status == "running"
+    assert heartbeat.worker_id == "worker_heartbeat"
+    assert heartbeat.external_run_id == "run_abc"
+    assert heartbeat.heartbeat_at is not None
+    assert heartbeat.leased_until is not None
+    assert heartbeat.leased_until > heartbeat.heartbeat_at
+    assert store.list_job_events(job.job_id)[-1].event_type == "heartbeat"
+
+
+def test_lease_job_claims_specific_job_and_blocks_active_other_worker() -> None:
+    store = _store()
+    service = JobService(store)
+    job = service.submit(EXTRACT_ALL, {"owner_user_id": "user_primary"})
+
+    leased = store.lease_job(job.job_id, worker_id="worker_a", lease_seconds=90)
+
+    assert leased.status == "running"
+    assert leased.worker_id == "worker_a"
+    assert leased.attempts == 1
+    assert leased.leased_until is not None
+    assert store.list_job_events(job.job_id)[-1].event_type == "leased"
+    try:
+        store.lease_job(job.job_id, worker_id="worker_b", lease_seconds=90)
+    except ValueError as exc:
+        assert "leased" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
+
+
+def test_job_source_refs_are_persisted_from_payload() -> None:
+    store = _store()
+    service = JobService(store)
+
+    job = service.submit(
+        EXTRACT_ALL,
+        {
+            "owner_user_id": "user_primary",
+            "source_refs": [{"source_item_id": "src_1", "chunk_id": "chk_1"}],
+        },
+    )
+
+    assert job.source_refs[0].source_item_id == "src_1"
+    assert job.source_refs[0].chunk_id == "chk_1"

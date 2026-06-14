@@ -240,6 +240,11 @@ class Job:
     updated_at: datetime = field(default_factory=utc_now)
     started_at: datetime | None = None
     finished_at: datetime | None = None
+    worker_id: str | None = None
+    leased_until: datetime | None = None
+    heartbeat_at: datetime | None = None
+    external_run_id: str | None = None
+    source_refs: list[SourceRef] = field(default_factory=list)
 
 
 @dataclass(slots=True)

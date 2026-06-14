@@ -524,14 +524,15 @@ class PostgresKnowledgeStore:
         return [(self._hyperedge_from_row(row), members_by_edge.get(row["hyperedge_id"], [])) for row in edge_rows]
 
     def create_job(self, job_type: str, payload: dict[str, Any], *, max_attempts: int = 3) -> Job:
+        source_refs = payload.get("source_refs") if isinstance(payload.get("source_refs"), list) else []
         with self.connect() as conn:
             row = conn.execute(
                 """
-                insert into jobs(job_type, payload, max_attempts)
-                values (%s, %s, %s)
+                insert into jobs(job_type, payload, max_attempts, source_refs)
+                values (%s, %s, %s, %s)
                 returning *
                 """,
-                (job_type, Jsonb(to_jsonable(payload)), max_attempts),
+                (job_type, Jsonb(to_jsonable(payload)), max_attempts, Jsonb(to_jsonable(source_refs))),
             ).fetchone()
             job = self._job_from_row(row)
         self.add_job_event(job.job_id, "queued", f"Queued {job_type} job", {"payload": payload})
@@ -584,7 +585,7 @@ class PostgresKnowledgeStore:
             ).fetchone()
         return self._job_event_from_row(row)
 
-    def claim_next_job(self) -> Job | None:
+    def claim_next_job(self, *, worker_id: str | None = None, lease_seconds: int | None = None) -> Job | None:
         with self.connect() as conn:
             row = conn.execute(
                 """
@@ -594,6 +595,9 @@ class PostgresKnowledgeStore:
                     started_at = now(),
                     finished_at = null,
                     error = null,
+                    worker_id = %s,
+                    heartbeat_at = now(),
+                    leased_until = case when %s::integer is null then null else now() + (%s::integer * interval '1 second') end,
                     updated_at = now()
                 where job_id = (
                     select job_id
@@ -604,12 +608,100 @@ class PostgresKnowledgeStore:
                     limit 1
                 )
                 returning *
-                """
+                """,
+                (worker_id, lease_seconds, lease_seconds),
             ).fetchone()
         if not row:
             return None
         job = self._job_from_row(row)
-        self.add_job_event(job.job_id, "started", f"Started attempt {job.attempts}")
+        self.add_job_event(
+            job.job_id,
+            "started",
+            f"Started attempt {job.attempts}",
+            {"worker_id": worker_id, "leased_until": job.leased_until.isoformat() if job.leased_until else None},
+        )
+        return job
+
+    def lease_job(self, job_id: str, *, worker_id: str | None = None, lease_seconds: int | None = None) -> Job:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                update jobs
+                set status = 'running',
+                    attempts = case when status = 'queued' then attempts + 1 else attempts end,
+                    started_at = case when status = 'queued' then now() else started_at end,
+                    finished_at = null,
+                    error = null,
+                    worker_id = coalesce(%s, worker_id),
+                    heartbeat_at = now(),
+                    leased_until = case when %s::integer is null then null else now() + (%s::integer * interval '1 second') end,
+                    updated_at = now()
+                where job_id = %s
+                  and (
+                    status = 'queued'
+                    or (
+                      status = 'running'
+                      and (
+                        worker_id is null
+                        or worker_id = %s
+                        or leased_until is null
+                        or leased_until < now()
+                      )
+                    )
+                  )
+                returning *
+                """,
+                (worker_id, lease_seconds, lease_seconds, job_id, worker_id),
+            ).fetchone()
+        if not row:
+            current = self.get_job(job_id)
+            raise ValueError(f"Job {job_id} cannot be leased from status {current.status}")
+        job = self._job_from_row(row)
+        self.add_job_event(
+            job.job_id,
+            "leased",
+            "Job leased",
+            {"worker_id": job.worker_id, "leased_until": job.leased_until.isoformat() if job.leased_until else None},
+        )
+        return job
+
+    def heartbeat_job(
+        self,
+        job_id: str,
+        *,
+        worker_id: str | None = None,
+        lease_seconds: int | None = None,
+        external_run_id: str | None = None,
+    ) -> Job:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                update jobs
+                set worker_id = coalesce(%s, worker_id),
+                    heartbeat_at = now(),
+                    leased_until = case when %s::integer is null then leased_until else now() + (%s::integer * interval '1 second') end,
+                    external_run_id = coalesce(%s, external_run_id),
+                    updated_at = now()
+                where job_id = %s
+                  and status = 'running'
+                returning *
+                """,
+                (worker_id, lease_seconds, lease_seconds, external_run_id, job_id),
+            ).fetchone()
+        if not row:
+            current = self.get_job(job_id)
+            raise ValueError(f"Only running jobs can heartbeat, got {current.status}")
+        job = self._job_from_row(row)
+        self.add_job_event(
+            job.job_id,
+            "heartbeat",
+            "Worker heartbeat",
+            {
+                "worker_id": job.worker_id,
+                "leased_until": job.leased_until.isoformat() if job.leased_until else None,
+                "external_run_id": job.external_run_id,
+            },
+        )
         return job
 
     def finish_job(self, job_id: str, result: dict[str, Any]) -> Job:
@@ -621,6 +713,7 @@ class PostgresKnowledgeStore:
                     result = %s,
                     error = null,
                     finished_at = now(),
+                    leased_until = null,
                     updated_at = now()
                 where job_id = %s
                 returning *
@@ -641,6 +734,9 @@ class PostgresKnowledgeStore:
                 set status = %s,
                     error = %s,
                     finished_at = case when %s = 'failed' then now() else finished_at end,
+                    worker_id = null,
+                    leased_until = null,
+                    heartbeat_at = null,
                     updated_at = now()
                 where job_id = %s
                 returning *
@@ -663,6 +759,10 @@ class PostgresKnowledgeStore:
                 set status = 'queued',
                     error = null,
                     finished_at = null,
+                    worker_id = null,
+                    leased_until = null,
+                    heartbeat_at = null,
+                    external_run_id = null,
                     updated_at = now()
                 where job_id = %s
                 returning *
@@ -684,6 +784,9 @@ class PostgresKnowledgeStore:
                         else 'Stale running job exceeded max attempts'
                     end,
                     finished_at = case when attempts < max_attempts then null else now() end,
+                    worker_id = null,
+                    leased_until = null,
+                    heartbeat_at = null,
                     updated_at = now()
                 where status = 'running'
                   and started_at is not null
@@ -798,6 +901,11 @@ class PostgresKnowledgeStore:
             updated_at=row["updated_at"],
             started_at=row["started_at"],
             finished_at=row["finished_at"],
+            worker_id=row.get("worker_id"),
+            leased_until=row.get("leased_until"),
+            heartbeat_at=row.get("heartbeat_at"),
+            external_run_id=row.get("external_run_id"),
+            source_refs=[SourceRef(**item) for item in (row.get("source_refs") or [])],
         )
 
     def _review_item_from_row(self, row: dict[str, Any]) -> ReviewItem:

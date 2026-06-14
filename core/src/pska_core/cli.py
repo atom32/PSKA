@@ -9,10 +9,13 @@ import shutil
 import subprocess
 import sys
 import time
-from typing import Sequence
+from typing import Any, Sequence
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 from pska_core.acl import ACLService
 from pska_core.api import serve
+from pska_core.config import DEFAULT_DATABASE_URL, PSKAConfig
 from pska_core.embeddings import EmbeddingConfig, EmbeddingService, build_embedding_provider
 from pska_core.enums import Visibility
 from pska_core.extraction import ExtractionService
@@ -29,15 +32,15 @@ from pska_core.serde import dumps
 from pska_core.store_postgres import PostgresKnowledgeStore
 
 
-DEFAULT_DATABASE_URL = "postgresql:///pska"
 SMOKE_DATABASE_URL = "postgresql:///pska_smoke"
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="pska-core", description="PSKA Core local utilities")
+    parser.add_argument("--config", type=Path, default=None, help="Path to PSKA JSON config")
     parser.add_argument(
         "--database-url",
-        default=os.environ.get("PSKA_DATABASE_URL", DEFAULT_DATABASE_URL),
+        default=None,
         help="PostgreSQL connection URL",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -84,8 +87,13 @@ def build_parser() -> argparse.ArgumentParser:
     extract_parser.add_argument("--owner-user-id", default=None)
 
     serve_parser = subparsers.add_parser("serve", help="Start local PSKA Core HTTP API")
-    serve_parser.add_argument("--host", default="127.0.0.1")
-    serve_parser.add_argument("--port", type=int, default=8765)
+    serve_parser.add_argument("--host", default=None)
+    serve_parser.add_argument("--port", type=int, default=None)
+
+    service_check_parser = subparsers.add_parser("service-check", help="Check a running PSKA online service contract")
+    service_check_parser.add_argument("--url", default=None)
+    service_check_parser.add_argument("--service-token", default=None)
+    service_check_parser.add_argument("--timeout-seconds", type=float, default=5.0)
 
     subparsers.add_parser("mcp-server", help="Start PSKA stdio MCP server")
 
@@ -104,12 +112,16 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser = subparsers.add_parser("job-run", help="Run queued durable jobs in this process")
     run_parser.add_argument("--limit", type=int, default=1)
     run_parser.add_argument("--until-empty", action="store_true")
+    run_parser.add_argument("--worker-id", default=None)
+    run_parser.add_argument("--lease-seconds", type=int, default=300)
 
     worker_parser = subparsers.add_parser("job-worker", help="Continuously poll and run durable jobs")
     worker_parser.add_argument("--poll-interval", type=float, default=5.0)
     worker_parser.add_argument("--max-jobs", type=int, default=0, help="Stop after this many jobs; 0 means no limit")
     worker_parser.add_argument("--idle-limit", type=int, default=0, help="Stop after this many idle polls; 0 means no limit")
     worker_parser.add_argument("--recover-stale-seconds", type=int, default=0)
+    worker_parser.add_argument("--worker-id", default=None)
+    worker_parser.add_argument("--lease-seconds", type=int, default=300)
 
     status_parser = subparsers.add_parser("job-status", help="Show durable jobs and events")
     status_parser.add_argument("--job-id")
@@ -149,6 +161,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    config = PSKAConfig.load(args.config)
+    config.apply_to_env()
+    args.database_url = args.database_url or config.database.url
+    if args.command == "service-check":
+        args.url = args.url or os.environ.get("PSKA_SERVICE_URL") or f"http://{config.service.host}:{config.service.port}"
+        args.service_token = args.service_token or os.environ.get("PSKA_SERVICE_TOKEN")
     if args.command == "db-check":
         return db_check(args.database_url)
     if args.command == "db-init":
@@ -170,8 +188,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "extract-all":
         return extract_all(args)
     if args.command == "serve":
-        serve(args.host, args.port, args.database_url)
+        serve(args.host or config.service.host, args.port or config.service.port, args.database_url)
         return 0
+    if args.command == "service-check":
+        return service_check(args)
     if args.command == "mcp-server":
         return MCPServer(args.database_url).run()
     if args.command == "smoke-twitter-import":
@@ -344,6 +364,37 @@ def extract_all(args: argparse.Namespace) -> int:
     return 0
 
 
+def service_check(args: argparse.Namespace) -> int:
+    base_url = str(args.url).rstrip("/")
+    headers = _service_check_headers(args.service_token)
+    checks: dict[str, Any] = {
+        "health": _service_check_request(base_url, "GET", "/health", headers=headers, timeout_seconds=args.timeout_seconds),
+        "ready": _service_check_request(base_url, "GET", "/ready", headers=headers, timeout_seconds=args.timeout_seconds),
+        "mcp_tools": _service_check_request(
+            base_url,
+            "POST",
+            "/mcp",
+            headers=headers,
+            timeout_seconds=args.timeout_seconds,
+            payload={"jsonrpc": "2.0", "id": "service-check", "method": "tools/list", "params": {}},
+        ),
+    }
+    mcp_payload = checks["mcp_tools"].get("payload") if checks["mcp_tools"].get("ok") else {}
+    tools = (((mcp_payload or {}).get("result") or {}).get("tools") or []) if isinstance(mcp_payload, dict) else []
+    tool_names = [tool.get("name") for tool in tools if isinstance(tool, dict) and tool.get("name")]
+    checks["mcp_tools"]["tool_names"] = tool_names
+    checks["mcp_tools"]["has_pska_search"] = "pska_search" in tool_names
+    ok = (
+        checks["health"].get("ok") is True
+        and checks["ready"].get("ok") is True
+        and checks["ready"].get("payload", {}).get("ok") is True
+        and checks["mcp_tools"].get("ok") is True
+        and checks["mcp_tools"]["has_pska_search"]
+    )
+    print(dumps({"ok": ok, "url": base_url, "checks": checks}))
+    return 0 if ok else 1
+
+
 def job_submit(args: argparse.Namespace) -> int:
     store = PostgresKnowledgeStore(args.database_url)
     payload = json.loads(args.payload.read_text(encoding="utf-8")) if args.payload else {}
@@ -358,7 +409,7 @@ def job_submit(args: argparse.Namespace) -> int:
 
 def job_run(args: argparse.Namespace) -> int:
     store = PostgresKnowledgeStore(args.database_url)
-    service = JobService(store)
+    service = JobService(store, worker_id=args.worker_id or _default_worker_id(), lease_seconds=args.lease_seconds)
     report = service.run_until_empty(limit=args.limit if args.limit > 0 else None) if args.until_empty else service.run_available(limit=args.limit)
     print(dumps(report))
     return 1 if report.failed else 0
@@ -366,7 +417,7 @@ def job_run(args: argparse.Namespace) -> int:
 
 def job_worker(args: argparse.Namespace) -> int:
     store = PostgresKnowledgeStore(args.database_url)
-    service = JobService(store)
+    service = JobService(store, worker_id=args.worker_id or _default_worker_id(), lease_seconds=args.lease_seconds)
     if args.recover_stale_seconds:
         recovered = service.recover_stale(max_age_seconds=args.recover_stale_seconds)
         if recovered:
@@ -555,16 +606,16 @@ def _table_exists(database_url: str, table: str) -> bool:
 
 
 def _add_embedding_args(parser: argparse.ArgumentParser, *, default_provider: str) -> None:
-    parser.add_argument("--embedding-provider", default=default_provider)
-    parser.add_argument("--embedding-model", default=os.environ.get("PSKA_EMBEDDING_MODEL", "BAAI/bge-m3"))
-    parser.add_argument("--embedding-dimensions", type=int, default=int(os.environ.get("PSKA_EMBEDDING_DIMENSIONS", "1024")))
+    parser.add_argument("--embedding-provider", default=None)
+    parser.add_argument("--embedding-model", default=None)
+    parser.add_argument("--embedding-dimensions", type=int, default=None)
 
 
 def _embedding_provider_from_args(args: argparse.Namespace):
     config = EmbeddingConfig(
-        provider=getattr(args, "embedding_provider", os.environ.get("PSKA_EMBEDDING_PROVIDER", "disabled")),
-        model=getattr(args, "embedding_model", os.environ.get("PSKA_EMBEDDING_MODEL", "BAAI/bge-m3")),
-        dimensions=getattr(args, "embedding_dimensions", int(os.environ.get("PSKA_EMBEDDING_DIMENSIONS", "1024"))),
+        provider=getattr(args, "embedding_provider", None) or os.environ.get("PSKA_EMBEDDING_PROVIDER", "disabled"),
+        model=getattr(args, "embedding_model", None) or os.environ.get("PSKA_EMBEDDING_MODEL", "BAAI/bge-m3"),
+        dimensions=getattr(args, "embedding_dimensions", None) or int(os.environ.get("PSKA_EMBEDDING_DIMENSIONS", "1024")),
         batch_size=getattr(args, "batch_size", int(os.environ.get("PSKA_EMBEDDING_BATCH_SIZE", "16"))),
     )
     return build_embedding_provider(config)
@@ -576,6 +627,45 @@ def _sample_query(store: PostgresKnowledgeStore) -> str:
         if words:
             return words[0]
     return "twitter"
+
+
+def _default_worker_id() -> str:
+    return f"pska-worker-{os.getpid()}"
+
+
+def _service_check_headers(service_token: str | None) -> dict[str, str]:
+    headers = {"accept": "application/json"}
+    if service_token:
+        headers["X-PSKA-Service-Token"] = service_token
+    return headers
+
+
+def _service_check_request(
+    base_url: str,
+    method: str,
+    path: str,
+    *,
+    headers: dict[str, str],
+    timeout_seconds: float,
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    data = None if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    request_headers = dict(headers)
+    if data is not None:
+        request_headers["content-type"] = "application/json; charset=utf-8"
+    request = Request(f"{base_url}{path}", data=data, method=method, headers=request_headers)
+    try:
+        with urlopen(request, timeout=timeout_seconds) as response:
+            body = response.read().decode("utf-8")
+            parsed = json.loads(body or "{}")
+            return {"ok": 200 <= response.status < 300, "status": response.status, "payload": parsed}
+    except HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        return {"ok": False, "status": exc.code, "error": body}
+    except (URLError, TimeoutError) as exc:
+        return {"ok": False, "error": str(exc)}
+    except json.JSONDecodeError as exc:
+        return {"ok": False, "error": f"invalid JSON: {exc}"}
 
 
 if __name__ == "__main__":

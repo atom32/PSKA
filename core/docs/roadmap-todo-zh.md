@@ -4,6 +4,14 @@
 
 长期愿景见 [vision-zh.md](vision-zh.md)。
 
+更新：2026-06-14
+
+- P0.1 service contract 已落地：HTTP `/mcp`、稳定 `/ready`、service contract 文档。
+- P0.2 auth/request context 已落地：service token、agent_service、represented user、HTTP/MCP ACL context。
+- P0.3 job worker metadata 已落地：worker lease、heartbeat、Fastreact `external_run_id`、source refs。
+- P0.5 observability/operations 已部分落地：增强 `/ready`、`service-check`、foreground runbook。
+- P0.4 background digest loop 已完成 write-back + external worker lifecycle slice：`pska_job_context`、`pska_write_candidates`、`POST /candidates`、`POST /jobs/{id}/lease`、`GET /digest/batches/{id}`、`POST /digest/candidates`、`complete/fail`。仍待补 priority/backoff、schema version、batch cursor 和更细的 candidate taxonomy。
+
 ## 当前判断
 
 PSKA 已完成初期 MVP 闭环：
@@ -104,13 +112,15 @@ online service -> background jobs -> idle digest -> multi-source connectors -> p
 
 PSKA 侧：
 
-- `jobs` 类型支持 `digest`。
-- `POST /jobs` 可创建 digest job，支持 scope、source refs、priority、lease ttl。
-- `POST /jobs/{job_id}/lease` 原子领取任务，返回 represented user、scope、allowed tools 和 batch cursor。
-- `GET /digest/batches/{batch_id}` 返回待处理 source/chunk/context，但必须先经过 ACL 和 scope 过滤。
-- `POST /digest/candidates` 写入 summary、entity、relationship、event、project、person、place、memory candidates。
-- `POST /review-items` 写入需要用户确认的摘要、提醒或 action candidate。
-- `POST /jobs/{job_id}/complete` 和 `POST /jobs/{job_id}/fail` 支持幂等完成、失败、retry/backoff。
+- `jobs` 类型支持 `digest_via_fastreact`。已完成。
+- `POST /jobs` 可创建 digest job，支持 scope 和 source refs。priority、backoff 待补。
+- `GET /jobs/{job_id}/context` 和 MCP `pska_job_context` 返回 scoped source/chunk context。已完成第一版。
+- `POST /candidates` 和 MCP `pska_write_candidates` 写入 entity、relationship、review、memory/profile candidates。已完成第一版。
+- `POST /jobs/{job_id}/lease` 领取任务，返回 scoped context 和 allowed tools。已完成第一版；batch cursor 待补。
+- `GET /digest/batches/{job_id}` 返回待处理 source/chunk/context，并经过 owner scope 过滤。已完成第一版。
+- `POST /digest/candidates` 写入 entity、relationship、review、memory/profile candidates。已完成第一版。
+- `POST /review-items` 写入需要用户确认的摘要、提醒或 action candidate。部分由 `POST /candidates` 的 `review_items` 覆盖。
+- `POST /jobs/{job_id}/complete` 和 `POST /jobs/{job_id}/fail` 支持完成、失败、retry。已完成第一版；backoff 待补。
 - 所有候选结果必须带 source refs、confidence、producer、schema version、request id 和 audit event。
 
 FastReAct 侧：

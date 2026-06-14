@@ -1,0 +1,28 @@
+{
+  "_comment": "PSKA local online service preset. Copy to ~/.pska/config.json or .pska/config.json.",
+  "database": {
+    "url": "postgresql:///pska"
+  },
+  "service": {
+    "host": "127.0.0.1",
+    "port": 8765,
+    "service_token": null
+  },
+  "llm": {
+    "api_key_file": "~/api_key.txt",
+    "model": "deepseek-v4-flash",
+    "base_url": "https://api.deepseek.com",
+    "timeout_seconds": 60
+  },
+  "fastreact": {
+    "url": "http://127.0.0.1:8000",
+    "service_token": null,
+    "timeout_seconds": 30
+  },
+  "embedding": {
+    "provider": "disabled",
+    "model": "BAAI/bge-m3",
+    "dimensions": 1024,
+    "batch_size": 16
+  }
+}
