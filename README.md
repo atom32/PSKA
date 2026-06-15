@@ -119,7 +119,7 @@ Or use the Chrome extension:
 | Agentic Search | ✅ Implemented |
 | MCP Interface | ✅ Implemented |
 | Production UI | ❌ Not Started |
-| Async Jobs | ❌ Not Started |
+| Async Jobs | ✅ Durable MVP |
 
 See [core/docs/mvp-status.md](core/docs/mvp-status.md) for detailed status and
 [core/docs/roadmap-todo-zh.md](core/docs/roadmap-todo-zh.md) for the next-stage TODO list.

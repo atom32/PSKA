@@ -9,8 +9,8 @@
 - P0.1 service contract 已落地：HTTP `/mcp`、稳定 `/ready`、service contract 文档。
 - P0.2 auth/request context 已落地：service token、agent_service、represented user、HTTP/MCP ACL context。
 - P0.3 job worker metadata 已落地：worker lease、heartbeat、Fastreact `external_run_id`、source refs。
-- P0.5 observability/operations 已部分落地：增强 `/ready`、`service-check`、foreground runbook、job stats/list/filter/cancel/retry/recover ops API 和 CLI。
-- P0.4 background digest loop 已完成 write-back + external worker lifecycle + scheduling + Fastreact worker slice：`pska_job_context`、`pska_write_candidates`、`POST /candidates`、`POST /jobs/{id}/lease`、`GET /digest/batches/{id}`、`POST /digest/candidates`、`complete/fail`、priority、retry backoff、candidate schema version、batch cursor、Fastreact `pska_digest` worker 脚本。仍待补更细的 candidate taxonomy、daemon/scheduler 化和真实 digest 质量调优。
+- P0.5 observability/operations 已部分落地：增强 `/ready`、`service-check`、foreground runbook、job stats/list/filter/cancel/retry/recover ops API 和 CLI，`digest_backlog` 指标。
+- P0.4 background digest loop 已完成 write-back + external worker lifecycle + backlog scheduling + Fastreact worker slice：`pska_job_context`、`pska_write_candidates`、`POST /candidates`、`POST /jobs/{id}/lease`、`GET /digest/batches/{id}`、`POST /digest/candidates`、`POST /digest/schedule`、`complete/fail`、priority、retry backoff、candidate schema version、batch cursor、Fastreact `pska_digest` worker 脚本。仍待补更细的 candidate taxonomy、daemon/periodic scheduler 化和真实 digest 质量调优。
 
 ## 当前判断
 
@@ -122,6 +122,7 @@ PSKA 侧：
 - `POST /review-items` 写入需要用户确认的摘要、提醒或 action candidate。部分由 `POST /candidates` 的 `review_items` 覆盖。
 - `GET /digest/batches/{job_id}?cursor=...&limit=...` 支持 batch cursor。已完成第一版。
 - `POST /jobs/{job_id}/complete` 和 `POST /jobs/{job_id}/fail` 支持完成、失败、retry backoff。已完成第一版。
+- `POST /digest/schedule` 和 CLI `digest-schedule` 从 source backlog 幂等创建 `digest_via_fastreact` job。已完成第一版。
 - 所有候选结果必须带 source refs、confidence、producer、schema version、request id 和 audit event。schema version 已支持 `pska.candidates.v1`。
 
 FastReAct 侧：
@@ -134,7 +135,7 @@ FastReAct 侧：
 
 策略：
 
-- 新数据优先。
+- 新数据优先。backlog scheduler 第一版按 source 创建时间倒序选取，跳过已排队/运行/成功的来源。
 - 低成本轻 digest 先行，高成本 LLM digest 延后。
 - retry backoff 已由 PSKA 控制；quota 和 idle window 待补。
 - 高影响 action 默认进入 review，不自动执行。

@@ -14,7 +14,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from pska_core.acl import ACLService
-from pska_core.api import serve
+from pska_core.api import PSKAApi, serve
 from pska_core.config import DEFAULT_DATABASE_URL, PSKAConfig
 from pska_core.embeddings import EmbeddingConfig, EmbeddingService, build_embedding_provider
 from pska_core.enums import Visibility
@@ -145,6 +145,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     recover_parser = subparsers.add_parser("job-recover", help="Recover stale running jobs")
     recover_parser.add_argument("--max-age-seconds", type=int, default=3600)
+
+    digest_schedule_parser = subparsers.add_parser("digest-schedule", help="Schedule digest_via_fastreact jobs from source backlog")
+    digest_schedule_parser.add_argument("--owner-user-id", default="user_primary")
+    digest_schedule_parser.add_argument("--source-item-id", action="append", dest="source_item_ids", default=[])
+    digest_schedule_parser.add_argument("--limit", type=int, default=20)
+    digest_schedule_parser.add_argument("--batch-size", type=int, default=20)
+    digest_schedule_parser.add_argument("--priority", type=int, default=0)
+    digest_schedule_parser.add_argument("--max-attempts", type=int, default=3)
+    digest_schedule_parser.add_argument("--retry-backoff-seconds", type=int, default=60)
+    digest_schedule_parser.add_argument("--force", action="store_true")
+    digest_schedule_parser.add_argument("--reason", default="")
+
     review_approve_parser = subparsers.add_parser("review-approve", help="Approve a pending review item")
     review_approve_parser.add_argument("review_item_id")
     review_approve_parser.add_argument("--actor-user-id", default="user_primary")
@@ -224,6 +236,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return job_cancel(args)
     if args.command == "job-recover":
         return job_recover(args)
+    if args.command == "digest-schedule":
+        return digest_schedule(args)
     if args.command == "review-approve":
         return review_approve(args)
     if args.command == "review-reject":
@@ -512,6 +526,23 @@ def job_recover(args: argparse.Namespace) -> int:
     return 0
 
 
+def digest_schedule(args: argparse.Namespace) -> int:
+    payload = {
+        "owner_user_id": args.owner_user_id,
+        "source_item_ids": args.source_item_ids,
+        "limit": args.limit,
+        "batch_size": args.batch_size,
+        "priority": args.priority,
+        "max_attempts": args.max_attempts,
+        "retry_backoff_seconds": args.retry_backoff_seconds,
+        "force": args.force,
+    }
+    if args.reason:
+        payload["reason"] = args.reason
+    print(dumps(PSKAApi(args.database_url).schedule_digest(payload)))
+    return 0
+
+
 def review_approve(args: argparse.Namespace) -> int:
     store = PostgresKnowledgeStore(args.database_url)
     service = ReviewService(store)
@@ -679,9 +710,14 @@ def _job_stats(store: PostgresKnowledgeStore, *, limit: int = 1000) -> dict[str,
     by_status = {status: 0 for status in ["queued", "running", "failed", "succeeded", "canceled"]}
     by_type: dict[str, int] = {}
     stale_running = []
+    digest_backlog_jobs = 0
+    digest_backlog_source_items: set[str] = set()
     for job in jobs:
         by_status[job.status] = by_status.get(job.status, 0) + 1
         by_type[job.job_type] = by_type.get(job.job_type, 0) + 1
+        if job.job_type == "digest_via_fastreact" and job.status in {"queued", "running"}:
+            digest_backlog_jobs += 1
+            digest_backlog_source_items.update(_job_source_item_ids(job))
         if job.status == "running" and job.leased_until and job.leased_until < utc_now():
             stale_running.append({"job_id": job.job_id, "job_type": job.job_type, "worker_id": job.worker_id})
     return {
@@ -690,7 +726,28 @@ def _job_stats(store: PostgresKnowledgeStore, *, limit: int = 1000) -> dict[str,
         "by_type": by_type,
         "running_stale_count": len(stale_running),
         "stale_running": stale_running[:10],
+        "digest_backlog": {
+            "jobs": digest_backlog_jobs,
+            "source_items": len(digest_backlog_source_items),
+        },
     }
+
+
+def _job_source_item_ids(job) -> set[str]:
+    ids = {ref.source_item_id for ref in job.source_refs if ref.source_item_id}
+    payload = job.payload if isinstance(job.payload, dict) else {}
+    raw_ids = payload.get("source_item_ids")
+    if isinstance(raw_ids, list):
+        ids.update(str(item) for item in raw_ids if item)
+    scope = payload.get("scope")
+    if isinstance(scope, dict) and isinstance(scope.get("source_item_ids"), list):
+        ids.update(str(item) for item in scope["source_item_ids"] if item)
+    raw_refs = payload.get("source_refs")
+    if isinstance(raw_refs, list):
+        for ref in raw_refs:
+            if isinstance(ref, dict) and ref.get("source_item_id"):
+                ids.add(str(ref["source_item_id"]))
+    return ids
 
 
 def _service_check_headers(service_token: str | None) -> dict[str, str]:

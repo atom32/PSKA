@@ -15,8 +15,8 @@ Twitter/X archive zip
   -> entities / hyperedges / review items
   -> ACL-first retrieval
   -> LLM agentic planning and answer synthesis
-  -> CLI / HTTP API / stdio MCP
-  -> Fastreact MCP tool access
+  -> CLI / HTTP API / stdio + HTTP MCP
+  -> Fastreact HTTP MCP tool access and digest worker
 ```
 
 This is an MVP, not a production-complete PSKA. The important architectural
@@ -38,9 +38,10 @@ allowed recovery path: ask the LLM to repair its own JSON/schema output.
 | Retrieval | MVP functional | ACL-first lexical/semantic placeholder ranking, citations, and one-hop hypergraph context. |
 | Agentic search | MVP complete | LLM plans retrieval queries and synthesizes answers from retrieved evidence. |
 | MCP boundary | MVP complete | PSKA exposes stdio MCP tools; Fastreact loads and calls them without importing PSKA internals. |
-| HTTP API | MVP functional | Local API supports health, ingest, search, agentic search, extraction, and review item listing. |
+| HTTP API | MVP functional | Local API supports health/readiness, ingest, search, agentic search, jobs, review, candidates, digest schedule, and HTTP MCP. |
+| Async jobs | Durable MVP | Jobs, events, lease/heartbeat, retry/backoff, stale recovery, job ops API/CLI, and Fastreact-backed digest/extraction contract are implemented. |
 | E2E smoke | MVP complete | Real local smoke covers DB reset, zip import, LLM extraction, search, MCP, HTTP, and Fastreact MCP load. |
-| Production readiness | Not complete | Needs async jobs, durable task state, stronger review workflow, observability, and UI. BGE-M3 embedding P0 is implemented but still needs real-data quality tuning. |
+| Production readiness | Not complete | Needs daemon supervision, stronger review workflow, richer metrics, connector expansion, UI, and real-data quality tuning. BGE-M3 embedding P0 is implemented but still needs production quality tuning. |
 
 ## Current Architecture
 
@@ -63,6 +64,10 @@ flowchart TD
     L --> N["HTTP API"]
     L --> O["stdio MCP server"]
     O --> P["Fastreact"]
+    N --> Q["durable jobs + digest schedule"]
+    Q --> P
+    P --> R["candidate write-back"]
+    R --> D
 ```
 
 ## LLM-Required Policy
@@ -99,6 +104,7 @@ CLI:
 ./scripts/pska --database-url postgresql:///pska_smoke search --query "GitHub"
 ./scripts/pska --database-url postgresql:///pska_smoke agentic-search --query "GitHub"
 ./scripts/pska --database-url postgresql:///pska_smoke serve --port 8766
+./scripts/pska --database-url postgresql:///pska_smoke digest-schedule --owner-user-id user_primary
 ```
 
 HTTP:
@@ -110,6 +116,13 @@ HTTP:
 - `POST /search`
 - `POST /agentic-search`
 - `POST /extract/all`
+- `POST /jobs`
+- `GET /jobs`
+- `GET /jobs/{job_id}`
+- `POST /digest/schedule`
+- `GET /digest/batches/{job_id}`
+- `POST /candidates`
+- `POST /mcp`
 
 MCP tools:
 
@@ -119,6 +132,8 @@ MCP tools:
 - `pska_ingest_channel_payload`
 - `pska_extract_all`
 - `pska_review_items`
+- `pska_job_context`
+- `pska_write_candidates`
 
 Fastreact sees these as namespaced tools, for example:
 

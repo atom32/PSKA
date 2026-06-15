@@ -15,7 +15,7 @@ from pska_core.embeddings import EmbeddingConfig, build_embedding_provider
 from pska_core.extraction import ExtractionService
 from pska_core.fastreact_client import FastreactError, HttpFastreactClient
 from pska_core.ingest import IngestService
-from pska_core.jobs import JobService
+from pska_core.jobs import DIGEST_VIA_FASTREACT, JobService
 from pska_core.memory import MemoryService
 from pska_core.mcp_server import MCPServer, PROTOCOL_VERSION
 from pska_core.models import ChannelIngestPayload, ReviewItem, SourceRef
@@ -232,12 +232,17 @@ class PSKAApi:
         by_type: dict[str, int] = {}
         worker_ids: set[str] = set()
         stale_running: list[dict[str, Any]] = []
+        digest_backlog_jobs = 0
+        digest_backlog_source_items: set[str] = set()
         now = datetime.now(UTC)
         for job in jobs:
             by_status[job.status] = by_status.get(job.status, 0) + 1
             by_type[job.job_type] = by_type.get(job.job_type, 0) + 1
             if job.worker_id:
                 worker_ids.add(job.worker_id)
+            if job.job_type == DIGEST_VIA_FASTREACT and job.status in {"queued", "running"}:
+                digest_backlog_jobs += 1
+                digest_backlog_source_items.update(_job_source_item_ids(job))
             if job.status == "running" and job.leased_until and _as_aware(job.leased_until) < now:
                 stale_running.append(
                     {
@@ -270,7 +275,69 @@ class PSKAApi:
                 "running_stale_count": len(stale_running),
                 "stale_running": stale_running[:10],
                 "recent_failed": recent_failed,
+                "digest_backlog": {
+                    "jobs": digest_backlog_jobs,
+                    "source_items": len(digest_backlog_source_items),
+                },
             }
+        }
+
+    def schedule_digest(self, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
+        owner_user_id = _owner_user_id_for_write(payload, context)
+        source_item_ids = _string_list(payload.get("source_item_ids"))
+        scoped_source_item_ids = set(_string_list(context.scope.get("source_item_ids"))) if context and context.scope else set()
+        force = bool(payload.get("force", False))
+        limit = _batch_limit(payload.get("limit") or 20)
+        batch_size = _batch_limit(payload.get("batch_size") or payload.get("limit") or 20)
+        priority = int(payload.get("priority") or 0)
+        max_attempts = int(payload.get("max_attempts") or 3)
+        retry_backoff_seconds = int(payload.get("retry_backoff_seconds") or payload.get("backoff_seconds") or 60)
+
+        source_items = [item for item in self.store.list_source_items() if item.owner_user_id == owner_user_id]
+        if source_item_ids:
+            requested = set(source_item_ids)
+            source_items = [item for item in source_items if item.source_item_id in requested]
+        if scoped_source_item_ids:
+            source_items = [item for item in source_items if item.source_item_id in scoped_source_item_ids]
+        source_items = sorted(source_items, key=lambda item: (item.created_at, item.source_item_id), reverse=True)
+
+        already_scheduled = set() if force else _active_digest_source_item_ids(self.store)
+        skipped_source_item_ids = [item.source_item_id for item in source_items if item.source_item_id in already_scheduled]
+        selected = [item for item in source_items if force or item.source_item_id not in already_scheduled][:limit]
+        source_refs = [{"source_item_id": item.source_item_id} for item in selected]
+
+        job = None
+        if source_refs:
+            job_payload: dict[str, Any] = {
+                "owner_user_id": owner_user_id,
+                "batch_size": batch_size,
+                "retry_backoff_seconds": retry_backoff_seconds,
+                "source_refs": source_refs,
+                "scope": {"source_item_ids": [ref["source_item_id"] for ref in source_refs]},
+            }
+            if payload.get("reason"):
+                job_payload["reason"] = str(payload["reason"])
+            job = self.jobs.submit(DIGEST_VIA_FASTREACT, job_payload, max_attempts=max_attempts, priority=priority)
+            self.store.add_job_event(
+                job.job_id,
+                "digest_scheduled",
+                "Scheduled digest job from source backlog",
+                {
+                    "owner_user_id": owner_user_id,
+                    "source_item_count": len(source_refs),
+                    "force": force,
+                    "priority": priority,
+                },
+            )
+
+        return {
+            "job": to_jsonable(job) if job else None,
+            "owner_user_id": owner_user_id,
+            "scheduled_source_item_ids": [ref["source_item_id"] for ref in source_refs],
+            "skipped_source_item_ids": skipped_source_item_ids,
+            "force": force,
+            "limit": limit,
+            "batch_size": batch_size,
         }
 
     def job_context(
@@ -407,6 +474,8 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
                 return self._json(200, self.api.write_candidates(payload, context=context))
             if path == "/digest/candidates":
                 return self._json(200, self.api.write_candidates(payload, context=context))
+            if path == "/digest/schedule":
+                return self._json(200, self.api.schedule_digest(payload, context=context))
             if path == "/jobs":
                 return self._json(200, self.api.submit_job(payload))
             if path == "/jobs/run":
@@ -519,6 +588,32 @@ def _job_source_item_ids(job) -> set[str]:
             if isinstance(ref, dict) and ref.get("source_item_id"):
                 ids.add(str(ref["source_item_id"]))
     return ids
+
+
+def _active_digest_source_item_ids(store: PostgresKnowledgeStore) -> set[str]:
+    ids: set[str] = set()
+    for job in store.list_jobs(job_type=DIGEST_VIA_FASTREACT, limit=10000):
+        if job.status in {"queued", "running", "succeeded"}:
+            ids.update(_job_source_item_ids(job))
+    return ids
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if item]
+
+
+def _owner_user_id_for_write(payload: dict[str, Any], context: RequestContext | None) -> str:
+    if context and context.caller == "agent_service":
+        return context.represented_user_id or context.effective_user_id
+    if payload.get("owner_user_id"):
+        return str(payload["owner_user_id"])
+    if context and context.represented_user_id:
+        return context.represented_user_id
+    if context:
+        return context.effective_user_id
+    return "user_primary"
 
 
 def _allowed_tools_for_job(job) -> list[str]:

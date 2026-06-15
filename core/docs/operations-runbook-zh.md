@@ -124,6 +124,18 @@ Fastreact offline does not make PSKA unavailable. In that case `/ready` should s
 ./scripts/pska jobs show job_xxx
 ```
 
+从 source backlog 创建 digest job：
+
+```bash
+./scripts/pska digest-schedule \
+  --owner-user-id user_primary \
+  --limit 20 \
+  --batch-size 20 \
+  --priority 0
+```
+
+`digest-schedule` 会跳过已经被 queued/running/succeeded digest job 覆盖的 source item；需要重做时加 `--force`，或用 `--source-item-id src_xxx` 指定范围。
+
 `queued` job 可能因为 retry backoff 暂时不可领取；查看 job 的 `run_after`。digest worker 可用 `GET /digest/batches/{job_id}?cursor=0&limit=20` 分页读取上下文，直到 `has_more=false`。
 
 Fastreact 侧脚本型 digest worker：
@@ -167,6 +179,7 @@ Local PSKA availability:
 Operational signals:
 
 - `checks.jobs.running_stale_count > 0` means worker lease expired; run `job-recover`.
+- `checks.jobs.digest_backlog.jobs > 0` means there are queued/running digest jobs for Fastreact workers.
 - `checks.jobs.recent_failed` shows recent failed jobs and `external_run_id` when Fastreact was involved.
 - `checks.fastreact.ok=false` means Fastreact is offline or not ready; PSKA can still do local retrieval and manage backlog.
 - `checks.fastreact.pska_tools_loaded=false` means Fastreact is reachable but missing required PSKA tools.

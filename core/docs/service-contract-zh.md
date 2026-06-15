@@ -2,7 +2,7 @@
 
 日期：2026-06-14
 
-状态：P0.5 + P0.4 write-back slice。本地 online service contract + service auth/request context + durable job worker metadata + readiness observability + foreground service runbook + Fastreact candidate write-back + config file support。
+状态：P0.5 + P0.4 digest backlog slice。本地 online service contract + service auth/request context + durable job worker metadata + readiness observability + foreground service runbook + Fastreact candidate write-back + digest schedule API/CLI + config file support。
 
 PSKA online service 是前台运行的本地 HTTP 服务。它不是 daemon supervisor；自动启动、重启、worker supervision 和运维手册属于 P0.5。
 
@@ -79,6 +79,7 @@ Jobs：
 
 Digest：
 
+- `POST /digest/schedule`
 - `GET /digest/batches/{job_id}`
 - `POST /digest/candidates`
 
@@ -171,6 +172,7 @@ X-PSKA-Scope: {"source_item_ids":["..."]}
 P0.4 readiness observability notes：
 
 - `checks.jobs.running_stale_count` counts running jobs whose lease has expired.
+- `checks.jobs.digest_backlog` reports queued/running digest jobs and scoped source count.
 - `checks.jobs.recent_failed` includes a bounded list of recent failed jobs with error and external run reference.
 - `checks.fastreact.pska_tools_loaded=false` means Fastreact is reachable but does not expose all PSKA required tools.
 - `checks.mcp.missing_required_tools` is a local contract failure and makes `ok=false` if required PSKA MCP tools are missing.
@@ -206,6 +208,7 @@ Fastreact-backed jobs such as `extract_via_fastreact` and `digest_via_fastreact`
 
 P0.4 write-back slice adds:
 
+- `POST /digest/schedule`
 - `GET /jobs/{job_id}/context`
 - `POST /jobs/{job_id}/lease`
 - `POST /jobs/{job_id}/complete`
@@ -219,6 +222,23 @@ P0.4 write-back slice adds:
 - retry `run_after` backoff
 - digest batch cursor
 - candidate `schema_version`
+
+`POST /digest/schedule` creates a `digest_via_fastreact` job from source backlog:
+
+```json
+{
+  "owner_user_id": "user_primary",
+  "source_item_ids": ["src_xxx"],
+  "limit": 20,
+  "batch_size": 20,
+  "priority": 0,
+  "max_attempts": 3,
+  "retry_backoff_seconds": 60,
+  "force": false
+}
+```
+
+It skips source items already covered by queued, running, or succeeded digest jobs unless `force=true`. The response includes the created job, `scheduled_source_item_ids`, and `skipped_source_item_ids`. This is a backlog scheduler, not a daemon; periodic invocation and supervision remain outside PSKA in this phase.
 
 `pska_job_context` returns the job, scoped source items, and chunks from the job's `source_refs`, `source_item_ids`, or `payload.scope.source_item_ids`. It is read-only and filtered to the request or represented user.
 

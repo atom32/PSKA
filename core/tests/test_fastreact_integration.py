@@ -420,6 +420,107 @@ def test_http_routes_cover_job_ops_filters_stats_cancel_and_recover() -> None:
     assert recovered["recovered"][0]["status"] == "queued"
 
 
+def test_digest_schedule_creates_backlog_and_skips_active_sources() -> None:
+    api = _api()
+    sources = [
+        IngestService(api.store).ingest_channel_payload(
+            {
+                "schema_version": "pska.channel_ingest.v1",
+                "source_channel": "manual",
+                "record_type": "note",
+                "source_id": f"digest-schedule-note-{index}",
+                "owner_user_id": "user_primary",
+                "space_id": "private_primary",
+                "visibility": "private",
+                "title": f"Digest schedule note {index}",
+                "content": {"text": f"Schedule digest source {index}."},
+            }
+        )
+        for index in range(3)
+    ]
+
+    first = api.schedule_digest({"owner_user_id": "user_primary", "limit": 2, "batch_size": 1, "priority": 7})
+    second = api.schedule_digest({"owner_user_id": "user_primary", "limit": 3})
+    forced = api.schedule_digest({"owner_user_id": "user_primary", "source_item_ids": [sources[0].source_item_id], "force": True})
+    stats = api.job_stats()["stats"]
+
+    assert first["job"]["job_type"] == DIGEST_VIA_FASTREACT
+    assert first["job"]["priority"] == 7
+    assert first["job"]["payload"]["batch_size"] == 1
+    assert len(first["scheduled_source_item_ids"]) == 2
+    assert first["skipped_source_item_ids"] == []
+    assert second["scheduled_source_item_ids"] == [sources[0].source_item_id]
+    assert sorted(second["skipped_source_item_ids"]) == sorted(source.source_item_id for source in sources[1:])
+    assert forced["scheduled_source_item_ids"] == [sources[0].source_item_id]
+    assert stats["digest_backlog"]["jobs"] == 3
+    assert stats["digest_backlog"]["source_items"] == 3
+
+
+def test_http_route_covers_digest_schedule() -> None:
+    api = _api()
+    source = IngestService(api.store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "digest-schedule-http-note",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "Digest schedule HTTP note",
+            "content": {"text": "Schedule this through HTTP."},
+        }
+    )
+
+    with _http_server(api) as base_url:
+        status, payload = _http_json(base_url, "POST", "/digest/schedule", {"owner_user_id": "user_primary", "limit": 1})
+
+    assert status == 200
+    assert payload["scheduled_source_item_ids"] == [source.source_item_id]
+    assert payload["job"]["job_type"] == DIGEST_VIA_FASTREACT
+
+
+def test_digest_schedule_agent_service_requires_represented_user_for_private_owner() -> None:
+    api = _api()
+    source = IngestService(api.store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "digest-schedule-agent-note",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "Digest schedule agent note",
+            "content": {"text": "Agent should need representation to schedule this."},
+        }
+    )
+
+    with _http_server(api) as base_url:
+        no_rep_status, no_rep = _http_json(
+            base_url,
+            "POST",
+            "/digest/schedule",
+            {"owner_user_id": "user_primary"},
+            headers={"X-PSKA-Caller": "agent_service"},
+        )
+        rep_status, rep = _http_json(
+            base_url,
+            "POST",
+            "/digest/schedule",
+            {"owner_user_id": "user_primary"},
+            headers={"X-PSKA-Caller": "agent_service", "X-PSKA-Represented-User-Id": "user_primary"},
+        )
+
+    assert no_rep_status == 200
+    assert no_rep["owner_user_id"] == "agent_service"
+    assert no_rep["job"] is None
+    assert no_rep["scheduled_source_item_ids"] == []
+    assert rep_status == 200
+    assert rep["owner_user_id"] == "user_primary"
+    assert rep["scheduled_source_item_ids"] == [source.source_item_id]
+
+
 def test_service_token_protects_non_health_routes(monkeypatch) -> None:
     monkeypatch.setenv("PSKA_SERVICE_TOKEN", "secret")
     api = _api()
@@ -628,6 +729,7 @@ def _api() -> PSKAApi:
     api.retrieval = RetrievalService(api.store, ACLService(api.store))
     api.agentic = AgenticSearchService(api.retrieval)
     api.mcp = MCPServer("postgresql:///unused", store=api.store)
+    api.jobs = JobService(api.store)
     api.reviews = ReviewService(api.store)
     api.candidates = CandidateWriteService(api.store)
     return api
