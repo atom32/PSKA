@@ -63,10 +63,13 @@ class JobService:
         self.worker_id = worker_id
         self.lease_seconds = lease_seconds
 
-    def submit(self, job_type: str, payload: dict[str, Any] | None = None, *, max_attempts: int = 3) -> Job:
+    def submit(self, job_type: str, payload: dict[str, Any] | None = None, *, max_attempts: int = 3, priority: int = 0) -> Job:
         if job_type not in JOB_TYPES:
             raise ValueError(f"Unsupported job type: {job_type}")
-        return self.store.create_job(job_type, payload or {}, max_attempts=max_attempts)
+        payload = dict(payload or {})
+        if "priority" in payload and priority == 0:
+            priority = int(payload["priority"])
+        return self.store.create_job(job_type, payload, max_attempts=max_attempts, priority=priority)
 
     def run_next(self) -> Job | None:
         job = self.store.claim_next_job(worker_id=self.worker_id, lease_seconds=self.lease_seconds)
@@ -248,6 +251,7 @@ class JobService:
         if not candidate_keys.intersection(response.keys()):
             return {"skipped": True, "reason": "no_candidate_keys"}
         payload = {
+            "schema_version": response.get("schema_version") or "pska.candidates.v1",
             "owner_user_id": owner_user_id,
             "job_id": job.job_id,
             "request_id": response.get("request_id") or response.get("run_id"),

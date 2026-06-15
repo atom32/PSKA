@@ -330,31 +330,43 @@ def test_http_routes_cover_mcp_jobs_and_review_contract() -> None:
 
 def test_http_routes_cover_digest_worker_contract() -> None:
     api = _api()
-    source = IngestService(api.store).ingest_channel_payload(
+    sources = [
+        IngestService(api.store).ingest_channel_payload(
+            {
+                "schema_version": "pska.channel_ingest.v1",
+                "source_channel": "manual",
+                "record_type": "note",
+                "source_id": f"digest-route-note-{index}",
+                "owner_user_id": "user_primary",
+                "space_id": "private_primary",
+                "visibility": "private",
+                "title": f"Digest route note {index}",
+                "content": {"text": f"PSKA digest workers write grounded candidates {index}."},
+            }
+        )
+        for index in range(2)
+    ]
+    job = JobService(api.store).submit(
+        DIGEST_VIA_FASTREACT,
         {
-            "schema_version": "pska.channel_ingest.v1",
-            "source_channel": "manual",
-            "record_type": "note",
-            "source_id": "digest-route-note",
             "owner_user_id": "user_primary",
-            "space_id": "private_primary",
-            "visibility": "private",
-            "title": "Digest route note",
-            "content": {"text": "PSKA digest workers write grounded candidates."},
-        }
+            "batch_size": 1,
+            "source_refs": [{"source_item_id": source.source_item_id} for source in sources],
+        },
     )
-    job = JobService(api.store).submit(DIGEST_VIA_FASTREACT, {"owner_user_id": "user_primary", "source_refs": [{"source_item_id": source.source_item_id}]})
     with _http_server(api) as base_url:
         lease_status, lease = _http_json(base_url, "POST", f"/jobs/{job.job_id}/lease", {"worker_id": "fastreact-worker", "lease_seconds": 120})
-        batch_status, batch = _http_json(base_url, "GET", f"/digest/batches/{job.job_id}")
+        batch_status, batch = _http_json(base_url, "GET", f"/digest/batches/{job.job_id}?limit=1")
+        next_batch_status, next_batch = _http_json(base_url, "GET", f"/digest/batches/{job.job_id}?cursor={batch['next_cursor']}&limit=1")
         candidates_status, candidates = _http_json(
             base_url,
             "POST",
             "/digest/candidates",
             {
+                "schema_version": "pska.candidates.v1",
                 "owner_user_id": "user_primary",
                 "job_id": job.job_id,
-                "source_refs": [{"source_item_id": source.source_item_id}],
+                "source_refs": [{"source_item_id": sources[0].source_item_id}],
                 "entities": [{"entity_type": "project", "label": "PSKA"}],
             },
         )
@@ -364,9 +376,15 @@ def test_http_routes_cover_digest_worker_contract() -> None:
     assert lease["job"]["status"] == "running"
     assert "pska_write_candidates" in lease["allowed_tools"]
     assert batch_status == 200
-    assert batch["source_items"][0]["source_item_id"] == source.source_item_id
+    assert batch["source_items"][0]["source_item_id"] == sources[0].source_item_id
+    assert batch["has_more"] is True
+    assert batch["next_cursor"] == "1"
+    assert next_batch_status == 200
+    assert next_batch["source_items"][0]["source_item_id"] == sources[1].source_item_id
+    assert next_batch["has_more"] is False
     assert candidates_status == 200
     assert candidates["summary"]["entities"]
+    assert candidates["summary"]["schema_version"] == "pska.candidates.v1"
     assert complete_status == 200
     assert complete["job"]["status"] == "succeeded"
 

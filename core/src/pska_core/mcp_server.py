@@ -81,6 +81,7 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "owner_user_id": {"type": "string"},
+                "schema_version": {"type": "string", "default": "pska.candidates.v1"},
                 "job_id": {"type": "string"},
                 "request_id": {"type": "string"},
                 "source_refs": {"type": "array", "items": {"type": "object"}},

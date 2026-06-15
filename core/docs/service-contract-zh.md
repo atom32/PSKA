@@ -207,6 +207,10 @@ P0.4 write-back slice adds:
 - `POST /digest/candidates`
 - MCP `pska_job_context`
 - MCP `pska_write_candidates`
+- job `priority`
+- retry `run_after` backoff
+- digest batch cursor
+- candidate `schema_version`
 
 `pska_job_context` returns the job, scoped source items, and chunks from the job's `source_refs`, `source_item_ids`, or `payload.scope.source_item_ids`. It is read-only and filtered to the request or represented user.
 
@@ -265,7 +269,14 @@ Lease response includes:
 - `allowed_tools`
 - `lease_seconds`
 
-For digest workers, `GET /digest/batches/{job_id}` is currently an alias for job context. `POST /digest/candidates` is currently an alias for `POST /candidates`.
+For digest workers, `GET /digest/batches/{job_id}` returns a paged job context. It accepts:
+
+```text
+cursor=0
+limit=20
+```
+
+The response includes `next_cursor`, `has_more`, `batch_size`, and `total_source_items`. `POST /digest/candidates` is currently an alias for `POST /candidates`.
 
 Complete/fail:
 
@@ -278,6 +289,8 @@ curl http://127.0.0.1:8765/jobs/job_xxx/fail \
   -H 'Content-Type: application/json' \
   -d '{"error":"Fastreact failed","retryable":true}'
 ```
+
+Retryable failures requeue the job with exponential backoff. The base delay is `payload.retry_backoff_seconds` or `payload.backoff_seconds`, defaulting to 60 seconds and capped at 3600 seconds. `POST /jobs/{job_id}/retry` resets `run_after` to now.
 
 ## HTTP MCP
 

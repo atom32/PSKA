@@ -55,6 +55,8 @@ def test_write_candidates_creates_grounded_knowledge_objects() -> None:
     assert len(summary["hyperedges"]) == 1
     assert len(summary["review_items"]) == 1
     assert len(summary["agent_memories"]) == 1
+    assert summary["schema_version"] == "pska.candidates.v1"
+    assert summary["warnings"] == ["schema_version missing; assumed pska.candidates.v1"]
     assert next(iter(store.hyperedges.values())).source_refs[0].source_item_id == source_id
     assert store.list_review_items()[0].proposal["source_refs"][0]["source_item_id"] == source_id
     assert store.list_audit_events("candidate_batch", "run_candidates")[0].decision == "accepted"
@@ -73,6 +75,24 @@ def test_write_candidates_requires_known_source_refs() -> None:
         )
     except CandidateWriteError as exc:
         assert "known source_items" in str(exc)
+    else:
+        raise AssertionError("expected CandidateWriteError")
+
+
+def test_write_candidates_rejects_unknown_schema_version() -> None:
+    store = _store_with_source()
+    source_id = next(iter(store.source_items))
+
+    try:
+        CandidateWriteService(store).write_candidates(
+            {
+                "schema_version": "pska.candidates.v999",
+                "owner_user_id": "user_primary",
+                "source_refs": [{"source_item_id": source_id}],
+            }
+        )
+    except CandidateWriteError as exc:
+        assert "unsupported candidate schema_version" in str(exc)
     else:
         raise AssertionError("expected CandidateWriteError")
 

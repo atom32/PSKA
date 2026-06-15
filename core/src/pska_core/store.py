@@ -70,6 +70,7 @@ class KnowledgeStore(Protocol):
     def claim_next_job(self, *, worker_id: str | None = None, lease_seconds: int | None = None) -> Job | None: ...
     def lease_job(self, job_id: str, *, worker_id: str | None = None, lease_seconds: int | None = None) -> Job: ...
     def heartbeat_job(self, job_id: str, *, worker_id: str | None = None, lease_seconds: int | None = None, external_run_id: str | None = None) -> Job: ...
+    def create_job(self, job_type: str, payload: dict, *, max_attempts: int = 3, priority: int = 0) -> Job: ...
 
 
 class InMemoryKnowledgeStore:
@@ -242,16 +243,18 @@ class InMemoryKnowledgeStore:
             results.append((self.hyperedges[edge_id], members))
         return results
 
-    def create_job(self, job_type: str, payload: dict, *, max_attempts: int = 3) -> Job:
+    def create_job(self, job_type: str, payload: dict, *, max_attempts: int = 3, priority: int = 0) -> Job:
         job = Job(
             job_id=f"job_{uuid4().hex}",
             job_type=job_type,
             payload=dict(payload),
             max_attempts=max_attempts,
+            priority=priority,
+            run_after=utc_now(),
             source_refs=_source_refs_from_payload(payload.get("source_refs")),
         )
         self.jobs[job.job_id] = job
-        self.add_job_event(job.job_id, "queued", f"Queued {job_type} job", {"payload": payload})
+        self.add_job_event(job.job_id, "queued", f"Queued {job_type} job", {"payload": payload, "priority": priority})
         return job
 
     def get_job(self, job_id: str) -> Job:
@@ -278,19 +281,27 @@ class InMemoryKnowledgeStore:
         return event
 
     def claim_next_job(self, *, worker_id: str | None = None, lease_seconds: int | None = None) -> Job | None:
-        queued = sorted((job for job in self.jobs.values() if job.status == "queued"), key=lambda job: job.created_at)
+        now = utc_now()
+        queued = sorted(
+            (
+                job
+                for job in self.jobs.values()
+                if job.status == "queued" and (job.run_after is None or job.run_after <= now)
+            ),
+            key=lambda job: (-job.priority, job.run_after or job.created_at, job.created_at, job.job_id),
+        )
         if not queued:
             return None
         job = queued[0]
         job.status = "running"
         job.attempts += 1
         job.error = None
-        job.started_at = utc_now()
+        job.started_at = now
         job.finished_at = None
         job.worker_id = worker_id
-        job.heartbeat_at = utc_now()
+        job.heartbeat_at = now
         job.leased_until = job.heartbeat_at + timedelta(seconds=lease_seconds) if lease_seconds else None
-        job.updated_at = utc_now()
+        job.updated_at = now
         self.add_job_event(
             job.job_id,
             "started",
@@ -303,6 +314,8 @@ class InMemoryKnowledgeStore:
         job = self.jobs[job_id]
         now = utc_now()
         if job.status == "queued":
+            if job.run_after is not None and job.run_after > now:
+                raise ValueError(f"Job {job_id} is not ready until {job.run_after.isoformat()}")
             job.status = "running"
             job.attempts += 1
             job.started_at = now
@@ -363,6 +376,8 @@ class InMemoryKnowledgeStore:
         job = self.jobs[job_id]
         job.status = "queued" if retryable and job.attempts < job.max_attempts else "failed"
         job.error = error
+        delay_seconds = _retry_delay_seconds(job.payload, job.attempts) if job.status == "queued" else 0
+        job.run_after = utc_now() + timedelta(seconds=delay_seconds) if job.status == "queued" else None
         if job.status == "failed":
             job.finished_at = utc_now()
         job.worker_id = None
@@ -370,7 +385,12 @@ class InMemoryKnowledgeStore:
         job.heartbeat_at = None
         job.updated_at = utc_now()
         event_type = "retry_queued" if job.status == "queued" else "failed"
-        self.add_job_event(job.job_id, event_type, error)
+        self.add_job_event(
+            job.job_id,
+            event_type,
+            error,
+            {"run_after": job.run_after.isoformat() if job.run_after else None, "backoff_seconds": delay_seconds},
+        )
         return job
 
     def retry_job(self, job_id: str) -> Job:
@@ -379,6 +399,7 @@ class InMemoryKnowledgeStore:
             raise ValueError(f"Only failed or canceled jobs can be retried, got {job.status}")
         job.status = "queued"
         job.error = None
+        job.run_after = utc_now()
         job.finished_at = None
         job.worker_id = None
         job.leased_until = None
@@ -399,10 +420,12 @@ class InMemoryKnowledgeStore:
             if job.attempts < job.max_attempts:
                 job.status = "queued"
                 job.error = "Recovered stale running job"
+                job.run_after = now
                 event_type = "stale_requeued"
             else:
                 job.status = "failed"
                 job.error = "Stale running job exceeded max attempts"
+                job.run_after = None
                 job.finished_at = now
                 event_type = "stale_failed"
             job.worker_id = None
@@ -452,3 +475,13 @@ def _source_refs_from_payload(value) -> list[SourceRef]:
         for ref in value
         if isinstance(ref, dict)
     ]
+
+
+def _retry_delay_seconds(payload: dict, attempts: int) -> int:
+    raw = payload.get("retry_backoff_seconds", payload.get("backoff_seconds", 60)) if isinstance(payload, dict) else 60
+    try:
+        base = max(0, int(raw))
+    except (TypeError, ValueError):
+        base = 60
+    exponent = max(0, attempts - 1)
+    return min(base * (2**exponent), 3600)

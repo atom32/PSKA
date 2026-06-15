@@ -5,7 +5,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from pska_core.acl import ACLService
 from pska_core.agentic import AgenticSearchService
@@ -253,6 +253,7 @@ class PSKAApi:
             str(payload["job_type"]),
             dict(payload.get("payload") or {}),
             max_attempts=int(payload.get("max_attempts") or 3),
+            priority=int(payload.get("priority") or (payload.get("payload") or {}).get("priority") or 0),
         )
         return {"job": to_jsonable(job)}
 
@@ -268,23 +269,39 @@ class PSKAApi:
             }
         return {"jobs": to_jsonable(self.store.list_jobs())}
 
-    def job_context(self, job_id: str, context: RequestContext | None = None) -> dict[str, Any]:
+    def job_context(
+        self,
+        job_id: str,
+        context: RequestContext | None = None,
+        *,
+        cursor: str | int | None = None,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
         job = self.store.get_job(job_id)
         user_id = context.effective_user_id if context else str(job.payload.get("owner_user_id") or "user_primary")
         represented_user_id = context.represented_user_id if context else None
         allowed_owner_id = represented_user_id or user_id
         source_item_ids = _job_source_item_ids(job)
-        source_items = [
-            item
-            for item in self.store.list_source_items()
-            if item.source_item_id in source_item_ids and item.owner_user_id == allowed_owner_id
-        ]
+        candidate_items = [item for item in self.store.list_source_items() if item.owner_user_id == allowed_owner_id]
+        if source_item_ids:
+            candidate_items = [item for item in candidate_items if item.source_item_id in source_item_ids]
+        candidate_items = sorted(candidate_items, key=lambda item: (item.created_at, item.source_item_id))
+        offset = _cursor_offset(cursor)
+        batch_size = _batch_limit(limit if limit is not None else (job.payload.get("batch_size") if isinstance(job.payload, dict) else None))
+        source_items = candidate_items[offset : offset + batch_size]
+        next_offset = offset + len(source_items)
+        has_more = next_offset < len(candidate_items)
         chunks = self.store.list_chunks_for_sources({item.source_item_id for item in source_items})
         return {
             "job": to_jsonable(job),
             "request_user_id": allowed_owner_id,
             "source_items": to_jsonable(source_items),
             "chunks": to_jsonable(chunks),
+            "cursor": str(offset),
+            "next_cursor": str(next_offset) if has_more else None,
+            "has_more": has_more,
+            "batch_size": batch_size,
+            "total_source_items": len(candidate_items),
         }
 
     def lease_job(self, job_id: str, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
@@ -322,7 +339,9 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
     api: PSKAApi
 
     def do_GET(self) -> None:  # noqa: N802 - stdlib handler API
-        path = urlparse(self.path).path
+        parsed_url = urlparse(self.path)
+        path = parsed_url.path
+        query = parse_qs(parsed_url.query)
         if path == "/health":
             return self._json(200, self.api.health())
         context = self._context({})
@@ -338,10 +357,10 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
             return self._json(200, self.api.job_status())
         if path.startswith("/jobs/") and path.endswith("/context"):
             job_id = path.removeprefix("/jobs/").removesuffix("/context")
-            return self._json(200, self.api.job_context(job_id, context=context))
+            return self._json(200, self.api.job_context(job_id, context=context, cursor=_first(query.get("cursor")), limit=_int_first(query.get("limit"))))
         if path.startswith("/digest/batches/"):
             job_id = path.removeprefix("/digest/batches/")
-            return self._json(200, self.api.job_context(job_id, context=context))
+            return self._json(200, self.api.job_context(job_id, context=context, cursor=_first(query.get("cursor")), limit=_int_first(query.get("limit"))))
         if path.startswith("/jobs/"):
             return self._json(200, self.api.job_status(path.removeprefix("/jobs/")))
         self._json(404, {"error": f"not found: {path}"})
@@ -485,3 +504,34 @@ def _allowed_tools_for_job(job) -> list[str]:
     if job.job_type in {"digest_via_fastreact", "extract_via_fastreact"}:
         return ["pska_job_context", "pska_search", "pska_agentic_search", "pska_write_candidates", "pska_review_items"]
     return ["pska_job_context", "pska_search", "pska_write_candidates"]
+
+
+def _first(values: list[str] | None) -> str | None:
+    return values[0] if values else None
+
+
+def _int_first(values: list[str] | None) -> int | None:
+    value = _first(values)
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+def _cursor_offset(value: str | int | None) -> int:
+    if value is None:
+        return 0
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _batch_limit(value: Any) -> int:
+    try:
+        limit = int(value) if value is not None else 20
+    except (TypeError, ValueError):
+        limit = 20
+    return min(max(limit, 1), 100)

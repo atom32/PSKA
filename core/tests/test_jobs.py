@@ -84,6 +84,35 @@ def test_job_service_can_drain_queue_until_empty() -> None:
     assert store.get_job(second.job_id).status == "succeeded"
 
 
+def test_job_priority_controls_claim_order() -> None:
+    store = _store()
+    service = JobService(store)
+    low = service.submit(EXTRACT_ALL, {"owner_user_id": "user_primary"}, priority=1)
+    high = service.submit(EXTRACT_ALL, {"owner_user_id": "user_primary"}, priority=10)
+
+    claimed = store.claim_next_job()
+
+    assert claimed is not None
+    assert claimed.job_id == high.job_id
+    assert store.get_job(low.job_id).status == "queued"
+
+
+def test_retryable_failure_uses_backoff_before_reclaim() -> None:
+    store = _store()
+    service = JobService(store)
+    job = service.submit(EMBED_BACKFILL, {"retry_backoff_seconds": 30}, max_attempts=2)
+
+    report = service.run_available(limit=1)
+    retried = store.get_job(job.job_id)
+
+    assert report.processed == 1
+    assert report.failed == 0
+    assert retried.status == "queued"
+    assert retried.run_after is not None
+    assert retried.run_after > utc_now()
+    assert store.claim_next_job() is None
+
+
 def test_import_job_retry_does_not_duplicate_source_document_or_chunk(tmp_path) -> None:
     archive_dir = tmp_path / "zips"
     archive_dir.mkdir()

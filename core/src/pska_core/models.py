@@ -234,6 +234,8 @@ class Job:
     status: str = "queued"
     attempts: int = 0
     max_attempts: int = 3
+    priority: int = 0
+    run_after: datetime | None = None
     error: str | None = None
     result: dict[str, Any] = field(default_factory=dict)
     created_at: datetime = field(default_factory=utc_now)

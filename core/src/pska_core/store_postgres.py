@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from datetime import timedelta
 from typing import Any, Iterator
 
 import psycopg
@@ -24,6 +25,7 @@ from pska_core.models import (
     TeamMembership,
     User,
     UserProfileCard,
+    utc_now,
 )
 from pska_core.serde import to_jsonable
 
@@ -523,19 +525,19 @@ class PostgresKnowledgeStore:
             )
         return [(self._hyperedge_from_row(row), members_by_edge.get(row["hyperedge_id"], [])) for row in edge_rows]
 
-    def create_job(self, job_type: str, payload: dict[str, Any], *, max_attempts: int = 3) -> Job:
+    def create_job(self, job_type: str, payload: dict[str, Any], *, max_attempts: int = 3, priority: int = 0) -> Job:
         source_refs = payload.get("source_refs") if isinstance(payload.get("source_refs"), list) else []
         with self.connect() as conn:
             row = conn.execute(
                 """
-                insert into jobs(job_type, payload, max_attempts, source_refs)
-                values (%s, %s, %s, %s)
+                insert into jobs(job_type, payload, max_attempts, source_refs, priority, run_after)
+                values (%s, %s, %s, %s, %s, now())
                 returning *
                 """,
-                (job_type, Jsonb(to_jsonable(payload)), max_attempts, Jsonb(to_jsonable(source_refs))),
+                (job_type, Jsonb(to_jsonable(payload)), max_attempts, Jsonb(to_jsonable(source_refs)), priority),
             ).fetchone()
             job = self._job_from_row(row)
-        self.add_job_event(job.job_id, "queued", f"Queued {job_type} job", {"payload": payload})
+        self.add_job_event(job.job_id, "queued", f"Queued {job_type} job", {"payload": payload, "priority": priority})
         return job
 
     def get_job(self, job_id: str) -> Job:
@@ -603,7 +605,8 @@ class PostgresKnowledgeStore:
                     select job_id
                     from jobs
                     where status = 'queued'
-                    order by created_at, job_id
+                      and run_after <= now()
+                    order by priority desc, run_after, created_at, job_id
                     for update skip locked
                     limit 1
                 )
@@ -638,7 +641,7 @@ class PostgresKnowledgeStore:
                     updated_at = now()
                 where job_id = %s
                   and (
-                    status = 'queued'
+                    (status = 'queued' and run_after <= now())
                     or (
                       status = 'running'
                       and (
@@ -727,12 +730,15 @@ class PostgresKnowledgeStore:
     def fail_job(self, job_id: str, error: str, *, retryable: bool = True) -> Job:
         current = self.get_job(job_id)
         status = "queued" if retryable and current.attempts < current.max_attempts else "failed"
+        delay_seconds = _retry_delay_seconds(current.payload, current.attempts) if status == "queued" else 0
+        run_after = utc_now() + timedelta(seconds=delay_seconds) if status == "queued" else None
         with self.connect() as conn:
             row = conn.execute(
                 """
                 update jobs
                 set status = %s,
                     error = %s,
+                    run_after = coalesce(%s, run_after),
                     finished_at = case when %s = 'failed' then now() else finished_at end,
                     worker_id = null,
                     leased_until = null,
@@ -741,11 +747,16 @@ class PostgresKnowledgeStore:
                 where job_id = %s
                 returning *
                 """,
-                (status, error, status, job_id),
+                (status, error, run_after, status, job_id),
             ).fetchone()
         job = self._job_from_row(row)
         event_type = "retry_queued" if status == "queued" else "failed"
-        self.add_job_event(job.job_id, event_type, error)
+        self.add_job_event(
+            job.job_id,
+            event_type,
+            error,
+            {"run_after": job.run_after.isoformat() if job.run_after else None, "backoff_seconds": delay_seconds},
+        )
         return job
 
     def retry_job(self, job_id: str) -> Job:
@@ -758,6 +769,7 @@ class PostgresKnowledgeStore:
                 update jobs
                 set status = 'queued',
                     error = null,
+                    run_after = now(),
                     finished_at = null,
                     worker_id = null,
                     leased_until = null,
@@ -783,6 +795,7 @@ class PostgresKnowledgeStore:
                         when attempts < max_attempts then 'Recovered stale running job'
                         else 'Stale running job exceeded max attempts'
                     end,
+                    run_after = case when attempts < max_attempts then now() else run_after end,
                     finished_at = case when attempts < max_attempts then null else now() end,
                     worker_id = null,
                     leased_until = null,
@@ -895,6 +908,8 @@ class PostgresKnowledgeStore:
             status=row["status"],
             attempts=int(row["attempts"]),
             max_attempts=int(row["max_attempts"]),
+            priority=int(row.get("priority") or 0),
+            run_after=row.get("run_after"),
             error=row["error"],
             result=dict(row["result"] or {}),
             created_at=row["created_at"],
@@ -933,3 +948,13 @@ def _vector_literal(vector: list[float] | None) -> str | None:
     if vector is None:
         return None
     return "[" + ",".join(f"{float(value):.9g}" for value in vector) + "]"
+
+
+def _retry_delay_seconds(payload: dict[str, Any], attempts: int) -> int:
+    raw = payload.get("retry_backoff_seconds", payload.get("backoff_seconds", 60)) if isinstance(payload, dict) else 60
+    try:
+        base = max(0, int(raw))
+    except (TypeError, ValueError):
+        base = 60
+    exponent = max(0, attempts - 1)
+    return min(base * (2**exponent), 3600)

@@ -15,6 +15,9 @@ class CandidateWriteError(ValueError):
     """Raised when a candidate batch cannot be grounded safely."""
 
 
+SUPPORTED_CANDIDATE_SCHEMA_VERSION = "pska.candidates.v1"
+
+
 class CandidateWriteService:
     """Applies Fastreact-generated candidates through PSKA's storage and review boundary."""
 
@@ -28,6 +31,12 @@ class CandidateWriteService:
         producer = str(payload.get("producer") or "fastreact")
         job_id = payload.get("job_id")
         request_id = payload.get("request_id")
+        schema_version = str(payload.get("schema_version") or SUPPORTED_CANDIDATE_SCHEMA_VERSION)
+        warnings: list[str] = []
+        if payload.get("schema_version") is None:
+            warnings.append("schema_version missing; assumed pska.candidates.v1")
+        if schema_version != SUPPORTED_CANDIDATE_SCHEMA_VERSION:
+            raise CandidateWriteError(f"unsupported candidate schema_version: {schema_version}")
         source_refs = _source_refs(payload.get("source_refs"))
         source_items = self._source_items_for_refs(source_refs)
         if not source_refs:
@@ -43,7 +52,8 @@ class CandidateWriteService:
             "review_items": [],
             "agent_memories": [],
             "profile_cards": [],
-            "warnings": [],
+            "schema_version": schema_version,
+            "warnings": warnings,
         }
         entity_lookup: dict[str, Entity] = {}
         for spec in _list_of_dicts(payload.get("entities")):
@@ -84,6 +94,7 @@ class CandidateWriteService:
             decision="accepted",
             metadata={
                 "producer": producer,
+                "schema_version": schema_version,
                 "job_id": job_id,
                 "request_id": request_id,
                 "summary": summary,
