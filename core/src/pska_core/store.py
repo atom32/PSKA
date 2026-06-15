@@ -71,6 +71,8 @@ class KnowledgeStore(Protocol):
     def lease_job(self, job_id: str, *, worker_id: str | None = None, lease_seconds: int | None = None) -> Job: ...
     def heartbeat_job(self, job_id: str, *, worker_id: str | None = None, lease_seconds: int | None = None, external_run_id: str | None = None) -> Job: ...
     def create_job(self, job_type: str, payload: dict, *, max_attempts: int = 3, priority: int = 0) -> Job: ...
+    def list_jobs(self, *, status: str | None = None, job_type: str | None = None, limit: int = 50) -> list[Job]: ...
+    def cancel_job(self, job_id: str, *, reason: str = "") -> Job: ...
 
 
 class InMemoryKnowledgeStore:
@@ -260,10 +262,12 @@ class InMemoryKnowledgeStore:
     def get_job(self, job_id: str) -> Job:
         return self.jobs[job_id]
 
-    def list_jobs(self, *, status: str | None = None, limit: int = 50) -> list[Job]:
+    def list_jobs(self, *, status: str | None = None, job_type: str | None = None, limit: int = 50) -> list[Job]:
         jobs = list(self.jobs.values())
         if status:
             jobs = [job for job in jobs if job.status == status]
+        if job_type:
+            jobs = [job for job in jobs if job.job_type == job_type]
         return sorted(jobs, key=lambda job: (job.created_at, job.job_id), reverse=True)[:limit]
 
     def list_job_events(self, job_id: str) -> list[JobEvent]:
@@ -407,6 +411,22 @@ class InMemoryKnowledgeStore:
         job.external_run_id = None
         job.updated_at = utc_now()
         self.add_job_event(job.job_id, "retry_queued", "Job manually queued for retry")
+        return job
+
+    def cancel_job(self, job_id: str, *, reason: str = "") -> Job:
+        job = self.jobs[job_id]
+        if job.status in {"succeeded", "failed", "canceled"}:
+            raise ValueError(f"Only queued or running jobs can be canceled, got {job.status}")
+        now = utc_now()
+        job.status = "canceled"
+        job.error = reason or "Job canceled"
+        job.finished_at = now
+        job.worker_id = None
+        job.leased_until = None
+        job.heartbeat_at = None
+        job.external_run_id = None
+        job.updated_at = now
+        self.add_job_event(job.job_id, "canceled", job.error)
         return job
 
     def recover_stale_jobs(self, *, max_age_seconds: int) -> list[Job]:

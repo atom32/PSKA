@@ -547,18 +547,22 @@ class PostgresKnowledgeStore:
             raise KeyError(job_id)
         return self._job_from_row(row)
 
-    def list_jobs(self, *, status: str | None = None, limit: int = 50) -> list[Job]:
+    def list_jobs(self, *, status: str | None = None, job_type: str | None = None, limit: int = 50) -> list[Job]:
+        conditions: list[str] = []
+        params: list[Any] = []
+        if status:
+            conditions.append("status = %s")
+            params.append(status)
+        if job_type:
+            conditions.append("job_type = %s")
+            params.append(job_type)
+        where = f"where {' and '.join(conditions)}" if conditions else ""
+        params.append(limit)
         with self.connect() as conn:
-            if status:
-                rows = conn.execute(
-                    "select * from jobs where status = %s order by created_at desc, job_id desc limit %s",
-                    (status, limit),
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    "select * from jobs order by created_at desc, job_id desc limit %s",
-                    (limit,),
-                ).fetchall()
+            rows = conn.execute(
+                f"select * from jobs {where} order by created_at desc, job_id desc limit %s",
+                tuple(params),
+            ).fetchall()
         return [self._job_from_row(row) for row in rows]
 
     def list_job_events(self, job_id: str) -> list[JobEvent]:
@@ -783,6 +787,32 @@ class PostgresKnowledgeStore:
             ).fetchone()
         job = self._job_from_row(row)
         self.add_job_event(job.job_id, "retry_queued", "Job manually queued for retry")
+        return job
+
+    def cancel_job(self, job_id: str, *, reason: str = "") -> Job:
+        current = self.get_job(job_id)
+        if current.status in {"succeeded", "failed", "canceled"}:
+            raise ValueError(f"Only queued or running jobs can be canceled, got {current.status}")
+        error = reason or "Job canceled"
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                update jobs
+                set status = 'canceled',
+                    error = %s,
+                    finished_at = now(),
+                    worker_id = null,
+                    leased_until = null,
+                    heartbeat_at = null,
+                    external_run_id = null,
+                    updated_at = now()
+                where job_id = %s
+                returning *
+                """,
+                (error, job_id),
+            ).fetchone()
+        job = self._job_from_row(row)
+        self.add_job_event(job.job_id, "canceled", error)
         return job
 
     def recover_stale_jobs(self, *, max_age_seconds: int) -> list[Job]:

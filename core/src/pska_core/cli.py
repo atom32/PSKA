@@ -126,10 +126,22 @@ def build_parser() -> argparse.ArgumentParser:
     status_parser = subparsers.add_parser("job-status", help="Show durable jobs and events")
     status_parser.add_argument("--job-id")
     status_parser.add_argument("--status")
+    status_parser.add_argument("--job-type")
     status_parser.add_argument("--limit", type=int, default=50)
+
+    jobs_parser = subparsers.add_parser("jobs", help="List durable jobs or show job stats")
+    jobs_parser.add_argument("action", choices=["list", "stats", "show"], nargs="?", default="list")
+    jobs_parser.add_argument("job_id", nargs="?")
+    jobs_parser.add_argument("--status")
+    jobs_parser.add_argument("--job-type")
+    jobs_parser.add_argument("--limit", type=int, default=50)
 
     retry_parser = subparsers.add_parser("job-retry", help="Queue a failed or canceled job for retry")
     retry_parser.add_argument("job_id")
+
+    cancel_parser = subparsers.add_parser("job-cancel", help="Cancel a queued or running job")
+    cancel_parser.add_argument("job_id")
+    cancel_parser.add_argument("--reason", default="")
 
     recover_parser = subparsers.add_parser("job-recover", help="Recover stale running jobs")
     recover_parser.add_argument("--max-age-seconds", type=int, default=3600)
@@ -204,8 +216,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         return job_worker(args)
     if args.command == "job-status":
         return job_status(args)
+    if args.command == "jobs":
+        return jobs(args)
     if args.command == "job-retry":
         return job_retry(args)
+    if args.command == "job-cancel":
+        return job_cancel(args)
     if args.command == "job-recover":
         return job_recover(args)
     if args.command == "review-approve":
@@ -452,7 +468,25 @@ def job_status(args: argparse.Namespace) -> int:
             "events": store.list_job_events(args.job_id),
         }
     else:
-        payload = {"jobs": store.list_jobs(status=args.status, limit=args.limit)}
+        payload = {"jobs": store.list_jobs(status=args.status, job_type=args.job_type, limit=args.limit)}
+    print(dumps(payload))
+    return 0
+
+
+def jobs(args: argparse.Namespace) -> int:
+    store = PostgresKnowledgeStore(args.database_url)
+    if args.action == "show":
+        if not args.job_id:
+            print("jobs show requires job_id", file=sys.stderr)
+            return 2
+        payload = {
+            "job": store.get_job(args.job_id),
+            "events": store.list_job_events(args.job_id),
+        }
+    elif args.action == "stats":
+        payload = {"stats": _job_stats(store, limit=args.limit)}
+    else:
+        payload = {"jobs": store.list_jobs(status=args.status, job_type=args.job_type, limit=args.limit)}
     print(dumps(payload))
     return 0
 
@@ -460,6 +494,13 @@ def job_status(args: argparse.Namespace) -> int:
 def job_retry(args: argparse.Namespace) -> int:
     store = PostgresKnowledgeStore(args.database_url)
     job = store.retry_job(args.job_id)
+    print(dumps({"job": job}))
+    return 0
+
+
+def job_cancel(args: argparse.Namespace) -> int:
+    store = PostgresKnowledgeStore(args.database_url)
+    job = store.cancel_job(args.job_id, reason=args.reason)
     print(dumps({"job": job}))
     return 0
 
@@ -631,6 +672,25 @@ def _sample_query(store: PostgresKnowledgeStore) -> str:
 
 def _default_worker_id() -> str:
     return f"pska-worker-{os.getpid()}"
+
+
+def _job_stats(store: PostgresKnowledgeStore, *, limit: int = 1000) -> dict[str, Any]:
+    jobs = store.list_jobs(limit=limit)
+    by_status = {status: 0 for status in ["queued", "running", "failed", "succeeded", "canceled"]}
+    by_type: dict[str, int] = {}
+    stale_running = []
+    for job in jobs:
+        by_status[job.status] = by_status.get(job.status, 0) + 1
+        by_type[job.job_type] = by_type.get(job.job_type, 0) + 1
+        if job.status == "running" and job.leased_until and job.leased_until < utc_now():
+            stale_running.append({"job_id": job.job_id, "job_type": job.job_type, "worker_id": job.worker_id})
+    return {
+        "sample_size": len(jobs),
+        "by_status": by_status,
+        "by_type": by_type,
+        "running_stale_count": len(stale_running),
+        "stale_running": stale_running[:10],
+    }
 
 
 def _service_check_headers(service_token: str | None) -> dict[str, str]:

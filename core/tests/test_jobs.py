@@ -275,6 +275,26 @@ def test_failed_jobs_can_be_requeued_for_manual_retry() -> None:
     assert store.list_job_events(job.job_id)[-1].event_type == "retry_queued"
 
 
+def test_queued_and_running_jobs_can_be_canceled() -> None:
+    store = _store()
+    service = JobService(store)
+    queued = service.submit(EMBED_BACKFILL, {}, max_attempts=1)
+    running_source = service.submit(EXTRACT_ALL, {"owner_user_id": "user_primary"}, max_attempts=1, priority=10)
+    running = store.claim_next_job(worker_id="worker_cancel", lease_seconds=60)
+
+    canceled_queued = store.cancel_job(queued.job_id, reason="not needed")
+    canceled_running = store.cancel_job(running_source.job_id, reason="worker shutdown")
+
+    assert running is not None
+    assert running.job_id == running_source.job_id
+    assert canceled_queued.status == "canceled"
+    assert canceled_queued.error == "not needed"
+    assert canceled_running.status == "canceled"
+    assert canceled_running.worker_id is None
+    assert canceled_running.leased_until is None
+    assert [event.event_type for event in store.list_job_events(queued.job_id)][-1] == "canceled"
+
+
 def test_stale_running_jobs_are_requeued_before_max_attempts() -> None:
     store = _store()
     service = JobService(store)

@@ -9,7 +9,7 @@
 - P0.1 service contract 已落地：HTTP `/mcp`、稳定 `/ready`、service contract 文档。
 - P0.2 auth/request context 已落地：service token、agent_service、represented user、HTTP/MCP ACL context。
 - P0.3 job worker metadata 已落地：worker lease、heartbeat、Fastreact `external_run_id`、source refs。
-- P0.5 observability/operations 已部分落地：增强 `/ready`、`service-check`、foreground runbook。
+- P0.5 observability/operations 已部分落地：增强 `/ready`、`service-check`、foreground runbook、job stats/list/filter/cancel/retry/recover ops API 和 CLI。
 - P0.4 background digest loop 已完成 write-back + external worker lifecycle + scheduling + Fastreact worker slice：`pska_job_context`、`pska_write_candidates`、`POST /candidates`、`POST /jobs/{id}/lease`、`GET /digest/batches/{id}`、`POST /digest/candidates`、`complete/fail`、priority、retry backoff、candidate schema version、batch cursor、Fastreact `pska_digest` worker 脚本。仍待补更细的 candidate taxonomy、daemon/scheduler 化和真实 digest 质量调优。
 
 ## 当前判断
@@ -162,6 +162,13 @@ FastReAct 侧：
   - worker 启动
   - FastReAct HTTP MCP 配置
   - 常见故障
+- Job ops 第一版已完成：
+  - `GET /jobs?status=&job_type=&limit=`
+  - `GET /jobs/stats`
+  - `POST /jobs/{job_id}/cancel`
+  - `POST /jobs/{job_id}/retry`
+  - `POST /jobs/recover-stale`
+  - CLI `jobs list|stats|show`、`job-cancel`、`job-retry`、`job-recover`
 
 验收：
 

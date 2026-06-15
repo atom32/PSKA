@@ -119,6 +119,9 @@ Fastreact offline does not make PSKA unavailable. In that case `/ready` should s
 
 ```bash
 ./scripts/pska job-status --job-id job_xxx
+./scripts/pska jobs list --status queued --job-type digest_via_fastreact
+./scripts/pska jobs stats
+./scripts/pska jobs show job_xxx
 ```
 
 `queued` job 可能因为 retry backoff 暂时不可领取；查看 job 的 `run_after`。digest worker 可用 `GET /digest/batches/{job_id}?cursor=0&limit=20` 分页读取上下文，直到 `has_more=false`。
@@ -145,6 +148,12 @@ python3 scripts/pska_digest_worker.py \
 
 ```bash
 ./scripts/pska job-retry job_xxx
+```
+
+取消 queued/running job：
+
+```bash
+./scripts/pska job-cancel job_xxx --reason "superseded"
 ```
 
 ## 6. Readiness Interpretation

@@ -179,6 +179,14 @@ P0.4 readiness observability notes：
 
 PSKA job system 是 durable orchestrator，不是复杂 agent loop 执行层。P0.3 之后，job 会记录 worker 与外部 run metadata：
 
+Operational job endpoints:
+
+- `GET /jobs?status=&job_type=&limit=` lists jobs with filters.
+- `GET /jobs/stats` returns status/type counts, active workers, stale running jobs, and recent failures.
+- `POST /jobs/{job_id}/cancel` cancels a queued/running job.
+- `POST /jobs/{job_id}/retry` requeues a failed/canceled job.
+- `POST /jobs/recover-stale` requeues or fails stale running jobs based on attempts.
+
 - `worker_id`：领取该 job 的 PSKA worker。
 - `leased_until`：当前 worker lease 到期时间；job 成功、失败、重试或 stale recovery 时清空。
 - `heartbeat_at`：worker 最近一次 heartbeat 时间。

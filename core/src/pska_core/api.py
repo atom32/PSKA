@@ -97,50 +97,7 @@ class PSKAApi:
 
     def _jobs_ready(self) -> dict[str, Any]:
         try:
-            jobs = self.store.list_jobs(limit=1000)
-            by_status = {status: 0 for status in ["queued", "running", "failed", "succeeded", "canceled"]}
-            by_type: dict[str, int] = {}
-            worker_ids: set[str] = set()
-            stale_running: list[dict[str, Any]] = []
-            now = datetime.now(UTC)
-            for job in jobs:
-                by_status[job.status] = by_status.get(job.status, 0) + 1
-                by_type[job.job_type] = by_type.get(job.job_type, 0) + 1
-                if job.worker_id:
-                    worker_ids.add(job.worker_id)
-                if job.status == "running" and job.leased_until and _as_aware(job.leased_until) < now:
-                    stale_running.append(
-                        {
-                            "job_id": job.job_id,
-                            "job_type": job.job_type,
-                            "worker_id": job.worker_id,
-                            "leased_until": job.leased_until,
-                            "external_run_id": job.external_run_id,
-                        }
-                    )
-            recent_failed = [
-                {
-                    "job_id": job.job_id,
-                    "job_type": job.job_type,
-                    "attempts": job.attempts,
-                    "max_attempts": job.max_attempts,
-                    "error": job.error,
-                    "updated_at": job.updated_at,
-                    "external_run_id": job.external_run_id,
-                }
-                for job in jobs
-                if job.status == "failed"
-            ][:5]
-            return {
-                "ok": True,
-                "sample_size": len(jobs),
-                "by_status": by_status,
-                "by_type": by_type,
-                "active_worker_ids": sorted(worker_ids),
-                "running_stale_count": len(stale_running),
-                "stale_running": stale_running[:10],
-                "recent_failed": recent_failed,
-            }
+            return {"ok": True, **self.job_stats()["stats"]}
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
@@ -261,13 +218,60 @@ class PSKAApi:
         report = self.jobs.run_available(limit=int(payload.get("limit") or 1))
         return {"run": to_jsonable(report)}
 
-    def job_status(self, job_id: str | None = None) -> dict[str, Any]:
+    def job_status(self, job_id: str | None = None, *, status: str | None = None, job_type: str | None = None, limit: int = 50) -> dict[str, Any]:
         if job_id:
             return {
                 "job": to_jsonable(self.store.get_job(job_id)),
                 "events": to_jsonable(self.store.list_job_events(job_id)),
             }
-        return {"jobs": to_jsonable(self.store.list_jobs())}
+        return {"jobs": to_jsonable(self.store.list_jobs(status=status, job_type=job_type, limit=limit))}
+
+    def job_stats(self, *, limit: int = 1000) -> dict[str, Any]:
+        jobs = self.store.list_jobs(limit=limit)
+        by_status = {status: 0 for status in ["queued", "running", "failed", "succeeded", "canceled"]}
+        by_type: dict[str, int] = {}
+        worker_ids: set[str] = set()
+        stale_running: list[dict[str, Any]] = []
+        now = datetime.now(UTC)
+        for job in jobs:
+            by_status[job.status] = by_status.get(job.status, 0) + 1
+            by_type[job.job_type] = by_type.get(job.job_type, 0) + 1
+            if job.worker_id:
+                worker_ids.add(job.worker_id)
+            if job.status == "running" and job.leased_until and _as_aware(job.leased_until) < now:
+                stale_running.append(
+                    {
+                        "job_id": job.job_id,
+                        "job_type": job.job_type,
+                        "worker_id": job.worker_id,
+                        "leased_until": job.leased_until,
+                        "external_run_id": job.external_run_id,
+                    }
+                )
+        recent_failed = [
+            {
+                "job_id": job.job_id,
+                "job_type": job.job_type,
+                "attempts": job.attempts,
+                "max_attempts": job.max_attempts,
+                "error": job.error,
+                "updated_at": job.updated_at,
+                "external_run_id": job.external_run_id,
+            }
+            for job in jobs
+            if job.status == "failed"
+        ][:5]
+        return {
+            "stats": {
+                "sample_size": len(jobs),
+                "by_status": by_status,
+                "by_type": by_type,
+                "active_worker_ids": sorted(worker_ids),
+                "running_stale_count": len(stale_running),
+                "stale_running": stale_running[:10],
+                "recent_failed": recent_failed,
+            }
+        }
 
     def job_context(
         self,
@@ -330,8 +334,11 @@ class PSKAApi:
     def retry_job(self, job_id: str) -> dict[str, Any]:
         return {"job": to_jsonable(self.store.retry_job(job_id))}
 
+    def cancel_job(self, job_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return {"job": to_jsonable(self.store.cancel_job(job_id, reason=str(payload.get("reason") or "")))}
+
     def recover_jobs(self, payload: dict[str, Any]) -> dict[str, Any]:
-        jobs = self.jobs.recover_stale(max_age_seconds=int(payload.get("max_age_seconds") or 3600))
+        jobs = self.store.recover_stale_jobs(max_age_seconds=int(payload.get("max_age_seconds") or 3600))
         return {"recovered": to_jsonable(jobs)}
 
 
@@ -353,8 +360,17 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
             return self._json(200, self.api.index_status())
         if path == "/review-items":
             return self._json(200, self.api.review_items())
+        if path == "/jobs/stats":
+            return self._json(200, self.api.job_stats(limit=_int_first(query.get("limit")) or 1000))
         if path == "/jobs":
-            return self._json(200, self.api.job_status())
+            return self._json(
+                200,
+                self.api.job_status(
+                    status=_first(query.get("status")),
+                    job_type=_first(query.get("job_type")),
+                    limit=_int_first(query.get("limit")) or 50,
+                ),
+            )
         if path.startswith("/jobs/") and path.endswith("/context"):
             job_id = path.removeprefix("/jobs/").removesuffix("/context")
             return self._json(200, self.api.job_context(job_id, context=context, cursor=_first(query.get("cursor")), limit=_int_first(query.get("limit"))))
@@ -397,6 +413,8 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
                 return self._json(200, self.api.run_jobs(payload))
             if path == "/jobs/recover":
                 return self._json(200, self.api.recover_jobs(payload))
+            if path == "/jobs/recover-stale":
+                return self._json(200, self.api.recover_jobs(payload))
             if path.startswith("/jobs/") and path.endswith("/lease"):
                 job_id = path.removeprefix("/jobs/").removesuffix("/lease")
                 return self._json(200, self.api.lease_job(job_id, payload, context=context))
@@ -406,6 +424,9 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
             if path.startswith("/jobs/") and path.endswith("/fail"):
                 job_id = path.removeprefix("/jobs/").removesuffix("/fail")
                 return self._json(200, self.api.fail_job(job_id, payload))
+            if path.startswith("/jobs/") and path.endswith("/cancel"):
+                job_id = path.removeprefix("/jobs/").removesuffix("/cancel")
+                return self._json(200, self.api.cancel_job(job_id, payload))
             if path.startswith("/review-items/") and path.endswith("/approve"):
                 review_item_id = path.removeprefix("/review-items/").removesuffix("/approve")
                 return self._json(200, self.api.approve_review_item(review_item_id, payload))

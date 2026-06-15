@@ -389,6 +389,37 @@ def test_http_routes_cover_digest_worker_contract() -> None:
     assert complete["job"]["status"] == "succeeded"
 
 
+def test_http_routes_cover_job_ops_filters_stats_cancel_and_recover() -> None:
+    api = _api()
+    service = JobService(api.store)
+    digest = service.submit(DIGEST_VIA_FASTREACT, {"owner_user_id": "user_primary"}, priority=5)
+    extract = service.submit(EXTRACT_VIA_FASTREACT, {"owner_user_id": "user_primary"}, priority=10)
+    running = api.store.claim_next_job(worker_id="worker_ops", lease_seconds=30)
+    assert running is not None
+    assert running.job_id == extract.job_id
+    running.started_at = utc_now() - timedelta(seconds=120)
+    running.leased_until = utc_now() - timedelta(seconds=10)
+
+    with _http_server(api) as base_url:
+        list_status, listed = _http_json(base_url, "GET", "/jobs?status=queued&job_type=digest_via_fastreact&limit=5")
+        stats_status, stats = _http_json(base_url, "GET", "/jobs/stats")
+        cancel_status, canceled = _http_json(base_url, "POST", f"/jobs/{digest.job_id}/cancel", {"reason": "covered by newer job"})
+        recover_status, recovered = _http_json(base_url, "POST", "/jobs/recover-stale", {"max_age_seconds": 60})
+
+    assert list_status == 200
+    assert [job["job_id"] for job in listed["jobs"]] == [digest.job_id]
+    assert stats_status == 200
+    assert stats["stats"]["by_status"]["queued"] == 1
+    assert stats["stats"]["by_status"]["running"] == 1
+    assert stats["stats"]["running_stale_count"] == 1
+    assert cancel_status == 200
+    assert canceled["job"]["status"] == "canceled"
+    assert canceled["job"]["error"] == "covered by newer job"
+    assert recover_status == 200
+    assert recovered["recovered"][0]["job_id"] == extract.job_id
+    assert recovered["recovered"][0]["status"] == "queued"
+
+
 def test_service_token_protects_non_health_routes(monkeypatch) -> None:
     monkeypatch.setenv("PSKA_SERVICE_TOKEN", "secret")
     api = _api()
