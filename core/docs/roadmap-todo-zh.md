@@ -10,7 +10,7 @@
 - P0.2 auth/request context 已落地：service token、agent_service、represented user、HTTP/MCP ACL context。
 - P0.3 job worker metadata 已落地：worker lease、heartbeat、Fastreact `external_run_id`、source refs。
 - P0.5 observability/operations 已部分落地：增强 `/ready`、`service-check`、foreground runbook。
-- P0.4 background digest loop 已完成 write-back + external worker lifecycle + scheduling slice：`pska_job_context`、`pska_write_candidates`、`POST /candidates`、`POST /jobs/{id}/lease`、`GET /digest/batches/{id}`、`POST /digest/candidates`、`complete/fail`、priority、retry backoff、candidate schema version、batch cursor。仍待补更细的 candidate taxonomy 和 Fastreact 专用 digest worker skill。
+- P0.4 background digest loop 已完成 write-back + external worker lifecycle + scheduling + Fastreact worker slice：`pska_job_context`、`pska_write_candidates`、`POST /candidates`、`POST /jobs/{id}/lease`、`GET /digest/batches/{id}`、`POST /digest/candidates`、`complete/fail`、priority、retry backoff、candidate schema version、batch cursor、Fastreact `pska_digest` worker 脚本。仍待补更细的 candidate taxonomy、daemon/scheduler 化和真实 digest 质量调优。
 
 ## 当前判断
 
@@ -126,8 +126,8 @@ PSKA 侧：
 
 FastReAct 侧：
 
-- 增加 PSKA digest worker skill/workflow。
-- worker 从 PSKA lease job，不从 PSKA DB 取数据。
+- 增加 PSKA digest worker skill/workflow。脚本型 worker 第一版已完成。
+- worker 从 PSKA lease job，不从 PSKA DB 取数据。已完成第一版。
 - worker 调用 PSKA tools 获取上下文、执行 LLM 推理、写回 candidates/review items。
 - worker 输出 FastReAct agent event stream，PSKA 只保存必要 audit 和结果引用。
 - worker 失败时返回结构化错误，PSKA 决定 retry、降级或进入 review。

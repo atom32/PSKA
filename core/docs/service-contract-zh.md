@@ -372,6 +372,8 @@ NO_PROXY=127.0.0.1,localhost PYTHONPATH=src \
 
 PSKA `/ready` accepts Fastreact namespaced MCP tools such as `pska_pska_search` and normalizes them when checking `checks.fastreact.pska_tools_loaded`.
 
+生成的 PSKA Fastreact profile 使用 `user_key=pska:{user_id}` 命中 `pska` tenant policy；该 policy 显式 deny `exec`、`read_file`、`write_file`、`edit_file`，digest/extract/QA 应只通过 PSKA HTTP MCP tools 访问知识库。
+
 Fastreact still must not access PSKA DB directly. PSKA remains the authority for ACL, source refs, review, audit, and persistence.
 
 ## Verified Interop

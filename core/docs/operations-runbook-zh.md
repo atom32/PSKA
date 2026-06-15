@@ -123,6 +123,18 @@ Fastreact offline does not make PSKA unavailable. In that case `/ready` should s
 
 `queued` job 可能因为 retry backoff 暂时不可领取；查看 job 的 `run_after`。digest worker 可用 `GET /digest/batches/{job_id}?cursor=0&limit=20` 分页读取上下文，直到 `has_more=false`。
 
+Fastreact 侧脚本型 digest worker：
+
+```bash
+cd ~/Fastreact/fastreact-nano
+python3 scripts/pska_digest_worker.py \
+  --pska-url http://127.0.0.1:8765 \
+  --fastreact-url http://127.0.0.1:8000 \
+  --batch-limit 20
+```
+
+该 worker 只通过 PSKA HTTP API/MCP 获取上下文和写回 candidates，不直接访问 PSKA DB。
+
 恢复 stale running jobs：
 
 ```bash
