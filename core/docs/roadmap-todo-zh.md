@@ -39,6 +39,7 @@ online service daemon -> background jobs -> idle digest -> review/memory -> reli
 - 长任务必须任务化，不能阻塞在线请求。
 - 所有 digest、memory 和主动建议都必须保留 source refs。
 - 未来其他系统接入 PSKA 时，也应复用同一套 API/MCP 契约，而不是依赖 FastReAct 或 PSKA 的内部实现。
+- Open-source-first：非 PSKA 核心边界能力优先采用成熟开源项目或库，避免从头造轮子。PSKA 自己实现的重点应限于私有权限、source refs、review/audit、canonical data model、service contract 和与 FastReAct 的边界。检索、解析、watch、rerank、评测、daemon 包装、UI 组件等应先评估现成方案。
 
 ## P0: Online Service Foundation
 
@@ -303,32 +304,39 @@ FastReAct 仍然是重要消费者，但不应主导 PSKA 架构。
    - Fastreact digest worker 修复 tool budget/重复写回问题。
    - 用当前 `postgresql:///pska` 的有限 docs/Twitter 样本跑通：lease job -> batch context -> LLM digest -> candidates/review/memory/profile 写回 -> complete job。
    - 加一个只读/半自动 gate，验证 digest job 不只是 queued，而是真的产生 grounded candidates。
+   - 优先复用：FastReAct 现有 worker/skill/event stream，PSKA 只补 contract/gate；不要在 PSKA 内重写 agent loop。
 
 2. **Review taxonomy 和候选质量**
    - 明确 `review_items` 类型：memory_candidate、profile_update、relationship_candidate、action_candidate、conflict、low_confidence。
    - 高影响/低置信候选进入 review；低风险摘要或关系候选可批量 approve。
    - Review apply 后必须写 audit event，并保留 source refs。
+   - 优先复用：Pydantic/JSON Schema 类 schema validation、现成 diff/approval UI 组件；PSKA 自己保留 audit/source-ref/write boundary。
 
 3. **Memory promotion lifecycle**
    - 将 digest candidates 稳定转成 agent memories/profile cards/hyperedges。
    - 增加 memory confidence、decay、last_verified_at 的实际更新路径。
    - 做 `memory-list`/`memory-review`/`profile-list` 这类人类可检查 CLI。
+   - 优先复用：现有知识图谱/实体归一化工具、dateparser/rapidfuzz 等轻量库；PSKA 自己定义 memory lifecycle 和 ACL。
 
 4. **Retrieval/GraphRAG 质量打磨**
    - 当前是轻量 GraphRAG，不是 GNN/HippoRAG/PPR。
    - 下一步优先做 rerank/evaluation，而不是上 GNN：加入 query fixture、expected citations、graph path relevance、conflict/gap regression。
    - 如果真实问题经常需要跨多文档多跳，再评估 HippoRAG/PPR 层。
+   - 优先复用：pgvector/Postgres FTS、rank-bm25 或 Tantivy/LanceDB/Qdrant 视边界评估，rerank 可评估 sentence-transformers/cross-encoder，GraphRAG 可评估 HippoRAG/PPR 而非自研 GNN。
 
 5. **Service daemon 产品化**
    - `local-daemon` 仍是 foreground supervisor。
    - 后续补 launchd/systemd wrapper、日志路径、pid/status、restart policy、配置检查。
    - `/ready` 增加 Fastreact worker/digest backlog 质量信号，而不是只看服务是否在线。
+   - 优先复用：launchd/systemd/supervisord 或 honcho/foreman 类 process manager；PSKA 只生成配置和健康检查。
 
 6. **Human-facing MVP workflow**
    - 固化日常命令：`files-sync`/`files-watch`、`digest-schedule`、`mvp-status --summary`、`review-list`、`agentic-search`。
    - 做一个 `daily-briefing` 或 `inbox` 第一版，把 digest/review/memory 串成用户每天能看的输出。
+   - 优先复用：Typer/Rich/Textual 或轻量 Web UI 组件库；先做可用 workflow，不从零做完整产品框架。
 
 7. **Connector 扩展保持克制**
    - MVP 阶段继续只把 Twitter/X archive 和 local files 做扎实。
    - Browser/Git connector 可以作为下一轮 P1.3/P1.4，但不应早于 digest/review/memory 闭环稳定。
    - Mail/photos/NAS/Home Assistant/conversations 继续后置。
+   - 优先复用：readability-lxml/trafilatura/Playwright、GitPython/PyDriller、Unstructured/Docling/Marker、watchdog 等成熟 connector/解析库；PSKA connector 只负责授权、manifest、source refs 和 canonical ingest。

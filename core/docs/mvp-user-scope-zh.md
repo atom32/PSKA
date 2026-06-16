@@ -51,6 +51,12 @@ MVP 阶段不追求：
 - 后台系统级安装器和复杂日志轮转。
 - 自动执行高影响动作。
 
+实现原则：
+
+- Open-source-first：非 PSKA 核心边界能力优先采用成熟开源项目或库，不从头造轮子。
+- PSKA 自己实现的重点是权限、source refs、review/audit、canonical DB、service contract 和 FastReAct 边界。
+- 文档解析、网页抽取、watch、rerank、评测、daemon 包装、UI 组件和 graph algorithm 都应先评估现成项目，再决定是否做薄封装。
+
 ## 当前下一步
 
 优先顺序：
