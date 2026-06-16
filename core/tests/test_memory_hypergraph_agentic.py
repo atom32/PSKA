@@ -182,6 +182,73 @@ def test_hypergraph_context_returns_grounded_source_citations() -> None:
     assert "GraphRAG" in edge_context["evidence_citations"][0]["snippet"]
 
 
+def test_graph_paths_return_two_hop_grounded_relation_chain() -> None:
+    store = make_store()
+    source_fastreact = IngestService(store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "note_pska_fastreact",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "PSKA FastReAct boundary",
+            "content": {"text": "PSKA delegates complex agentic work to FastReAct."},
+        }
+    )
+    source_digest = IngestService(store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "note_fastreact_digest",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "FastReAct digest worker",
+            "content": {"text": "FastReAct executes digest loops for PSKA."},
+        }
+    )
+    graph = HypergraphService(store)
+    graph.create_entity(Entity("ent_pska", "project", "PSKA", "user_primary", "private_primary", Visibility.PRIVATE))
+    graph.create_entity(Entity("ent_fastreact", "service", "FastReAct", "user_primary", "private_primary", Visibility.PRIVATE))
+    graph.create_entity(Entity("ent_digest", "workflow", "Digest", "user_primary", "private_primary", Visibility.PRIVATE))
+    graph.create_hyperedge(
+        relation_type="delegates_to",
+        owner_user_id="user_primary",
+        space_id="private_primary",
+        visibility=Visibility.PRIVATE,
+        directionality=Directionality.DIRECTED,
+        members=[("ent_pska", "caller"), ("ent_fastreact", "executor")],
+        evidence_text="PSKA delegates complex agentic work to FastReAct.",
+        source_refs=[SourceRef(source_item_id=source_fastreact.source_item_id)],
+        confidence=0.9,
+    )
+    graph.create_hyperedge(
+        relation_type="executes",
+        owner_user_id="user_primary",
+        space_id="private_primary",
+        visibility=Visibility.PRIVATE,
+        directionality=Directionality.DIRECTED,
+        members=[("ent_fastreact", "executor"), ("ent_digest", "workflow")],
+        evidence_text="FastReAct executes digest loops for PSKA.",
+        source_refs=[SourceRef(source_item_id=source_digest.source_item_id)],
+        confidence=0.8,
+    )
+
+    response = RetrievalService(store, ACLService(store)).search("PSKA 到 Digest 的关系路径", store.get_user("user_primary"))
+
+    two_hop_paths = [path for path in response.graph_paths if path["depth"] == 2]
+    assert two_hop_paths
+    path = two_hop_paths[0]
+    assert [entity["label"] for entity in path["entities"]] == ["PSKA", "FastReAct", "Digest"]
+    assert [edge["relation_type"] for edge in path["edges"]] == ["delegates_to", "executes"]
+    assert path["edges"][0]["evidence_citations"][0]["source_item_id"] == source_fastreact.source_item_id
+    assert path["edges"][1]["evidence_citations"][0]["source_item_id"] == source_digest.source_item_id
+    assert response.score_debug["graph_paths_used"] is True
+
+
 def test_hypergraph_context_does_not_leak_private_evidence_citations() -> None:
     store = make_store()
     source = IngestService(store).ingest_channel_payload(

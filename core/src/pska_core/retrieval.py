@@ -32,6 +32,7 @@ class RetrievalResponse:
     results: list[RetrievalResult]
     citations: list[dict[str, Any]]
     hypergraph_context: list[dict[str, Any]]
+    graph_paths: list[dict[str, Any]] = field(default_factory=list)
     profile_context_used: bool = False
     memory_context_used: bool = False
     gaps: list[str] = field(default_factory=list)
@@ -71,8 +72,14 @@ class RetrievalService:
             user=user,
             represented_user_id=represented_user_id,
         )
+        graph_paths = self._graph_paths(
+            query=query,
+            ranked=ranked,
+            user=user,
+            represented_user_id=represented_user_id,
+        )
         ranker = "exact_source" if rank_debug.get("exact_candidates", 0) else "hybrid_rrf"
-        graph_context_used = bool(hypergraph_context)
+        graph_context_used = bool(hypergraph_context or graph_paths)
         return RetrievalResponse(
             query=query,
             request_user_id=represented_user_id or user.user_id,
@@ -81,11 +88,13 @@ class RetrievalService:
             results=ranked,
             citations=citations,
             hypergraph_context=hypergraph_context,
+            graph_paths=graph_paths,
             gaps=[] if ranked or graph_context_used else ["insufficient_evidence"],
             score_debug={
                 "ranker": ranker,
                 "top_k": top_k,
                 "graph_context_used": graph_context_used,
+                "graph_paths_used": bool(graph_paths),
                 **rank_debug,
             },
         )
@@ -250,11 +259,7 @@ class RetrievalService:
         entities = self._matching_entities(query, ranked)
         if _is_graph_global_query(query):
             entities = self.store.list_entities()
-        visible_entities = [
-            entity
-            for entity in entities
-            if self._can_read_graph_object(user, entity.owner_user_id, entity.visibility, entity.visible_team_ids, represented_user_id)
-        ]
+        visible_entities = self._visible_entities(entities, user=user, represented_user_id=represented_user_id)
         edges = self.store.list_hyperedges_for_entities({entity.entity_id for entity in visible_entities})
         context = []
         entity_by_id = {entity.entity_id: entity for entity in self.store.list_entities()}
@@ -264,6 +269,93 @@ class RetrievalService:
             context.append(self._edge_context(edge, members, entity_by_id, user=user, represented_user_id=represented_user_id))
         return context
 
+    def _graph_paths(
+        self,
+        *,
+        query: str,
+        ranked: list[RetrievalResult],
+        user: User,
+        represented_user_id: str | None,
+        max_depth: int = 2,
+        max_paths: int = 8,
+    ) -> list[dict[str, Any]]:
+        seed_entities = self._visible_entities(
+            self._matching_entities(query, ranked),
+            user=user,
+            represented_user_id=represented_user_id,
+        )
+        if not seed_entities:
+            return []
+
+        all_entities = self.store.list_entities()
+        entity_by_id = {entity.entity_id: entity for entity in all_entities}
+        visible_entity_ids = {
+            entity.entity_id
+            for entity in self._visible_entities(all_entities, user=user, represented_user_id=represented_user_id)
+        }
+        paths: list[dict[str, Any]] = []
+        seen_paths: set[tuple[str, tuple[str, ...], tuple[str, ...]]] = set()
+
+        for seed in seed_entities:
+            frontier: list[tuple[str, list[str], list[dict[str, Any]], list[str]]] = [
+                (seed.entity_id, [seed.entity_id], [], [])
+            ]
+            for _depth in range(max_depth):
+                next_frontier: list[tuple[str, list[str], list[dict[str, Any]], list[str]]] = []
+                for current_entity_id, entity_ids, edge_contexts, edge_ids in frontier:
+                    edges = sorted(
+                        self.store.list_hyperedges_for_entities({current_entity_id}),
+                        key=lambda item: item[0].hyperedge_id,
+                    )
+                    for edge, members in edges:
+                        if edge.hyperedge_id in edge_ids:
+                            continue
+                        if not self._can_read_graph_object(user, edge.owner_user_id, edge.visibility, edge.visible_team_ids, represented_user_id):
+                            continue
+                        visible_member_ids = [member.entity_id for member in members if member.entity_id in visible_entity_ids]
+                        if current_entity_id not in visible_member_ids or len(visible_member_ids) < 2:
+                            continue
+
+                        edge_context = self._edge_context(edge, members, entity_by_id, user=user, represented_user_id=represented_user_id)
+                        for neighbor_entity_id in visible_member_ids:
+                            if neighbor_entity_id == current_entity_id:
+                                continue
+                            if neighbor_entity_id in entity_ids:
+                                continue
+                            next_entity_ids = [*entity_ids, neighbor_entity_id]
+                            next_edge_ids = [*edge_ids, edge.hyperedge_id]
+                            path_key = (seed.entity_id, tuple(next_edge_ids), tuple(next_entity_ids))
+                            if path_key in seen_paths:
+                                continue
+                            seen_paths.add(path_key)
+
+                            next_edge_contexts = [*edge_contexts, edge_context]
+                            paths.append(
+                                {
+                                    "path_id": f"{seed.entity_id}:{'|'.join(next_edge_ids)}:{neighbor_entity_id}",
+                                    "depth": len(next_edge_ids),
+                                    "seed": self._entity_context(seed),
+                                    "entities": [
+                                        self._entity_context(entity_by_id[entity_id])
+                                        for entity_id in next_entity_ids
+                                        if entity_id in entity_by_id
+                                    ],
+                                    "edges": next_edge_contexts,
+                                    "score_debug": {
+                                        "path_length": len(next_edge_ids),
+                                        "mean_confidence": _mean([edge_context["confidence"] for edge_context in next_edge_contexts]),
+                                    },
+                                }
+                            )
+                            if len(paths) >= max_paths:
+                                return paths
+                            if len(next_edge_ids) < max_depth:
+                                next_frontier.append((neighbor_entity_id, next_entity_ids, next_edge_contexts, next_edge_ids))
+                frontier = next_frontier
+                if not frontier:
+                    break
+        return paths
+
     def _matching_entities(self, query: str, ranked: list[RetrievalResult]) -> list[Entity]:
         haystack = " ".join([query, *[result.title for result in ranked], *[result.snippet for result in ranked]]).lower()
         matches = []
@@ -271,6 +363,26 @@ class RetrievalService:
             if entity.label.lower() in haystack:
                 matches.append(entity)
         return matches
+
+    def _visible_entities(
+        self,
+        entities: list[Entity],
+        *,
+        user: User,
+        represented_user_id: str | None,
+    ) -> list[Entity]:
+        return [
+            entity
+            for entity in entities
+            if self._can_read_graph_object(user, entity.owner_user_id, entity.visibility, entity.visible_team_ids, represented_user_id)
+        ]
+
+    def _entity_context(self, entity: Entity) -> dict[str, Any]:
+        return {
+            "entity_id": entity.entity_id,
+            "label": entity.label,
+            "entity_type": entity.entity_type,
+        }
 
     def _can_read_graph_object(
         self,
@@ -410,3 +522,9 @@ def _is_graph_global_query(query: str) -> bool:
     graph_terms = {"graph", "knowledge", "entity", "entities", "relation", "relations", "relationship", "relationships"}
     graph_terms_zh = ("图谱", "实体", "关系", "关联")
     return bool(terms.intersection(graph_terms)) or any(term in normalized for term in graph_terms_zh)
+
+
+def _mean(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    return sum(values) / len(values)
