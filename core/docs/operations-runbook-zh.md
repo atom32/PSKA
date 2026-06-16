@@ -33,6 +33,13 @@ export PSKA_FASTREACT_SERVICE_TOKEN=replace-with-fastreact-token
 export PSKA_EMBEDDING_PROVIDER=disabled
 ```
 
+当前产品化约定：
+
+- PSKA canonical database 是 `.pska/config.json` 里的 `database.url`，当前为 `postgresql:///pska`。
+- 临时样例库例如 `postgresql:///pska_mvp_plus_sample` 只用于 gate/实验，不应作为 daemon 默认库。
+- Fastreact 没有 PSKA 知识数据库；它只能通过 PSKA HTTP API/MCP 访问 canonical DB。
+- `service-check` 会比较 `/health.database` 和 config 的 `database.url`，发现服务指到错库时会失败。
+
 ## 2. Database
 
 检查 PostgreSQL 和 pgvector：
@@ -312,5 +319,7 @@ NO_PROXY=127.0.0.1,localhost PYTHONPATH=src \
 ```bash
 ./scripts/pska --config .pska/config.json service-check
 ```
+
+如果 Fastreact 使用 stdio MCP，生成配置时也必须使用同一个 `--database-url postgresql:///pska`。如果 Fastreact 使用 HTTP MCP，则它访问的是 `http://127.0.0.1:8765/mcp` 背后的 PSKA service，因此 PSKA service 自己必须通过 `service-check` 的 database alignment。
 
 PSKA owns storage, ACL, source refs, review, audit, jobs, citations, and MCP/API. Fastreact owns LLM calls, planning, tool orchestration, run lifecycle, SSE events, approval, and trace.

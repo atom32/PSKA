@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 import pska_core.cli as cli_module
-from pska_core.cli import build_parser, digest_scheduler, _mvp_next_actions, _mvp_status_summary, _review_items_payload
+from pska_core.cli import build_parser, digest_scheduler, _mvp_next_actions, _mvp_status_payload, _mvp_status_summary, _review_items_payload
 from pska_core.enums import ReviewType
 from pska_core.models import ReviewItem
 
@@ -54,7 +54,15 @@ def test_cli_accepts_search_and_smoke() -> None:
     local_daemon = build_parser().parse_args(["local-daemon", "--no-worker", "--digest-interval-seconds", "60"])
     mvp_bootstrap = build_parser().parse_args(["mvp-bootstrap", "--notes-root", "notes", "--dry-run", "--extract"])
     mvp_status = build_parser().parse_args(["mvp-status", "--summary"])
-    service_check = build_parser().parse_args(["service-check", "--url", "http://127.0.0.1:8765", "--timeout-seconds", "1"])
+    service_check = build_parser().parse_args([
+        "service-check",
+        "--url",
+        "http://127.0.0.1:8765",
+        "--timeout-seconds",
+        "1",
+        "--expected-database-url",
+        "postgresql:///pska",
+    ])
     embed = build_parser().parse_args(["embed-backfill", "--embedding-provider", "bge-m3", "--limit", "10"])
     mcp = build_parser().parse_args(["mcp-server"])
     connector = build_parser().parse_args(["connector-ingest-record", "record.json"])
@@ -79,6 +87,7 @@ def test_cli_accepts_search_and_smoke() -> None:
     assert service_check.command == "service-check"
     assert service_check.url == "http://127.0.0.1:8765"
     assert service_check.timeout_seconds == 1
+    assert service_check.expected_database_url == "postgresql:///pska"
     assert embed.command == "embed-backfill"
     assert embed.embedding_provider == "bge-m3"
     assert embed.limit == 10
@@ -406,6 +415,7 @@ def test_mvp_status_summary_is_compact() -> None:
     summary = _mvp_status_summary(
         {
             "ok": True,
+            "database_url": "postgresql:///pska",
             "ready": {
                 "checks": {
                     "database": {"ok": True},
@@ -430,10 +440,40 @@ def test_mvp_status_summary_is_compact() -> None:
     )
 
     assert summary["ok"] is True
+    assert summary["database_url"] == "postgresql:///pska"
     assert summary["fastreact_pska_tools_loaded"] is True
     assert summary["counts"]["source_items"] == 3
     assert summary["connectors"]["source_channels"] == ["files", "twitter"]
     assert summary["next_actions"] == ["ready"]
+
+
+def test_mvp_status_payload_reports_schema_drift(monkeypatch) -> None:
+    class BrokenStore:
+        def list_review_items(self):
+            raise RuntimeError("review table missing")
+
+    class BrokenApi:
+        def __init__(self, database_url: str) -> None:
+            self.store = BrokenStore()
+
+        def ready(self):
+            return {"ok": False, "checks": {"schema": {"ok": False, "missing": ["connector_states"]}}}
+
+        def metrics(self):
+            raise RuntimeError("connector_states missing")
+
+        def job_stats(self):
+            raise RuntimeError("jobs missing")
+
+    monkeypatch.setattr(cli_module, "PSKAApi", BrokenApi)
+
+    payload = _mvp_status_payload("postgresql:///pska")
+
+    assert payload["ok"] is False
+    assert payload["database_url"] == "postgresql:///pska"
+    assert "connector_states missing" in payload["metrics"]["error"]
+    assert "jobs missing" in payload["jobs"]["error"]
+    assert any("db-init" in action for action in payload["next_actions"])
 
 
 def _json_documents(output: str) -> list[dict]:

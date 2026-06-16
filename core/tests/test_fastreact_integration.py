@@ -720,6 +720,34 @@ def test_cli_service_check_smokes_online_contract(monkeypatch, capsys) -> None:
     assert payload["checks"]["health"]["ok"] is True
     assert payload["checks"]["ready"]["payload"]["checks"]["fastreact"]["ok"] is False
     assert payload["checks"]["mcp_tools"]["has_pska_search"] is True
+    assert payload["checks"]["database_alignment"]["ok"] is True
+
+
+def test_cli_service_check_fails_on_database_mismatch(monkeypatch, capsys) -> None:
+    class DownFastreact:
+        def ready(self):
+            raise FastreactError("not reachable")
+
+    monkeypatch.setattr(api_module, "HttpFastreactClient", DownFastreact)
+    api = _api()
+    with _http_server(api) as base_url:
+        code = service_check(
+            _namespace(
+                url=f"http://{base_url}",
+                service_token=None,
+                timeout_seconds=2,
+                expected_database_url="postgresql:///different",
+            )
+        )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 1
+    assert payload["ok"] is False
+    assert payload["checks"]["database_alignment"] == {
+        "ok": False,
+        "expected": "postgresql:///different",
+        "actual": "in_memory",
+    }
 
 
 def test_cli_service_check_uses_service_token(monkeypatch, capsys) -> None:

@@ -153,6 +153,7 @@ def build_parser() -> argparse.ArgumentParser:
     service_check_parser.add_argument("--url", default=None)
     service_check_parser.add_argument("--service-token", default=None)
     service_check_parser.add_argument("--timeout-seconds", type=float, default=5.0)
+    service_check_parser.add_argument("--expected-database-url", default=None)
 
     subparsers.add_parser("mcp-server", help="Start PSKA stdio MCP server")
 
@@ -271,6 +272,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "service-check":
         args.url = args.url or os.environ.get("PSKA_SERVICE_URL") or f"http://{config.service.host}:{config.service.port}"
         args.service_token = args.service_token or os.environ.get("PSKA_SERVICE_TOKEN")
+        args.expected_database_url = args.expected_database_url or config.database.url
     if args.command == "db-check":
         return db_check(args.database_url)
     if args.command == "db-init":
@@ -570,12 +572,21 @@ def service_check(args: argparse.Namespace) -> int:
     tool_names = [tool.get("name") for tool in tools if isinstance(tool, dict) and tool.get("name")]
     checks["mcp_tools"]["tool_names"] = tool_names
     checks["mcp_tools"]["has_pska_search"] = "pska_search" in tool_names
+    health_payload = checks["health"].get("payload") if checks["health"].get("ok") else {}
+    actual_database_url = health_payload.get("database") if isinstance(health_payload, dict) else None
+    expected_database_url = str(getattr(args, "expected_database_url", None) or "")
+    checks["database_alignment"] = {
+        "ok": not expected_database_url or actual_database_url == expected_database_url,
+        "expected": expected_database_url or None,
+        "actual": actual_database_url,
+    }
     ok = (
         checks["health"].get("ok") is True
         and checks["ready"].get("ok") is True
         and checks["ready"].get("payload", {}).get("ok") is True
         and checks["mcp_tools"].get("ok") is True
         and checks["mcp_tools"]["has_pska_search"]
+        and checks["database_alignment"]["ok"] is True
     )
     print(dumps({"ok": ok, "url": base_url, "checks": checks}))
     return 0 if ok else 1
@@ -1063,14 +1074,24 @@ def _default_worker_id() -> str:
 def _mvp_status_payload(database_url: str) -> dict[str, Any]:
     api = PSKAApi(database_url)
     ready = api.ready()
-    metrics = api.metrics()
-    jobs = api.job_stats()["stats"]
+    try:
+        metrics = api.metrics()
+    except Exception as exc:  # noqa: BLE001 - MVP status should report schema drift instead of crashing.
+        metrics = {"ok": False, "error": f"{type(exc).__name__}: {exc}", "index": {}, "connectors": {}}
+    try:
+        jobs = api.job_stats()["stats"]
+    except Exception as exc:  # noqa: BLE001
+        jobs = {"ok": False, "error": f"{type(exc).__name__}: {exc}", "digest_backlog": {}, "by_status": {}}
     index = metrics.get("index") or {}
     connectors = metrics.get("connectors") or {}
-    review_items = api.store.list_review_items()
+    try:
+        review_items = api.store.list_review_items()
+    except Exception:
+        review_items = []
     pending_reviews = [item for item in review_items if item.status == "pending"]
     payload = {
         "ok": bool(ready.get("ok")) and int(index.get("source_items") or 0) > 0,
+        "database_url": database_url,
         "ready": ready,
         "metrics": metrics,
         "jobs": jobs,
@@ -1094,6 +1115,7 @@ def _mvp_status_summary(payload: dict[str, Any]) -> dict[str, Any]:
     fastreact = checks.get("fastreact") or {}
     return {
         "ok": bool(payload.get("ok")),
+        "database_url": payload.get("database_url"),
         "database_ok": bool((checks.get("database") or {}).get("ok")),
         "schema_ok": bool((checks.get("schema") or {}).get("ok")),
         "mcp_ok": bool((checks.get("mcp") or {}).get("ok")),
