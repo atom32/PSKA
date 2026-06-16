@@ -131,6 +131,22 @@ def build_parser() -> argparse.ArgumentParser:
     local_daemon_parser.add_argument("--digest-batch-size", type=int, default=20)
     local_daemon_parser.add_argument("--digest-max-backlog-jobs", type=int, default=10)
 
+    mvp_bootstrap_parser = subparsers.add_parser("mvp-bootstrap", help="Initialize the MVP scope: DB, Twitter archive, local text roots, and digest backlog")
+    mvp_bootstrap_parser.add_argument("--twitter-archive", type=Path, default=Path.home() / "Downloads" / "twitter_archive")
+    mvp_bootstrap_parser.add_argument("--notes-root", type=Path, action="append", default=[])
+    mvp_bootstrap_parser.add_argument("--archive-root", type=Path, default=Path("archive/imports"))
+    mvp_bootstrap_parser.add_argument("--owner-user-id", default="user_primary")
+    mvp_bootstrap_parser.add_argument("--space-id", default="private_primary")
+    mvp_bootstrap_parser.add_argument("--skip-twitter", action="store_true")
+    mvp_bootstrap_parser.add_argument("--skip-files", action="store_true")
+    mvp_bootstrap_parser.add_argument("--skip-digest", action="store_true")
+    mvp_bootstrap_parser.add_argument("--digest-limit", type=int, default=20)
+    mvp_bootstrap_parser.add_argument("--digest-batch-size", type=int, default=20)
+    mvp_bootstrap_parser.add_argument("--dry-run", action="store_true")
+    _add_embedding_args(mvp_bootstrap_parser, default_provider=os.environ.get("PSKA_EMBEDDING_PROVIDER", "disabled"))
+
+    subparsers.add_parser("mvp-status", help="Show MVP readiness, metrics, and next actions")
+
     service_check_parser = subparsers.add_parser("service-check", help="Check a running PSKA online service contract")
     service_check_parser.add_argument("--url", default=None)
     service_check_parser.add_argument("--service-token", default=None)
@@ -278,6 +294,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     if args.command == "local-daemon":
         return local_daemon(args, config)
+    if args.command == "mvp-bootstrap":
+        return mvp_bootstrap(args)
+    if args.command == "mvp-status":
+        return mvp_status(args)
     if args.command == "service-check":
         return service_check(args)
     if args.command == "mcp-server":
@@ -568,6 +588,100 @@ def local_daemon(args: argparse.Namespace, config: PSKAConfig) -> int:
         digest_max_backlog_jobs=args.digest_max_backlog_jobs,
     )
     return run_supervisor(specs, restart=args.restart)
+
+
+def mvp_bootstrap(args: argparse.Namespace) -> int:
+    report: dict[str, Any] = {
+        "database_url": args.database_url,
+        "dry_run": bool(args.dry_run),
+        "steps": [],
+        "next_actions": [
+            "Start PSKA with: ./scripts/pska local-daemon",
+            "Start Fastreact and its PSKA digest worker when you want LLM digest candidates.",
+            "Check status with: ./scripts/pska mvp-status",
+        ],
+    }
+    if args.dry_run:
+        report["steps"].append({"name": "db_init", "would_run": True})
+    else:
+        db_init_returncode = db_init(args.database_url)
+        report["steps"].append({"name": "db_init", "returncode": db_init_returncode})
+        if db_init_returncode != 0:
+            report["ok"] = False
+            report["error"] = "db_init_failed"
+            print(dumps(report))
+            return db_init_returncode
+
+    store = PostgresKnowledgeStore(args.database_url)
+    embedding_provider = _embedding_provider_from_args(args)
+
+    if args.skip_twitter:
+        report["steps"].append({"name": "twitter_archive", "skipped": True, "reason": "--skip-twitter"})
+    elif not args.twitter_archive.expanduser().exists():
+        report["steps"].append({"name": "twitter_archive", "skipped": True, "reason": "archive directory not found", "path": str(args.twitter_archive)})
+    elif args.dry_run:
+        zip_count = len(list(args.twitter_archive.expanduser().glob("*.zip")))
+        report["steps"].append({"name": "twitter_archive", "would_import_zip_count": zip_count, "path": str(args.twitter_archive)})
+    else:
+        importer = TwitterZipImporter(
+            store,
+            archive_root=args.archive_root,
+            owner_user_id=args.owner_user_id,
+            space_id=args.space_id,
+            visibility=Visibility.PRIVATE,
+            embedding_provider=embedding_provider,
+        )
+        result = importer.import_directory(args.twitter_archive)
+        report["steps"].append({"name": "twitter_archive", "result": asdict(result)})
+
+    if args.skip_files:
+        report["steps"].append({"name": "files", "skipped": True, "reason": "--skip-files"})
+    else:
+        for root in args.notes_root:
+            if args.dry_run:
+                report["steps"].append({"name": "files", "would_scan": str(root)})
+                continue
+            try:
+                scan = scan_files(
+                    store,
+                    root=root,
+                    owner_user_id=args.owner_user_id,
+                    space_id=args.space_id,
+                    visibility=Visibility.PRIVATE,
+                    embedding_provider=embedding_provider,
+                )
+                report["steps"].append({"name": "files", "root": str(root), "result": scan})
+            except Exception as exc:  # noqa: BLE001 - bootstrap should continue across optional roots.
+                report["steps"].append({"name": "files", "root": str(root), "error": f"{type(exc).__name__}: {exc}"})
+
+    if args.skip_digest:
+        report["steps"].append({"name": "digest_schedule", "skipped": True, "reason": "--skip-digest"})
+    elif args.dry_run:
+        report["steps"].append({"name": "digest_schedule", "would_run": True, "limit": args.digest_limit, "batch_size": args.digest_batch_size})
+    else:
+        digest = PSKAApi(args.database_url).schedule_digest(
+            {
+                "owner_user_id": args.owner_user_id,
+                "limit": args.digest_limit,
+                "batch_size": args.digest_batch_size,
+                "reason": "mvp bootstrap",
+            }
+        )
+        report["steps"].append({"name": "digest_schedule", "result": digest})
+
+    try:
+        report["status"] = _mvp_status_payload(args.database_url)
+        report["ok"] = bool(report["status"].get("ok"))
+    except Exception as exc:  # noqa: BLE001 - bootstrap should produce an actionable report.
+        report["ok"] = False
+        report["status_error"] = f"{type(exc).__name__}: {exc}"
+    print(dumps(report))
+    return 0
+
+
+def mvp_status(args: argparse.Namespace) -> int:
+    print(dumps(_mvp_status_payload(args.database_url)))
+    return 0
 
 
 def job_submit(args: argparse.Namespace) -> int:
@@ -883,6 +997,56 @@ def _sample_query(store: PostgresKnowledgeStore) -> str:
 
 def _default_worker_id() -> str:
     return f"pska-worker-{os.getpid()}"
+
+
+def _mvp_status_payload(database_url: str) -> dict[str, Any]:
+    api = PSKAApi(database_url)
+    ready = api.ready()
+    metrics = api.metrics()
+    jobs = api.job_stats()["stats"]
+    index = metrics.get("index") or {}
+    connectors = metrics.get("connectors") or {}
+    review_items = api.store.list_review_items()
+    pending_reviews = [item for item in review_items if item.status == "pending"]
+    payload = {
+        "ok": bool(ready.get("ok")) and int(index.get("source_items") or 0) > 0,
+        "ready": ready,
+        "metrics": metrics,
+        "jobs": jobs,
+        "pending_review_items": len(pending_reviews),
+        "mvp_scope": {
+            "data_sources": ["twitter_archive", "local_text_files"],
+            "deferred": ["mail", "photos", "nas", "browser_history", "deep_git_sync", "pdf_word_complex_parsing"],
+        },
+    }
+    payload["next_actions"] = _mvp_next_actions(payload, connectors=connectors)
+    return payload
+
+
+def _mvp_next_actions(payload: dict[str, Any], *, connectors: dict[str, Any]) -> list[str]:
+    actions = []
+    ready = payload.get("ready") or {}
+    checks = ready.get("checks") or {}
+    metrics = payload.get("metrics") or {}
+    index = metrics.get("index") or {}
+    jobs = payload.get("jobs") or {}
+    source_items = int(index.get("source_items") or 0)
+    if not ready.get("ok"):
+        actions.append("Run ./scripts/pska db-init, then ./scripts/pska service-check after starting local-daemon.")
+    if source_items == 0:
+        actions.append("Run ./scripts/pska mvp-bootstrap to import Twitter/X archive or scan a notes root.")
+    if not connectors.get("state_count"):
+        actions.append("Authorize a local notes root with ./scripts/pska files-scan --root <path>.")
+    digest_backlog = (jobs.get("digest_backlog") or {}).get("jobs") or 0
+    if source_items and digest_backlog == 0:
+        actions.append("Run ./scripts/pska digest-schedule --owner-user-id user_primary to queue digest work.")
+    if checks.get("fastreact", {}).get("ok") is False:
+        actions.append("Start Fastreact when you want agentic digest or Fastreact-backed QA.")
+    if payload.get("pending_review_items"):
+        actions.append("Review pending memory/profile/action candidates with ./scripts/pska review-approve or review-reject.")
+    if not actions:
+        actions.append("System is ready for MVP use: run search, agentic-search, or keep local-daemon running.")
+    return actions
 
 
 def _job_stats(store: PostgresKnowledgeStore, *, limit: int = 1000) -> dict[str, Any]:

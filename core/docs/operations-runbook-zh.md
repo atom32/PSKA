@@ -47,7 +47,33 @@ export PSKA_EMBEDDING_PROVIDER=disabled
 ./scripts/pska db-init
 ```
 
-## 3. Start PSKA Local Daemon
+## 3. MVP Bootstrap And Status
+
+MVP 推荐先用有限数据源启动：
+
+```bash
+./scripts/pska mvp-bootstrap \
+  --twitter-archive ~/Downloads/twitter_archive \
+  --notes-root ~/Documents/notes
+```
+
+这个命令会：
+
+- 执行非破坏性的 `db-init`，不会 reset 数据库。
+- 如果 Twitter/X archive 目录存在，则导入 zip。
+- 如果传入 `--notes-root`，则扫描本地文本类文件。
+- 创建 digest backlog。
+- 输出当前 `mvp-status` 和 next actions。
+
+查看当前 MVP 状态：
+
+```bash
+./scripts/pska mvp-status
+```
+
+`mvp-status` 会报告 readiness、index/connector/job metrics、pending review 数量和下一步动作。
+
+## 4. Start PSKA Local Daemon
 
 MVP 推荐用一个前台 supervisor 启动 PSKA service、job worker 和 digest scheduler：
 
@@ -71,7 +97,7 @@ MVP 推荐用一个前台 supervisor 启动 PSKA service、job worker 和 digest
 
 这是本地前台 daemon，适合终端、tmux 或后续 launchd/systemd wrapper。Fastreact service 和 Fastreact digest worker 仍由 Fastreact 项目负责启动。
 
-## 4. Start PSKA Online Service Manually
+## 5. Start PSKA Online Service Manually
 
 前台启动 HTTP service：
 
@@ -102,7 +128,7 @@ MVP 推荐用一个前台 supervisor 启动 PSKA service、job worker 和 digest
 
 Fastreact offline does not make PSKA unavailable. In that case `/ready` should still have `ok=true`, with `checks.fastreact.ok=false`.
 
-## 5. Start Worker Manually
+## 6. Start Worker Manually
 
 前台启动 durable job worker：
 
@@ -123,7 +149,7 @@ Fastreact offline does not make PSKA unavailable. In that case `/ready` should s
   --limit 1
 ```
 
-## 6. Jobs
+## 7. Jobs
 
 提交 Fastreact-backed extraction job：
 
@@ -206,7 +232,7 @@ python3 scripts/pska_digest_worker.py \
 ./scripts/pska job-cancel job_xxx --reason "superseded"
 ```
 
-## 7. Readiness Interpretation
+## 8. Readiness Interpretation
 
 Local PSKA availability:
 
@@ -233,7 +259,7 @@ HTTP service logs:
 - Logs include request id, method, path, status, duration, caller/user, represented user, job id, and source ref count.
 - Logs intentionally omit request bodies, content text, tokens, and candidate payloads.
 
-## 8. Fastreact Boundary
+## 9. Fastreact Boundary
 
 目标形态是 Fastreact 通过 HTTP MCP 调用 PSKA：
 

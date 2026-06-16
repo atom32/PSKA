@@ -55,7 +55,21 @@ MVP 阶段不追求：
 
 优先顺序：
 
-1. 把 `local-daemon` 跑成稳定的本地前台服务入口。
-2. 用有限 Twitter/X archive 样本和少量本地 notes 持续验证 digest/review/memory。
-3. 打磨 retrieval/GraphRAG 质量和 review taxonomy。
-4. 只在核心流程稳定后再扩 Browser/Git/PDF 等 connector。
+1. 用 `mvp-bootstrap` 初始化有限数据源和 digest backlog。
+2. 用 `mvp-status` 查看 readiness、metrics、jobs、connector 和 next actions。
+3. 把 `local-daemon` 跑成稳定的本地前台服务入口。
+4. 用有限 Twitter/X archive 样本和少量本地 notes 持续验证 digest/review/memory。
+5. 打磨 retrieval/GraphRAG 质量和 review taxonomy。
+6. 只在核心流程稳定后再扩 Browser/Git/PDF 等 connector。
+
+推荐本地路径：
+
+```bash
+./scripts/pska mvp-bootstrap \
+  --twitter-archive ~/Downloads/twitter_archive \
+  --notes-root ~/Documents/notes
+
+./scripts/pska mvp-status
+
+./scripts/pska local-daemon
+```

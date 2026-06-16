@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 import pska_core.cli as cli_module
-from pska_core.cli import build_parser, digest_scheduler
+from pska_core.cli import build_parser, digest_scheduler, _mvp_next_actions
 
 
 def test_cli_accepts_db_check() -> None:
@@ -50,6 +50,8 @@ def test_cli_accepts_search_and_smoke() -> None:
     extract = build_parser().parse_args(["extract-all", "--owner-user-id", "user_primary"])
     serve = build_parser().parse_args(["serve", "--port", "8765"])
     local_daemon = build_parser().parse_args(["local-daemon", "--no-worker", "--digest-interval-seconds", "60"])
+    mvp_bootstrap = build_parser().parse_args(["mvp-bootstrap", "--notes-root", "notes", "--dry-run"])
+    mvp_status = build_parser().parse_args(["mvp-status"])
     service_check = build_parser().parse_args(["service-check", "--url", "http://127.0.0.1:8765", "--timeout-seconds", "1"])
     embed = build_parser().parse_args(["embed-backfill", "--embedding-provider", "bge-m3", "--limit", "10"])
     mcp = build_parser().parse_args(["mcp-server"])
@@ -66,6 +68,10 @@ def test_cli_accepts_search_and_smoke() -> None:
     assert local_daemon.command == "local-daemon"
     assert local_daemon.no_worker is True
     assert local_daemon.digest_interval_seconds == 60
+    assert mvp_bootstrap.command == "mvp-bootstrap"
+    assert str(mvp_bootstrap.notes_root[0]) == "notes"
+    assert mvp_bootstrap.dry_run is True
+    assert mvp_status.command == "mvp-status"
     assert service_check.command == "service-check"
     assert service_check.url == "http://127.0.0.1:8765"
     assert service_check.timeout_seconds == 1
@@ -295,6 +301,36 @@ def test_digest_scheduler_runs_one_foreground_cycle(monkeypatch, capsys) -> None
     assert documents[0]["scheduled"] is True
     assert documents[0]["cycle"] == 1
     assert documents[-1] == {"processed": 1, "idle_cycles": 0}
+
+
+def test_mvp_next_actions_prioritize_missing_data_and_fastreact() -> None:
+    actions = _mvp_next_actions(
+        {
+            "ready": {"ok": True, "checks": {"fastreact": {"ok": False}}},
+            "metrics": {"index": {"source_items": 0}},
+            "jobs": {"digest_backlog": {"jobs": 0}},
+            "pending_review_items": 0,
+        },
+        connectors={"state_count": 0},
+    )
+
+    assert any("mvp-bootstrap" in action for action in actions)
+    assert any("files-scan" in action for action in actions)
+    assert any("Fastreact" in action for action in actions)
+
+
+def test_mvp_next_actions_ready_state() -> None:
+    actions = _mvp_next_actions(
+        {
+            "ready": {"ok": True, "checks": {"fastreact": {"ok": True}}},
+            "metrics": {"index": {"source_items": 3}},
+            "jobs": {"digest_backlog": {"jobs": 1}},
+            "pending_review_items": 0,
+        },
+        connectors={"state_count": 1},
+    )
+
+    assert actions == ["System is ready for MVP use: run search, agentic-search, or keep local-daemon running."]
 
 
 def _json_documents(output: str) -> list[dict]:
