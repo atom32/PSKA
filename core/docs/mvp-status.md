@@ -148,7 +148,7 @@ Unit and contract tests:
 ```bash
 cd "/Users/xudawei/Documents/personal archive/core"
 python3 -m pytest -q
-# 25 passed
+# 146 passed
 
 cd "/Users/xudawei/Documents/personal archive/channels/twitter-x"
 python3 -m pytest -q
@@ -175,6 +175,25 @@ MVP+ limited-data HTTP service gate:
 cd "/Users/xudawei/Documents/personal archive/core"
 PYTHONPATH=src ../.pska/venvs/pska-py312/bin/python scripts/mvp_plus_http_smoke.py
 ```
+
+MVP+ limited real Twitter/X archive gate:
+
+```bash
+cd "/Users/xudawei/Documents/personal archive/core"
+PYTHONPATH=src ../.pska/venvs/pska-py312/bin/python scripts/mvp_plus_real_sample_smoke.py --limit 3
+```
+
+Use `--skip-llm` to validate Postgres reset, limited zip import, search, and
+digest backlog creation without calling the LLM. Without `--skip-llm`, the
+script also runs real LLM extraction and agentic search using
+`PSKA_LLM_API_KEY_FILE` or `~/api_key.txt`.
+
+Latest local evidence:
+
+- `--limit 3 --skip-llm`: passed with 3 real archive zips, imported sources,
+  chunks, cited search, and queued digest job.
+- `--limit 1`: passed with real LLM extraction, entities, hyperedges, graph
+  retrieval context, agentic answer synthesis, and queued digest job.
 
 This deterministic smoke uses a tiny in-memory dataset and fake LLM responses
 to verify the strengthened loop before running real archives. The object-level
