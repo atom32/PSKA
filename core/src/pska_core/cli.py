@@ -157,6 +157,21 @@ def build_parser() -> argparse.ArgumentParser:
     digest_schedule_parser.add_argument("--force", action="store_true")
     digest_schedule_parser.add_argument("--reason", default="")
 
+    digest_scheduler_parser = subparsers.add_parser("digest-scheduler", help="Foreground periodic digest backlog scheduler")
+    digest_scheduler_parser.add_argument("--owner-user-id", default="user_primary")
+    digest_scheduler_parser.add_argument("--interval-seconds", type=float, default=60.0)
+    digest_scheduler_parser.add_argument("--max-cycles", type=int, default=0, help="Stop after this many scheduler cycles; 0 means no limit")
+    digest_scheduler_parser.add_argument("--idle-limit", type=int, default=0, help="Stop after this many idle cycles; 0 means no limit")
+    digest_scheduler_parser.add_argument("--limit", type=int, default=20)
+    digest_scheduler_parser.add_argument("--batch-size", type=int, default=20)
+    digest_scheduler_parser.add_argument("--priority", type=int, default=0)
+    digest_scheduler_parser.add_argument("--max-attempts", type=int, default=3)
+    digest_scheduler_parser.add_argument("--retry-backoff-seconds", type=int, default=60)
+    digest_scheduler_parser.add_argument("--max-backlog-jobs", type=int, default=10)
+    digest_scheduler_parser.add_argument("--recover-stale-seconds", type=int, default=0)
+    digest_scheduler_parser.add_argument("--force", action="store_true")
+    digest_scheduler_parser.add_argument("--reason", default="periodic digest scheduler")
+
     review_approve_parser = subparsers.add_parser("review-approve", help="Approve a pending review item")
     review_approve_parser.add_argument("review_item_id")
     review_approve_parser.add_argument("--actor-user-id", default="user_primary")
@@ -238,6 +253,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return job_recover(args)
     if args.command == "digest-schedule":
         return digest_schedule(args)
+    if args.command == "digest-scheduler":
+        return digest_scheduler(args)
     if args.command == "review-approve":
         return review_approve(args)
     if args.command == "review-reject":
@@ -527,19 +544,54 @@ def job_recover(args: argparse.Namespace) -> int:
 
 
 def digest_schedule(args: argparse.Namespace) -> int:
-    payload = {
-        "owner_user_id": args.owner_user_id,
-        "source_item_ids": args.source_item_ids,
-        "limit": args.limit,
-        "batch_size": args.batch_size,
-        "priority": args.priority,
-        "max_attempts": args.max_attempts,
-        "retry_backoff_seconds": args.retry_backoff_seconds,
-        "force": args.force,
-    }
-    if args.reason:
-        payload["reason"] = args.reason
+    payload = _digest_schedule_payload(args)
     print(dumps(PSKAApi(args.database_url).schedule_digest(payload)))
+    return 0
+
+
+def digest_scheduler(args: argparse.Namespace) -> int:
+    api = PSKAApi(args.database_url)
+    processed = 0
+    idle_cycles = 0
+    while True:
+        if args.recover_stale_seconds:
+            recovered = api.store.recover_stale_jobs(max_age_seconds=args.recover_stale_seconds)
+            if recovered:
+                print(dumps({"event": "stale_recovered", "recovered": recovered}), flush=True)
+
+        stats = api.job_stats()["stats"]
+        backlog_jobs = int((stats.get("digest_backlog") or {}).get("jobs") or 0)
+        if args.max_backlog_jobs and backlog_jobs >= args.max_backlog_jobs:
+            result = {
+                "event": "digest_scheduler_cycle",
+                "scheduled": False,
+                "reason": "backlog_limit_reached",
+                "digest_backlog_jobs": backlog_jobs,
+            }
+        else:
+            scheduled = api.schedule_digest(_digest_schedule_payload(args))
+            result = {
+                "event": "digest_scheduler_cycle",
+                "scheduled": bool(scheduled.get("scheduled_source_item_ids")),
+                "digest": scheduled,
+            }
+
+        processed += 1
+        if result["scheduled"]:
+            idle_cycles = 0
+        else:
+            idle_cycles += 1
+        result["cycle"] = processed
+        result["idle_cycles"] = idle_cycles
+        print(dumps(result), flush=True)
+
+        if args.max_cycles and processed >= args.max_cycles:
+            break
+        if args.idle_limit and idle_cycles >= args.idle_limit:
+            break
+        time.sleep(max(0.0, args.interval_seconds))
+
+    print(dumps({"processed": processed, "idle_cycles": idle_cycles}))
     return 0
 
 
@@ -748,6 +800,22 @@ def _job_source_item_ids(job) -> set[str]:
             if isinstance(ref, dict) and ref.get("source_item_id"):
                 ids.add(str(ref["source_item_id"]))
     return ids
+
+
+def _digest_schedule_payload(args: argparse.Namespace) -> dict[str, Any]:
+    payload = {
+        "owner_user_id": args.owner_user_id,
+        "source_item_ids": getattr(args, "source_item_ids", []),
+        "limit": args.limit,
+        "batch_size": args.batch_size,
+        "priority": args.priority,
+        "max_attempts": args.max_attempts,
+        "retry_backoff_seconds": args.retry_backoff_seconds,
+        "force": args.force,
+    }
+    if args.reason:
+        payload["reason"] = args.reason
+    return payload
 
 
 def _service_check_headers(service_token: str | None) -> dict[str, str]:

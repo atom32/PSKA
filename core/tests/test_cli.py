@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from pska_core.cli import build_parser
+import json
+
+import pska_core.cli as cli_module
+from pska_core.cli import build_parser, digest_scheduler
 
 
 def test_cli_accepts_db_check() -> None:
@@ -175,3 +178,99 @@ def test_cli_accepts_digest_schedule() -> None:
     assert args.retry_backoff_seconds == 30
     assert args.force is True
     assert args.reason == "new import"
+
+
+def test_cli_accepts_digest_scheduler() -> None:
+    args = build_parser().parse_args(
+        [
+            "digest-scheduler",
+            "--owner-user-id",
+            "user_primary",
+            "--interval-seconds",
+            "0",
+            "--max-cycles",
+            "1",
+            "--idle-limit",
+            "1",
+            "--limit",
+            "5",
+            "--batch-size",
+            "2",
+            "--priority",
+            "3",
+            "--max-backlog-jobs",
+            "4",
+            "--recover-stale-seconds",
+            "60",
+        ]
+    )
+
+    assert args.command == "digest-scheduler"
+    assert args.owner_user_id == "user_primary"
+    assert args.interval_seconds == 0
+    assert args.max_cycles == 1
+    assert args.idle_limit == 1
+    assert args.limit == 5
+    assert args.batch_size == 2
+    assert args.priority == 3
+    assert args.max_backlog_jobs == 4
+    assert args.recover_stale_seconds == 60
+
+
+def test_digest_scheduler_runs_one_foreground_cycle(monkeypatch, capsys) -> None:
+    class FakeStore:
+        def recover_stale_jobs(self, *, max_age_seconds):
+            assert max_age_seconds == 60
+            return []
+
+    class FakeApi:
+        def __init__(self, database_url):
+            assert database_url == "postgresql:///example"
+            self.store = FakeStore()
+
+        def job_stats(self):
+            return {"stats": {"digest_backlog": {"jobs": 0}}}
+
+        def schedule_digest(self, payload):
+            assert payload["owner_user_id"] == "user_primary"
+            assert payload["limit"] == 5
+            return {"scheduled_source_item_ids": ["src_1"], "job": {"job_id": "job_1"}}
+
+    monkeypatch.setattr(cli_module, "PSKAApi", FakeApi)
+    args = build_parser().parse_args(
+        [
+            "--database-url",
+            "postgresql:///example",
+            "digest-scheduler",
+            "--interval-seconds",
+            "0",
+            "--max-cycles",
+            "1",
+            "--limit",
+            "5",
+            "--recover-stale-seconds",
+            "60",
+        ]
+    )
+
+    code = digest_scheduler(args)
+    documents = _json_documents(capsys.readouterr().out)
+
+    assert code == 0
+    assert documents[0]["event"] == "digest_scheduler_cycle"
+    assert documents[0]["scheduled"] is True
+    assert documents[0]["cycle"] == 1
+    assert documents[-1] == {"processed": 1, "idle_cycles": 0}
+
+
+def _json_documents(output: str) -> list[dict]:
+    decoder = json.JSONDecoder()
+    documents = []
+    offset = 0
+    while output[offset:].strip():
+        while offset < len(output) and output[offset].isspace():
+            offset += 1
+        document, end = decoder.raw_decode(output, offset)
+        documents.append(document)
+        offset = end
+    return documents

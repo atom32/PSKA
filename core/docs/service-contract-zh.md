@@ -238,7 +238,15 @@ P0.4 write-back slice adds:
 }
 ```
 
-It skips source items already covered by queued, running, or succeeded digest jobs unless `force=true`. The response includes the created job, `scheduled_source_item_ids`, and `skipped_source_item_ids`. This is a backlog scheduler, not a daemon; periodic invocation and supervision remain outside PSKA in this phase.
+It skips source items already covered by queued, running, or succeeded digest jobs unless `force=true`. The response includes the created job, `scheduled_source_item_ids`, and `skipped_source_item_ids`.
+
+For local operation, CLI `digest-scheduler` provides a foreground periodic loop over this endpoint:
+
+```bash
+./scripts/pska digest-scheduler --interval-seconds 300 --max-backlog-jobs 10
+```
+
+This is not a daemon supervisor. It creates digest backlog only; Fastreact still owns the digest worker loop and LLM execution.
 
 `pska_job_context` returns the job, scoped source items, and chunks from the job's `source_refs`, `source_item_ids`, or `payload.scope.source_item_ids`. It is read-only and filtered to the request or represented user.
 

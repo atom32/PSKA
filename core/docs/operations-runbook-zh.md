@@ -136,6 +136,20 @@ Fastreact offline does not make PSKA unavailable. In that case `/ready` should s
 
 `digest-schedule` 会跳过已经被 queued/running/succeeded digest job 覆盖的 source item；需要重做时加 `--force`，或用 `--source-item-id src_xxx` 指定范围。
 
+前台周期性创建 digest backlog：
+
+```bash
+./scripts/pska digest-scheduler \
+  --owner-user-id user_primary \
+  --interval-seconds 300 \
+  --limit 20 \
+  --batch-size 20 \
+  --max-backlog-jobs 10 \
+  --recover-stale-seconds 900
+```
+
+这是一个 foreground loop，适合本地终端、tmux 或后续 launchd/systemd wrapper。它不会执行 LLM digest；Fastreact 侧 digest worker 仍负责 lease job、调用模型和写回 candidates。
+
 `queued` job 可能因为 retry backoff 暂时不可领取；查看 job 的 `run_after`。digest worker 可用 `GET /digest/batches/{job_id}?cursor=0&limit=20` 分页读取上下文，直到 `has_more=false`。
 
 Fastreact 侧脚本型 digest worker：
