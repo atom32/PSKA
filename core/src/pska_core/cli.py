@@ -5,6 +5,7 @@ from dataclasses import asdict
 import json
 import os
 from pathlib import Path
+from shlex import quote as shlex_quote
 import shutil
 import subprocess
 import sys
@@ -148,6 +149,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     mvp_status_parser = subparsers.add_parser("mvp-status", help="Show MVP readiness, metrics, and next actions")
     mvp_status_parser.add_argument("--summary", action="store_true", help="Print a compact human-scale MVP status summary")
+
+    digest_worker_command_parser = subparsers.add_parser(
+        "fastreact-digest-worker-command",
+        help="Print the Fastreact-side PSKA digest worker command for this PSKA config",
+    )
+    digest_worker_command_parser.add_argument("--fastreact-root", type=Path, default=Path.home() / "Fastreact" / "fastreact-nano")
+    digest_worker_command_parser.add_argument("--python", default="python3")
+    digest_worker_command_parser.add_argument("--pska-url", default=None)
+    digest_worker_command_parser.add_argument("--fastreact-url", default=None)
+    digest_worker_command_parser.add_argument("--batch-limit", type=int, default=20)
+    digest_worker_command_parser.add_argument("--represented-user-id", default="user_primary")
 
     service_check_parser = subparsers.add_parser("service-check", help="Check a running PSKA online service contract")
     service_check_parser.add_argument("--url", default=None)
@@ -308,6 +320,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return mvp_bootstrap(args)
     if args.command == "mvp-status":
         return mvp_status(args)
+    if args.command == "fastreact-digest-worker-command":
+        return fastreact_digest_worker_command(args, config)
     if args.command == "service-check":
         return service_check(args)
     if args.command == "mcp-server":
@@ -711,6 +725,12 @@ def mvp_status(args: argparse.Namespace) -> int:
     payload = _mvp_status_payload(args.database_url)
     print(dumps(_mvp_status_summary(payload) if args.summary else payload))
     return 0
+
+
+def fastreact_digest_worker_command(args: argparse.Namespace, config: PSKAConfig) -> int:
+    payload = _fastreact_digest_worker_command_payload(args, config)
+    print(dumps(payload))
+    return 0 if payload["ok"] else 1
 
 
 def job_submit(args: argparse.Namespace) -> int:
@@ -1142,6 +1162,38 @@ def _mvp_status_summary(payload: dict[str, Any]) -> dict[str, Any]:
         },
         "pending_review_items": int(payload.get("pending_review_items") or 0),
         "next_actions": payload.get("next_actions") or [],
+    }
+
+
+def _fastreact_digest_worker_command_payload(args: argparse.Namespace, config: PSKAConfig) -> dict[str, Any]:
+    pska_url = str(args.pska_url or f"http://{config.service.host}:{config.service.port}").rstrip("/")
+    fastreact_url = str(args.fastreact_url or config.fastreact.url).rstrip("/")
+    fastreact_root = args.fastreact_root.expanduser()
+    command = [
+        str(args.python),
+        "scripts/pska_digest_worker.py",
+        "--pska-url",
+        pska_url,
+        "--fastreact-url",
+        fastreact_url,
+        "--batch-limit",
+        str(args.batch_limit),
+        "--represented-user-id",
+        str(args.represented_user_id),
+    ]
+    return {
+        "ok": True,
+        "pska_database_url": config.database.url,
+        "pska_url": pska_url,
+        "fastreact_url": fastreact_url,
+        "fastreact_root": str(fastreact_root),
+        "command": command,
+        "shell": f"cd {shlex_quote(str(fastreact_root))} && {' '.join(shlex_quote(part) for part in command)}",
+        "notes": [
+            "Start PSKA service first with ./scripts/pska --config .pska/config.json local-daemon or serve.",
+            "Run ./scripts/pska --config .pska/config.json service-check before starting the worker.",
+            "The worker belongs to Fastreact and must use PSKA HTTP API/MCP; it must not access the PSKA database directly.",
+        ],
     }
 
 

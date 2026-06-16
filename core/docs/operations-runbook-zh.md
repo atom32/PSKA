@@ -235,6 +235,8 @@ Fastreact offline does not make PSKA unavailable. In that case `/ready` should s
 Fastreact 侧脚本型 digest worker：
 
 ```bash
+./scripts/pska --config .pska/config.json fastreact-digest-worker-command
+
 cd ~/Fastreact/fastreact-nano
 python3 scripts/pska_digest_worker.py \
   --pska-url http://127.0.0.1:8765 \
@@ -242,7 +244,11 @@ python3 scripts/pska_digest_worker.py \
   --batch-limit 20
 ```
 
-该 worker 只通过 PSKA HTTP API/MCP 获取上下文和写回 candidates，不直接访问 PSKA DB。
+第一条命令会根据 PSKA config 输出可复制的 Fastreact worker command，并显示 PSKA canonical DB。该 worker 只通过 PSKA HTTP API/MCP 获取上下文和写回 candidates，不直接访问 PSKA DB。
+
+常见失败：
+
+- `FastReAct digest exceeded tool budget`：说明 PSKA job lease、batch context、Fastreact run 都已连通，但 Fastreact agent/skill 多次调用了写入工具。应在 Fastreact 侧收紧 `pska_digest` skill 或 worker prompt/tool policy；PSKA 侧会把 job 标为 failed，不伪造成功。
 
 恢复 stale running jobs：
 

@@ -3,7 +3,16 @@ from __future__ import annotations
 import json
 
 import pska_core.cli as cli_module
-from pska_core.cli import build_parser, digest_scheduler, _mvp_next_actions, _mvp_status_payload, _mvp_status_summary, _review_items_payload
+from pska_core.config import PSKAConfig
+from pska_core.cli import (
+    build_parser,
+    digest_scheduler,
+    _fastreact_digest_worker_command_payload,
+    _mvp_next_actions,
+    _mvp_status_payload,
+    _mvp_status_summary,
+    _review_items_payload,
+)
 from pska_core.enums import ReviewType
 from pska_core.models import ReviewItem
 
@@ -54,6 +63,7 @@ def test_cli_accepts_search_and_smoke() -> None:
     local_daemon = build_parser().parse_args(["local-daemon", "--no-worker", "--digest-interval-seconds", "60"])
     mvp_bootstrap = build_parser().parse_args(["mvp-bootstrap", "--notes-root", "notes", "--dry-run", "--extract"])
     mvp_status = build_parser().parse_args(["mvp-status", "--summary"])
+    digest_worker_command = build_parser().parse_args(["fastreact-digest-worker-command", "--batch-limit", "3"])
     service_check = build_parser().parse_args([
         "service-check",
         "--url",
@@ -84,6 +94,8 @@ def test_cli_accepts_search_and_smoke() -> None:
     assert mvp_bootstrap.extract is True
     assert mvp_status.command == "mvp-status"
     assert mvp_status.summary is True
+    assert digest_worker_command.command == "fastreact-digest-worker-command"
+    assert digest_worker_command.batch_limit == 3
     assert service_check.command == "service-check"
     assert service_check.url == "http://127.0.0.1:8765"
     assert service_check.timeout_seconds == 1
@@ -474,6 +486,33 @@ def test_mvp_status_payload_reports_schema_drift(monkeypatch) -> None:
     assert "connector_states missing" in payload["metrics"]["error"]
     assert "jobs missing" in payload["jobs"]["error"]
     assert any("db-init" in action for action in payload["next_actions"])
+
+
+def test_fastreact_digest_worker_command_payload_uses_config_urls() -> None:
+    args = build_parser().parse_args([
+        "fastreact-digest-worker-command",
+        "--fastreact-root",
+        "/tmp/Fast React/fastreact-nano",
+        "--batch-limit",
+        "7",
+        "--represented-user-id",
+        "user_primary",
+    ])
+    config = PSKAConfig.from_dict(
+        {
+            "database": {"url": "postgresql:///pska"},
+            "service": {"host": "127.0.0.1", "port": 8765},
+            "fastreact": {"url": "http://127.0.0.1:8000"},
+        }
+    )
+
+    payload = _fastreact_digest_worker_command_payload(args, config)
+
+    assert payload["pska_database_url"] == "postgresql:///pska"
+    assert payload["pska_url"] == "http://127.0.0.1:8765"
+    assert payload["fastreact_url"] == "http://127.0.0.1:8000"
+    assert "--batch-limit" in payload["command"]
+    assert "'/tmp/Fast React/fastreact-nano'" in payload["shell"]
 
 
 def _json_documents(output: str) -> list[dict]:
