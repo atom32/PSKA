@@ -56,6 +56,7 @@ Readiness and status：
 - `GET /health`
 - `GET /ready`
 - `GET /index-status`
+- `GET /metrics`
 
 Knowledge：
 
@@ -149,6 +150,21 @@ X-PSKA-Scope: {"source_item_ids":["..."]}
       "stale_running": [],
       "recent_failed": []
     },
+    "metrics": {
+      "ok": true,
+      "embedding": {
+        "provider": "disabled",
+        "model": "BAAI/bge-m3",
+        "total_chunks": 0,
+        "embedded_chunks": 0,
+        "missing_chunks": 0,
+        "coverage": 1.0
+      },
+      "connectors": {
+        "source_channel_count": 0,
+        "source_channels": {}
+      }
+    },
     "fastreact": {
       "ok": false,
       "url": "http://127.0.0.1:8000",
@@ -173,6 +189,8 @@ P0.4 readiness observability notes：
 
 - `checks.jobs.running_stale_count` counts running jobs whose lease has expired.
 - `checks.jobs.digest_backlog` reports queued/running digest jobs and scoped source count.
+- `checks.metrics.embedding` reports current provider/model coverage plus any-provider coverage.
+- `checks.metrics.connectors` reports first-pass source-channel freshness; this is a proxy until P1 connector state tables exist.
 - `checks.jobs.recent_failed` includes a bounded list of recent failed jobs with error and external run reference.
 - `checks.fastreact.pska_tools_loaded=false` means Fastreact is reachable but does not expose all PSKA required tools.
 - `checks.mcp.missing_required_tools` is a local contract failure and makes `ok=false` if required PSKA MCP tools are missing.

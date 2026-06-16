@@ -420,6 +420,57 @@ def test_http_routes_cover_job_ops_filters_stats_cancel_and_recover() -> None:
     assert recovered["recovered"][0]["status"] == "queued"
 
 
+def test_metrics_report_embedding_coverage_and_connector_freshness(monkeypatch) -> None:
+    api = _api()
+    monkeypatch.setenv("PSKA_EMBEDDING_PROVIDER", "fake-bge")
+    monkeypatch.setenv("PSKA_EMBEDDING_MODEL", "fake-model")
+    first = IngestService(api.store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "metrics-note-1",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "Metrics note 1",
+            "content": {"text": "Metrics coverage note one."},
+        }
+    )
+    second = IngestService(api.store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "fastreact",
+            "record_type": "conversation",
+            "source_id": "metrics-note-2",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "Metrics note 2",
+            "content": {"text": "Metrics coverage note two."},
+        }
+    )
+    first_chunk = api.store.list_chunks_for_sources({first.source_item_id})[0]
+    api.store.update_chunk_embedding(first_chunk.chunk_id, [1.0, 0.0, 1.0], provider="fake-bge", model="fake-model")
+
+    metrics = api.metrics()
+    ready = api.ready()
+    with _http_server(api) as base_url:
+        status, payload = _http_json(base_url, "GET", "/metrics")
+
+    assert metrics["embedding"]["total_chunks"] == 2
+    assert metrics["embedding"]["embedded_chunks"] == 1
+    assert metrics["embedding"]["missing_chunks"] == 1
+    assert metrics["embedding"]["coverage"] == 0.5
+    assert metrics["connectors"]["source_channel_count"] == 2
+    assert metrics["connectors"]["source_channels"]["manual"]["latest_source_item_id"] == first.source_item_id
+    assert metrics["connectors"]["source_channels"]["fastreact"]["latest_source_item_id"] == second.source_item_id
+    assert ready["checks"]["metrics"]["ok"] is True
+    assert ready["checks"]["metrics"]["embedding"]["coverage"] == 0.5
+    assert status == 200
+    assert payload["embedding"]["embedded_chunks"] == 1
+
+
 def test_digest_schedule_creates_backlog_and_skips_active_sources() -> None:
     api = _api()
     sources = [

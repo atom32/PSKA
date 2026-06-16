@@ -55,6 +55,7 @@ class PSKAApi:
                 "api_key_file_configured": bool(os.environ.get("PSKA_LLM_API_KEY_FILE")),
             },
             "jobs": self._jobs_ready(),
+            "metrics": self._metrics_ready(),
             "fastreact": self._fastreact_ready(),
             "mcp": self._mcp_ready(),
         }
@@ -98,6 +99,12 @@ class PSKAApi:
     def _jobs_ready(self) -> dict[str, Any]:
         try:
             return {"ok": True, **self.job_stats()["stats"]}
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    def _metrics_ready(self) -> dict[str, Any]:
+        try:
+            return {"ok": True, **self.metrics()}
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
@@ -225,6 +232,16 @@ class PSKAApi:
                 "events": to_jsonable(self.store.list_job_events(job_id)),
             }
         return {"jobs": to_jsonable(self.store.list_jobs(status=status, job_type=job_type, limit=limit))}
+
+    def metrics(self) -> dict[str, Any]:
+        source_items = self.store.list_source_items()
+        chunks = self.store.list_chunks_for_sources({item.source_item_id for item in source_items})
+        return {
+            "index": self.index_status(),
+            "embedding": _embedding_metrics(chunks),
+            "connectors": _connector_metrics(source_items),
+            "jobs": self.job_stats()["stats"],
+        }
 
     def job_stats(self, *, limit: int = 1000) -> dict[str, Any]:
         jobs = self.store.list_jobs(limit=limit)
@@ -425,6 +442,8 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
             return self._json(200, self.api.ready())
         if path == "/index-status":
             return self._json(200, self.api.index_status())
+        if path == "/metrics":
+            return self._json(200, self.api.metrics())
         if path == "/review-items":
             return self._json(200, self.api.review_items())
         if path == "/jobs/stats":
@@ -596,6 +615,64 @@ def _active_digest_source_item_ids(store: PostgresKnowledgeStore) -> set[str]:
         if job.status in {"queued", "running", "succeeded"}:
             ids.update(_job_source_item_ids(job))
     return ids
+
+
+def _embedding_metrics(chunks: list[Any]) -> dict[str, Any]:
+    configured_provider = os.environ.get("PSKA_EMBEDDING_PROVIDER", "disabled")
+    configured_model = os.environ.get("PSKA_EMBEDDING_MODEL", "BAAI/bge-m3")
+    total = len(chunks)
+    any_embedding = 0
+    current = 0
+    by_provider_model: dict[str, int] = {}
+    for chunk in chunks:
+        metadata = getattr(chunk, "metadata", {}) or {}
+        provider = metadata.get("embedding_provider")
+        model = metadata.get("embedding_model")
+        has_embedding = bool(getattr(chunk, "embedding", None)) or bool(provider and model)
+        if not has_embedding:
+            continue
+        any_embedding += 1
+        if provider and model:
+            by_provider_model[f"{provider}:{model}"] = by_provider_model.get(f"{provider}:{model}", 0) + 1
+        if provider == configured_provider and model == configured_model:
+            current += 1
+    return {
+        "provider": configured_provider,
+        "model": configured_model,
+        "configured": configured_provider != "disabled",
+        "total_chunks": total,
+        "embedded_chunks": current,
+        "any_embedding_chunks": any_embedding,
+        "missing_chunks": max(total - current, 0),
+        "coverage": (current / total) if total else 1.0,
+        "any_embedding_coverage": (any_embedding / total) if total else 1.0,
+        "by_provider_model": by_provider_model,
+    }
+
+
+def _connector_metrics(source_items: list[Any]) -> dict[str, Any]:
+    channels: dict[str, dict[str, Any]] = {}
+    for item in source_items:
+        channel = str(getattr(item, "source_channel", "") or "unknown")
+        current = channels.setdefault(
+            channel,
+            {
+                "source_items": 0,
+                "latest_source_item_id": None,
+                "latest_source_item_at": None,
+            },
+        )
+        current["source_items"] += 1
+        created_at = getattr(item, "created_at", None)
+        latest = current["latest_source_item_at"]
+        if latest is None or (created_at is not None and created_at > latest):
+            current["latest_source_item_id"] = getattr(item, "source_item_id", None)
+            current["latest_source_item_at"] = created_at
+    return {
+        "source_channels": dict(sorted(channels.items())),
+        "source_channel_count": len(channels),
+        "total_source_items": len(source_items),
+    }
 
 
 def _string_list(value: Any) -> list[str]:

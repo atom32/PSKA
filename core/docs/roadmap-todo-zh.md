@@ -9,7 +9,7 @@
 - P0.1 service contract 已落地：HTTP `/mcp`、稳定 `/ready`、service contract 文档。
 - P0.2 auth/request context 已落地：service token、agent_service、represented user、HTTP/MCP ACL context。
 - P0.3 job worker metadata 已落地：worker lease、heartbeat、Fastreact `external_run_id`、source refs。
-- P0.5 observability/operations 已部分落地：增强 `/ready`、`service-check`、foreground runbook、job stats/list/filter/cancel/retry/recover ops API 和 CLI，`digest_backlog` 指标。
+- P0.5 observability/operations 已部分落地：增强 `/ready`、`service-check`、foreground runbook、job stats/list/filter/cancel/retry/recover ops API 和 CLI，`digest_backlog`、embedding coverage、source-channel freshness 指标。
 - P0.4 background digest loop 已完成 write-back + external worker lifecycle + backlog scheduling + foreground periodic scheduler + Fastreact worker slice：`pska_job_context`、`pska_write_candidates`、`POST /candidates`、`POST /jobs/{id}/lease`、`GET /digest/batches/{id}`、`POST /digest/candidates`、`POST /digest/schedule`、CLI `digest-scheduler`、`complete/fail`、priority、retry backoff、candidate schema version、batch cursor、Fastreact `pska_digest` worker 脚本。仍待补更细的 candidate taxonomy、daemon supervisor 化和真实 digest 质量调优。
 
 ## 当前判断
@@ -154,10 +154,10 @@ FastReAct 侧：
 - API/worker 日志包含 request id、job id、source id。
 - 提供 basic metrics：
   - index counts
-  - pending/running/failed jobs
-  - digest backlog
-  - embedding coverage
-  - last successful connector scan
+  - pending/running/failed jobs 已完成第一版
+  - digest backlog 已完成第一版
+  - embedding coverage 已完成第一版
+  - source-channel freshness 已完成第一版；真正 last successful connector scan 留给 P1 connector state
 - 提供 manual：
   - 本地启动
   - service 启动

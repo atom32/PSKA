@@ -194,6 +194,8 @@ Operational signals:
 
 - `checks.jobs.running_stale_count > 0` means worker lease expired; run `job-recover`.
 - `checks.jobs.digest_backlog.jobs > 0` means there are queued/running digest jobs for Fastreact workers.
+- `checks.metrics.embedding.coverage < 1` means some chunks are missing embeddings for the currently configured provider/model; run `embed-backfill` when semantic retrieval is enabled.
+- `checks.metrics.connectors.source_channels` shows last source-item freshness by channel. It is a source-channel proxy until P1 connector state exists.
 - `checks.jobs.recent_failed` shows recent failed jobs and `external_run_id` when Fastreact was involved.
 - `checks.fastreact.ok=false` means Fastreact is offline or not ready; PSKA can still do local retrieval and manage backlog.
 - `checks.fastreact.pska_tools_loaded=false` means Fastreact is reachable but missing required PSKA tools.
