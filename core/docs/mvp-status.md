@@ -148,7 +148,7 @@ Unit and contract tests:
 ```bash
 cd "/Users/xudawei/Documents/personal archive/core"
 python3 -m pytest -q
-# 147 passed
+# 151 passed
 
 cd "/Users/xudawei/Documents/personal archive/channels/twitter-x"
 python3 -m pytest -q
@@ -197,6 +197,8 @@ Latest local evidence:
 - After Postgres hyperedge source-ref deserialization was fixed, real GraphRAG
   paths include `source_refs` and `evidence_citations`, with no ungrounded graph
   edge diagnostic in the 1-zip gate.
+- The real-sample smoke now asserts `search_has_citations`, and in LLM mode also
+  asserts `graph_has_evidence_citations`.
 
 This deterministic smoke uses a tiny in-memory dataset and fake LLM responses
 to verify the strengthened loop before running real archives. The object-level

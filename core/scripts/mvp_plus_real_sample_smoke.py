@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
 import re
@@ -122,6 +123,8 @@ def run_real_sample_smoke(args: argparse.Namespace) -> dict[str, Any]:
         report["query"] = query
         for label, command in _query_commands(args, database_url, query):
             result = subprocess.run(command, cwd=ROOT, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            if label == "search":
+                report["retrieval_checks"] = _retrieval_output_checks(result.stdout, include_graph=not args.skip_llm)
             report["steps"][label] = _step_result(result)
             if result.returncode != 0:
                 report["checks"] = _checks_from_store(database_url, args.owner_user_id, skip_llm=args.skip_llm)
@@ -155,6 +158,7 @@ def run_real_sample_smoke(args: argparse.Namespace) -> dict[str, Any]:
         )
 
     checks = _checks_from_store(database_url, args.owner_user_id, skip_llm=args.skip_llm)
+    checks.update(report.get("retrieval_checks") or {})
     report["checks"] = checks
     report["ok"] = all(checks.values()) and all(step["returncode"] == 0 for step in report["steps"].values())
     return report
@@ -225,6 +229,26 @@ def _query_commands(args: argparse.Namespace, database_url: str, query: str) -> 
             )
         )
     return commands
+
+
+def _retrieval_output_checks(stdout: str, *, include_graph: bool) -> dict[str, bool]:
+    try:
+        payload = json.loads(stdout)
+    except json.JSONDecodeError:
+        checks = {"search_has_citations": False}
+        if include_graph:
+            checks["graph_has_evidence_citations"] = False
+        return checks
+
+    checks = {"search_has_citations": bool(payload.get("citations"))}
+    if include_graph:
+        graph_context = list(payload.get("hypergraph_context") or [])
+        graph_paths = list(payload.get("graph_paths") or [])
+        graph_edges = [*graph_context]
+        for path in graph_paths:
+            graph_edges.extend(path.get("edges") or [])
+        checks["graph_has_evidence_citations"] = any(edge.get("evidence_citations") for edge in graph_edges if isinstance(edge, dict))
+    return checks
 
 
 def _checks_from_store(database_url: str, owner_user_id: str, *, skip_llm: bool) -> dict[str, bool]:

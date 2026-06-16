@@ -41,6 +41,43 @@ def test_extraction_creates_entities_hyperedges_and_review_items() -> None:
     assert "knowledge extraction agent" in llm.prompts[0]["system"]
 
 
+def test_extraction_repairs_one_member_hyperedge_schema() -> None:
+    store = InMemoryKnowledgeStore()
+    store.add_user(User("user_primary", "primary"))
+    item = IngestService(store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "repair-note",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "content": {"text": "Project Atlas depends on Twitter Archive."},
+        }
+    )
+    invalid = {
+        "entities": [{"entity_type": "project", "label": "Project Atlas"}],
+        "hyperedges": [
+            {
+                "relation_type": "depends_on",
+                "directionality": "directed",
+                "evidence_text": "Project Atlas depends on Twitter Archive.",
+                "confidence": 0.8,
+                "members": [{"entity_type": "project", "label": "Project Atlas", "role": "subject"}],
+            }
+        ],
+        "review_items": [],
+    }
+    llm = FakeLLM([invalid, extraction_response()])
+
+    report = ExtractionService(store, llm=llm).extract_source_item(item)
+
+    assert report.hyperedges_created
+    assert len(llm.prompts) == 2
+    assert "schema correction agent" in llm.prompts[1]["system"]
+
+
 def test_conversation_review_item_preserves_message_provenance() -> None:
     store = InMemoryKnowledgeStore()
     store.add_user(User("user_primary", "primary"))

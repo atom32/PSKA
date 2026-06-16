@@ -176,6 +176,8 @@ Previous extraction:
                 members = []
                 for member in edge["members"]:
                     members.append((str(member["entity_type"]), str(member["label"]), str(member["role"])))
+                if len(members) < 2:
+                    raise ValueError("hyperedges must have at least two members")
                 normalized_edges.append({
                     "relation_type": str(edge["relation_type"]),
                     "directionality": Directionality(str(edge.get("directionality") or Directionality.AMBIGUOUS)),
