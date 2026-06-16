@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import sys
+import types
+
 from pska_core.acl import ACLService
 from pska_core.agentic import AgenticSearchService
 from pska_core.enums import Directionality, MemoryLayer, ReviewType, UserRole, Visibility
@@ -470,6 +473,36 @@ def test_graph_paths_link_entities_by_alias_metadata() -> None:
     assert response.graph_paths[0]["seed"]["label"] == "FastReAct"
     assert response.graph_paths[0]["edges"][0]["relation_type"] == "executes"
     assert response.graph_paths[0]["edges"][0]["evidence_citations"][0]["source_item_id"] == source.source_item_id
+
+
+def test_graph_paths_can_use_optional_rapidfuzz_for_alias_typos(monkeypatch) -> None:
+    class FakeFuzz:
+        @staticmethod
+        def WRatio(alias, haystack):
+            return 94.0 if alias == "fastreact" and "fastreakt" in haystack else 0.0
+
+    module = types.ModuleType("rapidfuzz")
+    module.fuzz = FakeFuzz
+    monkeypatch.setitem(sys.modules, "rapidfuzz", module)
+    store = make_store()
+    graph = HypergraphService(store)
+    graph.create_entity(Entity("ent_fastreact_fuzzy", "service", "FastReAct", "user_primary", "private_primary", Visibility.PRIVATE))
+    graph.create_entity(Entity("ent_digest_fuzzy", "workflow", "Digest", "user_primary", "private_primary", Visibility.PRIVATE))
+    graph.create_hyperedge(
+        relation_type="executes",
+        owner_user_id="user_primary",
+        space_id="private_primary",
+        visibility=Visibility.PRIVATE,
+        directionality=Directionality.DIRECTED,
+        members=[("ent_fastreact_fuzzy", "executor"), ("ent_digest_fuzzy", "workflow")],
+        evidence_text="FastReAct executes digest.",
+        confidence=0.85,
+    )
+
+    response = RetrievalService(store, ACLService(store)).search("FastReakt 关系", store.get_user("user_primary"))
+
+    assert response.graph_paths
+    assert response.graph_paths[0]["seed"]["label"] == "FastReAct"
 
 
 def test_entity_linking_uses_word_boundaries_for_short_latin_labels() -> None:

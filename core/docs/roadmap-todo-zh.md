@@ -12,7 +12,7 @@
 - P0.5 observability/operations 已部分落地：增强 `/ready`、`service-check`、foreground `local-daemon` supervisor、runbook、job stats/list/filter/cancel/retry/recover ops API 和 CLI，`digest_backlog`、embedding coverage、source-channel freshness 指标，HTTP request id 与结构化访问日志。
 - P0.4 background digest loop 已完成 write-back + external worker lifecycle + backlog scheduling + foreground periodic scheduler + Fastreact worker slice：`pska_job_context`、`pska_write_candidates`、`POST /candidates`、`POST /jobs/{id}/lease`、`GET /digest/batches/{id}`、`POST /digest/candidates`、`POST /digest/schedule`、CLI `digest-scheduler`、`complete/fail`、priority、retry backoff、candidate schema version、batch cursor、Fastreact `pska_digest` worker 脚本。仍待补更细的 candidate taxonomy、daemon supervisor 化和真实 digest 质量调优。
 - P1.1 connector contract 已完成第一版：`pska.connector_record.v1`、`POST /connectors/records`、CLI `connector-ingest-record`，以及 `pska.connector_state.v1`、`GET/POST /connectors/states`、CLI `connector-state`。具体 Files/Browser/Git connector 实现仍待 P1.2+。
-- P2 retrieval quality 已补 GraphRAG grounding 第一版：hypergraph context 返回 ACL-filtered `source_refs` 和 `evidence_citations`，并能从 query seed entity 返回最多 2-hop 的 grounded `graph_paths`；实体链接支持 metadata aliases/canonical label/slug/handle 的轻量匹配；graph paths 已有基于 query mention、confidence、evidence coverage、path length 的第一版排序和 explanation；chunk retrieval 已有 recency/source authority tie-breaker；retrieval diagnostics 已能输出 insufficient/ungrounded evidence、graph conflict、sensitivity flags；profile/memory context 已能带 source refs/citations 进入 retrieval response。当前仍是轻量路径扩展，不是 GNN，也不是 HippoRAG/PPR 级别的成熟 GraphRAG。
+- P2 retrieval quality 已补 GraphRAG grounding 第一版：hypergraph context 返回 ACL-filtered `source_refs` 和 `evidence_citations`，并能从 query seed entity 返回最多 2-hop 的 grounded `graph_paths`；实体链接支持 metadata aliases/canonical label/slug/handle 的轻量匹配，并可选用 `rapidfuzz` 处理长 alias typo；graph paths 已有基于 query mention、confidence、evidence coverage、path length 的第一版排序和 explanation；chunk retrieval 已有 recency/source authority tie-breaker，并可选用 `rank-bm25` 做 lexical scorer；retrieval diagnostics 已能输出 insufficient/ungrounded evidence、graph conflict、sensitivity flags；profile/memory context 已能带 source refs/citations 进入 retrieval response。当前仍是轻量路径扩展，不是 GNN，也不是 HippoRAG/PPR 级别的成熟 GraphRAG。
 
 ## 当前判断
 
@@ -322,7 +322,7 @@ FastReAct 仍然是重要消费者，但不应主导 PSKA 架构。
    - 当前是轻量 GraphRAG，不是 GNN/HippoRAG/PPR。
    - 下一步优先做 rerank/evaluation，而不是上 GNN：加入 query fixture、expected citations、graph path relevance、conflict/gap regression。
    - 如果真实问题经常需要跨多文档多跳，再评估 HippoRAG/PPR 层。
-   - 优先复用：pgvector/Postgres FTS、rank-bm25 或 Tantivy/LanceDB/Qdrant 视边界评估，rerank 可评估 sentence-transformers/cross-encoder，GraphRAG 可评估 HippoRAG/PPR 而非自研 GNN。
+   - 优先复用：`rank-bm25` 和 `rapidfuzz` 已作为可选 retrieval extras 接入；下一步评估 pgvector/Postgres FTS、Tantivy/LanceDB/Qdrant，rerank 可评估 sentence-transformers/cross-encoder，GraphRAG 可评估 HippoRAG/PPR 而非自研 GNN。
 
 5. **Service daemon 产品化**
    - `local-daemon` 仍是 foreground supervisor。

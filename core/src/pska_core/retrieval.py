@@ -162,15 +162,7 @@ class RetrievalService:
         item_by_id = {item.source_item_id: item for item in items}
         exact_ranked = self._exact_source_results(query, items, chunks, item_by_id, top_k=top_k)
         query_terms = self._terms(query)
-        lexical_results: list[RetrievalResult] = []
-        for chunk in chunks:
-            item = item_by_id[chunk.source_item_id]
-            text_terms = self._terms(f"{item.title} {chunk.text} {item.url or ''}")
-            lexical = self._lexical_score(query_terms, text_terms)
-            if lexical <= 0:
-                continue
-            lexical_results.append(self._result_for_chunk(chunk, item, lexical, {"lexical": lexical, "vector": 0.0}))
-        lexical_ranked = sorted(lexical_results, key=lambda result: result.score, reverse=True)
+        lexical_ranked, lexical_ranker = self._lexical_ranked_results(query_terms, chunks, item_by_id)
 
         vector_ranked: list[RetrievalResult] = []
         vector_enabled = self.embedding_provider is not None
@@ -187,6 +179,7 @@ class RetrievalService:
         return combined, {
             "exact_candidates": len(exact_ranked),
             "lexical_candidates": len(lexical_ranked),
+            "lexical_ranker": lexical_ranker,
             "vector_enabled": vector_enabled,
             "vector_candidates": len(vector_ranked),
             "embedding_model": self.embedding_provider.model_name if self.embedding_provider else None,
@@ -255,6 +248,34 @@ class RetrievalService:
             return 0.0
         counts = {term: text_terms.count(term) for term in set(query_terms)}
         return sum(counts.values()) / math.sqrt(len(text_terms))
+
+    def _lexical_ranked_results(
+        self,
+        query_terms: list[str],
+        chunks: list[Chunk],
+        item_by_id: dict[str, SourceItem],
+    ) -> tuple[list[RetrievalResult], str]:
+        documents = [
+            self._terms(f"{item_by_id[chunk.source_item_id].title} {chunk.text} {item_by_id[chunk.source_item_id].url or ''}")
+            for chunk in chunks
+        ]
+        bm25_scores = _bm25_scores(documents, query_terms)
+        if bm25_scores is not None:
+            results = [
+                self._result_for_chunk(chunk, item_by_id[chunk.source_item_id], score, {"lexical": score, "bm25": score, "vector": 0.0})
+                for chunk, score in zip(chunks, bm25_scores)
+                if score > 0
+            ]
+            return sorted(results, key=lambda result: result.score, reverse=True), "rank_bm25"
+
+        lexical_results: list[RetrievalResult] = []
+        for chunk, text_terms in zip(chunks, documents):
+            item = item_by_id[chunk.source_item_id]
+            lexical = self._lexical_score(query_terms, text_terms)
+            if lexical <= 0:
+                continue
+            lexical_results.append(self._result_for_chunk(chunk, item, lexical, {"lexical": lexical, "vector": 0.0}))
+        return sorted(lexical_results, key=lambda result: result.score, reverse=True), "term_frequency"
 
     def _rrf_merge(
         self,
@@ -588,9 +609,16 @@ class RetrievalService:
                 if not normalized_alias:
                     continue
                 position = _match_position(normalized_haystack, normalized_alias)
-                if position is None:
+                if position is None and not _fuzzy_alias_match(normalized_haystack, normalized_alias):
                     continue
-                matches.append((position, -len(normalized_alias), entity.entity_id, entity))
+                matches.append(
+                    (
+                        position if position is not None else len(normalized_haystack) + 1,
+                        -len(normalized_alias),
+                        entity.entity_id,
+                        entity,
+                    )
+                )
                 break
         return [item[3] for item in sorted(matches)]
 
@@ -761,6 +789,19 @@ def _normalize_exact(value: str) -> str:
     return value.strip().lower()
 
 
+def _bm25_scores(documents: list[list[str]], query_terms: list[str]) -> list[float] | None:
+    if not documents or not query_terms:
+        return None
+    try:
+        from rank_bm25 import BM25Okapi  # type: ignore[import-not-found]
+    except Exception:  # noqa: BLE001 - optional retrieval dependency.
+        return None
+    try:
+        return [float(score) for score in BM25Okapi(documents).get_scores(query_terms)]
+    except Exception:  # noqa: BLE001 - malformed optional dependency should not break retrieval.
+        return None
+
+
 def _latest_source_time(items: list[SourceItem]) -> datetime | None:
     timestamps = [_source_time(item) for item in items]
     timestamps = [timestamp for timestamp in timestamps if timestamp is not None]
@@ -922,6 +963,19 @@ def _match_position(haystack: str, alias: str) -> int | None:
         position = collapsed_haystack.find(collapsed_alias)
         return position if position >= 0 else None
     return None
+
+
+def _fuzzy_alias_match(haystack: str, alias: str) -> bool:
+    if _contains_cjk(alias) or len(alias.replace(" ", "")) < 6:
+        return False
+    try:
+        from rapidfuzz import fuzz  # type: ignore[import-not-found]
+    except Exception:  # noqa: BLE001 - optional retrieval dependency.
+        return False
+    try:
+        return float(fuzz.WRatio(alias, haystack)) >= 90.0
+    except Exception:  # noqa: BLE001 - optional dependency should not break retrieval.
+        return False
 
 
 def _contains_cjk(value: str) -> bool:

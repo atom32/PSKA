@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import sys
+import types
+
 from pska_core.acl import ACLService
 from pska_core.embeddings import EmbeddingService
 from pska_core.enums import UserRole
@@ -146,6 +149,43 @@ def test_retrieval_prefers_exact_url_and_title_matches() -> None:
     assert title_response.results[0].score_debug["exact_source"] == 1.0
     assert url_response.results[0].title == "Exact Target"
     assert url_response.score_debug["ranker"] == "exact_source"
+
+
+def test_retrieval_falls_back_to_term_frequency_when_bm25_is_unavailable(monkeypatch) -> None:
+    monkeypatch.setitem(sys.modules, "rank_bm25", None)
+    store = _store()
+    IngestService(store).ingest_channel_payload(_payload("fallback-note", "fallback ranking topic"))
+    user = store.get_user("user_primary")
+
+    response = RetrievalService(store, ACLService(store)).search("ranking topic", user, top_k=1)
+
+    assert response.score_debug["lexical_ranker"] == "term_frequency"
+    assert response.results[0].title == "fallback-note"
+
+
+def test_retrieval_uses_optional_rank_bm25_when_available(monkeypatch) -> None:
+    class FakeBM25:
+        def __init__(self, documents):
+            self.documents = documents
+
+        def get_scores(self, query_terms):
+            query = set(query_terms)
+            return [float(len(query.intersection(document))) for document in self.documents]
+
+    module = types.ModuleType("rank_bm25")
+    module.BM25Okapi = FakeBM25
+    monkeypatch.setitem(sys.modules, "rank_bm25", module)
+    store = _store()
+    ingest = IngestService(store)
+    ingest.ingest_channel_payload(_payload("weak-note", "ranking"))
+    ingest.ingest_channel_payload(_payload("strong-note", "ranking topic"))
+    user = store.get_user("user_primary")
+
+    response = RetrievalService(store, ACLService(store)).search("ranking topic", user, top_k=1)
+
+    assert response.score_debug["lexical_ranker"] == "rank_bm25"
+    assert response.results[0].title == "strong-note"
+    assert response.results[0].score_debug["bm25"] == 2.0
 
 
 def test_retrieval_uses_recency_as_tie_breaker_for_similar_matches() -> None:

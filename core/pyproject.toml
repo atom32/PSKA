@@ -16,6 +16,10 @@ documents = [
 watch = [
   "watchdog>=4.0.0",
 ]
+retrieval = [
+  "rank-bm25>=0.2.2",
+  "rapidfuzz>=3.9.0",
+]
 embeddings = [
   "torch>=2.0",
   "transformers>=4.44.2,<5",

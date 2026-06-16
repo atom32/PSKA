@@ -41,7 +41,7 @@ rather than adding many more connectors.
 | Connector state | MVP functional | Connector records and durable connector states support enablement, scan cursor, sync status, permission scope, config, HTTP API, and CLI. |
 | LLM extraction | MVP complete | Extracts entities, hyperedges, and review items through LLM JSON contract. |
 | Hypergraph | MVP complete | Supports relation instances with multiple members and member roles; directionality is explicit. |
-| Retrieval | MVP functional | ACL-first lexical/semantic placeholder ranking, citations, and one-hop hypergraph context. |
+| Retrieval | MVP functional | ACL-first lexical/vector ranking, optional `rank-bm25` lexical scorer, citations, one-hop/two-hop graph context, and optional `rapidfuzz` alias typo tolerance. |
 | Agentic search | MVP complete | LLM plans retrieval queries and synthesizes answers from retrieved evidence. |
 | MCP boundary | MVP complete | PSKA exposes stdio MCP tools; Fastreact loads and calls them without importing PSKA internals. |
 | HTTP API | MVP functional | Local API supports health/readiness, ingest, connector records/states, search, agentic search, jobs, review, candidates, digest schedule, and HTTP MCP. |
@@ -159,7 +159,7 @@ Unit and contract tests:
 ```bash
 cd "/Users/xudawei/Documents/personal archive/core"
 python3 -m pytest -q
-# 178 passed
+# 181 passed
 
 cd "/Users/xudawei/Documents/personal archive/channels/twitter-x"
 python3 -m pytest -q
