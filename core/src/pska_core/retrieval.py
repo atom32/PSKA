@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 import math
 import re
 from typing import Any
@@ -132,6 +133,7 @@ class RetrievalService:
                 vector_ranked.append(self._result_for_chunk(chunk, item, vector_score, {"lexical": 0.0, "vector": vector_score}))
 
         combined = self._merge_exact_then_rrf(exact_ranked, lexical_ranked, vector_ranked, top_k=top_k)
+        self._apply_rank_quality_boosts(combined, item_by_id, reference_time=_latest_source_time(items))
         return combined, {
             "exact_candidates": len(exact_ranked),
             "lexical_candidates": len(lexical_ranked),
@@ -247,6 +249,26 @@ class RetrievalService:
             top_k=max(top_k - len(exact_ranked), 0),
         )
         return [*exact_ranked, *remainder][:top_k]
+
+    def _apply_rank_quality_boosts(
+        self,
+        results: list[RetrievalResult],
+        item_by_id: dict[str, SourceItem],
+        *,
+        reference_time: datetime | None,
+    ) -> None:
+        for result in results:
+            item = item_by_id[result.source_item_id]
+            recency = _source_recency_score(item, reference_time=reference_time)
+            authority = _source_authority_score(item)
+            base_score = result.score
+            boost = recency * 0.004 + authority * 0.004
+            result.score = base_score + boost
+            result.score_debug["base_score"] = base_score
+            result.score_debug["recency"] = recency
+            result.score_debug["source_authority"] = authority
+            result.score_debug["quality_boost"] = boost
+        results.sort(key=lambda result: result.score, reverse=True)
 
     def _hypergraph_context(
         self,
@@ -529,6 +551,83 @@ def _conversation_message_ids(item: SourceItem, text: str) -> list[str]:
 
 def _normalize_exact(value: str) -> str:
     return value.strip().lower()
+
+
+def _latest_source_time(items: list[SourceItem]) -> datetime | None:
+    timestamps = [_source_time(item) for item in items]
+    timestamps = [timestamp for timestamp in timestamps if timestamp is not None]
+    return max(timestamps) if timestamps else None
+
+
+def _source_time(item: SourceItem) -> datetime | None:
+    for value in (item.metadata.get("created_at"), item.metadata.get("captured_at"), item.created_at):
+        parsed = _parse_datetime(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str) and value.strip():
+        text = value.strip()
+        if text.endswith("Z"):
+            text = f"{text[:-1]}+00:00"
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+    else:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _source_recency_score(item: SourceItem, *, reference_time: datetime | None) -> float:
+    source_time = _source_time(item)
+    if source_time is None or reference_time is None:
+        return 0.0
+    age_days = max((reference_time - source_time).total_seconds() / 86400, 0.0)
+    half_life_days = 180.0
+    return round(0.5 ** (age_days / half_life_days), 6)
+
+
+def _source_authority_score(item: SourceItem) -> float:
+    metadata = item.metadata or {}
+    extra = metadata.get("extra") if isinstance(metadata.get("extra"), dict) else {}
+    candidates = [
+        metadata.get("source_authority"),
+        metadata.get("authority"),
+        extra.get("source_authority"),
+        extra.get("authority"),
+    ]
+    for candidate in candidates:
+        score = _coerce_unit_float(candidate)
+        if score is not None:
+            return score
+
+    channel_defaults = {
+        "manual": 0.65,
+        "conversation": 0.6,
+        "browser": 0.55,
+        "web": 0.55,
+        "git": 0.7,
+        "twitter": 0.5,
+        "x": 0.5,
+    }
+    return channel_defaults.get(item.source_channel.lower(), 0.5)
+
+
+def _coerce_unit_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    return max(0.0, min(1.0, numeric))
 
 
 def _entity_aliases(entity: Entity) -> list[str]:

@@ -39,7 +39,15 @@ def _store() -> InMemoryKnowledgeStore:
     return store
 
 
-def _payload(source_id: str, text: str, *, title: str | None = None, url: str | None = None) -> dict:
+def _payload(
+    source_id: str,
+    text: str,
+    *,
+    title: str | None = None,
+    url: str | None = None,
+    created_at: str | None = None,
+    extra: dict | None = None,
+) -> dict:
     return {
         "schema_version": "pska.channel_ingest.v1",
         "source_channel": "manual",
@@ -51,6 +59,8 @@ def _payload(source_id: str, text: str, *, title: str | None = None, url: str | 
         "title": title or source_id,
         "url": url,
         "content": {"text": text},
+        "created_at": created_at,
+        "extra": extra or {},
     }
 
 
@@ -136,3 +146,61 @@ def test_retrieval_prefers_exact_url_and_title_matches() -> None:
     assert title_response.results[0].score_debug["exact_source"] == 1.0
     assert url_response.results[0].title == "Exact Target"
     assert url_response.score_debug["ranker"] == "exact_source"
+
+
+def test_retrieval_uses_recency_as_tie_breaker_for_similar_matches() -> None:
+    store = _store()
+    ingest = IngestService(store)
+    ingest.ingest_channel_payload(
+        _payload(
+            "old-note",
+            "ranking topic",
+            title="Old note",
+            created_at="2026-01-01T00:00:00Z",
+        )
+    )
+    ingest.ingest_channel_payload(
+        _payload(
+            "new-note",
+            "ranking topic",
+            title="New note",
+            created_at="2026-06-01T00:00:00Z",
+        )
+    )
+    user = store.get_user("user_primary")
+
+    response = RetrievalService(store, ACLService(store)).search("ranking topic", user, top_k=2)
+
+    assert [result.title for result in response.results] == ["New note", "Old note"]
+    assert response.results[0].score_debug["recency"] == 1.0
+    assert response.results[0].score_debug["quality_boost"] > response.results[1].score_debug["quality_boost"]
+
+
+def test_retrieval_uses_source_authority_as_tie_breaker() -> None:
+    store = _store()
+    ingest = IngestService(store)
+    ingest.ingest_channel_payload(
+        _payload(
+            "low-authority-note",
+            "authority topic",
+            title="Low authority",
+            created_at="2026-06-01T00:00:00Z",
+            extra={"source_authority": 0.1},
+        )
+    )
+    ingest.ingest_channel_payload(
+        _payload(
+            "high-authority-note",
+            "authority topic",
+            title="High authority",
+            created_at="2026-06-01T00:00:00Z",
+            extra={"source_authority": 0.9},
+        )
+    )
+    user = store.get_user("user_primary")
+
+    response = RetrievalService(store, ACLService(store)).search("authority topic", user, top_k=2)
+
+    assert [result.title for result in response.results] == ["High authority", "Low authority"]
+    assert response.results[0].score_debug["source_authority"] == 0.9
+    assert response.results[1].score_debug["source_authority"] == 0.1
