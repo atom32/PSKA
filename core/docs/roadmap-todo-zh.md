@@ -11,6 +11,7 @@
 - P0.3 job worker metadata 已落地：worker lease、heartbeat、Fastreact `external_run_id`、source refs。
 - P0.5 observability/operations 已部分落地：增强 `/ready`、`service-check`、foreground runbook、job stats/list/filter/cancel/retry/recover ops API 和 CLI，`digest_backlog`、embedding coverage、source-channel freshness 指标，HTTP request id 与结构化访问日志。
 - P0.4 background digest loop 已完成 write-back + external worker lifecycle + backlog scheduling + foreground periodic scheduler + Fastreact worker slice：`pska_job_context`、`pska_write_candidates`、`POST /candidates`、`POST /jobs/{id}/lease`、`GET /digest/batches/{id}`、`POST /digest/candidates`、`POST /digest/schedule`、CLI `digest-scheduler`、`complete/fail`、priority、retry backoff、candidate schema version、batch cursor、Fastreact `pska_digest` worker 脚本。仍待补更细的 candidate taxonomy、daemon supervisor 化和真实 digest 质量调优。
+- P1.1 connector record contract 已完成第一版：`pska.connector_record.v1`、`POST /connectors/records`、CLI `connector-ingest-record`。connector state/enable-disable/cursor 持久化仍待后续 P1。
 
 ## 当前判断
 
@@ -184,18 +185,18 @@ FastReAct 侧：
 ### P1.1 Connector contract
 
 - 定义 connector 输出：
-  - connector_id
-  - external_id
-  - source_uri
-  - title
-  - body / artifact refs
-  - timestamps
-  - owner_user_id
-  - visibility
-  - permission metadata
-  - content hash
-- 支持 scan cursor 和增量同步。
-- 支持 connector-level enable/disable 和授权范围。
+  - connector_id 已完成第一版
+  - external_id 已完成第一版
+  - source_uri 已完成第一版
+  - title 已完成第一版
+  - body / artifact refs 已完成第一版
+  - timestamps 已完成第一版
+  - owner_user_id 已完成第一版
+  - visibility 已完成第一版
+  - permission metadata 已完成第一版
+  - content hash 已完成第一版
+- 支持 scan cursor 和增量同步。source-level scan_cursor 已保留；durable connector cursor state 待补。
+- 支持 connector-level enable/disable 和授权范围。record-level permission metadata 已保留；connector registry/state 待补。
 
 ### P1.2 Files connector
 

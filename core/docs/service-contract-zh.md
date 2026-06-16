@@ -63,6 +63,7 @@ Knowledge：
 - `POST /search`
 - `POST /agentic-search`
 - `POST /ingest/channel-payload`
+- `POST /connectors/records`
 - `POST /candidates`
 
 Jobs：
@@ -229,6 +230,57 @@ The foreground service writes one structured JSON log line per HTTP response to 
 ```
 
 Logs intentionally avoid request bodies, content text, tokens, and generated knowledge payloads. They are for correlation across PSKA, Fastreact, and worker logs.
+
+## Connector Record Contract
+
+P1 connector implementations should emit `pska.connector_record.v1` records and submit them to:
+
+```http
+POST /connectors/records
+```
+
+Minimal shape:
+
+```json
+{
+  "schema_version": "pska.connector_record.v1",
+  "connector_id": "files",
+  "external_id": "/Users/me/notes/project.md",
+  "source_uri": "file:///Users/me/notes/project.md",
+  "record_type": "file",
+  "title": "Project note",
+  "body": "Readable text extracted by the connector.",
+  "owner_user_id": "user_primary",
+  "space_id": "private_primary",
+  "visibility": "private",
+  "visible_team_ids": [],
+  "created_at": "2026-06-16T10:00:00Z",
+  "updated_at": "2026-06-16T10:05:00Z",
+  "captured_at": "2026-06-16T10:06:00Z",
+  "artifacts": {"path": "/Users/me/notes/project.md"},
+  "permission_metadata": {"root_id": "notes", "read_scope": "explicit_directory"},
+  "scan_cursor": "cursor_xxx",
+  "content_hash": "sha256:..."
+}
+```
+
+PSKA converts this to `pska.channel_ingest.v1` and stores it as normal `source_items`, `documents`, and `chunks`. Connector metadata is preserved under `source_items.metadata.extra.connector`, and permission metadata is preserved under `source_items.metadata.extra.permission_metadata`.
+
+Rules:
+
+- `connector_id` becomes `source_channel`.
+- `external_id` becomes `source_id`.
+- `source_uri` becomes `url`.
+- `artifacts` becomes `raw_paths`.
+- `body` is the canonical readable text.
+- `visibility`, `visible_team_ids`, `owner_user_id`, and `space_id` remain PSKA-owned ACL fields.
+- `scan_cursor` is preserved on the source item for now; durable connector state tables are still a later P1 step.
+
+Local CLI:
+
+```bash
+./scripts/pska connector-ingest-record ./record.json
+```
 
 ## Jobs and Workers
 

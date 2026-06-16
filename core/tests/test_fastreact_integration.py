@@ -328,6 +328,36 @@ def test_http_routes_cover_mcp_jobs_and_review_contract() -> None:
     assert reject_payload["review_item"]["status"] == "rejected"
 
 
+def test_http_route_ingests_connector_record_contract() -> None:
+    api = _api()
+    with _http_server(api) as base_url:
+        status, payload = _http_json(
+            base_url,
+            "POST",
+            "/connectors/records",
+            {
+                "schema_version": "pska.connector_record.v1",
+                "connector_id": "browser",
+                "external_id": "https://example.test/article",
+                "source_uri": "https://example.test/article",
+                "record_type": "web_page",
+                "title": "Example Article",
+                "body": "Browser connector captures readable article text.",
+                "owner_user_id": "user_primary",
+                "space_id": "private_primary",
+                "visibility": "private",
+                "permission_metadata": {"capture_mode": "current_page"},
+                "scan_cursor": "bookmark_cursor_1",
+            },
+        )
+
+    assert status == 200
+    assert payload["source_item"]["source_channel"] == "browser"
+    assert payload["source_item"]["source_id"] == "https://example.test/article"
+    assert payload["channel_payload"]["extra"]["connector"]["scan_cursor"] == "bookmark_cursor_1"
+    assert payload["channel_payload"]["extra"]["permission_metadata"]["capture_mode"] == "current_page"
+
+
 def test_http_routes_cover_digest_worker_contract() -> None:
     api = _api()
     sources = [
@@ -823,6 +853,7 @@ def _api() -> PSKAApi:
     api.store = _store()
     api.retrieval = RetrievalService(api.store, ACLService(api.store))
     api.agentic = AgenticSearchService(api.retrieval)
+    api.ingest = IngestService(api.store)
     api.mcp = MCPServer("postgresql:///unused", store=api.store)
     api.jobs = JobService(api.store)
     api.reviews = ReviewService(api.store)

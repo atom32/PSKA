@@ -52,6 +52,7 @@ def test_cli_accepts_search_and_smoke() -> None:
     service_check = build_parser().parse_args(["service-check", "--url", "http://127.0.0.1:8765", "--timeout-seconds", "1"])
     embed = build_parser().parse_args(["embed-backfill", "--embedding-provider", "bge-m3", "--limit", "10"])
     mcp = build_parser().parse_args(["mcp-server"])
+    connector = build_parser().parse_args(["connector-ingest-record", "record.json"])
 
     assert search.command == "search"
     assert search.query == "hello"
@@ -67,6 +68,8 @@ def test_cli_accepts_search_and_smoke() -> None:
     assert embed.embedding_provider == "bge-m3"
     assert embed.limit == 10
     assert mcp.command == "mcp-server"
+    assert connector.command == "connector-ingest-record"
+    assert str(connector.record) == "record.json"
 def test_cli_accepts_job_commands() -> None:
     submit = build_parser().parse_args(["job-submit", "extract_all", "--max-attempts", "2", "--run-now"])
     fastreact_extract = build_parser().parse_args(["job-submit", "extract_via_fastreact"])

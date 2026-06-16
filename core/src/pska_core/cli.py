@@ -16,6 +16,7 @@ from urllib.request import Request, urlopen
 from pska_core.acl import ACLService
 from pska_core.api import PSKAApi, serve
 from pska_core.config import DEFAULT_DATABASE_URL, PSKAConfig
+from pska_core.connectors import connector_record_to_payload
 from pska_core.embeddings import EmbeddingConfig, EmbeddingService, build_embedding_provider
 from pska_core.enums import Visibility
 from pska_core.extraction import ExtractionService
@@ -82,6 +83,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     ingest_parser = subparsers.add_parser("ingest-payload", help="Ingest a channel payload JSON file")
     ingest_parser.add_argument("payload", type=Path)
+
+    connector_ingest_parser = subparsers.add_parser("connector-ingest-record", help="Ingest a pska.connector_record.v1 JSON file")
+    connector_ingest_parser.add_argument("record", type=Path)
 
     extract_parser = subparsers.add_parser("extract-all", help="Extract entities/hyperedges from source items")
     extract_parser.add_argument("--owner-user-id", default=None)
@@ -224,6 +228,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return embed_backfill(args)
     if args.command == "ingest-payload":
         return ingest_payload(args)
+    if args.command == "connector-ingest-record":
+        return connector_ingest_record(args)
     if args.command == "extract-all":
         return extract_all(args)
     if args.command == "serve":
@@ -401,6 +407,15 @@ def ingest_payload(args: argparse.Namespace) -> int:
     data = __import__("json").loads(args.payload.read_text(encoding="utf-8"))
     item = IngestService(store).ingest_channel_payload(ChannelIngestPayload.from_mapping(data))
     print(dumps(item))
+    return 0
+
+
+def connector_ingest_record(args: argparse.Namespace) -> int:
+    store = PostgresKnowledgeStore(args.database_url)
+    data = json.loads(args.record.read_text(encoding="utf-8"))
+    payload = connector_record_to_payload(data)
+    item = IngestService(store).ingest_channel_payload(payload)
+    print(dumps({"source_item": item, "channel_payload": payload}))
     return 0
 
 

@@ -14,6 +14,7 @@ from pska_core.acl import ACLService
 from pska_core.agentic import AgenticSearchService
 from pska_core.auth import AuthError, RequestContext, authenticate_headers, context_from_headers, service_token_required
 from pska_core.candidates import CandidateWriteService
+from pska_core.connectors import connector_record_to_payload
 from pska_core.embeddings import EmbeddingConfig, build_embedding_provider
 from pska_core.extraction import ExtractionService
 from pska_core.fastreact_client import FastreactError, HttpFastreactClient
@@ -142,6 +143,15 @@ class PSKAApi:
     def ingest_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         item = self.ingest.ingest_channel_payload(ChannelIngestPayload.from_mapping(payload))
         return to_jsonable(item)
+
+    def ingest_connector_record(self, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
+        record_payload = context.apply_to_payload(payload) if context else payload
+        channel_payload = connector_record_to_payload(record_payload)
+        item = self.ingest.ingest_channel_payload(channel_payload)
+        return {
+            "source_item": to_jsonable(item),
+            "channel_payload": to_jsonable(channel_payload),
+        }
 
     def search(self, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
         payload = context.apply_to_payload(payload) if context else payload
@@ -486,6 +496,8 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
                 return self._json(200, response)
             if path == "/ingest/channel-payload":
                 return self._json(200, self.api.ingest_payload(payload))
+            if path == "/connectors/records":
+                return self._json(200, self.api.ingest_connector_record(payload, context=context))
             if path == "/search":
                 return self._json(200, self.api.search(payload, context=context))
             if path == "/agentic-search":
