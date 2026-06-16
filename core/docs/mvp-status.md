@@ -162,15 +162,24 @@ cd "/Users/xudawei/Documents/personal archive/core"
 .pska/venvs/pska-py312/bin/python core/scripts/e2e_smoke.py
 ```
 
-MVP+ limited-data gate:
+MVP+ limited-data object-level gate:
 
 ```bash
 cd "/Users/xudawei/Documents/personal archive/core"
 PYTHONPATH=src ../.pska/venvs/pska-py312/bin/python scripts/mvp_plus_smoke.py
 ```
 
+MVP+ limited-data HTTP service gate:
+
+```bash
+cd "/Users/xudawei/Documents/personal archive/core"
+PYTHONPATH=src ../.pska/venvs/pska-py312/bin/python scripts/mvp_plus_http_smoke.py
+```
+
 This deterministic smoke uses a tiny in-memory dataset and fake LLM responses
-to verify the strengthened loop before running real archives:
+to verify the strengthened loop before running real archives. The object-level
+gate validates the Python service components directly; the HTTP gate validates
+the online service routes and HTTP MCP transport:
 
 - limited source ingest
 - LLM extraction contract
