@@ -188,6 +188,18 @@ class PostgresKnowledgeStore:
             raise KeyError(agent_memory_id)
         return self._agent_memory_from_row(row)
 
+    def list_agent_memories(self, *, owner_user_id: str) -> list[AgentMemory]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                select * from agent_memories
+                where owner_user_id = %s
+                order by confidence desc, updated_at desc, agent_memory_id
+                """,
+                (owner_user_id,),
+            ).fetchall()
+        return [self._agent_memory_from_row(row) for row in rows]
+
     def update_agent_memory_lifecycle(
         self,
         agent_memory_id: str,
@@ -226,6 +238,18 @@ class PostgresKnowledgeStore:
                     Jsonb(to_jsonable(profile_card.source_refs)),
                 ),
             )
+
+    def list_profile_cards(self, *, owner_user_id: str) -> list[UserProfileCard]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                select * from user_profile_cards
+                where owner_user_id = %s
+                order by confidence desc, updated_at desc, profile_card_id
+                """,
+                (owner_user_id,),
+            ).fetchall()
+        return [self._profile_card_from_row(row) for row in rows]
 
     def add_entity(self, entity: Entity) -> None:
         with self.connect() as conn:
@@ -928,6 +952,15 @@ class PostgresKnowledgeStore:
             decay_policy=row["decay_policy"],
             last_verified_at=row["last_verified_at"],
             created_by_user_id=row["created_by_user_id"],
+        )
+
+    def _profile_card_from_row(self, row: dict[str, Any]) -> UserProfileCard:
+        return UserProfileCard(
+            profile_card_id=row["profile_card_id"],
+            owner_user_id=row["owner_user_id"],
+            profile=dict(row["profile"] or {}),
+            source_refs=[SourceRef(**item) for item in row["source_refs"]],
+            confidence=float(row["confidence"]),
         )
 
     def _job_from_row(self, row: dict[str, Any]) -> Job:

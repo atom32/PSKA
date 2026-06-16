@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import json
 import math
 import re
 from typing import Any
 
 from pska_core.acl import ACLService
 from pska_core.embeddings import EmbeddingProvider
-from pska_core.models import Chunk, Entity, Hyperedge, HyperedgeMember, SourceItem, User
+from pska_core.models import Chunk, Entity, Hyperedge, HyperedgeMember, SourceItem, SourceRef, User
 from pska_core.serde import to_jsonable
 from pska_core.store import KnowledgeStore
 
@@ -62,6 +63,8 @@ class RetrievalResponse:
     citations: list[dict[str, Any]]
     hypergraph_context: list[dict[str, Any]]
     graph_paths: list[dict[str, Any]] = field(default_factory=list)
+    profile_context: list[dict[str, Any]] = field(default_factory=list)
+    memory_context: list[dict[str, Any]] = field(default_factory=list)
     profile_context_used: bool = False
     memory_context_used: bool = False
     gaps: list[str] = field(default_factory=list)
@@ -108,6 +111,8 @@ class RetrievalService:
             user=user,
             represented_user_id=represented_user_id,
         )
+        profile_context = self._profile_context(query=query, user=user, represented_user_id=represented_user_id)
+        memory_context = self._memory_context(query=query, user=user, represented_user_id=represented_user_id)
         ranker = "exact_source" if rank_debug.get("exact_candidates", 0) else "hybrid_rrf"
         graph_context_used = bool(hypergraph_context or graph_paths)
         diagnostics = self._diagnostics(
@@ -116,6 +121,8 @@ class RetrievalService:
             visible_items=visible_items,
             hypergraph_context=hypergraph_context,
             graph_paths=graph_paths,
+            profile_context=profile_context,
+            memory_context=memory_context,
         )
         return RetrievalResponse(
             query=query,
@@ -126,6 +133,10 @@ class RetrievalService:
             citations=citations,
             hypergraph_context=hypergraph_context,
             graph_paths=graph_paths,
+            profile_context=profile_context,
+            memory_context=memory_context,
+            profile_context_used=bool(profile_context),
+            memory_context_used=bool(memory_context),
             gaps=diagnostics["gaps"],
             conflicts=diagnostics["conflicts"],
             sensitivity=diagnostics["sensitivity"],
@@ -317,6 +328,8 @@ class RetrievalService:
         visible_items: list[SourceItem],
         hypergraph_context: list[dict[str, Any]],
         graph_paths: list[dict[str, Any]],
+        profile_context: list[dict[str, Any]],
+        memory_context: list[dict[str, Any]],
     ) -> dict[str, Any]:
         item_by_id = {item.source_item_id: item for item in visible_items}
         gaps: list[str] = []
@@ -348,6 +361,22 @@ class RetrievalService:
         if sensitive_source_ids:
             sensitivity.append(f"sensitive_sources:{','.join(sorted(set(sensitive_source_ids)))}")
 
+        sensitive_memory_ids = [
+            str(item["agent_memory_id"])
+            for item in memory_context
+            if _sensitive_terms_in_text(str(item.get("text") or ""))
+        ]
+        if sensitive_memory_ids:
+            sensitivity.append(f"sensitive_memory_context:{','.join(sorted(set(sensitive_memory_ids)))}")
+
+        sensitive_profile_ids = [
+            str(item["profile_card_id"])
+            for item in profile_context
+            if _sensitive_terms_in_text(json.dumps(item.get("profile") or {}, ensure_ascii=False))
+        ]
+        if sensitive_profile_ids:
+            sensitivity.append(f"sensitive_profile_context:{','.join(sorted(set(sensitive_profile_ids)))}")
+
         return {
             "gaps": gaps,
             "conflicts": conflicts,
@@ -356,8 +385,83 @@ class RetrievalService:
                 "ungrounded_graph_edges": len(ungrounded_edges),
                 "conflict_count": len(conflicts),
                 "sensitivity_count": len(sensitivity),
+                "profile_context_count": len(profile_context),
+                "memory_context_count": len(memory_context),
             },
         }
+
+    def _profile_context(
+        self,
+        *,
+        query: str,
+        user: User,
+        represented_user_id: str | None,
+        limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        owner_user_id = _context_owner_user_id(user, represented_user_id)
+        query_terms = self._terms(query)
+        contexts = []
+        for card in self.store.list_profile_cards(owner_user_id=owner_user_id):
+            text = json.dumps(card.profile, ensure_ascii=False, sort_keys=True)
+            lexical = self._lexical_score(query_terms, self._terms(text))
+            if lexical <= 0 and not _is_profile_query(query):
+                continue
+            citations = self._source_ref_citations(card.source_refs, user=user, represented_user_id=represented_user_id)
+            contexts.append(
+                {
+                    "profile_card_id": card.profile_card_id,
+                    "profile": card.profile,
+                    "confidence": card.confidence,
+                    "source_refs": to_jsonable(card.source_refs),
+                    "citations": citations,
+                    "score": card.confidence * 0.7 + lexical * 0.3,
+                    "score_debug": {
+                        "lexical": lexical,
+                        "confidence": card.confidence,
+                        "has_citations": bool(citations),
+                    },
+                }
+            )
+        return sorted(contexts, key=lambda item: (item["score"], item["profile_card_id"]), reverse=True)[:limit]
+
+    def _memory_context(
+        self,
+        *,
+        query: str,
+        user: User,
+        represented_user_id: str | None,
+        limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        owner_user_id = _context_owner_user_id(user, represented_user_id)
+        query_terms = self._terms(query)
+        contexts = []
+        for memory in self.store.list_agent_memories(owner_user_id=owner_user_id):
+            if memory.confidence <= 0 or memory.decay_policy == "forgotten":
+                continue
+            lexical = self._lexical_score(query_terms, self._terms(memory.text))
+            if lexical <= 0 and not _is_memory_query(query):
+                continue
+            citations = self._source_ref_citations(memory.source_refs, user=user, represented_user_id=represented_user_id)
+            contexts.append(
+                {
+                    "agent_memory_id": memory.agent_memory_id,
+                    "layer": str(memory.layer),
+                    "text": memory.text,
+                    "confidence": memory.confidence,
+                    "decay_policy": memory.decay_policy,
+                    "last_verified_at": memory.last_verified_at.isoformat() if memory.last_verified_at else None,
+                    "created_by_user_id": memory.created_by_user_id,
+                    "source_refs": to_jsonable(memory.source_refs),
+                    "citations": citations,
+                    "score": memory.confidence * 0.7 + lexical * 0.3,
+                    "score_debug": {
+                        "lexical": lexical,
+                        "confidence": memory.confidence,
+                        "has_citations": bool(citations),
+                    },
+                }
+            )
+        return sorted(contexts, key=lambda item: (item["score"], item["agent_memory_id"]), reverse=True)[:limit]
 
     def _hypergraph_context(
         self,
@@ -582,7 +686,16 @@ class RetrievalService:
         user: User,
         represented_user_id: str | None,
     ) -> list[dict[str, Any]]:
-        source_item_ids = {ref.source_item_id for ref in edge.source_refs if ref.source_item_id}
+        return self._source_ref_citations(edge.source_refs, user=user, represented_user_id=represented_user_id)
+
+    def _source_ref_citations(
+        self,
+        source_refs: list[SourceRef],
+        *,
+        user: User,
+        represented_user_id: str | None,
+    ) -> list[dict[str, Any]]:
+        source_item_ids = {ref.source_item_id for ref in source_refs if ref.source_item_id}
         if not source_item_ids:
             return []
         items = [
@@ -636,6 +749,12 @@ def _conversation_message_ids(item: SourceItem, text: str) -> list[str]:
         if message_id and str(message_id) in text:
             message_ids.append(str(message_id))
     return message_ids
+
+
+def _context_owner_user_id(user: User, represented_user_id: str | None) -> str:
+    if user.role == "agent_service" and represented_user_id:
+        return represented_user_id
+    return represented_user_id or user.user_id
 
 
 def _normalize_exact(value: str) -> str:
@@ -807,6 +926,22 @@ def _match_position(haystack: str, alias: str) -> int | None:
 
 def _contains_cjk(value: str) -> bool:
     return any("\u4e00" <= char <= "\u9fff" for char in value)
+
+
+def _is_profile_query(query: str) -> bool:
+    normalized = query.lower()
+    terms = set(re.findall(r"[\w\u4e00-\u9fff]+", normalized))
+    return bool(terms.intersection({"profile", "preference", "preferences", "style", "about", "me"})) or any(
+        term in normalized for term in ("画像", "偏好", "关于我", "个人资料")
+    )
+
+
+def _is_memory_query(query: str) -> bool:
+    normalized = query.lower()
+    terms = set(re.findall(r"[\w\u4e00-\u9fff]+", normalized))
+    return bool(terms.intersection({"memory", "remember", "preference", "preferences", "context"})) or any(
+        term in normalized for term in ("记忆", "偏好", "上下文")
+    )
 
 
 def _graph_path_score(

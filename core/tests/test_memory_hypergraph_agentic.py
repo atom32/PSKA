@@ -96,6 +96,88 @@ def test_high_sensitive_profile_update_creates_review_item() -> None:
     assert store.review_items[result.review_item_id] == result
 
 
+def test_retrieval_includes_memory_context_with_source_citations() -> None:
+    store = make_store()
+    source = IngestService(store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "note_memory_context",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "Memory source",
+            "content": {"text": "The user prefers concise PSKA answers."},
+        }
+    )
+    MemoryService(store).write_agent_memory(
+        owner_user_id="user_primary",
+        layer=MemoryLayer.SEMANTIC,
+        text="User prefers concise PSKA answers.",
+        confidence=0.9,
+        source_refs=[SourceRef(source_item_id=source.source_item_id)],
+        created_by_user_id="agent_service",
+    )
+
+    response = RetrievalService(store, ACLService(store)).search("concise PSKA preference", store.get_user("user_primary"))
+
+    assert response.memory_context_used is True
+    assert response.memory_context[0]["text"] == "User prefers concise PSKA answers."
+    assert response.memory_context[0]["citations"][0]["source_item_id"] == source.source_item_id
+    assert response.score_debug["diagnostics"]["memory_context_count"] == 1
+
+
+def test_retrieval_includes_profile_context_with_source_citations() -> None:
+    store = make_store()
+    source = IngestService(store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "note_profile_context",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "Profile source",
+            "content": {"text": "Communication style should stay concise."},
+        }
+    )
+    MemoryService(store).propose_profile_update(
+        owner_user_id="user_primary",
+        profile_delta={"communication": {"style": "concise"}},
+        source_refs=[SourceRef(source_item_id=source.source_item_id)],
+        confidence=0.8,
+    )
+
+    response = RetrievalService(store, ACLService(store)).search("profile communication style", store.get_user("user_primary"))
+
+    assert response.profile_context_used is True
+    assert response.profile_context[0]["profile"] == {"communication": {"style": "concise"}}
+    assert response.profile_context[0]["citations"][0]["source_item_id"] == source.source_item_id
+    assert response.score_debug["diagnostics"]["profile_context_count"] == 1
+
+
+def test_agent_service_memory_context_requires_represented_user() -> None:
+    store = make_store()
+    MemoryService(store).write_agent_memory(
+        owner_user_id="user_primary",
+        layer=MemoryLayer.SEMANTIC,
+        text="User prefers concise answers.",
+        confidence=0.9,
+        source_refs=[],
+        created_by_user_id="agent_service",
+    )
+    retrieval = RetrievalService(store, ACLService(store))
+
+    denied = retrieval.search("concise preference", store.get_user("agent_service"))
+    allowed = retrieval.search("concise preference", store.get_user("agent_service"), represented_user_id="user_primary")
+
+    assert denied.memory_context == []
+    assert allowed.memory_context
+    assert allowed.request_user_id == "user_primary"
+
+
 def test_binary_relation_is_size_two_hyperedge() -> None:
     store = make_store()
     graph = HypergraphService(store)

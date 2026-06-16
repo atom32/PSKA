@@ -34,6 +34,7 @@ class KnowledgeStore(Protocol):
     def add_chunk(self, chunk: Chunk) -> None: ...
     def add_agent_memory(self, memory: AgentMemory) -> None: ...
     def get_agent_memory(self, agent_memory_id: str) -> AgentMemory: ...
+    def list_agent_memories(self, *, owner_user_id: str) -> list[AgentMemory]: ...
     def update_agent_memory_lifecycle(
         self,
         agent_memory_id: str,
@@ -43,6 +44,7 @@ class KnowledgeStore(Protocol):
         last_verified_at,
     ) -> AgentMemory: ...
     def add_profile_card(self, profile_card: UserProfileCard) -> None: ...
+    def list_profile_cards(self, *, owner_user_id: str) -> list[UserProfileCard]: ...
     def add_entity(self, entity: Entity) -> None: ...
     def add_hyperedge(self, hyperedge: Hyperedge, members: list[HyperedgeMember]) -> None: ...
     def add_review_item(self, review_item: ReviewItem) -> None: ...
@@ -127,6 +129,13 @@ class InMemoryKnowledgeStore:
     def get_agent_memory(self, agent_memory_id: str) -> AgentMemory:
         return self.agent_memories[agent_memory_id]
 
+    def list_agent_memories(self, *, owner_user_id: str) -> list[AgentMemory]:
+        return [
+            memory
+            for memory in self.agent_memories.values()
+            if memory.owner_user_id == owner_user_id
+        ]
+
     def update_agent_memory_lifecycle(
         self,
         agent_memory_id: str,
@@ -143,6 +152,13 @@ class InMemoryKnowledgeStore:
 
     def add_profile_card(self, profile_card: UserProfileCard) -> None:
         self.profile_cards[profile_card.profile_card_id] = profile_card
+
+    def list_profile_cards(self, *, owner_user_id: str) -> list[UserProfileCard]:
+        return [
+            card
+            for card in self.profile_cards.values()
+            if card.owner_user_id == owner_user_id
+        ]
 
     def add_entity(self, entity: Entity) -> None:
         self.entities[entity.entity_id] = entity
