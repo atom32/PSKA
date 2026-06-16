@@ -162,6 +162,26 @@ cd "/Users/xudawei/Documents/personal archive/core"
 .pska/venvs/pska-py312/bin/python core/scripts/e2e_smoke.py
 ```
 
+MVP+ limited-data gate:
+
+```bash
+cd "/Users/xudawei/Documents/personal archive/core"
+PYTHONPATH=src ../.pska/venvs/pska-py312/bin/python scripts/mvp_plus_smoke.py
+```
+
+This deterministic smoke uses a tiny in-memory dataset and fake LLM responses
+to verify the strengthened loop before running real archives:
+
+- limited source ingest
+- LLM extraction contract
+- Fastreact-style candidate write-back
+- durable digest job backlog creation
+- grounded GraphRAG path retrieval
+- memory/profile context with citations
+- conflict and sensitivity diagnostics
+- agentic QA from cited retrieval
+- MCP `pska_search`
+
 The real smoke currently verifies:
 
 - `pska_smoke` database reset and migration
