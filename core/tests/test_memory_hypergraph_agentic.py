@@ -16,6 +16,7 @@ from tests.fakes import FakeLLM, agentic_answer_response, agentic_plan_response
 def make_store() -> InMemoryKnowledgeStore:
     store = InMemoryKnowledgeStore()
     store.add_user(User("user_primary", "primary", UserRole.ADMIN))
+    store.add_user(User("user_secondary", "secondary", UserRole.USER))
     store.add_user(User("agent_service", "agent_service", UserRole.AGENT_SERVICE))
     return store
 
@@ -138,6 +139,84 @@ def test_graph_global_query_returns_visible_hypergraph_context_without_chunk_hit
     assert response.score_debug["graph_context_used"] is True
     assert response.hypergraph_context[0]["relation_type"] == "recommended"
     assert {member["label"] for member in response.hypergraph_context[0]["members"]} == {"A", "B"}
+
+
+def test_hypergraph_context_returns_grounded_source_citations() -> None:
+    store = make_store()
+    source = IngestService(store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "twitter",
+            "record_type": "tweet",
+            "source_id": "tweet_graphrag",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "GraphRAG tweet",
+            "url": "https://x.com/u/status/tweet_graphrag",
+            "content": {"text": "PSKA should use GraphRAG for grounded personal knowledge retrieval."},
+        }
+    )
+    graph = HypergraphService(store)
+    graph.create_entity(Entity("ent_pska", "project", "PSKA", "user_primary", "private_primary", Visibility.PRIVATE))
+    graph.create_entity(Entity("ent_graphrag", "concept", "GraphRAG", "user_primary", "private_primary", Visibility.PRIVATE))
+    graph.create_hyperedge(
+        relation_type="uses",
+        owner_user_id="user_primary",
+        space_id="private_primary",
+        visibility=Visibility.PRIVATE,
+        directionality=Directionality.DIRECTED,
+        members=[("ent_pska", "system"), ("ent_graphrag", "retrieval_pattern")],
+        evidence_text="PSKA should use GraphRAG for grounded personal knowledge retrieval.",
+        source_refs=[SourceRef(source_item_id=source.source_item_id)],
+        confidence=0.8,
+    )
+
+    response = RetrievalService(store, ACLService(store)).search("PSKA GraphRAG 关系", store.get_user("user_primary"))
+    edge_context = response.hypergraph_context[0]
+
+    assert edge_context["relation_type"] == "uses"
+    assert edge_context["source_refs"][0]["source_item_id"] == source.source_item_id
+    assert edge_context["evidence_citations"][0]["source_item_id"] == source.source_item_id
+    assert edge_context["evidence_citations"][0]["chunk_id"].startswith("chk_")
+    assert "GraphRAG" in edge_context["evidence_citations"][0]["snippet"]
+
+
+def test_hypergraph_context_does_not_leak_private_evidence_citations() -> None:
+    store = make_store()
+    source = IngestService(store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "twitter",
+            "record_type": "tweet",
+            "source_id": "tweet_private_graph",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "Private graph evidence",
+            "content": {"text": "Private GraphRAG evidence belongs only to user_primary."},
+        }
+    )
+    graph = HypergraphService(store)
+    graph.create_entity(Entity("ent_public_a", "concept", "PublicA", "user_primary", "private_primary", Visibility.PUBLIC))
+    graph.create_entity(Entity("ent_public_b", "concept", "PublicB", "user_primary", "private_primary", Visibility.PUBLIC))
+    graph.create_hyperedge(
+        relation_type="related_to",
+        owner_user_id="user_primary",
+        space_id="private_primary",
+        visibility=Visibility.PUBLIC,
+        directionality=Directionality.UNDIRECTED,
+        members=[("ent_public_a", "left"), ("ent_public_b", "right")],
+        evidence_text="The relation is public, but its source evidence is private.",
+        source_refs=[SourceRef(source_item_id=source.source_item_id)],
+        confidence=0.8,
+    )
+
+    response = RetrievalService(store, ACLService(store)).search("PublicA PublicB 关系", store.get_user("user_secondary"))
+
+    assert response.hypergraph_context
+    assert response.hypergraph_context[0]["source_refs"] == []
+    assert response.hypergraph_context[0]["evidence_citations"] == []
 
 
 def test_multi_party_relation_preserves_member_roles_and_ambiguous_direction() -> None:

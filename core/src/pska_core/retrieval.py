@@ -8,6 +8,7 @@ from typing import Any
 from pska_core.acl import ACLService
 from pska_core.embeddings import EmbeddingProvider
 from pska_core.models import Chunk, Entity, Hyperedge, HyperedgeMember, SourceItem, User
+from pska_core.serde import to_jsonable
 from pska_core.store import KnowledgeStore
 
 
@@ -260,7 +261,7 @@ class RetrievalService:
         for edge, members in sorted(edges, key=lambda item: item[0].hyperedge_id):
             if not self._can_read_graph_object(user, edge.owner_user_id, edge.visibility, edge.visible_team_ids, represented_user_id):
                 continue
-            context.append(self._edge_context(edge, members, entity_by_id))
+            context.append(self._edge_context(edge, members, entity_by_id, user=user, represented_user_id=represented_user_id))
         return context
 
     def _matching_entities(self, query: str, ranked: list[RetrievalResult]) -> list[Entity]:
@@ -293,13 +294,20 @@ class RetrievalService:
         edge: Hyperedge,
         members: list[HyperedgeMember],
         entity_by_id: dict[str, Entity],
+        *,
+        user: User,
+        represented_user_id: str | None,
     ) -> dict[str, Any]:
+        evidence_citations = self._edge_evidence_citations(edge, user=user, represented_user_id=represented_user_id)
+        visible_source_refs = self._visible_edge_source_refs(edge, user=user, represented_user_id=represented_user_id)
         return {
             "hyperedge_id": edge.hyperedge_id,
             "relation_type": edge.relation_type,
             "directionality": str(edge.directionality),
             "evidence_text": edge.evidence_text,
             "confidence": edge.confidence,
+            "source_refs": to_jsonable(visible_source_refs),
+            "evidence_citations": evidence_citations,
             "members": [
                 {
                     "entity_id": member.entity_id,
@@ -310,6 +318,69 @@ class RetrievalService:
                 for member in members
             ],
         }
+
+    def _visible_edge_source_refs(
+        self,
+        edge: Hyperedge,
+        *,
+        user: User,
+        represented_user_id: str | None,
+    ) -> list[Any]:
+        source_item_ids = {ref.source_item_id for ref in edge.source_refs if ref.source_item_id}
+        if not source_item_ids:
+            return []
+        visible_ids = {
+            item.source_item_id
+            for item in self.store.list_source_items()
+            if item.source_item_id in source_item_ids
+            and self.acl.can_read_item(user, item, represented_user_id=represented_user_id)
+        }
+        return [ref for ref in edge.source_refs if ref.source_item_id in visible_ids]
+
+    def _edge_evidence_citations(
+        self,
+        edge: Hyperedge,
+        *,
+        user: User,
+        represented_user_id: str | None,
+    ) -> list[dict[str, Any]]:
+        source_item_ids = {ref.source_item_id for ref in edge.source_refs if ref.source_item_id}
+        if not source_item_ids:
+            return []
+        items = [
+            item
+            for item in self.store.list_source_items()
+            if item.source_item_id in source_item_ids
+            and self.acl.can_read_item(user, item, represented_user_id=represented_user_id)
+        ]
+        chunks = self.store.list_chunks_for_sources({item.source_item_id for item in items})
+        chunks_by_source: dict[str, list[Chunk]] = {}
+        for chunk in chunks:
+            chunks_by_source.setdefault(chunk.source_item_id, []).append(chunk)
+
+        citations = []
+        for item in sorted(items, key=lambda current: current.source_item_id):
+            item_chunks = sorted(chunks_by_source.get(item.source_item_id, []), key=lambda chunk: chunk.ordinal)
+            if not item_chunks:
+                citations.append(
+                    {
+                        "source_item_id": item.source_item_id,
+                        "url": item.url,
+                        "title": item.title,
+                    }
+                )
+                continue
+            for chunk in item_chunks[:2]:
+                citations.append(
+                    {
+                        "source_item_id": item.source_item_id,
+                        "chunk_id": chunk.chunk_id,
+                        "url": item.url,
+                        "title": item.title,
+                        "snippet": chunk.text[:240],
+                    }
+                )
+        return citations
 
 
 def _conversation_message_ids(item: SourceItem, text: str) -> list[str]:
