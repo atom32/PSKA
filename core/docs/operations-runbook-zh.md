@@ -76,6 +76,18 @@ MVP 推荐先用有限数据源启动：
 
 `mvp-status` 会报告 readiness、index/connector/job metrics、pending review 数量和下一步动作。日常巡检优先使用 `--summary`，输出更紧凑，适合判断 PSKA 是否进入可用状态。
 
+当前 Postgres 样例库 gate：
+
+```bash
+cd core
+PYTHONPATH=src ../.pska/venvs/pska-py312/bin/python scripts/current_sample_gate.py \
+  --database-url postgresql:///pska \
+  --require-graph \
+  --require-review-or-memory
+```
+
+这个 gate 不 reset、不导入、不写入，只读取当前库，验证 source/chunk/search/citation/digest job/graph grounding/review-or-memory 是否已经形成 MVP+ 闭环。
+
 待审候选处理：
 
 ```bash

@@ -10,5 +10,12 @@ if [[ ! -x "$VENV/bin/python" ]]; then
   exit 1
 fi
 
+if [[ -z "${SSL_CERT_FILE:-}" ]]; then
+  CERT_FILE="$("$VENV/bin/python" -c 'import certifi; print(certifi.where())' 2>/dev/null || true)"
+  if [[ -n "$CERT_FILE" && -f "$CERT_FILE" ]]; then
+    export SSL_CERT_FILE="$CERT_FILE"
+  fi
+fi
+
 export PYTHONPATH="$ROOT/core/src${PYTHONPATH:+:$PYTHONPATH}"
 exec "$VENV/bin/python" -m pska_core.cli "$@"

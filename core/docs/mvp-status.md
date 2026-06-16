@@ -115,6 +115,7 @@ CLI:
 ./scripts/pska --database-url postgresql:///pska_smoke serve --port 8766
 ./scripts/pska --database-url postgresql:///pska_smoke digest-schedule --owner-user-id user_primary
 ./scripts/pska --database-url postgresql:///pska_smoke review-list --status pending --summary
+PYTHONPATH=src ../.pska/venvs/pska-py312/bin/python scripts/current_sample_gate.py --database-url postgresql:///pska --require-graph --require-review-or-memory
 ```
 
 HTTP:
@@ -158,7 +159,7 @@ Unit and contract tests:
 ```bash
 cd "/Users/xudawei/Documents/personal archive/core"
 python3 -m pytest -q
-# 166 passed
+# 169 passed
 
 cd "/Users/xudawei/Documents/personal archive/channels/twitter-x"
 python3 -m pytest -q
@@ -171,6 +172,11 @@ Full real smoke:
 cd "/Users/xudawei/Documents/personal archive/core"
 .pska/venvs/pska-py312/bin/python core/scripts/e2e_smoke.py
 ```
+
+Current Postgres sample gates:
+
+- `postgresql:///pska`: current daemon-aligned sample; passes strict MVP+ gate with source/chunk/search/citations/digest jobs/graph grounding/review-or-memory.
+- `postgresql:///pska_mvp_plus_sample`: small Twitter/files sample; currently passes retrieval and graph grounding after real LLM extraction, with digest worker write-back still pending.
 
 MVP+ limited-data object-level gate:
 
