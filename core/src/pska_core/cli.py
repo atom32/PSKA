@@ -16,7 +16,7 @@ from urllib.request import Request, urlopen
 from pska_core.acl import ACLService
 from pska_core.api import PSKAApi, serve
 from pska_core.config import DEFAULT_DATABASE_URL, PSKAConfig
-from pska_core.connectors import connector_record_to_payload
+from pska_core.connectors import connector_state_from_mapping, connector_record_to_payload
 from pska_core.embeddings import EmbeddingConfig, EmbeddingService, build_embedding_provider
 from pska_core.enums import Visibility
 from pska_core.extraction import ExtractionService
@@ -86,6 +86,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     connector_ingest_parser = subparsers.add_parser("connector-ingest-record", help="Ingest a pska.connector_record.v1 JSON file")
     connector_ingest_parser.add_argument("record", type=Path)
+
+    connector_state_parser = subparsers.add_parser("connector-state", help="Manage durable connector state")
+    connector_state_parser.add_argument("action", choices=["list", "show", "upsert"], nargs="?", default="list")
+    connector_state_parser.add_argument("connector_state_id", nargs="?")
+    connector_state_parser.add_argument("--state", type=Path, help="pska.connector_state.v1 JSON file for upsert")
+    connector_state_parser.add_argument("--connector-id")
+    connector_state_parser.add_argument("--owner-user-id", default=None)
+    connector_state_parser.add_argument("--enabled", choices=["true", "false"])
+    connector_state_parser.add_argument("--scan-cursor")
+    connector_state_parser.add_argument("--sync-status")
+    connector_state_parser.add_argument("--permission-scope-json", default="")
+    connector_state_parser.add_argument("--config-json", default="")
 
     extract_parser = subparsers.add_parser("extract-all", help="Extract entities/hyperedges from source items")
     extract_parser.add_argument("--owner-user-id", default=None)
@@ -230,6 +242,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return ingest_payload(args)
     if args.command == "connector-ingest-record":
         return connector_ingest_record(args)
+    if args.command == "connector-state":
+        return connector_state(args)
     if args.command == "extract-all":
         return extract_all(args)
     if args.command == "serve":
@@ -416,6 +430,40 @@ def connector_ingest_record(args: argparse.Namespace) -> int:
     payload = connector_record_to_payload(data)
     item = IngestService(store).ingest_channel_payload(payload)
     print(dumps({"source_item": item, "channel_payload": payload}))
+    return 0
+
+
+def connector_state(args: argparse.Namespace) -> int:
+    store = PostgresKnowledgeStore(args.database_url)
+    if args.action == "show":
+        if not args.connector_state_id:
+            print("connector-state show requires connector_state_id", file=sys.stderr)
+            return 2
+        print(dumps({"connector_state": store.get_connector_state(args.connector_state_id)}))
+        return 0
+    if args.action == "upsert":
+        payload = json.loads(args.state.read_text(encoding="utf-8")) if args.state else {}
+        if args.connector_state_id:
+            payload["connector_state_id"] = args.connector_state_id
+        if args.connector_id:
+            payload["connector_id"] = args.connector_id
+        if args.owner_user_id:
+            payload["owner_user_id"] = args.owner_user_id
+        if args.enabled:
+            payload["enabled"] = args.enabled == "true"
+        if args.scan_cursor is not None:
+            payload["scan_cursor"] = args.scan_cursor
+        if args.sync_status:
+            payload["sync_status"] = args.sync_status
+        if args.permission_scope_json:
+            payload["permission_scope"] = json.loads(args.permission_scope_json)
+        if args.config_json:
+            payload["config"] = json.loads(args.config_json)
+        state = connector_state_from_mapping(payload)
+        print(dumps({"connector_state": store.upsert_connector_state(state)}))
+        return 0
+    states = store.list_connector_states(owner_user_id=args.owner_user_id, connector_id=args.connector_id)
+    print(dumps({"connector_states": states}))
     return 0
 
 

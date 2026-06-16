@@ -114,6 +114,23 @@ class SourceItem:
 
 
 @dataclass(slots=True)
+class ConnectorState:
+    connector_state_id: str
+    connector_id: str
+    owner_user_id: str
+    enabled: bool = True
+    scan_cursor: str | None = None
+    sync_status: str = "idle"
+    last_success_at: datetime | None = None
+    last_error_at: datetime | None = None
+    last_error: str | None = None
+    permission_scope: dict[str, Any] = field(default_factory=dict)
+    config: dict[str, Any] = field(default_factory=dict)
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
+
+
+@dataclass(slots=True)
 class Document:
     document_id: str
     source_item_id: str

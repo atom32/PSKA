@@ -11,7 +11,7 @@
 - P0.3 job worker metadata 已落地：worker lease、heartbeat、Fastreact `external_run_id`、source refs。
 - P0.5 observability/operations 已部分落地：增强 `/ready`、`service-check`、foreground runbook、job stats/list/filter/cancel/retry/recover ops API 和 CLI，`digest_backlog`、embedding coverage、source-channel freshness 指标，HTTP request id 与结构化访问日志。
 - P0.4 background digest loop 已完成 write-back + external worker lifecycle + backlog scheduling + foreground periodic scheduler + Fastreact worker slice：`pska_job_context`、`pska_write_candidates`、`POST /candidates`、`POST /jobs/{id}/lease`、`GET /digest/batches/{id}`、`POST /digest/candidates`、`POST /digest/schedule`、CLI `digest-scheduler`、`complete/fail`、priority、retry backoff、candidate schema version、batch cursor、Fastreact `pska_digest` worker 脚本。仍待补更细的 candidate taxonomy、daemon supervisor 化和真实 digest 质量调优。
-- P1.1 connector record contract 已完成第一版：`pska.connector_record.v1`、`POST /connectors/records`、CLI `connector-ingest-record`。connector state/enable-disable/cursor 持久化仍待后续 P1。
+- P1.1 connector contract 已完成第一版：`pska.connector_record.v1`、`POST /connectors/records`、CLI `connector-ingest-record`，以及 `pska.connector_state.v1`、`GET/POST /connectors/states`、CLI `connector-state`。具体 Files/Browser/Git connector 实现仍待 P1.2+。
 - P2 retrieval quality 已补 GraphRAG grounding 第一版：hypergraph context 返回 ACL-filtered `source_refs` 和 `evidence_citations`，并能从 query seed entity 返回最多 2-hop 的 grounded `graph_paths`；实体链接支持 metadata aliases/canonical label/slug/handle 的轻量匹配；graph paths 已有基于 query mention、confidence、evidence coverage、path length 的第一版排序和 explanation；chunk retrieval 已有 recency/source authority tie-breaker；retrieval diagnostics 已能输出 insufficient/ungrounded evidence、graph conflict、sensitivity flags；profile/memory context 已能带 source refs/citations 进入 retrieval response。当前仍是轻量路径扩展，不是 GNN，也不是 HippoRAG/PPR 级别的成熟 GraphRAG。
 
 ## 当前判断
@@ -196,8 +196,8 @@ FastReAct 侧：
   - visibility 已完成第一版
   - permission metadata 已完成第一版
   - content hash 已完成第一版
-- 支持 scan cursor 和增量同步。source-level scan_cursor 已保留；durable connector cursor state 待补。
-- 支持 connector-level enable/disable 和授权范围。record-level permission metadata 已保留；connector registry/state 待补。
+- 支持 scan cursor 和增量同步。source-level scan_cursor 已保留；durable connector cursor state 已完成第一版。
+- 支持 connector-level enable/disable 和授权范围。record-level permission metadata 已保留；connector state 的 enabled、permission_scope、config 已完成第一版。
 
 ### P1.2 Files connector
 

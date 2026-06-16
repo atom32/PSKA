@@ -14,7 +14,7 @@ from pska_core.acl import ACLService
 from pska_core.agentic import AgenticSearchService
 from pska_core.auth import AuthError, RequestContext, authenticate_headers, context_from_headers, service_token_required
 from pska_core.candidates import CandidateWriteService
-from pska_core.connectors import connector_record_to_payload
+from pska_core.connectors import connector_state_from_mapping, connector_record_to_payload
 from pska_core.embeddings import EmbeddingConfig, build_embedding_provider
 from pska_core.extraction import ExtractionService
 from pska_core.fastreact_client import FastreactError, HttpFastreactClient
@@ -84,7 +84,7 @@ class PSKAApi:
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
     def _schema_ready(self) -> dict[str, Any]:
-        tables = ["source_items", "documents", "chunks", "entities", "hyperedges", "review_items", "jobs"]
+        tables = ["source_items", "documents", "chunks", "entities", "hyperedges", "review_items", "jobs", "connector_states"]
         counts: dict[str, int] = {}
         missing: list[str] = []
         for table in tables:
@@ -151,6 +151,34 @@ class PSKAApi:
         return {
             "source_item": to_jsonable(item),
             "channel_payload": to_jsonable(channel_payload),
+        }
+
+    def upsert_connector_state(self, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
+        payload = context.apply_to_payload(payload) if context else payload
+        state = connector_state_from_mapping(payload)
+        if payload.get("last_success_at") == "now":
+            state.last_success_at = datetime.now(UTC)
+            state.sync_status = str(payload.get("sync_status") or "succeeded")
+            state.last_error = None
+            state.last_error_at = None
+        if payload.get("last_error_at") == "now" or payload.get("last_error"):
+            state.last_error_at = datetime.now(UTC)
+            state.sync_status = str(payload.get("sync_status") or "failed")
+        return {"connector_state": to_jsonable(self.store.upsert_connector_state(state))}
+
+    def connector_states(
+        self,
+        *,
+        owner_user_id: str | None = None,
+        connector_id: str | None = None,
+        connector_state_id: str | None = None,
+    ) -> dict[str, Any]:
+        if connector_state_id:
+            return {"connector_state": to_jsonable(self.store.get_connector_state(connector_state_id))}
+        return {
+            "connector_states": to_jsonable(
+                self.store.list_connector_states(owner_user_id=owner_user_id, connector_id=connector_id)
+            )
         }
 
     def search(self, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
@@ -252,7 +280,7 @@ class PSKAApi:
         return {
             "index": self.index_status(),
             "embedding": _embedding_metrics(chunks),
-            "connectors": _connector_metrics(source_items),
+            "connectors": _connector_metrics(source_items, self.store.list_connector_states()),
             "jobs": self.job_stats()["stats"],
         }
 
@@ -460,6 +488,16 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
             return self._json(200, self.api.metrics())
         if path == "/review-items":
             return self._json(200, self.api.review_items())
+        if path == "/connectors/states":
+            return self._json(
+                200,
+                self.api.connector_states(
+                    owner_user_id=_first(query.get("owner_user_id")),
+                    connector_id=_first(query.get("connector_id")),
+                ),
+            )
+        if path.startswith("/connectors/states/"):
+            return self._json(200, self.api.connector_states(connector_state_id=path.removeprefix("/connectors/states/")))
         if path == "/jobs/stats":
             return self._json(200, self.api.job_stats(limit=_int_first(query.get("limit")) or 1000))
         if path == "/jobs":
@@ -498,6 +536,11 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
                 return self._json(200, self.api.ingest_payload(payload))
             if path == "/connectors/records":
                 return self._json(200, self.api.ingest_connector_record(payload, context=context))
+            if path == "/connectors/states":
+                return self._json(200, self.api.upsert_connector_state(payload, context=context))
+            if path.startswith("/connectors/states/"):
+                payload.setdefault("connector_state_id", path.removeprefix("/connectors/states/"))
+                return self._json(200, self.api.upsert_connector_state(payload, context=context))
             if path == "/search":
                 return self._json(200, self.api.search(payload, context=context))
             if path == "/agentic-search":
@@ -738,7 +781,7 @@ def _embedding_metrics(chunks: list[Any]) -> dict[str, Any]:
     }
 
 
-def _connector_metrics(source_items: list[Any]) -> dict[str, Any]:
+def _connector_metrics(source_items: list[Any], connector_states: list[Any] | None = None) -> dict[str, Any]:
     channels: dict[str, dict[str, Any]] = {}
     for item in source_items:
         channel = str(getattr(item, "source_channel", "") or "unknown")
@@ -756,10 +799,18 @@ def _connector_metrics(source_items: list[Any]) -> dict[str, Any]:
         if latest is None or (created_at is not None and created_at > latest):
             current["latest_source_item_id"] = getattr(item, "source_item_id", None)
             current["latest_source_item_at"] = created_at
+    states = connector_states or []
+    by_status: dict[str, int] = {}
+    for state in states:
+        status = str(getattr(state, "sync_status", "unknown") or "unknown")
+        by_status[status] = by_status.get(status, 0) + 1
     return {
         "source_channels": dict(sorted(channels.items())),
         "source_channel_count": len(channels),
         "total_source_items": len(source_items),
+        "state_count": len(states),
+        "enabled_state_count": len([state for state in states if getattr(state, "enabled", False)]),
+        "state_sync_status": dict(sorted(by_status.items())),
     }
 
 

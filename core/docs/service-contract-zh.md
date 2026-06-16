@@ -2,7 +2,7 @@
 
 日期：2026-06-14
 
-状态：P0.5 + P0.4 digest backlog slice。本地 online service contract + service auth/request context + durable job worker metadata + readiness observability + foreground service runbook + Fastreact candidate write-back + digest schedule API/CLI + config file support。
+状态：P0.5 + P0.4 digest backlog slice + P1.1 connector state slice。本地 online service contract + service auth/request context + durable job worker metadata + readiness observability + foreground service runbook + Fastreact candidate write-back + digest schedule API/CLI + connector record/state API/CLI + config file support。
 
 PSKA online service 是前台运行的本地 HTTP 服务。它不是 daemon supervisor；自动启动、重启、worker supervision 和运维手册属于 P0.5。
 
@@ -64,6 +64,10 @@ Knowledge：
 - `POST /agentic-search`
 - `POST /ingest/channel-payload`
 - `POST /connectors/records`
+- `GET /connectors/states`
+- `GET /connectors/states/{connector_state_id}`
+- `POST /connectors/states`
+- `POST /connectors/states/{connector_state_id}`
 - `POST /candidates`
 
 Jobs：
@@ -274,12 +278,51 @@ Rules:
 - `artifacts` becomes `raw_paths`.
 - `body` is the canonical readable text.
 - `visibility`, `visible_team_ids`, `owner_user_id`, and `space_id` remain PSKA-owned ACL fields.
-- `scan_cursor` is preserved on the source item for now; durable connector state tables are still a later P1 step.
+- `scan_cursor` is preserved on the source item and can also be persisted in connector state.
 
 Local CLI:
 
 ```bash
 ./scripts/pska connector-ingest-record ./record.json
+```
+
+## Connector State Contract
+
+Connector implementations should persist enablement, authorization scope, and
+incremental scan cursor through `pska.connector_state.v1`:
+
+```http
+POST /connectors/states
+GET /connectors/states?owner_user_id=user_primary&connector_id=files
+GET /connectors/states/conn_user_primary_files
+```
+
+Example:
+
+```json
+{
+  "schema_version": "pska.connector_state.v1",
+  "connector_id": "files",
+  "owner_user_id": "user_primary",
+  "enabled": true,
+  "scan_cursor": "cursor_xxx",
+  "sync_status": "succeeded",
+  "permission_scope": {"roots": ["/Users/me/notes"]},
+  "config": {"ignore": ["*.tmp", ".git/**"]}
+}
+```
+
+Local CLI:
+
+```bash
+./scripts/pska connector-state upsert \
+  --connector-id files \
+  --owner-user-id user_primary \
+  --scan-cursor cursor_xxx \
+  --permission-scope-json '{"roots":["/Users/me/notes"]}'
+
+./scripts/pska connector-state list --owner-user-id user_primary
+./scripts/pska connector-state show conn_user_primary_files
 ```
 
 ## Jobs and Workers

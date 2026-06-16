@@ -70,6 +70,29 @@ def test_cli_accepts_search_and_smoke() -> None:
     assert mcp.command == "mcp-server"
     assert connector.command == "connector-ingest-record"
     assert str(connector.record) == "record.json"
+
+
+def test_cli_accepts_connector_state_commands() -> None:
+    upsert = build_parser().parse_args(
+        [
+            "connector-state",
+            "upsert",
+            "--connector-id",
+            "files",
+            "--owner-user-id",
+            "user_primary",
+            "--scan-cursor",
+            "cursor_1",
+        ]
+    )
+    show = build_parser().parse_args(["connector-state", "show", "conn_user_primary_files"])
+
+    assert upsert.command == "connector-state"
+    assert upsert.action == "upsert"
+    assert upsert.connector_id == "files"
+    assert show.connector_state_id == "conn_user_primary_files"
+
+
 def test_cli_accepts_job_commands() -> None:
     submit = build_parser().parse_args(["job-submit", "extract_all", "--max-attempts", "2", "--run-now"])
     fastreact_extract = build_parser().parse_args(["job-submit", "extract_via_fastreact"])

@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from pska_core.connectors import CONNECTOR_RECORD_SCHEMA_VERSION, connector_record_to_payload
+from pska_core.connectors import (
+    CONNECTOR_RECORD_SCHEMA_VERSION,
+    CONNECTOR_STATE_SCHEMA_VERSION,
+    connector_state_from_mapping,
+    connector_record_to_payload,
+)
 from pska_core.ingest import IngestService
 from pska_core.store import InMemoryKnowledgeStore
 
@@ -53,3 +58,26 @@ def test_connector_record_rejects_missing_body() -> None:
         assert "body" in str(exc)
     else:
         raise AssertionError("expected ValueError")
+
+
+def test_connector_state_is_durable_by_owner_and_connector() -> None:
+    store = InMemoryKnowledgeStore()
+    state = connector_state_from_mapping(
+        {
+            "schema_version": CONNECTOR_STATE_SCHEMA_VERSION,
+            "connector_id": "files",
+            "owner_user_id": "user_primary",
+            "enabled": True,
+            "scan_cursor": "cursor_1",
+            "permission_scope": {"roots": ["/Users/example/notes"]},
+            "config": {"ignore": ["*.tmp"]},
+        }
+    )
+
+    saved = store.upsert_connector_state(state)
+    listed = store.list_connector_states(owner_user_id="user_primary", connector_id="files")
+
+    assert saved.connector_state_id == "conn_user_primary_files"
+    assert listed == [saved]
+    assert listed[0].scan_cursor == "cursor_1"
+    assert listed[0].permission_scope["roots"] == ["/Users/example/notes"]

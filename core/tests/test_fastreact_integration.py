@@ -358,6 +358,35 @@ def test_http_route_ingests_connector_record_contract() -> None:
     assert payload["channel_payload"]["extra"]["permission_metadata"]["capture_mode"] == "current_page"
 
 
+def test_http_routes_manage_connector_state_contract() -> None:
+    api = _api()
+    with _http_server(api) as base_url:
+        upsert_status, upsert = _http_json(
+            base_url,
+            "POST",
+            "/connectors/states",
+            {
+                "schema_version": "pska.connector_state.v1",
+                "connector_id": "files",
+                "owner_user_id": "user_primary",
+                "enabled": True,
+                "scan_cursor": "cursor_1",
+                "sync_status": "succeeded",
+                "permission_scope": {"roots": ["/Users/example/notes"]},
+            },
+        )
+        list_status, listed = _http_json(base_url, "GET", "/connectors/states?owner_user_id=user_primary&connector_id=files")
+        show_status, shown = _http_json(base_url, "GET", "/connectors/states/conn_user_primary_files")
+
+    assert upsert_status == 200
+    assert upsert["connector_state"]["connector_state_id"] == "conn_user_primary_files"
+    assert upsert["connector_state"]["scan_cursor"] == "cursor_1"
+    assert list_status == 200
+    assert [state["connector_state_id"] for state in listed["connector_states"]] == ["conn_user_primary_files"]
+    assert show_status == 200
+    assert shown["connector_state"]["permission_scope"]["roots"] == ["/Users/example/notes"]
+
+
 def test_http_routes_cover_digest_worker_contract() -> None:
     api = _api()
     sources = [

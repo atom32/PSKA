@@ -4,10 +4,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from pska_core.enums import Visibility
-from pska_core.models import ChannelIngestPayload
+from pska_core.models import ChannelIngestPayload, ConnectorState
 
 
 CONNECTOR_RECORD_SCHEMA_VERSION = "pska.connector_record.v1"
+CONNECTOR_STATE_SCHEMA_VERSION = "pska.connector_state.v1"
 
 
 @dataclass(slots=True)
@@ -61,6 +62,29 @@ class ConnectorRecord:
             content_hash=data.get("content_hash"),
             metadata=dict(data.get("metadata") or {}),
         )
+
+
+def connector_state_id(connector_id: str, owner_user_id: str) -> str:
+    return f"conn_{owner_user_id}_{connector_id}".replace("/", "_").replace(" ", "_")
+
+
+def connector_state_from_mapping(data: dict[str, Any]) -> ConnectorState:
+    schema_version = str(data.get("schema_version") or CONNECTOR_STATE_SCHEMA_VERSION)
+    if schema_version != CONNECTOR_STATE_SCHEMA_VERSION:
+        raise ValueError(f"Unsupported connector state schema_version: {schema_version}")
+    connector_id = str(data["connector_id"])
+    owner_user_id = str(data.get("owner_user_id") or "user_primary")
+    return ConnectorState(
+        connector_state_id=str(data.get("connector_state_id") or connector_state_id(connector_id, owner_user_id)),
+        connector_id=connector_id,
+        owner_user_id=owner_user_id,
+        enabled=bool(data.get("enabled", True)),
+        scan_cursor=data.get("scan_cursor"),
+        sync_status=str(data.get("sync_status") or "idle"),
+        last_error=data.get("last_error"),
+        permission_scope=dict(data.get("permission_scope") or {}),
+        config=dict(data.get("config") or {}),
+    )
 
 
 def connector_record_to_payload(record: ConnectorRecord | dict[str, Any]) -> ChannelIngestPayload:

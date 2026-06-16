@@ -12,6 +12,7 @@ from pska_core.enums import Directionality, MemoryLayer, ReviewType, UserRole, U
 from pska_core.models import (
     AgentMemory,
     Chunk,
+    ConnectorState,
     Document,
     Entity,
     Hyperedge,
@@ -104,6 +105,69 @@ class PostgresKnowledgeStore:
                 ),
             )
             return item
+
+    def upsert_connector_state(self, state: ConnectorState) -> ConnectorState:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                insert into connector_states(
+                    connector_state_id, connector_id, owner_user_id, enabled, scan_cursor,
+                    sync_status, last_success_at, last_error_at, last_error, permission_scope, config
+                )
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                on conflict (connector_state_id) do update
+                set connector_id = excluded.connector_id,
+                    owner_user_id = excluded.owner_user_id,
+                    enabled = excluded.enabled,
+                    scan_cursor = excluded.scan_cursor,
+                    sync_status = excluded.sync_status,
+                    last_success_at = excluded.last_success_at,
+                    last_error_at = excluded.last_error_at,
+                    last_error = excluded.last_error,
+                    permission_scope = excluded.permission_scope,
+                    config = excluded.config,
+                    updated_at = now()
+                returning *
+                """,
+                (
+                    state.connector_state_id,
+                    state.connector_id,
+                    state.owner_user_id,
+                    state.enabled,
+                    state.scan_cursor,
+                    state.sync_status,
+                    state.last_success_at,
+                    state.last_error_at,
+                    state.last_error,
+                    Jsonb(to_jsonable(state.permission_scope)),
+                    Jsonb(to_jsonable(state.config)),
+                ),
+            ).fetchone()
+        return self._connector_state_from_row(row)
+
+    def get_connector_state(self, connector_state_id: str) -> ConnectorState:
+        with self.connect() as conn:
+            row = conn.execute("select * from connector_states where connector_state_id = %s", (connector_state_id,)).fetchone()
+        if not row:
+            raise KeyError(connector_state_id)
+        return self._connector_state_from_row(row)
+
+    def list_connector_states(self, *, owner_user_id: str | None = None, connector_id: str | None = None) -> list[ConnectorState]:
+        clauses: list[str] = []
+        params: list[str] = []
+        if owner_user_id:
+            clauses.append("owner_user_id = %s")
+            params.append(owner_user_id)
+        if connector_id:
+            clauses.append("connector_id = %s")
+            params.append(connector_id)
+        where = " where " + " and ".join(clauses) if clauses else ""
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"select * from connector_states{where} order by updated_at desc, connector_state_id",  # noqa: S608 - fixed clauses only.
+                params,
+            ).fetchall()
+        return [self._connector_state_from_row(row) for row in rows]
 
     def add_document(self, document: Document) -> None:
         with self.connect() as conn:
@@ -884,6 +948,7 @@ class PostgresKnowledgeStore:
             "user_profile_cards",
             "jobs",
             "job_events",
+            "connector_states",
         }:
             raise ValueError(f"Unsupported table: {table}")
         with self.connect() as conn:
@@ -906,6 +971,23 @@ class PostgresKnowledgeStore:
             content_hash=row["content_hash"],
             metadata=dict(row["metadata"] or {}),
             created_at=row["created_at"],
+        )
+
+    def _connector_state_from_row(self, row: dict[str, Any]) -> ConnectorState:
+        return ConnectorState(
+            connector_state_id=row["connector_state_id"],
+            connector_id=row["connector_id"],
+            owner_user_id=row["owner_user_id"],
+            enabled=bool(row["enabled"]),
+            scan_cursor=row.get("scan_cursor"),
+            sync_status=row["sync_status"],
+            last_success_at=row.get("last_success_at"),
+            last_error_at=row.get("last_error_at"),
+            last_error=row.get("last_error"),
+            permission_scope=dict(row.get("permission_scope") or {}),
+            config=dict(row.get("config") or {}),
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
         )
 
     def _chunk_from_row(self, row: dict[str, Any]) -> Chunk:

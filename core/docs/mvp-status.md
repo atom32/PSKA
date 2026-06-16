@@ -33,12 +33,13 @@ allowed recovery path: ask the LLM to repair its own JSON/schema output.
 | Privacy model | MVP complete | Anonymous user/team IDs, private-first visibility, team-visible ACL fields, `agent_service` modeled separately. |
 | Twitter/X channel | MVP complete | Extension and Python schema emit `pska.archive.v2`; legacy zip import remains compatibility-only. |
 | Zip import | MVP complete | Imports current `~/Downloads/twitter_archive/*.zip`, preserves artifact paths, is idempotent by content hash. |
+| Connector state | MVP functional | Connector records and durable connector states support enablement, scan cursor, sync status, permission scope, config, HTTP API, and CLI. |
 | LLM extraction | MVP complete | Extracts entities, hyperedges, and review items through LLM JSON contract. |
 | Hypergraph | MVP complete | Supports relation instances with multiple members and member roles; directionality is explicit. |
 | Retrieval | MVP functional | ACL-first lexical/semantic placeholder ranking, citations, and one-hop hypergraph context. |
 | Agentic search | MVP complete | LLM plans retrieval queries and synthesizes answers from retrieved evidence. |
 | MCP boundary | MVP complete | PSKA exposes stdio MCP tools; Fastreact loads and calls them without importing PSKA internals. |
-| HTTP API | MVP functional | Local API supports health/readiness, ingest, search, agentic search, jobs, review, candidates, digest schedule, and HTTP MCP. |
+| HTTP API | MVP functional | Local API supports health/readiness, ingest, connector records/states, search, agentic search, jobs, review, candidates, digest schedule, and HTTP MCP. |
 | Async jobs | Durable MVP | Jobs, events, lease/heartbeat, retry/backoff, stale recovery, job ops API/CLI, and Fastreact-backed digest/extraction contract are implemented. |
 | E2E smoke | MVP complete | Real local smoke covers DB reset, zip import, LLM extraction, search, MCP, HTTP, and Fastreact MCP load. |
 | Production readiness | Not complete | Needs daemon supervision, stronger review workflow, richer metrics, connector expansion, UI, and real-data quality tuning. BGE-M3 embedding P0 is implemented but still needs production quality tuning. |
@@ -148,7 +149,7 @@ Unit and contract tests:
 ```bash
 cd "/Users/xudawei/Documents/personal archive/core"
 python3 -m pytest -q
-# 151 passed
+# 155 passed
 
 cd "/Users/xudawei/Documents/personal archive/channels/twitter-x"
 python3 -m pytest -q

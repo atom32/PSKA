@@ -7,6 +7,7 @@ from uuid import uuid4
 from pska_core.models import (
     AgentMemory,
     Chunk,
+    ConnectorState,
     Document,
     Entity,
     Hyperedge,
@@ -30,6 +31,9 @@ class KnowledgeStore(Protocol):
     def get_user(self, user_id: str) -> User: ...
     def team_memberships_for_user(self, user_id: str) -> list[TeamMembership]: ...
     def upsert_source_item(self, item: SourceItem) -> SourceItem: ...
+    def upsert_connector_state(self, state: ConnectorState) -> ConnectorState: ...
+    def get_connector_state(self, connector_state_id: str) -> ConnectorState: ...
+    def list_connector_states(self, *, owner_user_id: str | None = None, connector_id: str | None = None) -> list[ConnectorState]: ...
     def add_document(self, document: Document) -> None: ...
     def add_chunk(self, chunk: Chunk) -> None: ...
     def add_agent_memory(self, memory: AgentMemory) -> None: ...
@@ -85,6 +89,7 @@ class InMemoryKnowledgeStore:
         self.team_memberships: list[TeamMembership] = []
         self.source_items: dict[str, SourceItem] = {}
         self.source_items_by_hash: dict[str, str] = {}
+        self.connector_states: dict[str, ConnectorState] = {}
         self.documents: dict[str, Document] = {}
         self.chunks: dict[str, Chunk] = {}
         self.agent_memories: dict[str, AgentMemory] = {}
@@ -116,6 +121,25 @@ class InMemoryKnowledgeStore:
         self.source_items[item.source_item_id] = item
         self.source_items_by_hash[item.content_hash] = item.source_item_id
         return item
+
+    def upsert_connector_state(self, state: ConnectorState) -> ConnectorState:
+        state.updated_at = utc_now()
+        if state.connector_state_id in self.connector_states:
+            existing = self.connector_states[state.connector_state_id]
+            state.created_at = existing.created_at
+        self.connector_states[state.connector_state_id] = state
+        return state
+
+    def get_connector_state(self, connector_state_id: str) -> ConnectorState:
+        return self.connector_states[connector_state_id]
+
+    def list_connector_states(self, *, owner_user_id: str | None = None, connector_id: str | None = None) -> list[ConnectorState]:
+        states = list(self.connector_states.values())
+        if owner_user_id:
+            states = [state for state in states if state.owner_user_id == owner_user_id]
+        if connector_id:
+            states = [state for state in states if state.connector_id == connector_id]
+        return sorted(states, key=lambda state: (state.updated_at, state.connector_state_id), reverse=True)
 
     def add_document(self, document: Document) -> None:
         self.documents[document.document_id] = document
@@ -475,6 +499,7 @@ class InMemoryKnowledgeStore:
     def count_table(self, table: str) -> int:
         tables = {
             "source_items": self.source_items,
+            "connector_states": self.connector_states,
             "documents": self.documents,
             "chunks": self.chunks,
             "users": self.users,
