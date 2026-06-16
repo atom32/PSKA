@@ -26,7 +26,7 @@ MVP 当前应收窄数据来源，把精力集中在纵向闭环：
 
 暂缓：
 
-- Mail、photos、NAS、Home Assistant、浏览器历史、GitHub 深度同步、PDF/Word 复杂解析。
+- Mail、photos、NAS、Home Assistant、浏览器历史、GitHub 深度同步、PDF/Word 复杂版面解析/OCR。
 - 这些后续都应复用同一 connector record/state contract，而不是现在抢占 MVP 注意力。
 
 ## MVP 功能 Scope

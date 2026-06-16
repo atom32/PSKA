@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 
 from pska_core.connectors import connector_state_from_mapping
 from pska_core.files_connector import scan_files
@@ -46,6 +47,21 @@ def test_files_scan_honors_ignore_and_size_limit(tmp_path: Path) -> None:
     assert report.scanned == 2
     assert report.ingested == 0
     assert {item["reason"] for item in report.skipped} == {"file_too_large"}
+
+
+def test_files_scan_recognizes_optional_document_extractors(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setitem(sys.modules, "pypdf", None)
+    monkeypatch.setitem(sys.modules, "docx", None)
+    root = tmp_path / "notes"
+    root.mkdir()
+    (root / "paper.pdf").write_bytes(b"%PDF-1.4\n")
+    (root / "memo.docx").write_bytes(b"not a real docx")
+
+    report = scan_files(InMemoryKnowledgeStore(), root=root)
+
+    assert report.ingested == 0
+    assert {item["reason"] for item in report.skipped} == {"missing_dependency"}
+    assert all("required" in item["detail"] for item in report.skipped)
 
 
 def test_files_scan_respects_disabled_connector_state(tmp_path: Path) -> None:

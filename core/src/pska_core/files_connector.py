@@ -32,6 +32,11 @@ TEXT_SUFFIXES = {
     ".yaml",
     ".yml",
 }
+DOCUMENT_SUFFIXES = {
+    ".docx",
+    ".pdf",
+}
+SUPPORTED_SUFFIXES = TEXT_SUFFIXES | DOCUMENT_SUFFIXES
 DEFAULT_IGNORE = [".git/**", "**/.git/**", "__pycache__/**", "**/__pycache__/**", ".DS_Store", "**/.DS_Store"]
 
 
@@ -79,11 +84,16 @@ def scan_files(
             if stat.st_size > max_bytes:
                 report.skipped.append({"path": str(path), "reason": "file_too_large", "size_bytes": stat.st_size})
                 continue
-            if path.suffix.lower() not in TEXT_SUFFIXES:
+            suffix = path.suffix.lower()
+            if suffix not in SUPPORTED_SUFFIXES:
                 report.skipped.append({"path": str(path), "reason": "unsupported_suffix"})
                 continue
             raw = path.read_bytes()
-            text = raw.decode("utf-8", errors="replace")
+            extracted = _extract_text(path, raw)
+            if not extracted["ok"]:
+                report.skipped.append({"path": str(path), "reason": extracted["reason"], "detail": extracted.get("detail")})
+                continue
+            text = str(extracted["text"])
             if not text.strip():
                 report.skipped.append({"path": str(path), "reason": "empty_text"})
                 continue
@@ -115,6 +125,35 @@ def scan_files(
         state.last_error = None
     report.connector_state = store.upsert_connector_state(state)
     return report
+
+
+def _extract_text(path: Path, raw: bytes) -> dict[str, Any]:
+    suffix = path.suffix.lower()
+    if suffix in TEXT_SUFFIXES:
+        return {"ok": True, "text": raw.decode("utf-8", errors="replace"), "extractor": "utf8"}
+    if suffix == ".pdf":
+        try:
+            from pypdf import PdfReader  # type: ignore[import-not-found]
+        except Exception as exc:  # noqa: BLE001 - optional dependency.
+            return {"ok": False, "reason": "missing_dependency", "detail": f"pypdf required for PDF extraction: {type(exc).__name__}"}
+        try:
+            reader = PdfReader(path)
+            text = "\n\n".join(page.extract_text() or "" for page in reader.pages)
+        except Exception as exc:  # noqa: BLE001 - per-file failure should not abort scan.
+            return {"ok": False, "reason": "extract_failed", "detail": f"{type(exc).__name__}: {exc}"}
+        return {"ok": True, "text": text, "extractor": "pypdf"}
+    if suffix == ".docx":
+        try:
+            from docx import Document  # type: ignore[import-not-found]
+        except Exception as exc:  # noqa: BLE001 - optional dependency.
+            return {"ok": False, "reason": "missing_dependency", "detail": f"python-docx required for DOCX extraction: {type(exc).__name__}"}
+        try:
+            document = Document(path)
+            text = "\n".join(paragraph.text for paragraph in document.paragraphs)
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "reason": "extract_failed", "detail": f"{type(exc).__name__}: {exc}"}
+        return {"ok": True, "text": text, "extractor": "python-docx"}
+    return {"ok": False, "reason": "unsupported_suffix"}
 
 
 def _connector_state(store: KnowledgeStore, *, root: Path, owner_user_id: str) -> ConnectorState:
