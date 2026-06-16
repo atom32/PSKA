@@ -25,6 +25,10 @@ no rule-based fallback path for knowledge extraction or answer synthesis.
 Provider/configuration/schema failures are surfaced as failures, with one
 allowed recovery path: ask the LLM to repair its own JSON/schema output.
 
+Current MVP scope is intentionally narrow: Twitter/X archive plus local
+text-like files. The product work should now focus on the analysis/service loop
+rather than adding many more connectors.
+
 ## Completion Snapshot
 
 | Area | Status | Notes |
@@ -43,7 +47,7 @@ allowed recovery path: ask the LLM to repair its own JSON/schema output.
 | HTTP API | MVP functional | Local API supports health/readiness, ingest, connector records/states, search, agentic search, jobs, review, candidates, digest schedule, and HTTP MCP. |
 | Async jobs | Durable MVP | Jobs, events, lease/heartbeat, retry/backoff, stale recovery, job ops API/CLI, and Fastreact-backed digest/extraction contract are implemented. |
 | E2E smoke | MVP complete | Real local smoke covers DB reset, zip import, LLM extraction, search, MCP, HTTP, and Fastreact MCP load. |
-| Production readiness | Not complete | Needs daemon supervision, stronger review workflow, richer metrics, connector expansion, UI, and real-data quality tuning. BGE-M3 embedding P0 is implemented but still needs production quality tuning. |
+| Production readiness | Not complete | Foreground local daemon exists; still needs stronger review workflow, richer metrics, UI, system-level supervisor install, and real-data quality tuning. BGE-M3 embedding P0 is implemented but still needs production quality tuning. |
 
 ## Current Architecture
 
@@ -150,7 +154,7 @@ Unit and contract tests:
 ```bash
 cd "/Users/xudawei/Documents/personal archive/core"
 python3 -m pytest -q
-# 159 passed
+# 161 passed
 
 cd "/Users/xudawei/Documents/personal archive/channels/twitter-x"
 python3 -m pytest -q

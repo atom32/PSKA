@@ -49,6 +49,7 @@ def test_cli_accepts_search_and_smoke() -> None:
     agentic = build_parser().parse_args(["agentic-search", "--query", "hello"])
     extract = build_parser().parse_args(["extract-all", "--owner-user-id", "user_primary"])
     serve = build_parser().parse_args(["serve", "--port", "8765"])
+    local_daemon = build_parser().parse_args(["local-daemon", "--no-worker", "--digest-interval-seconds", "60"])
     service_check = build_parser().parse_args(["service-check", "--url", "http://127.0.0.1:8765", "--timeout-seconds", "1"])
     embed = build_parser().parse_args(["embed-backfill", "--embedding-provider", "bge-m3", "--limit", "10"])
     mcp = build_parser().parse_args(["mcp-server"])
@@ -62,6 +63,9 @@ def test_cli_accepts_search_and_smoke() -> None:
     assert agentic.command == "agentic-search"
     assert extract.command == "extract-all"
     assert serve.command == "serve"
+    assert local_daemon.command == "local-daemon"
+    assert local_daemon.no_worker is True
+    assert local_daemon.digest_interval_seconds == 60
     assert service_check.command == "service-check"
     assert service_check.url == "http://127.0.0.1:8765"
     assert service_check.timeout_seconds == 1

@@ -2,7 +2,7 @@
 
 日期：2026-06-14
 
-状态：P0.5 foreground service runbook。PSKA 仍不是 daemon supervisor；自动启动、重启策略、日志轮转、launchd/systemd 配置留给后续部署阶段。
+状态：P0.5 local daemon runbook。PSKA 已有 foreground `local-daemon` supervisor；自动登录启动、重启策略、日志轮转、launchd/systemd 安装仍留给后续部署阶段。
 
 ## 1. Environment
 
@@ -47,7 +47,31 @@ export PSKA_EMBEDDING_PROVIDER=disabled
 ./scripts/pska db-init
 ```
 
-## 3. Start PSKA Online Service
+## 3. Start PSKA Local Daemon
+
+MVP 推荐用一个前台 supervisor 启动 PSKA service、job worker 和 digest scheduler：
+
+```bash
+./scripts/pska --config .pska/config.json local-daemon
+```
+
+它会启动：
+
+- `serve`
+- `job-worker`
+- `digest-scheduler`
+
+可选：
+
+```bash
+./scripts/pska local-daemon --restart
+./scripts/pska local-daemon --no-worker
+./scripts/pska local-daemon --no-digest-scheduler
+```
+
+这是本地前台 daemon，适合终端、tmux 或后续 launchd/systemd wrapper。Fastreact service 和 Fastreact digest worker 仍由 Fastreact 项目负责启动。
+
+## 4. Start PSKA Online Service Manually
 
 前台启动 HTTP service：
 
@@ -78,7 +102,7 @@ export PSKA_EMBEDDING_PROVIDER=disabled
 
 Fastreact offline does not make PSKA unavailable. In that case `/ready` should still have `ok=true`, with `checks.fastreact.ok=false`.
 
-## 4. Start Worker
+## 5. Start Worker Manually
 
 前台启动 durable job worker：
 
@@ -99,7 +123,7 @@ Fastreact offline does not make PSKA unavailable. In that case `/ready` should s
   --limit 1
 ```
 
-## 5. Jobs
+## 6. Jobs
 
 提交 Fastreact-backed extraction job：
 
@@ -182,7 +206,7 @@ python3 scripts/pska_digest_worker.py \
 ./scripts/pska job-cancel job_xxx --reason "superseded"
 ```
 
-## 6. Readiness Interpretation
+## 7. Readiness Interpretation
 
 Local PSKA availability:
 
@@ -209,7 +233,7 @@ HTTP service logs:
 - Logs include request id, method, path, status, duration, caller/user, represented user, job id, and source ref count.
 - Logs intentionally omit request bodies, content text, tokens, and candidate payloads.
 
-## 7. Fastreact Boundary
+## 8. Fastreact Boundary
 
 目标形态是 Fastreact 通过 HTTP MCP 调用 PSKA：
 

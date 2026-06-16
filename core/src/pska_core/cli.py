@@ -24,6 +24,7 @@ from pska_core.files_connector import scan_files
 from pska_core.importers.twitter_zip import TwitterZipImporter
 from pska_core.ingest import IngestService
 from pska_core.jobs import JOB_TYPES, JobService
+from pska_core.local_daemon import build_process_specs, run_supervisor
 from pska_core.memory import MemoryService
 from pska_core.mcp_server import MCPServer
 from pska_core.models import ChannelIngestPayload, ReviewItem, SourceRef
@@ -116,6 +117,19 @@ def build_parser() -> argparse.ArgumentParser:
     serve_parser = subparsers.add_parser("serve", help="Start local PSKA Core HTTP API")
     serve_parser.add_argument("--host", default=None)
     serve_parser.add_argument("--port", type=int, default=None)
+
+    local_daemon_parser = subparsers.add_parser("local-daemon", help="Run PSKA service, worker, and digest scheduler under a local foreground supervisor")
+    local_daemon_parser.add_argument("--no-worker", action="store_true")
+    local_daemon_parser.add_argument("--no-digest-scheduler", action="store_true")
+    local_daemon_parser.add_argument("--restart", action="store_true", help="Restart child processes if they exit")
+    local_daemon_parser.add_argument("--worker-id", default="pska-worker-local")
+    local_daemon_parser.add_argument("--poll-interval", type=float, default=5.0)
+    local_daemon_parser.add_argument("--lease-seconds", type=int, default=300)
+    local_daemon_parser.add_argument("--recover-stale-seconds", type=int, default=900)
+    local_daemon_parser.add_argument("--digest-interval-seconds", type=float, default=300.0)
+    local_daemon_parser.add_argument("--digest-limit", type=int, default=20)
+    local_daemon_parser.add_argument("--digest-batch-size", type=int, default=20)
+    local_daemon_parser.add_argument("--digest-max-backlog-jobs", type=int, default=10)
 
     service_check_parser = subparsers.add_parser("service-check", help="Check a running PSKA online service contract")
     service_check_parser.add_argument("--url", default=None)
@@ -262,6 +276,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "serve":
         serve(args.host or config.service.host, args.port or config.service.port, args.database_url)
         return 0
+    if args.command == "local-daemon":
+        return local_daemon(args, config)
     if args.command == "service-check":
         return service_check(args)
     if args.command == "mcp-server":
@@ -533,6 +549,25 @@ def service_check(args: argparse.Namespace) -> int:
     )
     print(dumps({"ok": ok, "url": base_url, "checks": checks}))
     return 0 if ok else 1
+
+
+def local_daemon(args: argparse.Namespace, config: PSKAConfig) -> int:
+    specs = build_process_specs(
+        config_path=args.config,
+        config=config,
+        database_url=args.database_url,
+        include_worker=not args.no_worker,
+        include_digest_scheduler=not args.no_digest_scheduler,
+        worker_id=args.worker_id,
+        poll_interval=args.poll_interval,
+        lease_seconds=args.lease_seconds,
+        recover_stale_seconds=args.recover_stale_seconds,
+        digest_interval_seconds=args.digest_interval_seconds,
+        digest_limit=args.digest_limit,
+        digest_batch_size=args.digest_batch_size,
+        digest_max_backlog_jobs=args.digest_max_backlog_jobs,
+    )
+    return run_supervisor(specs, restart=args.restart)
 
 
 def job_submit(args: argparse.Namespace) -> int:
