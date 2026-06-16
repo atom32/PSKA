@@ -195,6 +195,41 @@ P0.4 readiness observability notes：
 - `checks.fastreact.pska_tools_loaded=false` means Fastreact is reachable but does not expose all PSKA required tools.
 - `checks.mcp.missing_required_tools` is a local contract failure and makes `ok=false` if required PSKA MCP tools are missing.
 
+## Request IDs and Logs
+
+HTTP clients may pass either header:
+
+```http
+X-PSKA-Request-Id: req_xxx
+X-Request-Id: req_xxx
+```
+
+PSKA returns the selected id in every HTTP response:
+
+```http
+X-PSKA-Request-Id: req_xxx
+```
+
+The foreground service writes one structured JSON log line per HTTP response to stderr:
+
+```json
+{
+  "event": "pska.http_request",
+  "request_id": "req_xxx",
+  "method": "POST",
+  "path": "/jobs/job_xxx/lease",
+  "status": 200,
+  "duration_ms": 2.4,
+  "caller": "agent_service",
+  "user_id": "agent_service",
+  "represented_user_id": "user_primary",
+  "job_id": "job_xxx",
+  "source_item_ids_count": 3
+}
+```
+
+Logs intentionally avoid request bodies, content text, tokens, and generated knowledge payloads. They are for correlation across PSKA, Fastreact, and worker logs.
+
 ## Jobs and Workers
 
 PSKA job system 是 durable orchestrator，不是复杂 agent loop 执行层。P0.3 之后，job 会记录 worker 与外部 run metadata：

@@ -9,7 +9,7 @@
 - P0.1 service contract 已落地：HTTP `/mcp`、稳定 `/ready`、service contract 文档。
 - P0.2 auth/request context 已落地：service token、agent_service、represented user、HTTP/MCP ACL context。
 - P0.3 job worker metadata 已落地：worker lease、heartbeat、Fastreact `external_run_id`、source refs。
-- P0.5 observability/operations 已部分落地：增强 `/ready`、`service-check`、foreground runbook、job stats/list/filter/cancel/retry/recover ops API 和 CLI，`digest_backlog`、embedding coverage、source-channel freshness 指标。
+- P0.5 observability/operations 已部分落地：增强 `/ready`、`service-check`、foreground runbook、job stats/list/filter/cancel/retry/recover ops API 和 CLI，`digest_backlog`、embedding coverage、source-channel freshness 指标，HTTP request id 与结构化访问日志。
 - P0.4 background digest loop 已完成 write-back + external worker lifecycle + backlog scheduling + foreground periodic scheduler + Fastreact worker slice：`pska_job_context`、`pska_write_candidates`、`POST /candidates`、`POST /jobs/{id}/lease`、`GET /digest/batches/{id}`、`POST /digest/candidates`、`POST /digest/schedule`、CLI `digest-scheduler`、`complete/fail`、priority、retry backoff、candidate schema version、batch cursor、Fastreact `pska_digest` worker 脚本。仍待补更细的 candidate taxonomy、daemon supervisor 化和真实 digest 质量调优。
 
 ## 当前判断
@@ -151,7 +151,7 @@ FastReAct 侧：
 
 ### P0.5 Observability and operations
 
-- API/worker 日志包含 request id、job id、source id。
+- API 日志包含 request id、job id、source ref count。已完成第一版；worker 日志和 Fastreact trace 对齐继续由 Fastreact worker 侧完善。
 - 提供 basic metrics：
   - index counts
   - pending/running/failed jobs 已完成第一版

@@ -4,8 +4,11 @@ from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
+import sys
+import time
 from typing import Any
 from urllib.parse import parse_qs, urlparse
+from uuid import uuid4
 
 from pska_core.acl import ACLService
 from pska_core.agentic import AgenticSearchService
@@ -433,6 +436,7 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
         parsed_url = urlparse(self.path)
         path = parsed_url.path
         query = parse_qs(parsed_url.query)
+        self._begin_request(path=path, payload={})
         if path == "/health":
             return self._json(200, self.api.health())
         context = self._context({})
@@ -471,6 +475,7 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         try:
             payload = self._read_json()
+            self._begin_request(path=path, payload=payload)
             context = self._context(payload)
             if context is None:
                 return
@@ -529,6 +534,8 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
                 return self._json(200, self.api.retry_job(job_id))
             self._json(404, {"error": f"not found: {path}"})
         except Exception as exc:  # noqa: BLE001 - local API should report JSON errors.
+            if not hasattr(self, "_request_meta"):
+                self._begin_request(path=path, payload={})
             self._json(500, {"error": f"{type(exc).__name__}: {exc}"})
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - stdlib signature
@@ -549,20 +556,65 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
         if service_token_required() and not authenticated:
             self._json(401, {"error": "PSKA service token required"})
             return None
-        return context_from_headers(self.headers, payload, service_authenticated=authenticated)
+        context = context_from_headers(self.headers, payload, service_authenticated=authenticated)
+        self._request_context = context
+        return context
 
     def _json(self, status: int, payload: dict[str, Any]) -> None:
         data = json.dumps(to_jsonable(payload), ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("content-type", "application/json; charset=utf-8")
+        self.send_header("x-pska-request-id", self._request_id())
         self.send_header("content-length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
+        self._log_request(status)
 
     def _empty(self, status: int) -> None:
         self.send_response(status)
+        self.send_header("x-pska-request-id", self._request_id())
         self.send_header("content-length", "0")
         self.end_headers()
+        self._log_request(status)
+
+    def _begin_request(self, *, path: str, payload: dict[str, Any]) -> None:
+        request_id = self.headers.get("X-PSKA-Request-Id") or self.headers.get("X-Request-Id") or f"req_{uuid4().hex}"
+        self._request_meta = {
+            "request_id": request_id,
+            "method": self.command,
+            "path": path,
+            "started_at": time.monotonic(),
+            **_request_refs(path, payload),
+        }
+
+    def _request_id(self) -> str:
+        if not hasattr(self, "_request_meta"):
+            self._begin_request(path=urlparse(self.path).path, payload={})
+        return str(self._request_meta["request_id"])
+
+    def _log_request(self, status: int) -> None:
+        meta = dict(getattr(self, "_request_meta", {}))
+        if meta.get("logged"):
+            return
+        context = getattr(self, "_request_context", None)
+        duration_ms = None
+        if meta.get("started_at") is not None:
+            duration_ms = round((time.monotonic() - float(meta["started_at"])) * 1000, 2)
+        record = {
+            "event": "pska.http_request",
+            "request_id": meta.get("request_id"),
+            "method": meta.get("method"),
+            "path": meta.get("path"),
+            "status": status,
+            "duration_ms": duration_ms,
+            "caller": getattr(context, "caller", None),
+            "user_id": getattr(context, "effective_user_id", None),
+            "represented_user_id": getattr(context, "represented_user_id", None),
+            "job_id": meta.get("job_id"),
+            "source_item_ids_count": meta.get("source_item_ids_count", 0),
+        }
+        print(json.dumps(record, ensure_ascii=False, sort_keys=True), file=sys.stderr, flush=True)
+        self._request_meta["logged"] = True
 
 
 def serve(host: str = "127.0.0.1", port: int = 8765, database_url: str | None = None) -> None:
@@ -586,6 +638,30 @@ def _source_refs_from_payload(value: Any) -> list[SourceRef]:
         for ref in value
         if isinstance(ref, dict)
     ]
+
+
+def _request_refs(path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    job_id = None
+    if path.startswith("/jobs/"):
+        remainder = path.removeprefix("/jobs/")
+        job_id = remainder.split("/", 1)[0] or None
+    if not job_id:
+        job_id = payload.get("job_id") or payload.get("pska_job_id")
+
+    source_item_ids = set(_string_list(payload.get("source_item_ids")))
+    source_refs = payload.get("source_refs")
+    if isinstance(source_refs, list):
+        for ref in source_refs:
+            if isinstance(ref, dict) and ref.get("source_item_id"):
+                source_item_ids.add(str(ref["source_item_id"]))
+    scope = payload.get("scope")
+    if isinstance(scope, dict):
+        source_item_ids.update(_string_list(scope.get("source_item_ids")))
+
+    return {
+        "job_id": str(job_id) if job_id else None,
+        "source_item_ids_count": len(source_item_ids),
+    }
 
 
 def _as_aware(value: datetime) -> datetime:

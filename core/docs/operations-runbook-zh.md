@@ -201,6 +201,13 @@ Operational signals:
 - `checks.fastreact.pska_tools_loaded=false` means Fastreact is reachable but missing required PSKA tools.
 - `checks.mcp.missing_required_tools` means PSKA's local MCP contract is broken.
 
+HTTP service logs:
+
+- Every HTTP response emits one JSON line to stderr with `event=pska.http_request`.
+- Pass `X-PSKA-Request-Id` or `X-Request-Id` from clients/workers to correlate PSKA logs with Fastreact traces.
+- Logs include request id, method, path, status, duration, caller/user, represented user, job id, and source ref count.
+- Logs intentionally omit request bodies, content text, tokens, and candidate payloads.
+
 ## 7. Fastreact Boundary
 
 目标形态是 Fastreact 通过 HTTP MCP 调用 PSKA：

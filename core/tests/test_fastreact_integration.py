@@ -420,6 +420,50 @@ def test_http_routes_cover_job_ops_filters_stats_cancel_and_recover() -> None:
     assert recovered["recovered"][0]["status"] == "queued"
 
 
+def test_http_request_logs_include_request_job_and_source_refs(capsys) -> None:
+    api = _api()
+    job = JobService(api.store).submit(
+        DIGEST_VIA_FASTREACT,
+        {
+            "owner_user_id": "user_primary",
+            "source_refs": [{"source_item_id": "src_log"}],
+        },
+    )
+
+    with _http_server(api) as base_url:
+        conn = HTTPConnection(base_url, timeout=5)
+        conn.request("GET", f"/jobs/{job.job_id}", headers={"X-PSKA-Request-Id": "req-test-123"})
+        response = conn.getresponse()
+        response.read()
+        request_id = response.getheader("x-pska-request-id")
+        conn.close()
+
+        post_status, _payload = _http_json(
+            base_url,
+            "POST",
+            "/digest/schedule",
+            {
+                "owner_user_id": "user_primary",
+                "source_refs": [{"source_item_id": "src_a"}],
+                "scope": {"source_item_ids": ["src_b"]},
+            },
+            headers={"X-Request-Id": "req-test-456"},
+        )
+
+    logs = [json.loads(line) for line in capsys.readouterr().err.splitlines() if line.strip()]
+
+    assert response.status == 200
+    assert request_id == "req-test-123"
+    assert post_status == 200
+    assert logs[0]["event"] == "pska.http_request"
+    assert logs[0]["request_id"] == "req-test-123"
+    assert logs[0]["path"] == f"/jobs/{job.job_id}"
+    assert logs[0]["job_id"] == job.job_id
+    assert logs[1]["request_id"] == "req-test-456"
+    assert logs[1]["path"] == "/digest/schedule"
+    assert logs[1]["source_item_ids_count"] == 2
+
+
 def test_metrics_report_embedding_coverage_and_connector_freshness(monkeypatch) -> None:
     api = _api()
     monkeypatch.setenv("PSKA_EMBEDDING_PROVIDER", "fake-bge")
