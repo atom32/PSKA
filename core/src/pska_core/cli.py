@@ -231,6 +231,12 @@ def build_parser() -> argparse.ArgumentParser:
     digest_scheduler_parser.add_argument("--force", action="store_true")
     digest_scheduler_parser.add_argument("--reason", default="periodic digest scheduler")
 
+    review_list_parser = subparsers.add_parser("review-list", help="List review items awaiting or recording human decisions")
+    review_list_parser.add_argument("--status", default=None)
+    review_list_parser.add_argument("--owner-user-id", default=None)
+    review_list_parser.add_argument("--limit", type=int, default=50)
+    review_list_parser.add_argument("--summary", action="store_true", help="Print compact review item rows")
+
     review_approve_parser = subparsers.add_parser("review-approve", help="Approve a pending review item")
     review_approve_parser.add_argument("review_item_id")
     review_approve_parser.add_argument("--actor-user-id", default="user_primary")
@@ -326,6 +332,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return digest_schedule(args)
     if args.command == "digest-scheduler":
         return digest_scheduler(args)
+    if args.command == "review-list":
+        return review_list(args)
     if args.command == "review-approve":
         return review_approve(args)
     if args.command == "review-reject":
@@ -847,6 +855,13 @@ def digest_scheduler(args: argparse.Namespace) -> int:
     return 0
 
 
+def review_list(args: argparse.Namespace) -> int:
+    store = PostgresKnowledgeStore(args.database_url)
+    items = store.list_review_items()
+    print(dumps(_review_items_payload(items, status=args.status, owner_user_id=args.owner_user_id, limit=args.limit, summary=args.summary)))
+    return 0
+
+
 def review_approve(args: argparse.Namespace) -> int:
     store = PostgresKnowledgeStore(args.database_url)
     service = ReviewService(store)
@@ -864,6 +879,42 @@ def review_approve(args: argparse.Namespace) -> int:
         )
     print(dumps({"review_item": review_item}))
     return 0
+
+
+def _review_items_payload(
+    items: Sequence[ReviewItem],
+    *,
+    status: str | None = None,
+    owner_user_id: str | None = None,
+    limit: int = 50,
+    summary: bool = False,
+) -> dict[str, Any]:
+    filtered = [
+        item
+        for item in items
+        if (status is None or item.status == status)
+        and (owner_user_id is None or item.owner_user_id == owner_user_id)
+    ]
+    limited = filtered[: max(0, limit)]
+    if summary:
+        payload_items = [
+            {
+                "review_item_id": item.review_item_id,
+                "owner_user_id": item.owner_user_id,
+                "review_type": item.review_type.value if hasattr(item.review_type, "value") else str(item.review_type),
+                "status": item.status,
+                "title": item.title,
+            }
+            for item in limited
+        ]
+    else:
+        payload_items = list(limited)
+    return {
+        "review_items": payload_items,
+        "count": len(payload_items),
+        "total_matching": len(filtered),
+        "limit": max(0, limit),
+    }
 
 
 def review_reject(args: argparse.Namespace) -> int:
@@ -1098,7 +1149,7 @@ def _mvp_next_actions(payload: dict[str, Any], *, connectors: dict[str, Any]) ->
     if checks.get("fastreact", {}).get("ok") is False:
         actions.append("Start Fastreact when you want agentic digest or Fastreact-backed QA.")
     if payload.get("pending_review_items"):
-        actions.append("Review pending memory/profile/action candidates with ./scripts/pska review-approve or review-reject.")
+        actions.append("Inspect pending candidates with ./scripts/pska review-list --status pending --summary, then use review-approve or review-reject.")
     if not actions:
         actions.append("System is ready for MVP use: run search, agentic-search, or keep local-daemon running.")
     return actions

@@ -114,6 +114,7 @@ CLI:
 ./scripts/pska --database-url postgresql:///pska_smoke agentic-search --query "GitHub"
 ./scripts/pska --database-url postgresql:///pska_smoke serve --port 8766
 ./scripts/pska --database-url postgresql:///pska_smoke digest-schedule --owner-user-id user_primary
+./scripts/pska --database-url postgresql:///pska_smoke review-list --status pending --summary
 ```
 
 HTTP:
@@ -157,7 +158,7 @@ Unit and contract tests:
 ```bash
 cd "/Users/xudawei/Documents/personal archive/core"
 python3 -m pytest -q
-# 165 passed
+# 166 passed
 
 cd "/Users/xudawei/Documents/personal archive/channels/twitter-x"
 python3 -m pytest -q

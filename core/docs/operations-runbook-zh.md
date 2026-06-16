@@ -76,6 +76,14 @@ MVP 推荐先用有限数据源启动：
 
 `mvp-status` 会报告 readiness、index/connector/job metrics、pending review 数量和下一步动作。日常巡检优先使用 `--summary`，输出更紧凑，适合判断 PSKA 是否进入可用状态。
 
+待审候选处理：
+
+```bash
+./scripts/pska review-list --status pending --summary
+./scripts/pska review-approve <review_item_id> --reason "looks right"
+./scripts/pska review-reject <review_item_id> --reason "not grounded enough"
+```
+
 ## 4. Start PSKA Local Daemon
 
 MVP 推荐用一个前台 supervisor 启动 PSKA service、job worker 和 digest scheduler：

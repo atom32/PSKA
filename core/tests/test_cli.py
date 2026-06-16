@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 
 import pska_core.cli as cli_module
-from pska_core.cli import build_parser, digest_scheduler, _mvp_next_actions, _mvp_status_summary
+from pska_core.cli import build_parser, digest_scheduler, _mvp_next_actions, _mvp_status_summary, _review_items_payload
+from pska_core.enums import ReviewType
+from pska_core.models import ReviewItem
 
 
 def test_cli_accepts_db_check() -> None:
@@ -131,6 +133,15 @@ def test_cli_accepts_job_commands() -> None:
 
 
 def test_cli_accepts_review_commands() -> None:
+    listing = build_parser().parse_args(
+        ["review-list", "--status", "pending", "--owner-user-id", "user_primary", "--limit", "5", "--summary"]
+    )
+    assert listing.command == "review-list"
+    assert listing.status == "pending"
+    assert listing.owner_user_id == "user_primary"
+    assert listing.limit == 5
+    assert listing.summary is True
+
     approve = build_parser().parse_args(
         ["review-approve", "rev_123", "--actor-user-id", "user_primary", "--reason", "ok", "--apply"]
     )
@@ -147,6 +158,47 @@ def test_cli_accepts_review_commands() -> None:
     apply = build_parser().parse_args(["review-apply", "rev_123"])
     assert apply.command == "review-apply"
     assert apply.review_item_id == "rev_123"
+
+
+def test_review_items_payload_filters_and_summarizes() -> None:
+    payload = _review_items_payload(
+        [
+            ReviewItem(
+                review_item_id="rev_1",
+                owner_user_id="user_primary",
+                review_type=ReviewType.PROFILE_UPDATE,
+                title="Profile update",
+                proposal={"profile_delta": {"topic": "PSKA"}},
+            ),
+            ReviewItem(
+                review_item_id="rev_2",
+                owner_user_id="other",
+                review_type=ReviewType.CONFLICT,
+                title="Conflict",
+                proposal={},
+                status="approved",
+            ),
+        ],
+        status="pending",
+        owner_user_id="user_primary",
+        limit=10,
+        summary=True,
+    )
+
+    assert payload == {
+        "review_items": [
+            {
+                "review_item_id": "rev_1",
+                "owner_user_id": "user_primary",
+                "review_type": "profile_update",
+                "status": "pending",
+                "title": "Profile update",
+            }
+        ],
+        "count": 1,
+        "total_matching": 1,
+        "limit": 10,
+    }
 
 
 def test_cli_accepts_job_worker_commands() -> None:
