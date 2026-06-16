@@ -135,8 +135,9 @@ def test_graph_global_query_returns_visible_hypergraph_context_without_chunk_hit
     response = RetrievalService(store, ACLService(store)).search("列出重要实体和关系", store.get_user("user_primary"))
 
     assert response.results == []
-    assert response.gaps == []
+    assert response.gaps == ["ungrounded_graph_context"]
     assert response.score_debug["graph_context_used"] is True
+    assert response.score_debug["diagnostics"]["ungrounded_graph_edges"] == 1
     assert response.hypergraph_context[0]["relation_type"] == "recommended"
     assert {member["label"] for member in response.hypergraph_context[0]["members"]} == {"A", "B"}
 
@@ -180,6 +181,42 @@ def test_hypergraph_context_returns_grounded_source_citations() -> None:
     assert edge_context["evidence_citations"][0]["source_item_id"] == source.source_item_id
     assert edge_context["evidence_citations"][0]["chunk_id"].startswith("chk_")
     assert "GraphRAG" in edge_context["evidence_citations"][0]["snippet"]
+
+
+def test_retrieval_reports_conflicting_graph_relations() -> None:
+    store = make_store()
+    source = IngestService(store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "note_conflict",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "Conflict note",
+            "content": {"text": "Claim A contradicts Claim B."},
+        }
+    )
+    graph = HypergraphService(store)
+    graph.create_entity(Entity("ent_claim_a", "claim", "Claim A", "user_primary", "private_primary", Visibility.PRIVATE))
+    graph.create_entity(Entity("ent_claim_b", "claim", "Claim B", "user_primary", "private_primary", Visibility.PRIVATE))
+    edge = graph.create_hyperedge(
+        relation_type="contradicts",
+        owner_user_id="user_primary",
+        space_id="private_primary",
+        visibility=Visibility.PRIVATE,
+        members=[("ent_claim_a", "left"), ("ent_claim_b", "right")],
+        evidence_text="Claim A contradicts Claim B.",
+        source_refs=[SourceRef(source_item_id=source.source_item_id)],
+        confidence=0.9,
+    )
+
+    response = RetrievalService(store, ACLService(store)).search("Claim A Claim B", store.get_user("user_primary"))
+
+    assert response.gaps == []
+    assert response.conflicts == [f"graph_conflict:{edge.hyperedge_id}:contradicts"]
+    assert response.score_debug["diagnostics"]["conflict_count"] == 1
 
 
 def test_graph_paths_return_two_hop_grounded_relation_chain() -> None:

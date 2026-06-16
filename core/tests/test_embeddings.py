@@ -204,3 +204,32 @@ def test_retrieval_uses_source_authority_as_tie_breaker() -> None:
     assert [result.title for result in response.results] == ["High authority", "Low authority"]
     assert response.results[0].score_debug["source_authority"] == 0.9
     assert response.results[1].score_debug["source_authority"] == 0.1
+
+
+def test_retrieval_reports_sensitive_query_terms() -> None:
+    store = _store()
+    IngestService(store).ingest_channel_payload(_payload("security-note", "API key rotation checklist."))
+    user = store.get_user("user_primary")
+
+    response = RetrievalService(store, ACLService(store)).search("api key rotation", user, top_k=1)
+
+    assert response.sensitivity == ["sensitive_query_terms:api key"]
+    assert response.score_debug["diagnostics"]["sensitivity_count"] == 1
+
+
+def test_retrieval_reports_sensitive_source_metadata() -> None:
+    store = _store()
+    IngestService(store).ingest_channel_payload(
+        _payload(
+            "sensitive-note",
+            "private planning topic",
+            title="Sensitive note",
+            extra={"sensitivity": "high"},
+        )
+    )
+    user = store.get_user("user_primary")
+
+    response = RetrievalService(store, ACLService(store)).search("private planning topic", user, top_k=1)
+
+    assert response.sensitivity == [f"sensitive_sources:{response.results[0].source_item_id}"]
+    assert response.score_debug["diagnostics"]["sensitivity_count"] == 1

@@ -13,6 +13,34 @@ from pska_core.serde import to_jsonable
 from pska_core.store import KnowledgeStore
 
 
+_CONFLICT_RELATION_TYPES = {"contradicts", "conflicts_with", "disputes", "refutes"}
+_SENSITIVE_TERMS = {
+    "api key",
+    "bank",
+    "diagnosis",
+    "health",
+    "medical",
+    "passport",
+    "password",
+    "phone",
+    "salary",
+    "secret",
+    "ssn",
+    "tax",
+    "地址",
+    "护照",
+    "密码",
+    "密钥",
+    "工资",
+    "电话",
+    "税",
+    "身份证",
+    "诊断",
+    "银行",
+    "医疗",
+}
+
+
 @dataclass(slots=True)
 class RetrievalResult:
     result_id: str
@@ -38,6 +66,7 @@ class RetrievalResponse:
     memory_context_used: bool = False
     gaps: list[str] = field(default_factory=list)
     conflicts: list[str] = field(default_factory=list)
+    sensitivity: list[str] = field(default_factory=list)
     score_debug: dict[str, Any] = field(default_factory=dict)
 
 
@@ -81,6 +110,13 @@ class RetrievalService:
         )
         ranker = "exact_source" if rank_debug.get("exact_candidates", 0) else "hybrid_rrf"
         graph_context_used = bool(hypergraph_context or graph_paths)
+        diagnostics = self._diagnostics(
+            query=query,
+            ranked=ranked,
+            visible_items=visible_items,
+            hypergraph_context=hypergraph_context,
+            graph_paths=graph_paths,
+        )
         return RetrievalResponse(
             query=query,
             request_user_id=represented_user_id or user.user_id,
@@ -90,12 +126,15 @@ class RetrievalService:
             citations=citations,
             hypergraph_context=hypergraph_context,
             graph_paths=graph_paths,
-            gaps=[] if ranked or graph_context_used else ["insufficient_evidence"],
+            gaps=diagnostics["gaps"],
+            conflicts=diagnostics["conflicts"],
+            sensitivity=diagnostics["sensitivity"],
             score_debug={
                 "ranker": ranker,
                 "top_k": top_k,
                 "graph_context_used": graph_context_used,
                 "graph_paths_used": bool(graph_paths),
+                "diagnostics": diagnostics["score_debug"],
                 **rank_debug,
             },
         )
@@ -269,6 +308,56 @@ class RetrievalService:
             result.score_debug["source_authority"] = authority
             result.score_debug["quality_boost"] = boost
         results.sort(key=lambda result: result.score, reverse=True)
+
+    def _diagnostics(
+        self,
+        *,
+        query: str,
+        ranked: list[RetrievalResult],
+        visible_items: list[SourceItem],
+        hypergraph_context: list[dict[str, Any]],
+        graph_paths: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        item_by_id = {item.source_item_id: item for item in visible_items}
+        gaps: list[str] = []
+        conflicts: list[str] = []
+        sensitivity: list[str] = []
+
+        if not ranked and not hypergraph_context and not graph_paths:
+            gaps.append("insufficient_evidence")
+
+        graph_edges = _dedupe_edge_contexts([*hypergraph_context, *[edge for path in graph_paths for edge in path.get("edges", [])]])
+        ungrounded_edges = [edge for edge in graph_edges if not edge.get("evidence_citations")]
+        if graph_edges and ungrounded_edges:
+            gaps.append("ungrounded_graph_context")
+
+        for edge in graph_edges:
+            relation_type = str(edge.get("relation_type") or "").lower()
+            if relation_type in _CONFLICT_RELATION_TYPES:
+                conflicts.append(f"graph_conflict:{edge.get('hyperedge_id')}:{relation_type}")
+
+        sensitive_query_terms = _sensitive_terms_in_text(query)
+        if sensitive_query_terms:
+            sensitivity.append(f"sensitive_query_terms:{','.join(sensitive_query_terms)}")
+
+        sensitive_source_ids = [
+            result.source_item_id
+            for result in ranked
+            if _source_sensitivity(item_by_id.get(result.source_item_id)) in {"high", "sensitive"}
+        ]
+        if sensitive_source_ids:
+            sensitivity.append(f"sensitive_sources:{','.join(sorted(set(sensitive_source_ids)))}")
+
+        return {
+            "gaps": gaps,
+            "conflicts": conflicts,
+            "sensitivity": sensitivity,
+            "score_debug": {
+                "ungrounded_graph_edges": len(ungrounded_edges),
+                "conflict_count": len(conflicts),
+                "sensitivity_count": len(sensitivity),
+            },
+        }
 
     def _hypergraph_context(
         self,
@@ -628,6 +717,43 @@ def _coerce_unit_float(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return max(0.0, min(1.0, numeric))
+
+
+def _dedupe_edge_contexts(edges: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    deduped = []
+    for edge in edges:
+        edge_id = str(edge.get("hyperedge_id") or "")
+        if not edge_id:
+            continue
+        if edge_id in seen:
+            continue
+        seen.add(edge_id)
+        deduped.append(edge)
+    return deduped
+
+
+def _sensitive_terms_in_text(text: str) -> list[str]:
+    normalized = _normalize_match_text(text)
+    matches = []
+    for term in sorted(_SENSITIVE_TERMS):
+        if _match_position(normalized, _normalize_match_text(term)) is not None:
+            matches.append(term)
+    return matches
+
+
+def _source_sensitivity(item: SourceItem | None) -> str:
+    if item is None:
+        return "normal"
+    metadata = item.metadata or {}
+    extra = metadata.get("extra") if isinstance(metadata.get("extra"), dict) else {}
+    for value in (metadata.get("sensitivity"), metadata.get("classification"), extra.get("sensitivity"), extra.get("classification")):
+        if not value:
+            continue
+        normalized = str(value).strip().lower()
+        if normalized in {"high", "sensitive"}:
+            return normalized
+    return "normal"
 
 
 def _entity_aliases(entity: Entity) -> list[str]:
