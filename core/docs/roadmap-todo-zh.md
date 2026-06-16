@@ -295,11 +295,40 @@ FastReAct 仍然是重要消费者，但不应主导 PSKA 架构。
 
 ## 当前优先级建议
 
-下一步优先做：
+截至当前，P0.1/P0.2/P0.3/P0.4/P0.5 的核心机制都已有第一版，P1.2 Files connector 也已经覆盖 config sync、watch、PDF/DOCX optional extraction、manifest reconciliation 和缺失文件记录。下一步不再是补服务骨架，而是把 PSKA 从“机制可跑”推进到“人类日常可用”。
 
-1. P0.1 Service contract。
-2. P0.2 Auth and ACL request context。
-3. P0.3 Job system and workers。
-4. P0.4 Background digest loop。
+优先顺序：
 
-这些完成后，PSKA 才真正从“可用 MVP”进入“可常驻、可主动、可扩展的数据底座”。
+1. **真实 digest E2E 稳定化**
+   - Fastreact digest worker 修复 tool budget/重复写回问题。
+   - 用当前 `postgresql:///pska` 的有限 docs/Twitter 样本跑通：lease job -> batch context -> LLM digest -> candidates/review/memory/profile 写回 -> complete job。
+   - 加一个只读/半自动 gate，验证 digest job 不只是 queued，而是真的产生 grounded candidates。
+
+2. **Review taxonomy 和候选质量**
+   - 明确 `review_items` 类型：memory_candidate、profile_update、relationship_candidate、action_candidate、conflict、low_confidence。
+   - 高影响/低置信候选进入 review；低风险摘要或关系候选可批量 approve。
+   - Review apply 后必须写 audit event，并保留 source refs。
+
+3. **Memory promotion lifecycle**
+   - 将 digest candidates 稳定转成 agent memories/profile cards/hyperedges。
+   - 增加 memory confidence、decay、last_verified_at 的实际更新路径。
+   - 做 `memory-list`/`memory-review`/`profile-list` 这类人类可检查 CLI。
+
+4. **Retrieval/GraphRAG 质量打磨**
+   - 当前是轻量 GraphRAG，不是 GNN/HippoRAG/PPR。
+   - 下一步优先做 rerank/evaluation，而不是上 GNN：加入 query fixture、expected citations、graph path relevance、conflict/gap regression。
+   - 如果真实问题经常需要跨多文档多跳，再评估 HippoRAG/PPR 层。
+
+5. **Service daemon 产品化**
+   - `local-daemon` 仍是 foreground supervisor。
+   - 后续补 launchd/systemd wrapper、日志路径、pid/status、restart policy、配置检查。
+   - `/ready` 增加 Fastreact worker/digest backlog 质量信号，而不是只看服务是否在线。
+
+6. **Human-facing MVP workflow**
+   - 固化日常命令：`files-sync`/`files-watch`、`digest-schedule`、`mvp-status --summary`、`review-list`、`agentic-search`。
+   - 做一个 `daily-briefing` 或 `inbox` 第一版，把 digest/review/memory 串成用户每天能看的输出。
+
+7. **Connector 扩展保持克制**
+   - MVP 阶段继续只把 Twitter/X archive 和 local files 做扎实。
+   - Browser/Git connector 可以作为下一轮 P1.3/P1.4，但不应早于 digest/review/memory 闭环稳定。
+   - Mail/photos/NAS/Home Assistant/conversations 继续后置。

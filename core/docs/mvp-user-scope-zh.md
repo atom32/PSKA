@@ -55,13 +55,13 @@ MVP 阶段不追求：
 
 优先顺序：
 
-1. 用 `mvp-bootstrap --extract` 初始化有限数据源、digest backlog 和第一版图谱。
-2. 用 `files-sync` 按 `.pska/config.json` 的 `files.roots` 同步本地 notes/docs。
-3. 用 `mvp-status --summary` 查看 readiness、metrics、jobs、connector 和 next actions。
-4. 把 `local-daemon` 跑成稳定的本地前台服务入口。
-5. 用有限 Twitter/X archive 样本和少量本地 notes 持续验证 digest/review/memory。
-6. 打磨 retrieval/GraphRAG 质量和 review taxonomy。
-7. 只在核心流程稳定后再扩 Browser/Git/PDF 等 connector。
+1. 先用有限数据集跑稳真实 digest E2E：PSKA backlog -> Fastreact worker -> candidates/review/memory/profile 写回 -> job complete。
+2. 修 review taxonomy 和 apply path，让 digest 结果能被人类确认、拒绝、批量处理，并保留 audit/source refs。
+3. 把 memory promotion 做成稳定生命周期：candidate -> review -> agent memory/profile/hyperedge。
+4. 打磨 retrieval/GraphRAG 质量：先做 fixture/evaluation/rerank，再考虑 HippoRAG/PPR；暂不做 GNN。
+5. 把 `local-daemon` 从前台 supervisor 产品化到可日常运行：日志、restart、status、配置检查。
+6. 固化人类日常 workflow：`files-sync`/`files-watch`、`digest-schedule`、`mvp-status --summary`、`review-list`、`agentic-search`、daily briefing/inbox。
+7. 只在核心 digest/review/memory/retrieval 闭环稳定后再扩 Browser/Git connector。
 
 推荐本地路径：
 
