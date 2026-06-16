@@ -54,7 +54,8 @@ MVP 推荐先用有限数据源启动：
 ```bash
 ./scripts/pska mvp-bootstrap \
   --twitter-archive ~/Downloads/twitter_archive \
-  --notes-root ~/Documents/notes
+  --notes-root ~/Documents/notes \
+  --extract
 ```
 
 这个命令会：
@@ -63,15 +64,17 @@ MVP 推荐先用有限数据源启动：
 - 如果 Twitter/X archive 目录存在，则导入 zip。
 - 如果传入 `--notes-root`，则扫描本地文本类文件。
 - 创建 digest backlog。
+- 如果传入 `--extract`，则在有限数据集上构建第一版 entities/hyperedges。
 - 输出当前 `mvp-status` 和 next actions。
 
 查看当前 MVP 状态：
 
 ```bash
 ./scripts/pska mvp-status
+./scripts/pska mvp-status --summary
 ```
 
-`mvp-status` 会报告 readiness、index/connector/job metrics、pending review 数量和下一步动作。
+`mvp-status` 会报告 readiness、index/connector/job metrics、pending review 数量和下一步动作。日常巡检优先使用 `--summary`，输出更紧凑，适合判断 PSKA 是否进入可用状态。
 
 ## 4. Start PSKA Local Daemon
 

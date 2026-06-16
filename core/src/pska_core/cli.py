@@ -140,12 +140,14 @@ def build_parser() -> argparse.ArgumentParser:
     mvp_bootstrap_parser.add_argument("--skip-twitter", action="store_true")
     mvp_bootstrap_parser.add_argument("--skip-files", action="store_true")
     mvp_bootstrap_parser.add_argument("--skip-digest", action="store_true")
+    mvp_bootstrap_parser.add_argument("--extract", action="store_true", help="Run initial LLM extraction after ingesting MVP sources")
     mvp_bootstrap_parser.add_argument("--digest-limit", type=int, default=20)
     mvp_bootstrap_parser.add_argument("--digest-batch-size", type=int, default=20)
     mvp_bootstrap_parser.add_argument("--dry-run", action="store_true")
     _add_embedding_args(mvp_bootstrap_parser, default_provider=os.environ.get("PSKA_EMBEDDING_PROVIDER", "disabled"))
 
-    subparsers.add_parser("mvp-status", help="Show MVP readiness, metrics, and next actions")
+    mvp_status_parser = subparsers.add_parser("mvp-status", help="Show MVP readiness, metrics, and next actions")
+    mvp_status_parser.add_argument("--summary", action="store_true", help="Print a compact human-scale MVP status summary")
 
     service_check_parser = subparsers.add_parser("service-check", help="Check a running PSKA online service contract")
     service_check_parser.add_argument("--url", default=None)
@@ -669,6 +671,13 @@ def mvp_bootstrap(args: argparse.Namespace) -> int:
         )
         report["steps"].append({"name": "digest_schedule", "result": digest})
 
+    if args.extract:
+        if args.dry_run:
+            report["steps"].append({"name": "extract_all", "would_run": True, "owner_user_id": args.owner_user_id})
+        else:
+            reports = ExtractionService(store).extract_all_visible(owner_user_id=args.owner_user_id)
+            report["steps"].append({"name": "extract_all", "reports": reports})
+
     try:
         report["status"] = _mvp_status_payload(args.database_url)
         report["ok"] = bool(report["status"].get("ok"))
@@ -680,7 +689,8 @@ def mvp_bootstrap(args: argparse.Namespace) -> int:
 
 
 def mvp_status(args: argparse.Namespace) -> int:
-    print(dumps(_mvp_status_payload(args.database_url)))
+    payload = _mvp_status_payload(args.database_url)
+    print(dumps(_mvp_status_summary(payload) if args.summary else payload))
     return 0
 
 
@@ -1023,6 +1033,45 @@ def _mvp_status_payload(database_url: str) -> dict[str, Any]:
     return payload
 
 
+def _mvp_status_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    ready = payload.get("ready") or {}
+    checks = ready.get("checks") or {}
+    metrics = payload.get("metrics") or {}
+    index = metrics.get("index") or {}
+    connectors = metrics.get("connectors") or {}
+    jobs = payload.get("jobs") or {}
+    fastreact = checks.get("fastreact") or {}
+    return {
+        "ok": bool(payload.get("ok")),
+        "database_ok": bool((checks.get("database") or {}).get("ok")),
+        "schema_ok": bool((checks.get("schema") or {}).get("ok")),
+        "mcp_ok": bool((checks.get("mcp") or {}).get("ok")),
+        "fastreact_ok": bool(fastreact.get("ok")),
+        "fastreact_pska_tools_loaded": bool(fastreact.get("pska_tools_loaded")),
+        "counts": {
+            "source_items": int(index.get("source_items") or 0),
+            "chunks": int(index.get("chunks") or 0),
+            "entities": int(index.get("entities") or 0),
+            "hyperedges": int(index.get("hyperedges") or 0),
+            "review_items": int(index.get("review_items") or 0),
+            "jobs": int(index.get("jobs") or 0),
+        },
+        "connectors": {
+            "source_channels": sorted((connectors.get("source_channels") or {}).keys()),
+            "state_count": int(connectors.get("state_count") or 0),
+            "enabled_state_count": int(connectors.get("enabled_state_count") or 0),
+            "state_sync_status": connectors.get("state_sync_status") or {},
+        },
+        "jobs": {
+            "by_status": jobs.get("by_status") or {},
+            "digest_backlog": jobs.get("digest_backlog") or {},
+            "running_stale_count": int(jobs.get("running_stale_count") or 0),
+        },
+        "pending_review_items": int(payload.get("pending_review_items") or 0),
+        "next_actions": payload.get("next_actions") or [],
+    }
+
+
 def _mvp_next_actions(payload: dict[str, Any], *, connectors: dict[str, Any]) -> list[str]:
     actions = []
     ready = payload.get("ready") or {}
@@ -1037,9 +1086,15 @@ def _mvp_next_actions(payload: dict[str, Any], *, connectors: dict[str, Any]) ->
         actions.append("Run ./scripts/pska mvp-bootstrap to import Twitter/X archive or scan a notes root.")
     if not connectors.get("state_count"):
         actions.append("Authorize a local notes root with ./scripts/pska files-scan --root <path>.")
+    entities = int(index.get("entities") or 0)
+    hyperedges = int(index.get("hyperedges") or 0)
+    if source_items and (entities == 0 or hyperedges == 0):
+        actions.append("Run ./scripts/pska mvp-bootstrap --extract or ./scripts/pska extract-all --owner-user-id user_primary to build the initial graph.")
     digest_backlog = (jobs.get("digest_backlog") or {}).get("jobs") or 0
-    if source_items and digest_backlog == 0:
+    if source_items and digest_backlog == 0 and (entities == 0 or hyperedges == 0):
         actions.append("Run ./scripts/pska digest-schedule --owner-user-id user_primary to queue digest work.")
+    if digest_backlog and checks.get("fastreact", {}).get("ok") is True:
+        actions.append("Run the Fastreact PSKA digest worker to consume queued digest jobs.")
     if checks.get("fastreact", {}).get("ok") is False:
         actions.append("Start Fastreact when you want agentic digest or Fastreact-backed QA.")
     if payload.get("pending_review_items"):

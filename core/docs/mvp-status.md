@@ -104,8 +104,8 @@ Disallowed recovery:
 CLI:
 
 ```bash
-./scripts/pska mvp-bootstrap --twitter-archive ~/Downloads/twitter_archive --notes-root ~/Documents/notes
-./scripts/pska mvp-status
+./scripts/pska mvp-bootstrap --twitter-archive ~/Downloads/twitter_archive --notes-root ~/Documents/notes --extract
+./scripts/pska mvp-status --summary
 ./scripts/pska local-daemon
 ./scripts/pska db-reset --name pska_smoke
 ./scripts/pska --database-url postgresql:///pska_smoke import-twitter-zips
@@ -157,7 +157,7 @@ Unit and contract tests:
 ```bash
 cd "/Users/xudawei/Documents/personal archive/core"
 python3 -m pytest -q
-# 163 passed
+# 165 passed
 
 cd "/Users/xudawei/Documents/personal archive/channels/twitter-x"
 python3 -m pytest -q

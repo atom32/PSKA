@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 import pska_core.cli as cli_module
-from pska_core.cli import build_parser, digest_scheduler, _mvp_next_actions
+from pska_core.cli import build_parser, digest_scheduler, _mvp_next_actions, _mvp_status_summary
 
 
 def test_cli_accepts_db_check() -> None:
@@ -50,8 +50,8 @@ def test_cli_accepts_search_and_smoke() -> None:
     extract = build_parser().parse_args(["extract-all", "--owner-user-id", "user_primary"])
     serve = build_parser().parse_args(["serve", "--port", "8765"])
     local_daemon = build_parser().parse_args(["local-daemon", "--no-worker", "--digest-interval-seconds", "60"])
-    mvp_bootstrap = build_parser().parse_args(["mvp-bootstrap", "--notes-root", "notes", "--dry-run"])
-    mvp_status = build_parser().parse_args(["mvp-status"])
+    mvp_bootstrap = build_parser().parse_args(["mvp-bootstrap", "--notes-root", "notes", "--dry-run", "--extract"])
+    mvp_status = build_parser().parse_args(["mvp-status", "--summary"])
     service_check = build_parser().parse_args(["service-check", "--url", "http://127.0.0.1:8765", "--timeout-seconds", "1"])
     embed = build_parser().parse_args(["embed-backfill", "--embedding-provider", "bge-m3", "--limit", "10"])
     mcp = build_parser().parse_args(["mcp-server"])
@@ -71,7 +71,9 @@ def test_cli_accepts_search_and_smoke() -> None:
     assert mvp_bootstrap.command == "mvp-bootstrap"
     assert str(mvp_bootstrap.notes_root[0]) == "notes"
     assert mvp_bootstrap.dry_run is True
+    assert mvp_bootstrap.extract is True
     assert mvp_status.command == "mvp-status"
+    assert mvp_status.summary is True
     assert service_check.command == "service-check"
     assert service_check.url == "http://127.0.0.1:8765"
     assert service_check.timeout_seconds == 1
@@ -307,8 +309,8 @@ def test_mvp_next_actions_prioritize_missing_data_and_fastreact() -> None:
     actions = _mvp_next_actions(
         {
             "ready": {"ok": True, "checks": {"fastreact": {"ok": False}}},
-            "metrics": {"index": {"source_items": 0}},
-            "jobs": {"digest_backlog": {"jobs": 0}},
+            "metrics": {"index": {"source_items": 0, "entities": 0, "hyperedges": 0}},
+            "jobs": {"digest_backlog": {"jobs": 1}},
             "pending_review_items": 0,
         },
         connectors={"state_count": 0},
@@ -319,18 +321,67 @@ def test_mvp_next_actions_prioritize_missing_data_and_fastreact() -> None:
     assert any("Fastreact" in action for action in actions)
 
 
-def test_mvp_next_actions_ready_state() -> None:
+def test_mvp_next_actions_surface_graph_and_digest_work() -> None:
     actions = _mvp_next_actions(
         {
             "ready": {"ok": True, "checks": {"fastreact": {"ok": True}}},
-            "metrics": {"index": {"source_items": 3}},
+            "metrics": {"index": {"source_items": 3, "entities": 0, "hyperedges": 0}},
             "jobs": {"digest_backlog": {"jobs": 1}},
             "pending_review_items": 0,
         },
         connectors={"state_count": 1},
     )
 
+    assert any("extract-all" in action for action in actions)
+    assert any("digest worker" in action for action in actions)
+
+
+def test_mvp_next_actions_ready_state() -> None:
+    actions = _mvp_next_actions(
+        {
+            "ready": {"ok": True, "checks": {"fastreact": {"ok": True}}},
+            "metrics": {"index": {"source_items": 3, "entities": 1, "hyperedges": 1}},
+            "jobs": {"digest_backlog": {"jobs": 0}},
+            "pending_review_items": 0,
+        },
+        connectors={"state_count": 1},
+    )
+
     assert actions == ["System is ready for MVP use: run search, agentic-search, or keep local-daemon running."]
+
+
+def test_mvp_status_summary_is_compact() -> None:
+    summary = _mvp_status_summary(
+        {
+            "ok": True,
+            "ready": {
+                "checks": {
+                    "database": {"ok": True},
+                    "schema": {"ok": True},
+                    "mcp": {"ok": True},
+                    "fastreact": {"ok": True, "pska_tools_loaded": True},
+                }
+            },
+            "metrics": {
+                "index": {"source_items": 3, "chunks": 3, "entities": 1, "hyperedges": 1, "review_items": 0, "jobs": 2},
+                "connectors": {
+                    "source_channels": {"twitter": {}, "files": {}},
+                    "state_count": 1,
+                    "enabled_state_count": 1,
+                    "state_sync_status": {"succeeded": 1},
+                },
+            },
+            "jobs": {"by_status": {"queued": 1}, "digest_backlog": {"jobs": 1}, "running_stale_count": 0},
+            "pending_review_items": 0,
+            "next_actions": ["ready"],
+        }
+    )
+
+    assert summary["ok"] is True
+    assert summary["fastreact_pska_tools_loaded"] is True
+    assert summary["counts"]["source_items"] == 3
+    assert summary["connectors"]["source_channels"] == ["files", "twitter"]
+    assert summary["next_actions"] == ["ready"]
 
 
 def _json_documents(output: str) -> list[dict]:
