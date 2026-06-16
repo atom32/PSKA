@@ -148,7 +148,7 @@ Unit and contract tests:
 ```bash
 cd "/Users/xudawei/Documents/personal archive/core"
 python3 -m pytest -q
-# 146 passed
+# 147 passed
 
 cd "/Users/xudawei/Documents/personal archive/channels/twitter-x"
 python3 -m pytest -q
@@ -194,6 +194,9 @@ Latest local evidence:
   chunks, cited search, and queued digest job.
 - `--limit 1`: passed with real LLM extraction, entities, hyperedges, graph
   retrieval context, agentic answer synthesis, and queued digest job.
+- After Postgres hyperedge source-ref deserialization was fixed, real GraphRAG
+  paths include `source_refs` and `evidence_citations`, with no ungrounded graph
+  edge diagnostic in the 1-zip gate.
 
 This deterministic smoke uses a tiny in-memory dataset and fake LLM responses
 to verify the strengthened loop before running real archives. The object-level

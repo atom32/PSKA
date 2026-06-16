@@ -937,7 +937,7 @@ class PostgresKnowledgeStore:
             directionality=Directionality(row["directionality"]),
             visible_team_ids=list(row["visible_team_ids"] or []),
             evidence_text=row["evidence_text"],
-            source_refs=[],
+            source_refs=[SourceRef(**item) for item in (row.get("source_refs") or [])],
             confidence=row["confidence"],
         )
 
