@@ -248,6 +248,8 @@ def build_parser() -> argparse.ArgumentParser:
     digest_schedule_parser.add_argument("--priority", type=int, default=0)
     digest_schedule_parser.add_argument("--max-attempts", type=int, default=3)
     digest_schedule_parser.add_argument("--retry-backoff-seconds", type=int, default=60)
+    digest_schedule_parser.add_argument("--quota-window-seconds", type=int, default=0, help="Optional scheduling quota window; 0 disables quota")
+    digest_schedule_parser.add_argument("--max-jobs-per-window", type=int, default=0, help="Optional max digest jobs per quota window; 0 disables quota")
     digest_schedule_parser.add_argument("--force", action="store_true")
     digest_schedule_parser.add_argument("--reason", default="")
 
@@ -261,6 +263,8 @@ def build_parser() -> argparse.ArgumentParser:
     digest_scheduler_parser.add_argument("--priority", type=int, default=0)
     digest_scheduler_parser.add_argument("--max-attempts", type=int, default=3)
     digest_scheduler_parser.add_argument("--retry-backoff-seconds", type=int, default=60)
+    digest_scheduler_parser.add_argument("--quota-window-seconds", type=int, default=0, help="Optional scheduling quota window; 0 disables quota")
+    digest_scheduler_parser.add_argument("--max-jobs-per-window", type=int, default=0, help="Optional max digest jobs per quota window; 0 disables quota")
     digest_scheduler_parser.add_argument("--max-backlog-jobs", type=int, default=10)
     digest_scheduler_parser.add_argument("--recover-stale-seconds", type=int, default=0)
     digest_scheduler_parser.add_argument("--force", action="store_true")
@@ -1420,6 +1424,8 @@ def _digest_schedule_payload(args: argparse.Namespace) -> dict[str, Any]:
         "priority": args.priority,
         "max_attempts": args.max_attempts,
         "retry_backoff_seconds": args.retry_backoff_seconds,
+        "quota_window_seconds": getattr(args, "quota_window_seconds", 0),
+        "max_jobs_per_window": getattr(args, "max_jobs_per_window", 0),
         "force": args.force,
     }
     if args.reason:

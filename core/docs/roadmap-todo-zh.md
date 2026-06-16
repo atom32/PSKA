@@ -140,7 +140,7 @@ FastReAct 侧：
 
 - 新数据优先。backlog scheduler 第一版按 source 创建时间倒序选取，跳过已排队/运行/成功的来源；foreground scheduler 可周期性触发。
 - 低成本轻 digest 先行，高成本 LLM digest 延后。
-- retry backoff 已由 PSKA 控制；quota 和 idle window 待补。
+- retry backoff 已由 PSKA 控制；quota window 已完成第一版：`digest-schedule`/`digest-scheduler` 支持 `quota_window_seconds` 和 `max_jobs_per_window`，限制自动 digest job 创建频率；idle window 仍待结合 daemon/usage pattern 调优。
 - 高影响 action 默认进入 review，不自动执行。
 
 验收：

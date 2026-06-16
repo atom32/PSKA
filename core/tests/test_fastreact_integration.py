@@ -645,6 +645,46 @@ def test_digest_schedule_skips_failed_sources_unless_forced() -> None:
     assert forced["scheduled_source_item_ids"] == [source.source_item_id]
 
 
+def test_digest_schedule_respects_job_quota_unless_forced() -> None:
+    api = _api()
+    sources = [
+        IngestService(api.store).ingest_channel_payload(
+            {
+                "schema_version": "pska.channel_ingest.v1",
+                "source_channel": "manual",
+                "record_type": "note",
+                "source_id": f"digest-quota-note-{index}",
+                "owner_user_id": "user_primary",
+                "space_id": "private_primary",
+                "visibility": "private",
+                "title": f"Digest quota note {index}",
+                "content": {"text": f"Quota source {index}."},
+            }
+        )
+        for index in range(2)
+    ]
+
+    first = api.schedule_digest({"owner_user_id": "user_primary", "limit": 1, "quota_window_seconds": 3600, "max_jobs_per_window": 1})
+    limited = api.schedule_digest({"owner_user_id": "user_primary", "limit": 1, "quota_window_seconds": 3600, "max_jobs_per_window": 1})
+    forced = api.schedule_digest(
+        {
+            "owner_user_id": "user_primary",
+            "source_item_ids": [sources[1].source_item_id],
+            "quota_window_seconds": 3600,
+            "max_jobs_per_window": 1,
+            "force": True,
+        }
+    )
+
+    assert first["quota"]["enabled"] is True
+    assert first["quota_limited"] is False
+    assert limited["job"] is None
+    assert limited["quota_limited"] is True
+    assert limited["quota"]["jobs_in_window"] == 1
+    assert forced["scheduled_source_item_ids"] == [sources[1].source_item_id]
+    assert forced["quota"]["enabled"] is False
+
+
 def test_http_route_covers_digest_schedule() -> None:
     api = _api()
     source = IngestService(api.store).ingest_channel_payload(

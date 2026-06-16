@@ -221,10 +221,12 @@ Fastreact offline does not make PSKA unavailable. In that case `/ready` should s
   --owner-user-id user_primary \
   --limit 20 \
   --batch-size 20 \
-  --priority 0
+  --priority 0 \
+  --quota-window-seconds 86400 \
+  --max-jobs-per-window 24
 ```
 
-`digest-schedule` 的自动模式只处理没有任何 digest job 覆盖过的 source item；queued、running、succeeded、failed、canceled 都视为“已经处理/已做决定”。需要重做时加 `--force`，或用 `--source-item-id src_xxx` 指定范围。
+`digest-schedule` 的自动模式只处理没有任何 digest job 覆盖过的 source item；queued、running、succeeded、failed、canceled 都视为“已经处理/已做决定”。`--quota-window-seconds` 和 `--max-jobs-per-window` 可限制自动 digest job 创建频率，避免空闲时无限排队；需要重做时加 `--force`，或用 `--source-item-id src_xxx` 指定范围。
 
 前台周期性创建 digest backlog：
 
@@ -235,6 +237,8 @@ Fastreact offline does not make PSKA unavailable. In that case `/ready` should s
   --limit 20 \
   --batch-size 20 \
   --max-backlog-jobs 10 \
+  --quota-window-seconds 86400 \
+  --max-jobs-per-window 24 \
   --recover-stale-seconds 900
 ```
 

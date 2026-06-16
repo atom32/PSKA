@@ -286,6 +286,10 @@ def test_cli_accepts_digest_schedule() -> None:
             "4",
             "--retry-backoff-seconds",
             "30",
+            "--quota-window-seconds",
+            "3600",
+            "--max-jobs-per-window",
+            "2",
             "--force",
             "--reason",
             "new import",
@@ -300,6 +304,8 @@ def test_cli_accepts_digest_schedule() -> None:
     assert args.priority == 5
     assert args.max_attempts == 4
     assert args.retry_backoff_seconds == 30
+    assert args.quota_window_seconds == 3600
+    assert args.max_jobs_per_window == 2
     assert args.force is True
     assert args.reason == "new import"
 
@@ -324,6 +330,10 @@ def test_cli_accepts_digest_scheduler() -> None:
             "3",
             "--max-backlog-jobs",
             "4",
+            "--quota-window-seconds",
+            "3600",
+            "--max-jobs-per-window",
+            "2",
             "--recover-stale-seconds",
             "60",
         ]
@@ -338,6 +348,8 @@ def test_cli_accepts_digest_scheduler() -> None:
     assert args.batch_size == 2
     assert args.priority == 3
     assert args.max_backlog_jobs == 4
+    assert args.quota_window_seconds == 3600
+    assert args.max_jobs_per_window == 2
     assert args.recover_stale_seconds == 60
 
 

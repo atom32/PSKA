@@ -410,11 +410,13 @@ P0.4 write-back slice adds:
   "priority": 0,
   "max_attempts": 3,
   "retry_backoff_seconds": 60,
+  "quota_window_seconds": 86400,
+  "max_jobs_per_window": 24,
   "force": false
 }
 ```
 
-It skips source items already covered by any existing digest job unless `force=true`. This includes queued, running, succeeded, failed, and canceled jobs, so automatic digest does not repeat failed work forever. Manual redigest should pass `force=true` and, preferably, an explicit `source_item_ids` scope. The response includes the created job, `scheduled_source_item_ids`, and `skipped_source_item_ids`.
+It skips source items already covered by any existing digest job unless `force=true`. This includes queued, running, succeeded, failed, and canceled jobs, so automatic digest does not repeat failed work forever. `quota_window_seconds` and `max_jobs_per_window` optionally cap automatic job creation for an owner; when the quota is hit the response has `quota_limited=true` and no job is created. Manual redigest should pass `force=true` and, preferably, an explicit `source_item_ids` scope. The response includes the created job, `scheduled_source_item_ids`, `skipped_source_item_ids`, and `quota`.
 
 For local operation, CLI `digest-scheduler` provides a foreground periodic loop over this endpoint:
 

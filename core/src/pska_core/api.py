@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
@@ -350,6 +350,19 @@ class PSKAApi:
         priority = int(payload.get("priority") or 0)
         max_attempts = int(payload.get("max_attempts") or 3)
         retry_backoff_seconds = int(payload.get("retry_backoff_seconds") or payload.get("backoff_seconds") or 60)
+        quota = _digest_schedule_quota(self.store, owner_user_id=owner_user_id, payload=payload, force=force)
+        if quota["limited"]:
+            return {
+                "job": None,
+                "owner_user_id": owner_user_id,
+                "scheduled_source_item_ids": [],
+                "skipped_source_item_ids": [],
+                "force": force,
+                "limit": limit,
+                "batch_size": batch_size,
+                "quota": quota,
+                "quota_limited": True,
+            }
 
         source_items = [item for item in self.store.list_source_items() if item.owner_user_id == owner_user_id]
         if source_item_ids:
@@ -396,6 +409,8 @@ class PSKAApi:
             "force": force,
             "limit": limit,
             "batch_size": batch_size,
+            "quota": quota,
+            "quota_limited": False,
         }
 
     def job_context(
@@ -745,6 +760,46 @@ def _covered_digest_source_item_ids(store: PostgresKnowledgeStore) -> set[str]:
     for job in store.list_jobs(job_type=DIGEST_VIA_FASTREACT, limit=10000):
         ids.update(_job_source_item_ids(job))
     return ids
+
+
+def _digest_schedule_quota(store: PostgresKnowledgeStore, *, owner_user_id: str, payload: dict[str, Any], force: bool) -> dict[str, Any]:
+    window_seconds = _optional_positive_int(payload.get("quota_window_seconds"))
+    max_jobs = _optional_positive_int(payload.get("max_jobs_per_window"))
+    if force or not window_seconds or not max_jobs:
+        return {
+            "enabled": False,
+            "limited": False,
+            "window_seconds": window_seconds,
+            "max_jobs_per_window": max_jobs,
+            "jobs_in_window": 0,
+            "remaining_jobs": None,
+        }
+    cutoff = datetime.now(UTC) - timedelta(seconds=window_seconds)
+    jobs_in_window = 0
+    for job in store.list_jobs(job_type=DIGEST_VIA_FASTREACT, limit=10000):
+        job_payload = job.payload if isinstance(job.payload, dict) else {}
+        if str(job_payload.get("owner_user_id") or "") != owner_user_id:
+            continue
+        created_at = _as_aware(job.created_at)
+        if created_at >= cutoff:
+            jobs_in_window += 1
+    remaining = max(max_jobs - jobs_in_window, 0)
+    return {
+        "enabled": True,
+        "limited": jobs_in_window >= max_jobs,
+        "window_seconds": window_seconds,
+        "max_jobs_per_window": max_jobs,
+        "jobs_in_window": jobs_in_window,
+        "remaining_jobs": remaining,
+    }
+
+
+def _optional_positive_int(value: Any) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
 
 
 def _embedding_metrics(chunks: list[Any]) -> dict[str, Any]:
