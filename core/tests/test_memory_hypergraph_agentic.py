@@ -244,9 +244,65 @@ def test_graph_paths_return_two_hop_grounded_relation_chain() -> None:
     path = two_hop_paths[0]
     assert [entity["label"] for entity in path["entities"]] == ["PSKA", "FastReAct", "Digest"]
     assert [edge["relation_type"] for edge in path["edges"]] == ["delegates_to", "executes"]
+    assert path["explanation"] == "PSKA -[delegates_to]-> FastReAct -[executes]-> Digest"
+    assert path["score"] > 0
+    assert path["score_debug"]["evidence_coverage"] == 1.0
     assert path["edges"][0]["evidence_citations"][0]["source_item_id"] == source_fastreact.source_item_id
     assert path["edges"][1]["evidence_citations"][0]["source_item_id"] == source_digest.source_item_id
     assert response.score_debug["graph_paths_used"] is True
+
+
+def test_graph_paths_rank_grounded_high_confidence_paths_first() -> None:
+    store = make_store()
+    source = IngestService(store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "note_grounded_path",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "Grounded graph path",
+            "content": {"text": "PSKA has strong evidence for the grounded path."},
+        }
+    )
+    graph = HypergraphService(store)
+    graph.create_entity(Entity("ent_pska_rank", "project", "PSKA", "user_primary", "private_primary", Visibility.PRIVATE))
+    graph.create_entity(Entity("ent_grounded_rank", "concept", "Grounded", "user_primary", "private_primary", Visibility.PRIVATE))
+    graph.create_entity(Entity("ent_weak_rank", "concept", "Weak", "user_primary", "private_primary", Visibility.PRIVATE))
+    graph.create_hyperedge(
+        relation_type="supports",
+        owner_user_id="user_primary",
+        space_id="private_primary",
+        visibility=Visibility.PRIVATE,
+        members=[("ent_pska_rank", "system"), ("ent_weak_rank", "claim")],
+        evidence_text="Weak ungrounded relation.",
+        confidence=0.1,
+    )
+    graph.create_hyperedge(
+        relation_type="supports",
+        owner_user_id="user_primary",
+        space_id="private_primary",
+        visibility=Visibility.PRIVATE,
+        members=[("ent_pska_rank", "system"), ("ent_grounded_rank", "claim")],
+        evidence_text="PSKA has strong evidence for the grounded path.",
+        source_refs=[SourceRef(source_item_id=source.source_item_id)],
+        confidence=0.95,
+    )
+
+    response = RetrievalService(store, ACLService(store)).search("PSKA graph paths", store.get_user("user_primary"))
+
+    grounded_path = next(path for path in response.graph_paths if path["entities"][-1]["label"] == "Grounded")
+    weak_path = next(
+        path
+        for path in response.graph_paths
+        if path["depth"] == 1 and [entity["label"] for entity in path["entities"]] == ["PSKA", "Weak"]
+    )
+    assert response.graph_paths.index(grounded_path) < response.graph_paths.index(weak_path)
+    assert grounded_path["score"] > weak_path["score"]
+    assert grounded_path["score_debug"]["evidence_coverage"] == 1.0
+    assert weak_path["score_debug"]["evidence_coverage"] == 0.0
 
 
 def test_graph_paths_link_entities_by_alias_metadata() -> None:

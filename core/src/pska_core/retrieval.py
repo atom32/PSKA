@@ -279,6 +279,7 @@ class RetrievalService:
         max_depth: int = 2,
         max_paths: int = 8,
     ) -> list[dict[str, Any]]:
+        normalized_query = _normalize_match_text(query)
         seed_entities = self._visible_entities(
             self._matching_entities(query, ranked),
             user=user,
@@ -295,6 +296,7 @@ class RetrievalService:
         }
         paths: list[dict[str, Any]] = []
         seen_paths: set[tuple[str, tuple[str, ...], tuple[str, ...]]] = set()
+        candidate_limit = max_paths * 4
 
         for seed in seed_entities:
             frontier: list[tuple[str, list[str], list[dict[str, Any]], list[str]]] = [
@@ -330,31 +332,36 @@ class RetrievalService:
                             seen_paths.add(path_key)
 
                             next_edge_contexts = [*edge_contexts, edge_context]
+                            path_entities = [
+                                self._entity_context(entity_by_id[entity_id])
+                                for entity_id in next_entity_ids
+                                if entity_id in entity_by_id
+                            ]
+                            score, score_debug = _graph_path_score(
+                                path_entities,
+                                next_edge_contexts,
+                                normalized_query=normalized_query,
+                            )
                             paths.append(
                                 {
                                     "path_id": f"{seed.entity_id}:{'|'.join(next_edge_ids)}:{neighbor_entity_id}",
                                     "depth": len(next_edge_ids),
                                     "seed": self._entity_context(seed),
-                                    "entities": [
-                                        self._entity_context(entity_by_id[entity_id])
-                                        for entity_id in next_entity_ids
-                                        if entity_id in entity_by_id
-                                    ],
+                                    "entities": path_entities,
                                     "edges": next_edge_contexts,
-                                    "score_debug": {
-                                        "path_length": len(next_edge_ids),
-                                        "mean_confidence": _mean([edge_context["confidence"] for edge_context in next_edge_contexts]),
-                                    },
+                                    "explanation": _graph_path_explanation(path_entities, next_edge_contexts),
+                                    "score": score,
+                                    "score_debug": score_debug,
                                 }
                             )
-                            if len(paths) >= max_paths:
-                                return paths
+                            if len(paths) >= candidate_limit:
+                                return _rank_graph_paths(paths, max_paths=max_paths)
                             if len(next_edge_ids) < max_depth:
                                 next_frontier.append((neighbor_entity_id, next_entity_ids, next_edge_contexts, next_edge_ids))
                 frontier = next_frontier
                 if not frontier:
                     break
-        return paths
+        return _rank_graph_paths(paths, max_paths=max_paths)
 
     def _matching_entities(self, query: str, ranked: list[RetrievalResult]) -> list[Entity]:
         haystack = " ".join([query, *[result.title for result in ranked], *[result.snippet for result in ranked]])
@@ -575,6 +582,57 @@ def _match_position(haystack: str, alias: str) -> int | None:
 
 def _contains_cjk(value: str) -> bool:
     return any("\u4e00" <= char <= "\u9fff" for char in value)
+
+
+def _graph_path_score(
+    entities: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+    *,
+    normalized_query: str,
+) -> tuple[float, dict[str, Any]]:
+    mean_confidence = _mean([float(edge.get("confidence") or 0.0) for edge in edges])
+    evidence_coverage = _mean([1.0 if edge.get("evidence_citations") else 0.0 for edge in edges])
+    mentioned_entities = [
+        entity
+        for entity in entities
+        if _match_position(normalized_query, _normalize_match_text(str(entity.get("label", "")))) is not None
+    ]
+    mention_coverage = len(mentioned_entities) / len(entities) if entities else 0.0
+    path_length = len(edges)
+    length_penalty = 0.08 * max(path_length - 1, 0)
+    score = mean_confidence * 0.45 + evidence_coverage * 0.35 + mention_coverage * 0.25 - length_penalty
+    return round(score, 6), {
+        "path_length": path_length,
+        "mean_confidence": mean_confidence,
+        "evidence_coverage": evidence_coverage,
+        "query_mention_coverage": mention_coverage,
+        "query_mentioned_entity_ids": [str(entity["entity_id"]) for entity in mentioned_entities],
+        "length_penalty": length_penalty,
+    }
+
+
+def _rank_graph_paths(paths: list[dict[str, Any]], *, max_paths: int) -> list[dict[str, Any]]:
+    return sorted(
+        paths,
+        key=lambda path: (
+            float(path.get("score") or 0.0),
+            -int(path.get("depth") or 0),
+            str(path.get("path_id") or ""),
+        ),
+        reverse=True,
+    )[:max_paths]
+
+
+def _graph_path_explanation(entities: list[dict[str, Any]], edges: list[dict[str, Any]]) -> str:
+    if not entities:
+        return ""
+    parts = [str(entities[0].get("label") or entities[0].get("entity_id") or "unknown")]
+    for index, edge in enumerate(edges, start=1):
+        relation = str(edge.get("relation_type") or "related_to")
+        next_entity = entities[index] if index < len(entities) else {}
+        next_label = str(next_entity.get("label") or next_entity.get("entity_id") or "unknown")
+        parts.append(f"-[{relation}]-> {next_label}")
+    return " ".join(parts)
 
 
 def _is_graph_global_query(query: str) -> bool:
