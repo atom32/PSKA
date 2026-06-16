@@ -32,6 +32,7 @@ allowed recovery path: ask the LLM to repair its own JSON/schema output.
 | Data model | MVP complete | PostgreSQL schema covers users, teams, spaces, sources, documents, chunks, memory, profile cards, entities, hyperedges, review items, audit events. |
 | Privacy model | MVP complete | Anonymous user/team IDs, private-first visibility, team-visible ACL fields, `agent_service` modeled separately. |
 | Twitter/X channel | MVP complete | Extension and Python schema emit `pska.archive.v2`; legacy zip import remains compatibility-only. |
+| Files connector | MVP first slice | `files-scan` ingests authorized local text-like files, records permission roots, metadata, content hash, and scan cursor. |
 | Zip import | MVP complete | Imports current `~/Downloads/twitter_archive/*.zip`, preserves artifact paths, is idempotent by content hash. |
 | Connector state | MVP functional | Connector records and durable connector states support enablement, scan cursor, sync status, permission scope, config, HTTP API, and CLI. |
 | LLM extraction | MVP complete | Extracts entities, hyperedges, and review items through LLM JSON contract. |
@@ -149,7 +150,7 @@ Unit and contract tests:
 ```bash
 cd "/Users/xudawei/Documents/personal archive/core"
 python3 -m pytest -q
-# 155 passed
+# 159 passed
 
 cd "/Users/xudawei/Documents/personal archive/channels/twitter-x"
 python3 -m pytest -q

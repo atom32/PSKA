@@ -20,6 +20,7 @@ from pska_core.connectors import connector_state_from_mapping, connector_record_
 from pska_core.embeddings import EmbeddingConfig, EmbeddingService, build_embedding_provider
 from pska_core.enums import Visibility
 from pska_core.extraction import ExtractionService
+from pska_core.files_connector import scan_files
 from pska_core.importers.twitter_zip import TwitterZipImporter
 from pska_core.ingest import IngestService
 from pska_core.jobs import JOB_TYPES, JobService
@@ -98,6 +99,16 @@ def build_parser() -> argparse.ArgumentParser:
     connector_state_parser.add_argument("--sync-status")
     connector_state_parser.add_argument("--permission-scope-json", default="")
     connector_state_parser.add_argument("--config-json", default="")
+
+    files_scan_parser = subparsers.add_parser("files-scan", help="Scan an authorized local directory through the Files connector")
+    files_scan_parser.add_argument("--root", type=Path, required=True)
+    files_scan_parser.add_argument("--owner-user-id", default="user_primary")
+    files_scan_parser.add_argument("--space-id", default="private_primary")
+    files_scan_parser.add_argument("--visibility", choices=[item.value for item in Visibility], default=Visibility.PRIVATE.value)
+    files_scan_parser.add_argument("--visible-team-ids", default="")
+    files_scan_parser.add_argument("--ignore", action="append", default=[])
+    files_scan_parser.add_argument("--max-bytes", type=int, default=1_000_000)
+    _add_embedding_args(files_scan_parser, default_provider=os.environ.get("PSKA_EMBEDDING_PROVIDER", "disabled"))
 
     extract_parser = subparsers.add_parser("extract-all", help="Extract entities/hyperedges from source items")
     extract_parser.add_argument("--owner-user-id", default=None)
@@ -244,6 +255,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return connector_ingest_record(args)
     if args.command == "connector-state":
         return connector_state(args)
+    if args.command == "files-scan":
+        return files_scan(args)
     if args.command == "extract-all":
         return extract_all(args)
     if args.command == "serve":
@@ -465,6 +478,23 @@ def connector_state(args: argparse.Namespace) -> int:
     states = store.list_connector_states(owner_user_id=args.owner_user_id, connector_id=args.connector_id)
     print(dumps({"connector_states": states}))
     return 0
+
+
+def files_scan(args: argparse.Namespace) -> int:
+    store = PostgresKnowledgeStore(args.database_url)
+    report = scan_files(
+        store,
+        root=args.root,
+        owner_user_id=args.owner_user_id,
+        space_id=args.space_id,
+        visibility=Visibility(args.visibility),
+        visible_team_ids=[item.strip() for item in args.visible_team_ids.split(",") if item.strip()],
+        ignore=list(args.ignore or []),
+        max_bytes=args.max_bytes,
+        embedding_provider=_embedding_provider_from_args(args),
+    )
+    print(dumps(report))
+    return 1 if report.failed else 0
 
 
 def extract_all(args: argparse.Namespace) -> int:

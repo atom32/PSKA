@@ -203,12 +203,12 @@ FastReAct 侧：
 
 文件是 PSKA 最基础的管理目标。
 
-- 本机目录授权。
-- 文件 metadata 扫描。
-- 文本抽取。
-- content hash 去重。
-- 文件移动/改名检测。
-- ignore rules。
+- 本机目录授权。已完成第一版：`files-scan --root` 会把 root 写入 connector state `permission_scope.roots`。
+- 文件 metadata 扫描。已完成第一版：path、mime type、size、mtime、source URI。
+- 文本抽取。已完成第一版：UTF-8 文本类文件。
+- content hash 去重。已完成第一版：connector record 携带 `sha256`，PSKA ingest 仍按内容 hash 幂等。
+- 文件移动/改名检测。待补：当前以绝对路径作为 external_id，移动会作为新 source。
+- ignore rules。已完成第一版：默认忽略 `.git`、`__pycache__`、`.DS_Store`，CLI 支持 `--ignore`。
 
 ### P1.3 Browser and web connector
 

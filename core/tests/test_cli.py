@@ -53,6 +53,7 @@ def test_cli_accepts_search_and_smoke() -> None:
     embed = build_parser().parse_args(["embed-backfill", "--embedding-provider", "bge-m3", "--limit", "10"])
     mcp = build_parser().parse_args(["mcp-server"])
     connector = build_parser().parse_args(["connector-ingest-record", "record.json"])
+    files_scan = build_parser().parse_args(["files-scan", "--root", "notes", "--ignore", "*.tmp"])
 
     assert search.command == "search"
     assert search.query == "hello"
@@ -70,6 +71,9 @@ def test_cli_accepts_search_and_smoke() -> None:
     assert mcp.command == "mcp-server"
     assert connector.command == "connector-ingest-record"
     assert str(connector.record) == "record.json"
+    assert files_scan.command == "files-scan"
+    assert str(files_scan.root) == "notes"
+    assert files_scan.ignore == ["*.tmp"]
 
 
 def test_cli_accepts_connector_state_commands() -> None:

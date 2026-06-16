@@ -325,6 +325,23 @@ Local CLI:
 ./scripts/pska connector-state show conn_user_primary_files
 ```
 
+## Files Connector
+
+P1.2 first slice:
+
+```bash
+./scripts/pska files-scan \
+  --root ~/Documents/notes \
+  --owner-user-id user_primary \
+  --ignore '*.tmp'
+```
+
+The first slice supports UTF-8 text-like files such as Markdown, text, JSON,
+YAML, CSV/TSV, logs, and Python files. It records file path, file URI, mime
+type, size, mtime-based scan cursor, content hash, and the authorized root in
+`connector_state.permission_scope.roots`. Binary/PDF/Word extraction and
+move/rename reconciliation are later connector-quality work.
+
 ## Jobs and Workers
 
 PSKA job system 是 durable orchestrator，不是复杂 agent loop 执行层。P0.3 之后，job 会记录 worker 与外部 run metadata：
