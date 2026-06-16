@@ -357,12 +357,20 @@ class RetrievalService:
         return paths
 
     def _matching_entities(self, query: str, ranked: list[RetrievalResult]) -> list[Entity]:
-        haystack = " ".join([query, *[result.title for result in ranked], *[result.snippet for result in ranked]]).lower()
-        matches = []
+        haystack = " ".join([query, *[result.title for result in ranked], *[result.snippet for result in ranked]])
+        normalized_haystack = _normalize_match_text(haystack)
+        matches: list[tuple[int, int, str, Entity]] = []
         for entity in self.store.list_entities():
-            if entity.label.lower() in haystack:
-                matches.append(entity)
-        return matches
+            for alias in _entity_aliases(entity):
+                normalized_alias = _normalize_match_text(alias)
+                if not normalized_alias:
+                    continue
+                position = _match_position(normalized_haystack, normalized_alias)
+                if position is None:
+                    continue
+                matches.append((position, -len(normalized_alias), entity.entity_id, entity))
+                break
+        return [item[3] for item in sorted(matches)]
 
     def _visible_entities(
         self,
@@ -514,6 +522,59 @@ def _conversation_message_ids(item: SourceItem, text: str) -> list[str]:
 
 def _normalize_exact(value: str) -> str:
     return value.strip().lower()
+
+
+def _entity_aliases(entity: Entity) -> list[str]:
+    aliases: list[str] = [entity.label]
+    metadata_aliases = entity.metadata.get("aliases") or entity.metadata.get("alias") or []
+    if isinstance(metadata_aliases, str):
+        metadata_aliases = [metadata_aliases]
+    if isinstance(metadata_aliases, list):
+        aliases.extend(str(alias) for alias in metadata_aliases if str(alias).strip())
+    for metadata_key in ("canonical_label", "slug", "handle"):
+        value = entity.metadata.get(metadata_key)
+        if value:
+            aliases.append(str(value))
+
+    seen: set[str] = set()
+    normalized_aliases = []
+    for alias in aliases:
+        normalized = alias.strip()
+        if not normalized:
+            continue
+        dedupe_key = _normalize_match_text(normalized)
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        normalized_aliases.append(normalized)
+    return normalized_aliases
+
+
+def _normalize_match_text(value: str) -> str:
+    normalized = re.sub(r"[_\-/]+", " ", value.lower())
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def _match_position(haystack: str, alias: str) -> int | None:
+    if _contains_cjk(alias):
+        position = haystack.find(alias)
+        return position if position >= 0 else None
+
+    pattern = rf"(?<![a-z0-9]){re.escape(alias)}(?![a-z0-9])"
+    match = re.search(pattern, haystack)
+    if match:
+        return match.start()
+
+    collapsed_alias = alias.replace(" ", "")
+    if collapsed_alias != alias and len(collapsed_alias) >= 3:
+        collapsed_haystack = haystack.replace(" ", "")
+        position = collapsed_haystack.find(collapsed_alias)
+        return position if position >= 0 else None
+    return None
+
+
+def _contains_cjk(value: str) -> bool:
+    return any("\u4e00" <= char <= "\u9fff" for char in value)
 
 
 def _is_graph_global_query(query: str) -> bool:

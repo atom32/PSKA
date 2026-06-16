@@ -249,6 +249,74 @@ def test_graph_paths_return_two_hop_grounded_relation_chain() -> None:
     assert response.score_debug["graph_paths_used"] is True
 
 
+def test_graph_paths_link_entities_by_alias_metadata() -> None:
+    store = make_store()
+    source = IngestService(store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "note_fr_digest_alias",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "FR digest note",
+            "content": {"text": "FR runs digest jobs for PSKA."},
+        }
+    )
+    graph = HypergraphService(store)
+    graph.create_entity(
+        Entity(
+            "ent_fastreact_alias",
+            "service",
+            "FastReAct",
+            "user_primary",
+            "private_primary",
+            Visibility.PRIVATE,
+            metadata={"aliases": ["FR", "Fast React", "FastReact"]},
+        )
+    )
+    graph.create_entity(Entity("ent_digest_alias", "workflow", "Digest", "user_primary", "private_primary", Visibility.PRIVATE))
+    graph.create_hyperedge(
+        relation_type="executes",
+        owner_user_id="user_primary",
+        space_id="private_primary",
+        visibility=Visibility.PRIVATE,
+        directionality=Directionality.DIRECTED,
+        members=[("ent_fastreact_alias", "executor"), ("ent_digest_alias", "workflow")],
+        evidence_text="FR runs digest jobs for PSKA.",
+        source_refs=[SourceRef(source_item_id=source.source_item_id)],
+        confidence=0.85,
+    )
+
+    response = RetrievalService(store, ACLService(store)).search("FR digest 关系", store.get_user("user_primary"))
+
+    assert response.graph_paths
+    assert response.graph_paths[0]["seed"]["label"] == "FastReAct"
+    assert response.graph_paths[0]["edges"][0]["relation_type"] == "executes"
+    assert response.graph_paths[0]["edges"][0]["evidence_citations"][0]["source_item_id"] == source.source_item_id
+
+
+def test_entity_linking_uses_word_boundaries_for_short_latin_labels() -> None:
+    store = make_store()
+    graph = HypergraphService(store)
+    graph.create_entity(Entity("ent_ai", "concept", "AI", "user_primary", "private_primary", Visibility.PRIVATE))
+    graph.create_entity(Entity("ent_digest_boundary", "workflow", "Digest", "user_primary", "private_primary", Visibility.PRIVATE))
+    graph.create_hyperedge(
+        relation_type="related_to",
+        owner_user_id="user_primary",
+        space_id="private_primary",
+        visibility=Visibility.PRIVATE,
+        members=[("ent_ai", "concept"), ("ent_digest_boundary", "workflow")],
+        evidence_text="AI is related to digest workflows.",
+    )
+
+    response = RetrievalService(store, ACLService(store)).search("explain daily routine", store.get_user("user_primary"))
+
+    assert response.graph_paths == []
+    assert response.hypergraph_context == []
+
+
 def test_hypergraph_context_does_not_leak_private_evidence_citations() -> None:
     store = make_store()
     source = IngestService(store).ingest_channel_payload(
