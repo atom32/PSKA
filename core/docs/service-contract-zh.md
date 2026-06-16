@@ -347,8 +347,11 @@ JSON, YAML, CSV/TSV, logs, and Python files. With optional
 `pska-core[documents]`, it also uses mature extractors `pypdf` and
 `python-docx` for PDF/DOCX text extraction. It records file path, file URI, mime
 type, size, mtime-based scan cursor, content hash, and the authorized root in
-`connector_state.permission_scope.roots`. Complex layout parsing, OCR, and
-move/rename reconciliation are later connector-quality work.
+`connector_state.permission_scope.roots`. It also records a lightweight file
+manifest in `connector_state.config.files_manifest`, so sync reports can
+distinguish new, changed, unchanged, moved, and missing files without deleting
+canonical source history. Complex layout parsing, OCR, and a richer source
+versioning UI are later connector-quality work.
 
 ## Jobs and Workers
 

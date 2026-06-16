@@ -87,6 +87,9 @@ class IngestService:
         return stored
 
     def _hash_payload(self, payload: ChannelIngestPayload, text: str) -> str:
+        connector_hash = payload.content.get("content_hash")
+        if connector_hash:
+            return str(connector_hash)
         basis = "\n".join([
             payload.source_channel,
             payload.record_type,

@@ -91,7 +91,7 @@ MVP 推荐先用有限数据源启动：
 ./scripts/pska --config .pska/config.json digest-schedule --owner-user-id user_primary --reason "files sync"
 ```
 
-`files-sync` 会读取 `.pska/config.json` 的 `files.roots`，把 UTF-8 文本类文件以及可选 PDF/DOCX 文本抽取结果写入 canonical DB，并更新 `conn_user_primary_files` 的授权 root、scan cursor 和 sync status。`files-watch` 是基于 `watchdog` 的前台监听模式，适合在 notes/docs root 变化时自动触发同一套 files scan；安装方式是 `pska-core[watch]`。`digest-schedule` 只会为还没有 digest job 覆盖过的新 source 创建 backlog。
+`files-sync` 会读取 `.pska/config.json` 的 `files.roots`，把 UTF-8 文本类文件以及可选 PDF/DOCX 文本抽取结果写入 canonical DB，并更新 `conn_user_primary_files` 的授权 root、scan cursor、sync status 和 lightweight file manifest。后续同步会报告 new、changed、unchanged、moved、missing；missing 只记录在 connector state，不会删除 canonical source history。`files-watch` 是基于 `watchdog` 的前台监听模式，适合在 notes/docs root 变化时自动触发同一套 files scan；安装方式是 `pska-core[watch]`。`digest-schedule` 只会为还没有 digest job 覆盖过的新 source 创建 backlog。
 
 当前 Postgres 样例库 gate：
 

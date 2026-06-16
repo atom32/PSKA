@@ -46,9 +46,15 @@ class FilesScanReport:
     connector_state: ConnectorState
     scanned: int = 0
     ingested: int = 0
+    new_files: int = 0
+    changed_files: int = 0
+    unchanged_files: int = 0
+    moved_files: int = 0
+    missing_files: int = 0
     skipped: list[dict[str, Any]] = field(default_factory=list)
     failed: list[dict[str, Any]] = field(default_factory=list)
     source_item_ids: list[str] = field(default_factory=list)
+    changes: list[dict[str, Any]] = field(default_factory=list)
 
 
 def scan_files(
@@ -75,6 +81,9 @@ def scan_files(
     report = FilesScanReport(root=str(root), connector_state=state)
     latest_cursor = state.scan_cursor
     patterns = [*(ignore or []), *DEFAULT_IGNORE]
+    previous_manifest = dict((state.config or {}).get("files_manifest") or {})
+    next_manifest: dict[str, dict[str, Any]] = {}
+    previous_by_hash = _manifest_by_hash(previous_manifest)
 
     for path in _iter_candidate_files(root, ignore=patterns):
         report.scanned += 1
@@ -89,6 +98,21 @@ def scan_files(
                 report.skipped.append({"path": str(path), "reason": "unsupported_suffix"})
                 continue
             raw = path.read_bytes()
+            file_content_hash = "sha256:" + hashlib.sha256(raw).hexdigest()
+            classification = _classify_file(relative, file_content_hash, previous_manifest, previous_by_hash)
+            if classification["status"] == "unchanged":
+                report.unchanged_files += 1
+                next_manifest[relative] = {
+                    **dict(previous_manifest.get(relative) or {}),
+                    "path": str(path),
+                    "relative_path": relative,
+                    "content_hash": file_content_hash,
+                    "size_bytes": stat.st_size,
+                    "mtime_ns": str(int(stat.st_mtime_ns)),
+                }
+                report.changes.append({"path": str(path), "status": "unchanged"})
+                latest_cursor = _max_scan_cursor(latest_cursor, str(int(stat.st_mtime_ns)))
+                continue
             extracted = _extract_text(path, raw)
             if not extracted["ok"]:
                 report.skipped.append({"path": str(path), "reason": extracted["reason"], "detail": extracted.get("detail")})
@@ -109,16 +133,42 @@ def scan_files(
                 visibility=visibility,
                 visible_team_ids=visible_team_ids or [],
                 stat=stat,
+                content_hash=file_content_hash,
             )
             report.ingested += 1
             report.source_item_ids.append(item.source_item_id)
+            _record_classification(report, classification)
+            next_manifest[relative] = _manifest_entry(
+                path=path,
+                relative=relative,
+                content_hash=file_content_hash,
+                stat=stat,
+                source_item_id=item.source_item_id,
+            )
+            change = {
+                "path": str(path),
+                "status": classification["status"],
+                "source_item_id": item.source_item_id,
+                "content_hash": file_content_hash,
+            }
+            if classification.get("previous_path"):
+                change["previous_path"] = classification["previous_path"]
+            report.changes.append(change)
             latest_cursor = _max_scan_cursor(latest_cursor, str(int(stat.st_mtime_ns)))
         except Exception as exc:  # noqa: BLE001 - per-file failures should not abort a scan.
             report.failed.append({"path": str(path), "error": f"{type(exc).__name__}: {exc}"})
 
+    missing = _missing_manifest(previous_manifest, next_manifest)
+    report.missing_files = len(missing)
+    report.changes.extend(missing)
     status = "failed" if report.failed and not report.ingested else "succeeded"
     state.scan_cursor = latest_cursor
     state.sync_status = status
+    state.config = {
+        **dict(state.config or {}),
+        "files_manifest": next_manifest,
+        "files_missing": missing,
+    }
     if report.failed:
         state.last_error = report.failed[0]["error"]
     else:
@@ -202,8 +252,8 @@ def _ingest_file(
     visibility: Visibility,
     visible_team_ids: list[str],
     stat,
+    content_hash: str,
 ) -> SourceItem:
-    content_hash = "sha256:" + hashlib.sha256(raw).hexdigest()
     mime_type = mimetypes.guess_type(path.name)[0] or "text/plain"
     payload = connector_record_to_payload(
         {
@@ -227,6 +277,77 @@ def _ingest_file(
         }
     )
     return ingest.ingest_channel_payload(payload)
+
+
+def _manifest_by_hash(manifest: dict[str, Any]) -> dict[str, list[tuple[str, dict[str, Any]]]]:
+    by_hash: dict[str, list[tuple[str, dict[str, Any]]]] = {}
+    for relative, entry in manifest.items():
+        if not isinstance(entry, dict):
+            continue
+        content_hash = entry.get("content_hash")
+        if content_hash:
+            by_hash.setdefault(str(content_hash), []).append((relative, entry))
+    return by_hash
+
+
+def _classify_file(
+    relative: str,
+    content_hash: str,
+    previous_manifest: dict[str, Any],
+    previous_by_hash: dict[str, list[tuple[str, dict[str, Any]]]],
+) -> dict[str, Any]:
+    previous = previous_manifest.get(relative)
+    if isinstance(previous, dict):
+        if previous.get("content_hash") == content_hash:
+            return {"status": "unchanged"}
+        return {"status": "changed", "previous_content_hash": previous.get("content_hash")}
+    for previous_relative, entry in previous_by_hash.get(content_hash, []):
+        if previous_relative != relative:
+            return {"status": "moved", "previous_path": entry.get("path"), "previous_relative_path": previous_relative}
+    return {"status": "new"}
+
+
+def _record_classification(report: FilesScanReport, classification: dict[str, Any]) -> None:
+    status = classification["status"]
+    if status == "new":
+        report.new_files += 1
+    elif status == "changed":
+        report.changed_files += 1
+    elif status == "moved":
+        report.moved_files += 1
+
+
+def _manifest_entry(*, path: Path, relative: str, content_hash: str, stat, source_item_id: str) -> dict[str, Any]:
+    return {
+        "path": str(path),
+        "relative_path": relative,
+        "content_hash": content_hash,
+        "source_item_id": source_item_id,
+        "size_bytes": stat.st_size,
+        "mtime_ns": str(int(stat.st_mtime_ns)),
+    }
+
+
+def _missing_manifest(previous_manifest: dict[str, Any], next_manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    missing = []
+    next_hashes = {entry.get("content_hash") for entry in next_manifest.values() if isinstance(entry, dict)}
+    for relative, entry in sorted(previous_manifest.items()):
+        if relative in next_manifest:
+            continue
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("content_hash") in next_hashes:
+            continue
+        missing.append(
+            {
+                "status": "missing",
+                "path": entry.get("path"),
+                "relative_path": relative,
+                "source_item_id": entry.get("source_item_id"),
+                "content_hash": entry.get("content_hash"),
+            }
+        )
+    return missing
 
 
 def _max_scan_cursor(current: str | None, candidate: str) -> str:

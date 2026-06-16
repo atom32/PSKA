@@ -102,3 +102,38 @@ def test_files_scan_updates_legacy_cursor_and_appends_authorized_root(tmp_path: 
     assert report.ingested == 1
     assert report.connector_state.scan_cursor != "legacy_cursor"
     assert report.connector_state.permission_scope["roots"] == [str(first_root.resolve()), str(second_root.resolve())]
+
+
+def test_files_scan_reconciles_unchanged_changed_moved_and_missing_files(tmp_path: Path) -> None:
+    root = tmp_path / "notes"
+    root.mkdir()
+    note = root / "note.txt"
+    note.write_text("stable content", encoding="utf-8")
+    store = InMemoryKnowledgeStore()
+
+    first = scan_files(store, root=root)
+    first_source_id = first.source_item_ids[0]
+    first_manifest = dict(first.connector_state.config["files_manifest"])
+
+    unchanged = scan_files(store, root=root)
+    note.write_text("changed content", encoding="utf-8")
+    changed = scan_files(store, root=root)
+    changed_source_id = changed.source_item_ids[0]
+    moved_path = root / "renamed.txt"
+    note.rename(moved_path)
+    moved = scan_files(store, root=root)
+    moved_path.unlink()
+    missing = scan_files(store, root=root)
+
+    assert first.new_files == 1
+    assert first_manifest["note.txt"]["source_item_id"] == first_source_id
+    assert unchanged.unchanged_files == 1
+    assert unchanged.ingested == 0
+    assert changed.changed_files == 1
+    assert changed_source_id != first_source_id
+    assert moved.moved_files == 1
+    assert moved.missing_files == 0
+    assert moved.source_item_ids == [changed_source_id]
+    assert moved.changes[0]["previous_path"] == str(note.resolve())
+    assert missing.missing_files == 1
+    assert missing.connector_state.config["files_missing"][0]["source_item_id"] == changed_source_id
