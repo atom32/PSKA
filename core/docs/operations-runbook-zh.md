@@ -83,6 +83,15 @@ MVP 推荐先用有限数据源启动：
 
 `mvp-status` 会报告 readiness、index/connector/job metrics、pending review 数量和下一步动作。日常巡检优先使用 `--summary`，输出更紧凑，适合判断 PSKA 是否进入可用状态。
 
+同步本地 files/notes roots：
+
+```bash
+./scripts/pska --config .pska/config.json files-sync
+./scripts/pska --config .pska/config.json digest-schedule --owner-user-id user_primary --reason "files sync"
+```
+
+`files-sync` 会读取 `.pska/config.json` 的 `files.roots`，把 UTF-8 文本类文件写入 canonical DB，并更新 `conn_user_primary_files` 的授权 root、scan cursor 和 sync status。`digest-schedule` 只会为还没有 digest job 覆盖过的新 source 创建 backlog。
+
 当前 Postgres 样例库 gate：
 
 ```bash

@@ -77,6 +77,7 @@ def test_cli_accepts_search_and_smoke() -> None:
     mcp = build_parser().parse_args(["mcp-server"])
     connector = build_parser().parse_args(["connector-ingest-record", "record.json"])
     files_scan = build_parser().parse_args(["files-scan", "--root", "notes", "--ignore", "*.tmp"])
+    files_sync = build_parser().parse_args(["files-sync", "--root", "notes", "--ignore", "*.tmp"])
 
     assert search.command == "search"
     assert search.query == "hello"
@@ -109,6 +110,9 @@ def test_cli_accepts_search_and_smoke() -> None:
     assert files_scan.command == "files-scan"
     assert str(files_scan.root) == "notes"
     assert files_scan.ignore == ["*.tmp"]
+    assert files_sync.command == "files-sync"
+    assert str(files_sync.root[0]) == "notes"
+    assert files_sync.ignore == ["*.tmp"]
 
 
 def test_cli_accepts_connector_state_commands() -> None:
@@ -513,6 +517,17 @@ def test_fastreact_digest_worker_command_payload_uses_config_urls() -> None:
     assert payload["fastreact_url"] == "http://127.0.0.1:8000"
     assert "--batch-limit" in payload["command"]
     assert "'/tmp/Fast React/fastreact-nano'" in payload["shell"]
+
+
+def test_files_sync_reports_missing_roots(capsys) -> None:
+    args = build_parser().parse_args(["--database-url", "postgresql:///example", "files-sync"])
+
+    code = cli_module.files_sync(args, PSKAConfig())
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 1
+    assert payload["ok"] is False
+    assert "files.roots" in payload["error"]
 
 
 def _json_documents(output: str) -> list[dict]:

@@ -330,13 +330,17 @@ Local CLI:
 P1.2 first slice:
 
 ```bash
+./scripts/pska files-sync
+
 ./scripts/pska files-scan \
   --root ~/Documents/notes \
   --owner-user-id user_primary \
   --ignore '*.tmp'
 ```
 
-The first slice supports UTF-8 text-like files such as Markdown, text, JSON,
+`files-sync` scans configured `files.roots` from PSKA config. `files-scan` is
+the explicit one-off form. The first slice supports UTF-8 text-like files such
+as Markdown, text, JSON,
 YAML, CSV/TSV, logs, and Python files. It records file path, file URI, mime
 type, size, mtime-based scan cursor, content hash, and the authorized root in
 `connector_state.permission_scope.roots`. Binary/PDF/Word extraction and

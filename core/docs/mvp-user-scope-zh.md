@@ -56,11 +56,12 @@ MVP 阶段不追求：
 优先顺序：
 
 1. 用 `mvp-bootstrap --extract` 初始化有限数据源、digest backlog 和第一版图谱。
-2. 用 `mvp-status --summary` 查看 readiness、metrics、jobs、connector 和 next actions。
-3. 把 `local-daemon` 跑成稳定的本地前台服务入口。
-4. 用有限 Twitter/X archive 样本和少量本地 notes 持续验证 digest/review/memory。
-5. 打磨 retrieval/GraphRAG 质量和 review taxonomy。
-6. 只在核心流程稳定后再扩 Browser/Git/PDF 等 connector。
+2. 用 `files-sync` 按 `.pska/config.json` 的 `files.roots` 同步本地 notes/docs。
+3. 用 `mvp-status --summary` 查看 readiness、metrics、jobs、connector 和 next actions。
+4. 把 `local-daemon` 跑成稳定的本地前台服务入口。
+5. 用有限 Twitter/X archive 样本和少量本地 notes 持续验证 digest/review/memory。
+6. 打磨 retrieval/GraphRAG 质量和 review taxonomy。
+7. 只在核心流程稳定后再扩 Browser/Git/PDF 等 connector。
 
 推荐本地路径：
 
@@ -71,6 +72,8 @@ MVP 阶段不追求：
   --extract
 
 ./scripts/pska mvp-status --summary
+
+./scripts/pska files-sync
 
 ./scripts/pska local-daemon
 ```

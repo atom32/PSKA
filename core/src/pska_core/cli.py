@@ -112,6 +112,15 @@ def build_parser() -> argparse.ArgumentParser:
     files_scan_parser.add_argument("--max-bytes", type=int, default=1_000_000)
     _add_embedding_args(files_scan_parser, default_provider=os.environ.get("PSKA_EMBEDDING_PROVIDER", "disabled"))
 
+    files_sync_parser = subparsers.add_parser("files-sync", help="Scan configured Files connector roots from PSKA config")
+    files_sync_parser.add_argument("--root", type=Path, action="append", default=[], help="Additional or override root to scan")
+    files_sync_parser.add_argument("--owner-user-id", default=None)
+    files_sync_parser.add_argument("--space-id", default=None)
+    files_sync_parser.add_argument("--visibility", choices=[item.value for item in Visibility], default=None)
+    files_sync_parser.add_argument("--ignore", action="append", default=[])
+    files_sync_parser.add_argument("--max-bytes", type=int, default=None)
+    _add_embedding_args(files_sync_parser, default_provider=os.environ.get("PSKA_EMBEDDING_PROVIDER", "disabled"))
+
     extract_parser = subparsers.add_parser("extract-all", help="Extract entities/hyperedges from source items")
     extract_parser.add_argument("--owner-user-id", default=None)
 
@@ -309,6 +318,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return connector_state(args)
     if args.command == "files-scan":
         return files_scan(args)
+    if args.command == "files-sync":
+        return files_sync(args, config)
     if args.command == "extract-all":
         return extract_all(args)
     if args.command == "serve":
@@ -557,6 +568,52 @@ def files_scan(args: argparse.Namespace) -> int:
     )
     print(dumps(report))
     return 1 if report.failed else 0
+
+
+def files_sync(args: argparse.Namespace, config: PSKAConfig) -> int:
+    roots = list(args.root or []) or list(config.files.roots)
+    if not roots:
+        print(dumps({
+            "ok": False,
+            "error": "No files roots configured. Add files.roots to .pska/config.json or pass --root <path>.",
+            "reports": [],
+        }))
+        return 1
+    store = PostgresKnowledgeStore(args.database_url)
+    reports = []
+    failed = []
+    for root in roots:
+        try:
+            report = scan_files(
+                store,
+                root=root,
+                owner_user_id=args.owner_user_id or config.files.owner_user_id,
+                space_id=args.space_id or config.files.space_id,
+                visibility=Visibility(args.visibility or config.files.visibility),
+                ignore=[*config.files.ignore, *(args.ignore or [])],
+                max_bytes=args.max_bytes or config.files.max_bytes,
+                embedding_provider=_embedding_provider_from_args(args),
+            )
+            reports.append(report)
+            failed.extend(report.failed)
+        except Exception as exc:  # noqa: BLE001 - report all roots together.
+            failed.append({"root": str(root), "error": f"{type(exc).__name__}: {exc}"})
+    payload = {
+        "ok": not failed,
+        "database_url": args.database_url,
+        "roots": [str(root.expanduser()) for root in roots],
+        "reports": reports,
+        "totals": {
+            "roots": len(roots),
+            "scanned": sum(report.scanned for report in reports),
+            "ingested": sum(report.ingested for report in reports),
+            "skipped": sum(len(report.skipped) for report in reports),
+            "failed": len(failed),
+        },
+        "failed": failed,
+    }
+    print(dumps(payload))
+    return 0 if payload["ok"] else 1
 
 
 def extract_all(args: argparse.Namespace) -> int:
@@ -1210,7 +1267,7 @@ def _mvp_next_actions(payload: dict[str, Any], *, connectors: dict[str, Any]) ->
     if source_items == 0:
         actions.append("Run ./scripts/pska mvp-bootstrap to import Twitter/X archive or scan a notes root.")
     if not connectors.get("state_count"):
-        actions.append("Authorize a local notes root with ./scripts/pska files-scan --root <path>.")
+        actions.append("Authorize a local notes root with ./scripts/pska files-sync or ./scripts/pska files-scan --root <path>.")
     entities = int(index.get("entities") or 0)
     hyperedges = int(index.get("hyperedges") or 0)
     if source_items and (entities == 0 or hyperedges == 0):

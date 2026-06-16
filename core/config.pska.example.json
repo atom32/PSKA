@@ -24,5 +24,18 @@
     "model": "BAAI/bge-m3",
     "dimensions": 1024,
     "batch_size": 16
+  },
+  "files": {
+    "roots": [
+      "~/Documents/notes"
+    ],
+    "ignore": [
+      "*.tmp",
+      "*.bak"
+    ],
+    "max_bytes": 1000000,
+    "owner_user_id": "user_primary",
+    "space_id": "private_primary",
+    "visibility": "private"
   }
 }

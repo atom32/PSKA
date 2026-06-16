@@ -100,12 +100,35 @@ class EmbeddingConfigFile:
 
 
 @dataclass(frozen=True, slots=True)
+class FilesConfig:
+    roots: tuple[Path, ...] = ()
+    ignore: tuple[str, ...] = ()
+    max_bytes: int = 1_000_000
+    owner_user_id: str = "user_primary"
+    space_id: str = "private_primary"
+    visibility: str = "private"
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> "FilesConfig":
+        data = data or {}
+        return cls(
+            roots=tuple(expand_path(root) for root in data.get("roots") or []),
+            ignore=tuple(str(item) for item in data.get("ignore") or []),
+            max_bytes=int(data.get("max_bytes") or 1_000_000),
+            owner_user_id=str(data.get("owner_user_id") or "user_primary"),
+            space_id=str(data.get("space_id") or "private_primary"),
+            visibility=str(data.get("visibility") or "private"),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class PSKAConfig:
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     service: ServiceConfig = field(default_factory=ServiceConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
     fastreact: FastreactConfig = field(default_factory=FastreactConfig)
     embedding: EmbeddingConfigFile = field(default_factory=EmbeddingConfigFile)
+    files: FilesConfig = field(default_factory=FilesConfig)
 
     @classmethod
     def load(cls, config_path: str | Path | None = None) -> "PSKAConfig":
@@ -127,6 +150,7 @@ class PSKAConfig:
             llm=llm,
             fastreact=FastreactConfig.from_dict(data.get("fastreact"), api_key_file=llm.api_key_file),
             embedding=EmbeddingConfigFile.from_dict(data.get("embedding")),
+            files=FilesConfig.from_dict(data.get("files")),
         )
 
     @classmethod
@@ -155,6 +179,15 @@ class PSKAConfig:
                 model=os.getenv("PSKA_EMBEDDING_MODEL") or base.embedding.model,
                 dimensions=int(os.getenv("PSKA_EMBEDDING_DIMENSIONS")) if os.getenv("PSKA_EMBEDDING_DIMENSIONS") else base.embedding.dimensions,
                 batch_size=int(os.getenv("PSKA_EMBEDDING_BATCH_SIZE")) if os.getenv("PSKA_EMBEDDING_BATCH_SIZE") else base.embedding.batch_size,
+            ),
+            files=FilesConfig(
+                roots=tuple(expand_path(root) for root in os.getenv("PSKA_FILES_ROOTS", "").split(os.pathsep) if root)
+                or base.files.roots,
+                ignore=base.files.ignore,
+                max_bytes=int(os.getenv("PSKA_FILES_MAX_BYTES", str(base.files.max_bytes))),
+                owner_user_id=os.getenv("PSKA_FILES_OWNER_USER_ID", base.files.owner_user_id),
+                space_id=os.getenv("PSKA_FILES_SPACE_ID", base.files.space_id),
+                visibility=os.getenv("PSKA_FILES_VISIBILITY", base.files.visibility),
             ),
         )
 

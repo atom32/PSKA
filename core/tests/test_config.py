@@ -29,6 +29,7 @@ def test_pska_config_loads_json_and_keyfile_token(tmp_path: Path) -> None:
                 "llm": {"api_key_file": str(key_file)},
                 "fastreact": {"url": "http://127.0.0.1:9000"},
                 "embedding": {"provider": "disabled"},
+                "files": {"roots": [str(tmp_path / "notes")], "ignore": ["*.tmp"], "max_bytes": 1234},
             }
         ),
         encoding="utf-8",
@@ -42,6 +43,9 @@ def test_pska_config_loads_json_and_keyfile_token(tmp_path: Path) -> None:
     assert config.fastreact.url == "http://127.0.0.1:9000"
     assert config.fastreact.service_token == "shared-local-token"
     assert config.llm.api_key_file == key_file
+    assert config.files.roots == (tmp_path / "notes",)
+    assert config.files.ignore == ("*.tmp",)
+    assert config.files.max_bytes == 1234
 
 
 def test_pska_config_env_overrides_file(tmp_path: Path, monkeypatch) -> None:
