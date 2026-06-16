@@ -214,7 +214,7 @@ Fastreact offline does not make PSKA unavailable. In that case `/ready` should s
   --priority 0
 ```
 
-`digest-schedule` 会跳过已经被 queued/running/succeeded digest job 覆盖的 source item；需要重做时加 `--force`，或用 `--source-item-id src_xxx` 指定范围。
+`digest-schedule` 的自动模式只处理没有任何 digest job 覆盖过的 source item；queued、running、succeeded、failed、canceled 都视为“已经处理/已做决定”。需要重做时加 `--force`，或用 `--source-item-id src_xxx` 指定范围。
 
 前台周期性创建 digest backlog：
 

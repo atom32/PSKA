@@ -610,6 +610,41 @@ def test_digest_schedule_creates_backlog_and_skips_active_sources() -> None:
     assert stats["digest_backlog"]["source_items"] == 3
 
 
+def test_digest_schedule_skips_failed_sources_unless_forced() -> None:
+    api = _api()
+    source = IngestService(api.store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "digest-failed-covered-note",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "Digest failed covered note",
+            "content": {"text": "A failed digest should not be auto-scheduled forever."},
+        }
+    )
+    job = JobService(api.store).submit(
+        DIGEST_VIA_FASTREACT,
+        {
+            "owner_user_id": "user_primary",
+            "source_refs": [{"source_item_id": source.source_item_id}],
+            "scope": {"source_item_ids": [source.source_item_id]},
+        },
+        max_attempts=1,
+    )
+    api.store.fail_job(job.job_id, "failed once", retryable=False)
+
+    automatic = api.schedule_digest({"owner_user_id": "user_primary", "limit": 1})
+    forced = api.schedule_digest({"owner_user_id": "user_primary", "source_item_ids": [source.source_item_id], "force": True})
+
+    assert automatic["job"] is None
+    assert automatic["scheduled_source_item_ids"] == []
+    assert automatic["skipped_source_item_ids"] == [source.source_item_id]
+    assert forced["scheduled_source_item_ids"] == [source.source_item_id]
+
+
 def test_http_route_covers_digest_schedule() -> None:
     api = _api()
     source = IngestService(api.store).ingest_channel_payload(

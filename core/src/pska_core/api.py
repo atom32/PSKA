@@ -359,7 +359,7 @@ class PSKAApi:
             source_items = [item for item in source_items if item.source_item_id in scoped_source_item_ids]
         source_items = sorted(source_items, key=lambda item: (item.created_at, item.source_item_id), reverse=True)
 
-        already_scheduled = set() if force else _active_digest_source_item_ids(self.store)
+        already_scheduled = set() if force else _covered_digest_source_item_ids(self.store)
         skipped_source_item_ids = [item.source_item_id for item in source_items if item.source_item_id in already_scheduled]
         selected = [item for item in source_items if force or item.source_item_id not in already_scheduled][:limit]
         source_refs = [{"source_item_id": item.source_item_id} for item in selected]
@@ -740,11 +740,10 @@ def _job_source_item_ids(job) -> set[str]:
     return ids
 
 
-def _active_digest_source_item_ids(store: PostgresKnowledgeStore) -> set[str]:
+def _covered_digest_source_item_ids(store: PostgresKnowledgeStore) -> set[str]:
     ids: set[str] = set()
     for job in store.list_jobs(job_type=DIGEST_VIA_FASTREACT, limit=10000):
-        if job.status in {"queued", "running", "succeeded"}:
-            ids.update(_job_source_item_ids(job))
+        ids.update(_job_source_item_ids(job))
     return ids
 
 

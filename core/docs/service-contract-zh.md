@@ -403,7 +403,7 @@ P0.4 write-back slice adds:
 }
 ```
 
-It skips source items already covered by queued, running, or succeeded digest jobs unless `force=true`. The response includes the created job, `scheduled_source_item_ids`, and `skipped_source_item_ids`.
+It skips source items already covered by any existing digest job unless `force=true`. This includes queued, running, succeeded, failed, and canceled jobs, so automatic digest does not repeat failed work forever. Manual redigest should pass `force=true` and, preferably, an explicit `source_item_ids` scope. The response includes the created job, `scheduled_source_item_ids`, and `skipped_source_item_ids`.
 
 For local operation, CLI `digest-scheduler` provides a foreground periodic loop over this endpoint:
 
