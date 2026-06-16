@@ -331,6 +331,7 @@ P1.2 first slice:
 
 ```bash
 ./scripts/pska files-sync
+./scripts/pska files-watch --initial-sync
 
 ./scripts/pska files-scan \
   --root ~/Documents/notes \
@@ -338,12 +339,13 @@ P1.2 first slice:
   --ignore '*.tmp'
 ```
 
-`files-sync` scans configured `files.roots` from PSKA config. `files-scan` is
-the explicit one-off form. The first slice supports UTF-8 text-like files such
-as Markdown, text, JSON,
-YAML, CSV/TSV, logs, and Python files. With optional `pska-core[documents]`,
-it also uses mature extractors `pypdf` and `python-docx` for PDF/DOCX text
-extraction. It records file path, file URI, mime
+`files-sync` scans configured `files.roots` from PSKA config. `files-watch`
+uses optional `watchdog` support from `pska-core[watch]` to run the same sync
+path whenever authorized roots change. `files-scan` is the explicit one-off
+form. The first slice supports UTF-8 text-like files such as Markdown, text,
+JSON, YAML, CSV/TSV, logs, and Python files. With optional
+`pska-core[documents]`, it also uses mature extractors `pypdf` and
+`python-docx` for PDF/DOCX text extraction. It records file path, file URI, mime
 type, size, mtime-based scan cursor, content hash, and the authorized root in
 `connector_state.permission_scope.roots`. Complex layout parsing, OCR, and
 move/rename reconciliation are later connector-quality work.

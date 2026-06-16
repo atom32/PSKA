@@ -22,6 +22,7 @@ from pska_core.embeddings import EmbeddingConfig, EmbeddingService, build_embedd
 from pska_core.enums import Visibility
 from pska_core.extraction import ExtractionService
 from pska_core.files_connector import scan_files
+from pska_core.files_watcher import watch_files
 from pska_core.importers.twitter_zip import TwitterZipImporter
 from pska_core.ingest import IngestService
 from pska_core.jobs import JOB_TYPES, JobService
@@ -120,6 +121,18 @@ def build_parser() -> argparse.ArgumentParser:
     files_sync_parser.add_argument("--ignore", action="append", default=[])
     files_sync_parser.add_argument("--max-bytes", type=int, default=None)
     _add_embedding_args(files_sync_parser, default_provider=os.environ.get("PSKA_EMBEDDING_PROVIDER", "disabled"))
+
+    files_watch_parser = subparsers.add_parser("files-watch", help="Watch configured Files connector roots and sync changes")
+    files_watch_parser.add_argument("--root", type=Path, action="append", default=[], help="Additional or override root to watch")
+    files_watch_parser.add_argument("--owner-user-id", default=None)
+    files_watch_parser.add_argument("--space-id", default=None)
+    files_watch_parser.add_argument("--visibility", choices=[item.value for item in Visibility], default=None)
+    files_watch_parser.add_argument("--ignore", action="append", default=[])
+    files_watch_parser.add_argument("--max-bytes", type=int, default=None)
+    files_watch_parser.add_argument("--debounce-seconds", type=float, default=2.0)
+    files_watch_parser.add_argument("--initial-sync", action="store_true")
+    files_watch_parser.add_argument("--max-events", type=int, default=0, help="Stop after this many file events; 0 means no limit")
+    _add_embedding_args(files_watch_parser, default_provider=os.environ.get("PSKA_EMBEDDING_PROVIDER", "disabled"))
 
     extract_parser = subparsers.add_parser("extract-all", help="Extract entities/hyperedges from source items")
     extract_parser.add_argument("--owner-user-id", default=None)
@@ -320,6 +333,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return files_scan(args)
     if args.command == "files-sync":
         return files_sync(args, config)
+    if args.command == "files-watch":
+        return files_watch(args, config)
     if args.command == "extract-all":
         return extract_all(args)
     if args.command == "serve":
@@ -614,6 +629,66 @@ def files_sync(args: argparse.Namespace, config: PSKAConfig) -> int:
     }
     print(dumps(payload))
     return 0 if payload["ok"] else 1
+
+
+def files_watch(args: argparse.Namespace, config: PSKAConfig) -> int:
+    roots = list(args.root or []) or list(config.files.roots)
+    if not roots:
+        print(dumps({
+            "ok": False,
+            "error": "No files roots configured. Add files.roots to .pska/config.json or pass --root <path>.",
+        }))
+        return 1
+    store = PostgresKnowledgeStore(args.database_url)
+    print(
+        dumps(
+            {
+                "event": "files_watch_started",
+                "database_url": args.database_url,
+                "roots": [str(root.expanduser()) for root in roots],
+                "debounce_seconds": args.debounce_seconds,
+                "initial_sync": args.initial_sync,
+            }
+        ),
+        flush=True,
+    )
+
+    def on_report(report) -> None:  # noqa: ANN001 - report is JSON-serializable through dumps.
+        print(
+            dumps(
+                {
+                    "event": "files_watch_synced",
+                    "root": report.root,
+                    "scanned": report.scanned,
+                    "ingested": report.ingested,
+                    "skipped": len(report.skipped),
+                    "failed": len(report.failed),
+                    "source_item_ids": report.source_item_ids,
+                }
+            ),
+            flush=True,
+        )
+
+    try:
+        summary = watch_files(
+            store,
+            roots=roots,
+            owner_user_id=args.owner_user_id or config.files.owner_user_id,
+            space_id=args.space_id or config.files.space_id,
+            visibility=Visibility(args.visibility or config.files.visibility),
+            ignore=[*config.files.ignore, *(args.ignore or [])],
+            max_bytes=args.max_bytes or config.files.max_bytes,
+            debounce_seconds=args.debounce_seconds,
+            initial_sync=args.initial_sync,
+            max_events=args.max_events,
+            on_report=on_report,
+            embedding_provider=_embedding_provider_from_args(args),
+        )
+    except Exception as exc:  # noqa: BLE001 - CLI should report optional dependency/setup errors cleanly.
+        print(dumps({"ok": False, "error": f"{type(exc).__name__}: {exc}"}))
+        return 1
+    print(dumps({"event": "files_watch_stopped", "summary": summary}), flush=True)
+    return 0
 
 
 def extract_all(args: argparse.Namespace) -> int:
