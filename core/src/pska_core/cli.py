@@ -1677,12 +1677,12 @@ def _daily_briefing_narrative(
             messages=[
                 {
                     "role": "system",
-                    "content": "You are FastReAct writing a concise PSKA daily briefing. Use only the provided deterministic context and cite source refs.",
+                    "content": "Rewrite the user-provided PSKA facts into a concise Chinese daily briefing. Do not call tools.",
                 },
-                {"role": "user", "content": dumps({"deterministic_briefing": _narrative_briefing_context(briefing)})},
+                {"role": "user", "content": _narrative_briefing_text(briefing)},
             ],
             user_id=owner_user_id,
-            purpose="daily_briefing",
+            purpose="pska_narrative_briefing",
             stream=False,
             scope={"source_refs": source_refs},
         )
@@ -1758,6 +1758,31 @@ def _narrative_briefing_context(briefing: dict[str, Any]) -> dict[str, Any]:
         },
         "deterministic_next_actions": briefing.get("deterministic_next_actions"),
     }
+
+
+def _narrative_briefing_text(briefing: dict[str, Any]) -> str:
+    context = _narrative_briefing_context(briefing)
+    recent_titles = [
+        str(source.get("title") or source.get("source_item_id"))
+        for source in context.get("recent_sources", [])
+        if isinstance(source, dict)
+    ]
+    action_labels = [
+        str(action).replace("./scripts/pska ", "")
+        for action in context.get("deterministic_next_actions", [])
+    ]
+    failed_jobs = context.get("failed_jobs") or {}
+    return "\n".join(
+        [
+            "请把以下确定性 PSKA 状态改写成 3 句以内的中文日常简报；只基于这些事实，不要请求工具或额外数据。",
+            f"资料规模：source_items={((context.get('source_counts') or {}).get('source_items') or 0)}, chunks={((context.get('source_counts') or {}).get('chunks') or 0)}。",
+            f"最近资料：{', '.join(recent_titles) if recent_titles else '无'}。",
+            f"connector：channels={', '.join((context.get('connector_state') or {}).get('source_channels') or [])}, state_count={(context.get('connector_state') or {}).get('state_count') or 0}。",
+            f"digest backlog：jobs={(context.get('digest_backlog') or {}).get('jobs') or 0}, source_items={(context.get('digest_backlog') or {}).get('source_items') or 0}。",
+            f"pending reviews：{context.get('pending_review_count') or 0}；failed jobs：{failed_jobs.get('count') or 0}。",
+            f"建议动作：{'; '.join(action_labels) if action_labels else '无需动作'}。",
+        ]
+    )
 
 
 def _briefing_source_refs(briefing: dict[str, Any]) -> list[dict[str, Any]]:

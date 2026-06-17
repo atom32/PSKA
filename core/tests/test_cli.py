@@ -837,11 +837,11 @@ def test_daily_briefing_narrative_saves_fastreact_answer(monkeypatch) -> None:
 
     class FakeFastreact:
         def chat_completion(self, **kwargs):
-            assert kwargs["purpose"] == "daily_briefing"
+            assert kwargs["purpose"] == "pska_narrative_briefing"
             assert kwargs["scope"] == {"source_refs": [{"source_item_id": "src_1"}]}
-            context = json.loads(kwargs["messages"][1]["content"])["deterministic_briefing"]
-            assert "recommended_commands" not in context
-            assert context["source_counts"] == {"source_items": 1, "chunks": 1}
+            prompt = kwargs["messages"][1]["content"]
+            assert "source_items=1" in prompt
+            assert "recommended_commands" not in prompt
             return {
                 "run_id": "run_daily_1",
                 "content": "Today PSKA has one fresh source and no urgent review.",
