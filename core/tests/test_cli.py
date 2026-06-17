@@ -113,8 +113,9 @@ def test_cli_accepts_search_and_smoke() -> None:
     assert daily_briefing.command == "daily-briefing"
     assert daily_briefing.owner_user_id == "user_primary"
     assert daily_briefing.limit == 3
-    narrative_briefing = build_parser().parse_args(["daily-briefing", "--narrative"])
+    narrative_briefing = build_parser().parse_args(["daily-briefing", "--narrative", "--narrative-timeout-seconds", "90"])
     assert narrative_briefing.narrative is True
+    assert narrative_briefing.narrative_timeout_seconds == 90
     assert memory_list.command == "memory-list"
     assert memory_list.owner_user_id == "user_primary"
     assert memory_list.limit == 2
@@ -838,6 +839,9 @@ def test_daily_briefing_narrative_saves_fastreact_answer(monkeypatch) -> None:
         def chat_completion(self, **kwargs):
             assert kwargs["purpose"] == "daily_briefing"
             assert kwargs["scope"] == {"source_refs": [{"source_item_id": "src_1"}]}
+            context = json.loads(kwargs["messages"][1]["content"])["deterministic_briefing"]
+            assert "recommended_commands" not in context
+            assert context["source_counts"] == {"source_items": 1, "chunks": 1}
             return {
                 "run_id": "run_daily_1",
                 "content": "Today PSKA has one fresh source and no urgent review.",
@@ -857,6 +861,8 @@ def test_daily_briefing_narrative_saves_fastreact_answer(monkeypatch) -> None:
 
     saved = store.source_items[payload["narrative"]["saved_source_item_id"]]
     assert payload["narrative"]["ok"] is True
+    assert payload["requires_llm"] is True
+    assert payload["requires_fastreact_online"] is True
     assert payload["narrative"]["fallback"] is False
     assert payload["narrative"]["source_refs"] == [{"source_item_id": "src_1"}]
     assert payload["narrative"]["trace_summary"]["run_id"] == "run_daily_1"
@@ -895,6 +901,7 @@ def test_daily_briefing_narrative_falls_back_when_fastreact_down(monkeypatch) ->
         "postgresql:///example",
         owner_user_id="user_primary",
         narrative=True,
+        narrative_timeout_seconds=75,
         fastreact_client=DownFastreact(),
     )
 
@@ -902,6 +909,7 @@ def test_daily_briefing_narrative_falls_back_when_fastreact_down(monkeypatch) ->
     assert payload["narrative"]["ok"] is False
     assert payload["narrative"]["fallback"] is True
     assert "FastReAct down" in payload["narrative"]["error"]
+    assert payload["narrative"]["timeout_seconds"] == 75
     assert payload["deterministic_next_actions"]
     assert not store.source_items
 

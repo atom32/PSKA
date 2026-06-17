@@ -21,7 +21,7 @@ from pska_core.connectors import connector_state_from_mapping, connector_record_
 from pska_core.embeddings import EmbeddingConfig, EmbeddingService, build_embedding_provider
 from pska_core.enums import Visibility
 from pska_core.extraction import ExtractionService
-from pska_core.fastreact_client import FastreactError, HttpFastreactClient
+from pska_core.fastreact_client import FastreactConfig, FastreactError, HttpFastreactClient
 from pska_core.files_connector import scan_files
 from pska_core.files_watcher import watch_files
 from pska_core.importers.twitter_zip import TwitterZipImporter
@@ -181,6 +181,7 @@ def build_parser() -> argparse.ArgumentParser:
     daily_briefing_parser.add_argument("--owner-user-id", default="user_primary")
     daily_briefing_parser.add_argument("--limit", type=int, default=5, help="Maximum source/review/job rows to include")
     daily_briefing_parser.add_argument("--narrative", action="store_true", help="Ask FastReAct for a narrative summary and save it when available")
+    daily_briefing_parser.add_argument("--narrative-timeout-seconds", type=float, default=None, help="Override FastReAct chat timeout for --narrative")
 
     digest_worker_command_parser = subparsers.add_parser(
         "fastreact-digest-worker-command",
@@ -901,7 +902,13 @@ def daily_status(args: argparse.Namespace) -> int:
 
 
 def daily_briefing(args: argparse.Namespace) -> int:
-    payload = _daily_briefing_payload(args.database_url, owner_user_id=args.owner_user_id, limit=args.limit, narrative=args.narrative)
+    payload = _daily_briefing_payload(
+        args.database_url,
+        owner_user_id=args.owner_user_id,
+        limit=args.limit,
+        narrative=args.narrative,
+        narrative_timeout_seconds=args.narrative_timeout_seconds,
+    )
     print(dumps(payload))
     return 0
 
@@ -1545,6 +1552,7 @@ def _daily_briefing_payload(
     owner_user_id: str = "user_primary",
     limit: int = 5,
     narrative: bool = False,
+    narrative_timeout_seconds: float | None = None,
     fastreact_client=None,
 ) -> dict[str, Any]:
     limit = max(0, limit)
@@ -1570,8 +1578,8 @@ def _daily_briefing_payload(
         "database_url": database_url,
         "owner_user_id": owner_user_id,
         "briefing_type": "deterministic_daily_v0",
-        "requires_llm": False,
-        "requires_fastreact_online": False,
+        "requires_llm": bool(narrative),
+        "requires_fastreact_online": bool(narrative),
         "service_readiness": daily.get("service_readiness") or {},
         "source_summary": {
             "counts": daily.get("source_counts") or {},
@@ -1598,6 +1606,7 @@ def _daily_briefing_payload(
             store,
             payload,
             owner_user_id=owner_user_id,
+            timeout_seconds=narrative_timeout_seconds,
             fastreact_client=fastreact_client,
         )
     return payload
@@ -1657,19 +1666,20 @@ def _daily_briefing_narrative(
     briefing: dict[str, Any],
     *,
     owner_user_id: str,
+    timeout_seconds: float | None = None,
     fastreact_client=None,
 ) -> dict[str, Any]:
     source_refs = _briefing_source_refs(briefing)
     trace_summary: dict[str, Any] = {}
     try:
-        client = fastreact_client or HttpFastreactClient()
+        client = fastreact_client or _fastreact_client(timeout_seconds=timeout_seconds)
         response = client.chat_completion(
             messages=[
                 {
                     "role": "system",
                     "content": "You are FastReAct writing a concise PSKA daily briefing. Use only the provided deterministic context and cite source refs.",
                 },
-                {"role": "user", "content": dumps({"deterministic_briefing": briefing})},
+                {"role": "user", "content": dumps({"deterministic_briefing": _narrative_briefing_context(briefing)})},
             ],
             user_id=owner_user_id,
             purpose="daily_briefing",
@@ -1706,7 +1716,48 @@ def _daily_briefing_narrative(
             "error": f"{type(exc).__name__}: {exc}",
             "source_refs": source_refs,
             "trace_summary": trace_summary,
+            "timeout_seconds": timeout_seconds,
         }
+
+
+def _fastreact_client(*, timeout_seconds: float | None = None) -> HttpFastreactClient:
+    config = FastreactConfig.from_env()
+    if timeout_seconds is not None:
+        config = FastreactConfig(
+            url=config.url,
+            service_token=config.service_token,
+            timeout_seconds=max(1.0, float(timeout_seconds)),
+        )
+    return HttpFastreactClient(config)
+
+
+def _narrative_briefing_context(briefing: dict[str, Any]) -> dict[str, Any]:
+    failed_jobs = briefing.get("failed_jobs") or {}
+    recent_failed = []
+    for job in failed_jobs.get("recent", []) or []:
+        if not isinstance(job, dict):
+            continue
+        recent_failed.append(
+            {
+                "job_id": job.get("job_id"),
+                "job_type": job.get("job_type"),
+                "error": str(job.get("error") or "")[:240],
+            }
+        )
+    return {
+        "owner_user_id": briefing.get("owner_user_id"),
+        "service_readiness": briefing.get("service_readiness"),
+        "source_counts": (briefing.get("source_summary") or {}).get("counts"),
+        "recent_sources": (briefing.get("source_summary") or {}).get("recent_sources"),
+        "connector_state": briefing.get("connector_state"),
+        "digest_backlog": briefing.get("digest_backlog"),
+        "pending_review_count": (briefing.get("pending_reviews") or {}).get("total_matching"),
+        "failed_jobs": {
+            "count": failed_jobs.get("count"),
+            "recent": recent_failed,
+        },
+        "deterministic_next_actions": briefing.get("deterministic_next_actions"),
+    }
 
 
 def _briefing_source_refs(briefing: dict[str, Any]) -> list[dict[str, Any]]:
