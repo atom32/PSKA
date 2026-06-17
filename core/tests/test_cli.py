@@ -19,6 +19,7 @@ from pska_core.cli import (
     _review_items_payload,
 )
 from pska_core.enums import MemoryLayer, ReviewType, Visibility
+from pska_core.fastreact_client import FastreactError
 from pska_core.models import AgentMemory, ReviewItem, SourceItem, SourceRef, UserProfileCard
 from pska_core.store import InMemoryKnowledgeStore
 
@@ -112,6 +113,8 @@ def test_cli_accepts_search_and_smoke() -> None:
     assert daily_briefing.command == "daily-briefing"
     assert daily_briefing.owner_user_id == "user_primary"
     assert daily_briefing.limit == 3
+    narrative_briefing = build_parser().parse_args(["daily-briefing", "--narrative"])
+    assert narrative_briefing.narrative is True
     assert memory_list.command == "memory-list"
     assert memory_list.owner_user_id == "user_primary"
     assert memory_list.limit == 2
@@ -791,6 +794,116 @@ def test_daily_briefing_payload_includes_deterministic_next_actions(monkeypatch)
     assert "./scripts/pska review-list --status pending --owner-user-id user_primary --summary" in payload["deterministic_next_actions"]
     assert "./scripts/pska jobs list --status failed" in payload["deterministic_next_actions"]
     assert "./scripts/pska fastreact-digest-worker-command" in payload["deterministic_next_actions"]
+
+
+def test_daily_briefing_narrative_saves_fastreact_answer(monkeypatch) -> None:
+    created_at = datetime(2026, 6, 17, 8, 30, tzinfo=timezone.utc)
+    store = InMemoryKnowledgeStore()
+    store.upsert_source_item(
+        SourceItem(
+            source_item_id="src_1",
+            source_channel="manual",
+            record_type="note",
+            source_id="note_1",
+            owner_user_id="user_primary",
+            space_id="private_primary",
+            visibility=Visibility.PRIVATE,
+            visible_team_ids=[],
+            title="Daily source",
+            url=None,
+            content_text="Daily briefing source.",
+            content_hash="hash_1",
+            created_at=created_at,
+        )
+    )
+
+    class FakeApi:
+        def __init__(self, database_url: str) -> None:
+            assert database_url == "postgresql:///example"
+            self.store = store
+
+        def ready(self):
+            return {"ok": True, "checks": {"database": {"ok": True}, "schema": {"ok": True}, "mcp": {"ok": True}, "jobs": {"ok": True}, "metrics": {"ok": True}, "fastreact": {"ok": True}}}
+
+        def metrics(self):
+            return {
+                "index": {"source_items": 1, "chunks": 1, "entities": 1, "hyperedges": 1, "review_items": 0, "jobs": 0},
+                "connectors": {"source_channels": {"manual": {}}, "state_count": 1, "enabled_state_count": 1},
+            }
+
+        def job_stats(self):
+            return {"stats": {"by_status": {"failed": 0}, "digest_backlog": {"jobs": 0, "source_items": 0}, "running_stale_count": 0}}
+
+    class FakeFastreact:
+        def chat_completion(self, **kwargs):
+            assert kwargs["purpose"] == "daily_briefing"
+            assert kwargs["scope"] == {"source_refs": [{"source_item_id": "src_1"}]}
+            return {
+                "run_id": "run_daily_1",
+                "content": "Today PSKA has one fresh source and no urgent review.",
+                "source_refs": [{"source_item_id": "src_1"}],
+                "tool_calls": [{"name": "pska_index_status"}],
+            }
+
+    monkeypatch.setattr(cli_module, "PSKAApi", FakeApi)
+
+    payload = _daily_briefing_payload(
+        "postgresql:///example",
+        owner_user_id="user_primary",
+        limit=3,
+        narrative=True,
+        fastreact_client=FakeFastreact(),
+    )
+
+    saved = store.source_items[payload["narrative"]["saved_source_item_id"]]
+    assert payload["narrative"]["ok"] is True
+    assert payload["narrative"]["fallback"] is False
+    assert payload["narrative"]["source_refs"] == [{"source_item_id": "src_1"}]
+    assert payload["narrative"]["trace_summary"]["run_id"] == "run_daily_1"
+    assert saved.source_channel == "pska_briefing"
+    assert saved.metadata["extra"]["purpose"] == "daily_briefing"
+    assert saved.metadata["extra"]["source_refs"] == [{"source_item_id": "src_1"}]
+    assert saved.metadata["content"]["trace_summary"]["run_id"] == "run_daily_1"
+
+
+def test_daily_briefing_narrative_falls_back_when_fastreact_down(monkeypatch) -> None:
+    store = InMemoryKnowledgeStore()
+
+    class FakeApi:
+        def __init__(self, database_url: str) -> None:
+            self.store = store
+
+        def ready(self):
+            return {"ok": True, "checks": {"database": {"ok": True}, "schema": {"ok": True}, "mcp": {"ok": True}, "jobs": {"ok": True}, "metrics": {"ok": True}, "fastreact": {"ok": False}}}
+
+        def metrics(self):
+            return {
+                "index": {"source_items": 0, "chunks": 0, "entities": 0, "hyperedges": 0, "review_items": 0, "jobs": 0},
+                "connectors": {"source_channels": {}, "state_count": 0, "enabled_state_count": 0},
+            }
+
+        def job_stats(self):
+            return {"stats": {"by_status": {"failed": 0}, "digest_backlog": {"jobs": 0, "source_items": 0}, "running_stale_count": 0}}
+
+    class DownFastreact:
+        def chat_completion(self, **_kwargs):
+            raise FastreactError("FastReAct down")
+
+    monkeypatch.setattr(cli_module, "PSKAApi", FakeApi)
+
+    payload = _daily_briefing_payload(
+        "postgresql:///example",
+        owner_user_id="user_primary",
+        narrative=True,
+        fastreact_client=DownFastreact(),
+    )
+
+    assert payload["narrative"]["attempted"] is True
+    assert payload["narrative"]["ok"] is False
+    assert payload["narrative"]["fallback"] is True
+    assert "FastReAct down" in payload["narrative"]["error"]
+    assert payload["deterministic_next_actions"]
+    assert not store.source_items
 
 
 def test_fastreact_digest_worker_command_payload_uses_config_urls() -> None:

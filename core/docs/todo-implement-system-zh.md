@@ -158,7 +158,7 @@ commit_evidence: "Implemented deterministic `daily-briefing` CLI entry that asse
 id: HW-005
 track: Human Workflow
 priority: P2
-status: backlog
+status: verified
 user_value: 用户获得更自然的每日总结，但保留 deterministic fallback。
 dependencies:
   - HW-004
@@ -170,7 +170,7 @@ acceptance_gates:
   - narrative briefing 的 source refs 被保存。
 verification_commands:
   - cd core && ../.pska/venvs/pska-py312/bin/python -m pytest -q
-commit_evidence: ""
+commit_evidence: "Implemented optional `daily-briefing --narrative` FastReAct path. Default `daily-briefing` remains deterministic; `--narrative` sends deterministic context/source_refs to FastReAct and, on success, saves the answer as a `pska_briefing`/`daily_narrative` source item with purpose, represented_user_id, source_refs, trace_summary, and the FastReAct response in source metadata. FastReAct failure returns deterministic fallback with narrative.ok=false and does not save fake narrative data. Verification on 2026-06-17: targeted CLI tests `27 passed in 0.23s`; core pytest `189 passed in 8.55s`; twitter-x pytest `9 passed in 0.02s`; sample fallback smoke `PSKA_FASTREACT_URL=http://127.0.0.1:9 ./scripts/pska daily-briefing --owner-user-id user_primary --limit 2 --narrative` returned ok=true, narrative.attempted=true, narrative.ok=false, narrative.fallback=true, source_refs populated, and deterministic_next_actions populated. Unit coverage verifies successful narrative save with source_refs and trace_summary."
 ```
 
 ### HW-006 Agent Conversation Capture

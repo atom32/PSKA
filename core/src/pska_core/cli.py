@@ -21,6 +21,7 @@ from pska_core.connectors import connector_state_from_mapping, connector_record_
 from pska_core.embeddings import EmbeddingConfig, EmbeddingService, build_embedding_provider
 from pska_core.enums import Visibility
 from pska_core.extraction import ExtractionService
+from pska_core.fastreact_client import FastreactError, HttpFastreactClient
 from pska_core.files_connector import scan_files
 from pska_core.files_watcher import watch_files
 from pska_core.importers.twitter_zip import TwitterZipImporter
@@ -179,6 +180,7 @@ def build_parser() -> argparse.ArgumentParser:
     daily_briefing_parser = subparsers.add_parser("daily-briefing", help="Show deterministic daily PSKA briefing and next actions")
     daily_briefing_parser.add_argument("--owner-user-id", default="user_primary")
     daily_briefing_parser.add_argument("--limit", type=int, default=5, help="Maximum source/review/job rows to include")
+    daily_briefing_parser.add_argument("--narrative", action="store_true", help="Ask FastReAct for a narrative summary and save it when available")
 
     digest_worker_command_parser = subparsers.add_parser(
         "fastreact-digest-worker-command",
@@ -899,7 +901,7 @@ def daily_status(args: argparse.Namespace) -> int:
 
 
 def daily_briefing(args: argparse.Namespace) -> int:
-    payload = _daily_briefing_payload(args.database_url, owner_user_id=args.owner_user_id, limit=args.limit)
+    payload = _daily_briefing_payload(args.database_url, owner_user_id=args.owner_user_id, limit=args.limit, narrative=args.narrative)
     print(dumps(payload))
     return 0
 
@@ -1537,7 +1539,14 @@ def _daily_status_payload(database_url: str, *, owner_user_id: str = "user_prima
     }
 
 
-def _daily_briefing_payload(database_url: str, *, owner_user_id: str = "user_primary", limit: int = 5) -> dict[str, Any]:
+def _daily_briefing_payload(
+    database_url: str,
+    *,
+    owner_user_id: str = "user_primary",
+    limit: int = 5,
+    narrative: bool = False,
+    fastreact_client=None,
+) -> dict[str, Any]:
     limit = max(0, limit)
     status = _mvp_status_payload(database_url)
     summary = _mvp_status_summary(status)
@@ -1556,7 +1565,7 @@ def _daily_briefing_payload(database_url: str, *, owner_user_id: str = "user_pri
         digest_backlog_count=digest_backlog_count,
     )
     recommended_commands = list(dict.fromkeys([*daily.get("recommended_commands", []), *next_actions]))
-    return {
+    payload = {
         "ok": bool(daily.get("ok")),
         "database_url": database_url,
         "owner_user_id": owner_user_id,
@@ -1584,6 +1593,14 @@ def _daily_briefing_payload(database_url: str, *, owner_user_id: str = "user_pri
             "FastReAct can be offline; narrative generation belongs to HW-005.",
         ],
     }
+    if narrative:
+        payload["narrative"] = _daily_briefing_narrative(
+            store,
+            payload,
+            owner_user_id=owner_user_id,
+            fastreact_client=fastreact_client,
+        )
+    return payload
 
 
 def _recent_source_items(items: Sequence[SourceItem], *, owner_user_id: str, limit: int) -> list[dict[str, Any]]:
@@ -1633,6 +1650,162 @@ def _daily_briefing_next_actions(
     if not actions:
         actions.append("./scripts/pska daily-briefing")
     return list(dict.fromkeys(actions))
+
+
+def _daily_briefing_narrative(
+    store,
+    briefing: dict[str, Any],
+    *,
+    owner_user_id: str,
+    fastreact_client=None,
+) -> dict[str, Any]:
+    source_refs = _briefing_source_refs(briefing)
+    trace_summary: dict[str, Any] = {}
+    try:
+        client = fastreact_client or HttpFastreactClient()
+        response = client.chat_completion(
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are FastReAct writing a concise PSKA daily briefing. Use only the provided deterministic context and cite source refs.",
+                },
+                {"role": "user", "content": dumps({"deterministic_briefing": briefing})},
+            ],
+            user_id=owner_user_id,
+            purpose="daily_briefing",
+            stream=False,
+            scope={"source_refs": source_refs},
+        )
+        answer = _fastreact_response_text(response)
+        if not answer:
+            raise FastreactError("FastReAct daily briefing returned no narrative content")
+        cited_refs = _fastreact_response_source_refs(response) or source_refs
+        trace_summary = _fastreact_trace_summary(response)
+        saved = _save_narrative_briefing_source(
+            store,
+            owner_user_id=owner_user_id,
+            answer=answer,
+            source_refs=cited_refs,
+            trace_summary=trace_summary,
+            response=response,
+        )
+        return {
+            "attempted": True,
+            "ok": True,
+            "fallback": False,
+            "answer": answer,
+            "source_refs": cited_refs,
+            "trace_summary": trace_summary,
+            "saved_source_item_id": saved.source_item_id,
+        }
+    except Exception as exc:  # noqa: BLE001 - narrative must never break deterministic briefing.
+        return {
+            "attempted": True,
+            "ok": False,
+            "fallback": True,
+            "error": f"{type(exc).__name__}: {exc}",
+            "source_refs": source_refs,
+            "trace_summary": trace_summary,
+        }
+
+
+def _briefing_source_refs(briefing: dict[str, Any]) -> list[dict[str, Any]]:
+    refs: list[dict[str, Any]] = []
+    for source in ((briefing.get("source_summary") or {}).get("recent_sources") or []):
+        if isinstance(source, dict) and source.get("source_item_id"):
+            refs.append({"source_item_id": str(source["source_item_id"])})
+    for review in ((briefing.get("pending_reviews") or {}).get("review_items") or []):
+        if isinstance(review, dict):
+            refs.extend(ref for ref in review.get("source_refs", []) if isinstance(ref, dict))
+    return _dedupe_source_ref_dicts(refs)
+
+
+def _fastreact_response_text(response: dict[str, Any]) -> str:
+    for key in ["content", "answer", "text", "message"]:
+        value = response.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    choices = response.get("choices")
+    if isinstance(choices, list) and choices:
+        first = choices[0]
+        if isinstance(first, dict):
+            message = first.get("message")
+            if isinstance(message, dict) and isinstance(message.get("content"), str):
+                return message["content"].strip()
+            if isinstance(first.get("text"), str):
+                return first["text"].strip()
+    return ""
+
+
+def _fastreact_response_source_refs(response: dict[str, Any]) -> list[dict[str, Any]]:
+    refs = response.get("source_refs") or response.get("citations")
+    if not isinstance(refs, list):
+        return []
+    normalized = []
+    allowed = set(SourceRef.__dataclass_fields__)
+    for ref in refs:
+        if not isinstance(ref, dict):
+            continue
+        source_ref = {key: value for key, value in ref.items() if key in allowed and value}
+        if source_ref:
+            normalized.append(source_ref)
+    return _dedupe_source_ref_dicts(normalized)
+
+
+def _fastreact_trace_summary(response: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: response[key]
+        for key in ["run_id", "session_id", "model", "usage", "tool_calls", "event_count"]
+        if key in response
+    }
+
+
+def _save_narrative_briefing_source(
+    store,
+    *,
+    owner_user_id: str,
+    answer: str,
+    source_refs: list[dict[str, Any]],
+    trace_summary: dict[str, Any],
+    response: dict[str, Any],
+) -> SourceItem:
+    source_id = str(response.get("run_id") or f"daily_narrative_{int(time.time())}")
+    return IngestService(store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "pska_briefing",
+            "record_type": "daily_narrative",
+            "source_id": source_id,
+            "owner_user_id": owner_user_id,
+            "space_id": "private_primary",
+            "visibility": Visibility.PRIVATE.value,
+            "title": "FastReAct daily briefing",
+            "content": {
+                "text": answer,
+                "source_refs": source_refs,
+                "trace_summary": trace_summary,
+                "fastreact_response": response,
+            },
+            "extra": {
+                "purpose": "daily_briefing",
+                "represented_user_id": owner_user_id,
+                "source_refs": source_refs,
+                "trace_summary": trace_summary,
+            },
+        }
+    )
+
+
+def _dedupe_source_ref_dicts(refs: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[tuple[str, Any], ...]] = set()
+    for ref in refs:
+        normalized = {key: value for key, value in ref.items() if value}
+        key = tuple(sorted(normalized.items()))
+        if normalized and key not in seen:
+            seen.add(key)
+            deduped.append(normalized)
+    return deduped
 
 
 def _daily_status_recommended_commands(
