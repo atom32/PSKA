@@ -172,6 +172,10 @@ def build_parser() -> argparse.ArgumentParser:
     mvp_status_parser = subparsers.add_parser("mvp-status", help="Show MVP readiness, metrics, and next actions")
     mvp_status_parser.add_argument("--summary", action="store_true", help="Print a compact human-scale MVP status summary")
 
+    daily_status_parser = subparsers.add_parser("daily-status", help="Show deterministic daily PSKA readiness, backlog, and next commands")
+    daily_status_parser.add_argument("--owner-user-id", default="user_primary")
+    daily_status_parser.add_argument("--limit", type=int, default=5, help="Maximum pending reviews and failed jobs to include")
+
     digest_worker_command_parser = subparsers.add_parser(
         "fastreact-digest-worker-command",
         help="Print the Fastreact-side PSKA digest worker command for this PSKA config",
@@ -350,6 +354,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return mvp_bootstrap(args)
     if args.command == "mvp-status":
         return mvp_status(args)
+    if args.command == "daily-status":
+        return daily_status(args)
     if args.command == "fastreact-digest-worker-command":
         return fastreact_digest_worker_command(args, config)
     if args.command == "service-check":
@@ -868,6 +874,12 @@ def mvp_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def daily_status(args: argparse.Namespace) -> int:
+    payload = _daily_status_payload(args.database_url, owner_user_id=args.owner_user_id, limit=args.limit)
+    print(dumps(payload))
+    return 0
+
+
 def fastreact_digest_worker_command(args: argparse.Namespace, config: PSKAConfig) -> int:
     payload = _fastreact_digest_worker_command_payload(args, config)
     print(dumps(payload))
@@ -1304,6 +1316,86 @@ def _mvp_status_summary(payload: dict[str, Any]) -> dict[str, Any]:
         "pending_review_items": int(payload.get("pending_review_items") or 0),
         "next_actions": payload.get("next_actions") or [],
     }
+
+
+def _daily_status_payload(database_url: str, *, owner_user_id: str = "user_primary", limit: int = 5) -> dict[str, Any]:
+    limit = max(0, limit)
+    status = _mvp_status_payload(database_url)
+    summary = _mvp_status_summary(status)
+    jobs = status.get("jobs") or {}
+    metrics = status.get("metrics") or {}
+    index = metrics.get("index") or {}
+    checks = ((status.get("ready") or {}).get("checks") or {})
+
+    try:
+        review_items = PSKAApi(database_url).store.list_review_items()
+    except Exception:
+        review_items = []
+    pending_reviews = _review_items_payload(
+        review_items,
+        status="pending",
+        owner_user_id=owner_user_id,
+        limit=limit,
+        summary=True,
+    )
+    failed_jobs = list(jobs.get("recent_failed") or [])[:limit]
+    recommended_commands = _daily_status_recommended_commands(
+        summary=summary,
+        pending_review_count=int(pending_reviews.get("total_matching") or 0),
+        failed_job_count=int((jobs.get("by_status") or {}).get("failed") or len(failed_jobs)),
+    )
+
+    return {
+        "ok": bool(summary.get("database_ok")) and bool(summary.get("schema_ok")) and bool(summary.get("mcp_ok")),
+        "database_url": database_url,
+        "owner_user_id": owner_user_id,
+        "requires_fastreact_online": False,
+        "service_readiness": {
+            "database_ok": bool(summary.get("database_ok")),
+            "schema_ok": bool(summary.get("schema_ok")),
+            "mcp_ok": bool(summary.get("mcp_ok")),
+            "jobs_ok": bool((checks.get("jobs") or {}).get("ok")),
+            "metrics_ok": bool((checks.get("metrics") or {}).get("ok")),
+            "fastreact_ok": bool(summary.get("fastreact_ok")),
+            "fastreact_optional_for_daily_status": True,
+        },
+        "source_counts": {
+            "source_items": int(index.get("source_items") or 0),
+            "chunks": int(index.get("chunks") or 0),
+        },
+        "digest_backlog": (jobs.get("digest_backlog") or {}),
+        "pending_reviews": pending_reviews,
+        "failed_jobs": {
+            "count": int((jobs.get("by_status") or {}).get("failed") or len(failed_jobs)),
+            "recent": failed_jobs,
+        },
+        "recommended_commands": recommended_commands,
+        "next_actions": status.get("next_actions") or [],
+    }
+
+
+def _daily_status_recommended_commands(
+    *,
+    summary: dict[str, Any],
+    pending_review_count: int,
+    failed_job_count: int,
+) -> list[str]:
+    commands = ["./scripts/pska daily-status", "./scripts/pska mvp-status --summary"]
+    counts = summary.get("counts") or {}
+    digest_backlog = ((summary.get("jobs") or {}).get("digest_backlog") or {}).get("jobs") or 0
+    if int(counts.get("source_items") or 0) == 0:
+        commands.append("./scripts/pska mvp-bootstrap")
+    if int(counts.get("source_items") or 0) > 0 and int(counts.get("entities") or 0) == 0:
+        commands.append("./scripts/pska extract-all --owner-user-id user_primary")
+    if digest_backlog:
+        commands.append("./scripts/pska fastreact-digest-worker-command")
+    elif int(counts.get("source_items") or 0) > 0:
+        commands.append("./scripts/pska digest-schedule --owner-user-id user_primary")
+    if pending_review_count:
+        commands.append("./scripts/pska review-list --status pending --owner-user-id user_primary --summary")
+    if failed_job_count:
+        commands.append("./scripts/pska jobs list --status failed")
+    return commands
 
 
 def _fastreact_digest_worker_command_payload(args: argparse.Namespace, config: PSKAConfig) -> dict[str, Any]:

@@ -8,6 +8,7 @@ from pska_core.cli import (
     build_parser,
     digest_scheduler,
     _fastreact_digest_worker_command_payload,
+    _daily_status_payload,
     _mvp_next_actions,
     _mvp_status_payload,
     _mvp_status_summary,
@@ -63,6 +64,7 @@ def test_cli_accepts_search_and_smoke() -> None:
     local_daemon = build_parser().parse_args(["local-daemon", "--no-worker", "--digest-interval-seconds", "60"])
     mvp_bootstrap = build_parser().parse_args(["mvp-bootstrap", "--notes-root", "notes", "--dry-run", "--extract"])
     mvp_status = build_parser().parse_args(["mvp-status", "--summary"])
+    daily_status = build_parser().parse_args(["daily-status", "--owner-user-id", "user_primary", "--limit", "3"])
     digest_worker_command = build_parser().parse_args(["fastreact-digest-worker-command", "--batch-limit", "3"])
     service_check = build_parser().parse_args([
         "service-check",
@@ -96,6 +98,9 @@ def test_cli_accepts_search_and_smoke() -> None:
     assert mvp_bootstrap.extract is True
     assert mvp_status.command == "mvp-status"
     assert mvp_status.summary is True
+    assert daily_status.command == "daily-status"
+    assert daily_status.owner_user_id == "user_primary"
+    assert daily_status.limit == 3
     assert digest_worker_command.command == "fastreact-digest-worker-command"
     assert digest_worker_command.batch_limit == 3
     assert service_check.command == "service-check"
@@ -507,6 +512,75 @@ def test_mvp_status_payload_reports_schema_drift(monkeypatch) -> None:
     assert "connector_states missing" in payload["metrics"]["error"]
     assert "jobs missing" in payload["jobs"]["error"]
     assert any("db-init" in action for action in payload["next_actions"])
+
+
+def test_daily_status_payload_is_deterministic_and_fastreact_optional(monkeypatch) -> None:
+    class FakeStore:
+        def list_review_items(self):
+            return [
+                ReviewItem(
+                    review_item_id="rev_1",
+                    owner_user_id="user_primary",
+                    review_type=ReviewType.PROFILE_UPDATE,
+                    title="Profile update",
+                    proposal={"profile_delta": {"topic": "PSKA"}},
+                ),
+                ReviewItem(
+                    review_item_id="rev_other",
+                    owner_user_id="other",
+                    review_type=ReviewType.CONFLICT,
+                    title="Other conflict",
+                    proposal={},
+                ),
+            ]
+
+    class FakeApi:
+        def __init__(self, database_url: str) -> None:
+            assert database_url == "postgresql:///example"
+            self.store = FakeStore()
+
+        def ready(self):
+            return {
+                "ok": True,
+                "checks": {
+                    "database": {"ok": True},
+                    "schema": {"ok": True},
+                    "mcp": {"ok": True},
+                    "jobs": {"ok": True},
+                    "metrics": {"ok": True},
+                    "fastreact": {"ok": False, "error": "offline"},
+                },
+            }
+
+        def metrics(self):
+            return {
+                "index": {"source_items": 3, "chunks": 4, "entities": 1, "hyperedges": 1, "review_items": 2, "jobs": 3},
+                "connectors": {"source_channels": {"twitter": {}}, "state_count": 1, "enabled_state_count": 1},
+            }
+
+        def job_stats(self):
+            return {
+                "stats": {
+                    "by_status": {"queued": 1, "running": 0, "failed": 1, "succeeded": 1, "canceled": 0},
+                    "digest_backlog": {"jobs": 1, "source_items": 1},
+                    "running_stale_count": 0,
+                    "recent_failed": [{"job_id": "job_1", "job_type": "extract_all", "error": "boom"}],
+                }
+            }
+
+    monkeypatch.setattr(cli_module, "PSKAApi", FakeApi)
+
+    payload = _daily_status_payload("postgresql:///example", owner_user_id="user_primary", limit=5)
+
+    assert payload["ok"] is True
+    assert payload["requires_fastreact_online"] is False
+    assert payload["service_readiness"]["fastreact_ok"] is False
+    assert payload["source_counts"] == {"source_items": 3, "chunks": 4}
+    assert payload["digest_backlog"] == {"jobs": 1, "source_items": 1}
+    assert payload["pending_reviews"]["total_matching"] == 1
+    assert payload["failed_jobs"]["count"] == 1
+    assert "./scripts/pska review-list --status pending --owner-user-id user_primary --summary" in payload["recommended_commands"]
+    assert "./scripts/pska jobs list --status failed" in payload["recommended_commands"]
 
 
 def test_fastreact_digest_worker_command_payload_uses_config_urls() -> None:
