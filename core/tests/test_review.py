@@ -108,6 +108,79 @@ def test_llm_share_proposal_without_target_cannot_apply() -> None:
     assert store.get_review_item(review.review_item_id).status == "approved"
 
 
+def test_relationship_candidate_without_source_refs_cannot_apply() -> None:
+    store = _store()
+    review = ReviewItem(
+        review_item_id="rev_rel_missing_refs",
+        owner_user_id="user_primary",
+        review_type=ReviewType.RELATIONSHIP_CANDIDATE,
+        title="Review relationship without refs",
+        proposal={
+            "relation_type": "depends_on",
+            "confidence": 0.8,
+            "members": [
+                {"entity_type": "project", "label": "PSKA", "role": "system"},
+                {"entity_type": "service", "label": "FastReAct", "role": "dependency"},
+            ],
+        },
+    )
+    store.add_review_item(review)
+
+    ReviewService(store).approve(review.review_item_id, actor_user_id="user_primary")
+    with pytest.raises(ValueError, match="source_refs"):
+        ReviewService(store).apply(review.review_item_id, actor_user_id="user_primary")
+
+    assert store.get_review_item(review.review_item_id).status == "approved"
+    assert store.hyperedges == {}
+
+
+def test_relationship_candidate_applies_hyperedge_with_evidence_and_audit() -> None:
+    store = _store()
+    source = IngestService(store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "note-relationship",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "Relationship note",
+            "content": {"text": "PSKA depends on FastReAct for narrative briefing."},
+        }
+    )
+    review = ReviewItem(
+        review_item_id="rev_rel_apply",
+        owner_user_id="user_primary",
+        review_type=ReviewType.RELATIONSHIP_CANDIDATE,
+        title="Review PSKA FastReAct relationship",
+        proposal={
+            "relation_type": "depends_on",
+            "evidence_text": "PSKA depends on FastReAct for narrative briefing.",
+            "confidence": 0.82,
+            "source_refs": [{"source_item_id": source.source_item_id}],
+            "members": [
+                {"entity_type": "project", "label": "PSKA", "role": "system"},
+                {"entity_type": "service", "label": "FastReAct", "role": "dependency"},
+            ],
+        },
+    )
+    store.add_review_item(review)
+
+    applied = ReviewService(store).approve_and_apply(review.review_item_id, actor_user_id="user_primary")
+
+    assert applied.status == "applied"
+    edge = next(iter(store.hyperedges.values()))
+    assert edge.relation_type == "depends_on"
+    assert edge.evidence_text == "PSKA depends on FastReAct for narrative briefing."
+    assert edge.source_refs == [SourceRef(source_item_id=source.source_item_id)]
+    assert edge.confidence == 0.82
+    events = store.list_audit_events("review_item", review.review_item_id)
+    assert [event.decision for event in events] == ["approved", "applied"]
+    assert events[-1].metadata["created_hyperedge_id"] == edge.hyperedge_id
+    assert events[-1].metadata["source_refs"][0]["source_item_id"] == source.source_item_id
+
+
 def _store() -> InMemoryKnowledgeStore:
     store = InMemoryKnowledgeStore()
     store.add_user(User("user_primary", "primary", UserRole.ADMIN))

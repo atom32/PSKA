@@ -303,6 +303,7 @@ def test_review_summary_distinguishes_candidate_types_and_missing_sources() -> N
     assert by_type["profile_update"]["source_ref_status"] == "missing"
     assert by_type["profile_update"]["apply_supported"] is True
     assert by_type["memory_candidate"]["apply_supported"] is False
+    assert by_type["relationship_candidate"]["apply_supported"] is True
     assert by_type["relationship_candidate"]["confidence"] == 0.6
     assert "./scripts/pska review-reject rev_conflict" in by_type["conflict"]["recommended_actions"]
 

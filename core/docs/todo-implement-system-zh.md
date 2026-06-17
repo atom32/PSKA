@@ -200,7 +200,7 @@ commit_evidence: "Implemented reusable `capture_agent_conversation` helper and `
 id: HW-007
 track: Human Workflow
 priority: P1
-status: ready
+status: verified
 user_value: 进入图谱的是有出处、有关系语义、有置信度的关联数据，而不是孤立结论。
 dependencies:
   - HW-002
@@ -213,7 +213,7 @@ acceptance_gates:
   - apply 后 hyperedge 保留 evidence/source refs 和 audit event。
 verification_commands:
   - cd core && ../.pska/venvs/pska-py312/bin/python -m pytest -q
-commit_evidence: ""
+commit_evidence: "Implemented relationship_candidate review apply path with required relation_type, source_refs, members, confidence validation. Missing source_refs cannot apply and leaves review approved, not applied. Successful apply creates a hyperedge preserving evidence_text, source_refs, confidence, directionality/members, and records created_hyperedge_id/source_refs in review.apply audit metadata. Verification on 2026-06-17: targeted review/CLI tests `33 passed in 0.22s`; core pytest `192 passed in 8.59s`; twitter-x pytest `9 passed in 0.03s`; sample Postgres smoke applied `rev_hw007_relationship_smoke`, created hyperedge `hed_b46ae1a1872055738f787210b9a3e054`, preserved source_ref `src_31dad8d7fe855a06b0d4bf8072403c4c`, and audit decisions were approved/applied."
 ```
 
 ### HW-008 Digest Budget Policy

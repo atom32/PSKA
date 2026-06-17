@@ -1160,7 +1160,7 @@ def _review_items_payload(
 def _review_item_summary(item: ReviewItem) -> dict[str, Any]:
     review_type = item.review_type.value if hasattr(item.review_type, "value") else str(item.review_type)
     source_refs = _review_source_refs(item.proposal)
-    apply_supported = review_type in {"profile_update", "share_proposal"}
+    apply_supported = review_type in {"profile_update", "share_proposal", "relationship_candidate"}
     return {
         "review_item_id": item.review_item_id,
         "owner_user_id": item.owner_user_id,
