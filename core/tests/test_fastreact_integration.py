@@ -602,9 +602,13 @@ def test_digest_schedule_creates_backlog_and_skips_active_sources() -> None:
     assert first["job"]["priority"] == 7
     assert first["job"]["payload"]["batch_size"] == 1
     assert len(first["scheduled_source_item_ids"]) == 2
-    assert first["skipped_source_item_ids"] == []
+    assert first["policy"]["max_source_items"] == 2
+    assert {item["reason"] for item in first["selected_source_items"]} == {"new_or_triggered_source"}
+    assert first["skipped_source_item_ids"] == [sources[0].source_item_id]
+    assert first["skipped_source_items"][0]["reason"] == "limit_reached"
     assert second["scheduled_source_item_ids"] == [sources[0].source_item_id]
     assert sorted(second["skipped_source_item_ids"]) == sorted(source.source_item_id for source in sources[1:])
+    assert {item["reason"] for item in second["skipped_source_items"]} == {"active_digest_job"}
     assert forced["scheduled_source_item_ids"] == [sources[0].source_item_id]
     assert stats["digest_backlog"]["jobs"] == 3
     assert stats["digest_backlog"]["source_items"] == 3
@@ -642,6 +646,43 @@ def test_digest_schedule_skips_failed_sources_unless_forced() -> None:
     assert automatic["job"] is None
     assert automatic["scheduled_source_item_ids"] == []
     assert automatic["skipped_source_item_ids"] == [source.source_item_id]
+    assert automatic["skipped_source_items"][0]["reason"] == "failed_digest_job_requires_force_or_new_trigger"
+    assert forced["scheduled_source_item_ids"] == [source.source_item_id]
+
+
+def test_digest_schedule_skips_succeeded_sources_until_forced_or_new_trigger() -> None:
+    api = _api()
+    source = IngestService(api.store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "digest-succeeded-covered-note",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "Digest succeeded covered note",
+            "content": {"text": "A successful digest should not be scheduled forever."},
+        }
+    )
+    job = JobService(api.store).submit(
+        DIGEST_VIA_FASTREACT,
+        {
+            "owner_user_id": "user_primary",
+            "source_refs": [{"source_item_id": source.source_item_id}],
+            "scope": {"source_item_ids": [source.source_item_id]},
+        },
+    )
+    api.store.finish_job(job.job_id, {"ok": True})
+
+    automatic = api.schedule_digest({"owner_user_id": "user_primary", "limit": 1})
+    forced = api.schedule_digest({"owner_user_id": "user_primary", "source_item_ids": [source.source_item_id], "force": True})
+
+    assert automatic["job"] is None
+    assert automatic["scheduled_source_item_ids"] == []
+    assert automatic["skipped_source_item_ids"] == [source.source_item_id]
+    assert automatic["skipped_source_items"][0]["reason"] == "completed_digest_job"
+    assert automatic["policy"]["successful_source_repeat"].startswith("skip completed")
     assert forced["scheduled_source_item_ids"] == [source.source_item_id]
 
 

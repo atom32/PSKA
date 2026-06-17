@@ -357,9 +357,12 @@ class PSKAApi:
                 "owner_user_id": owner_user_id,
                 "scheduled_source_item_ids": [],
                 "skipped_source_item_ids": [],
+                "selected_source_items": [],
+                "skipped_source_items": [],
                 "force": force,
                 "limit": limit,
                 "batch_size": batch_size,
+                "policy": _digest_budget_policy(limit=limit, batch_size=batch_size, force=force),
                 "quota": quota,
                 "quota_limited": True,
             }
@@ -372,9 +375,28 @@ class PSKAApi:
             source_items = [item for item in source_items if item.source_item_id in scoped_source_item_ids]
         source_items = sorted(source_items, key=lambda item: (item.created_at, item.source_item_id), reverse=True)
 
-        already_scheduled = set() if force else _covered_digest_source_item_ids(self.store)
-        skipped_source_item_ids = [item.source_item_id for item in source_items if item.source_item_id in already_scheduled]
-        selected = [item for item in source_items if force or item.source_item_id not in already_scheduled][:limit]
+        coverage = {} if force else _digest_source_coverage(self.store)
+        skipped_items = [
+            _digest_source_explanation(item, selected=False, reason=coverage[item.source_item_id]["reason"], job=coverage[item.source_item_id]["job"])
+            for item in source_items
+            if item.source_item_id in coverage
+        ]
+        eligible = [item for item in source_items if force or item.source_item_id not in coverage]
+        selected = eligible[:limit]
+        selected_items = [
+            _digest_source_explanation(
+                item,
+                selected=True,
+                reason="force_selected" if force else "new_or_triggered_source",
+                job=None,
+            )
+            for item in selected
+        ]
+        if len(eligible) > limit:
+            skipped_items.extend(
+                _digest_source_explanation(item, selected=False, reason="limit_reached", job=None)
+                for item in eligible[limit:]
+            )
         source_refs = [{"source_item_id": item.source_item_id} for item in selected]
 
         job = None
@@ -398,6 +420,9 @@ class PSKAApi:
                     "source_item_count": len(source_refs),
                     "force": force,
                     "priority": priority,
+                    "policy": _digest_budget_policy(limit=limit, batch_size=batch_size, force=force),
+                    "selected_source_items": selected_items,
+                    "skipped_source_items": skipped_items[:20],
                 },
             )
 
@@ -405,10 +430,13 @@ class PSKAApi:
             "job": to_jsonable(job) if job else None,
             "owner_user_id": owner_user_id,
             "scheduled_source_item_ids": [ref["source_item_id"] for ref in source_refs],
-            "skipped_source_item_ids": skipped_source_item_ids,
+            "skipped_source_item_ids": [item["source_item_id"] for item in skipped_items],
+            "selected_source_items": selected_items,
+            "skipped_source_items": skipped_items,
             "force": force,
             "limit": limit,
             "batch_size": batch_size,
+            "policy": _digest_budget_policy(limit=limit, batch_size=batch_size, force=force),
             "quota": quota,
             "quota_limited": False,
         }
@@ -755,11 +783,61 @@ def _job_source_item_ids(job) -> set[str]:
     return ids
 
 
-def _covered_digest_source_item_ids(store: PostgresKnowledgeStore) -> set[str]:
-    ids: set[str] = set()
+def _digest_source_coverage(store: PostgresKnowledgeStore) -> dict[str, dict[str, Any]]:
+    coverage: dict[str, dict[str, Any]] = {}
+    priority = {"queued": 0, "running": 1, "succeeded": 2, "failed": 3, "canceled": 4}
     for job in store.list_jobs(job_type=DIGEST_VIA_FASTREACT, limit=10000):
-        ids.update(_job_source_item_ids(job))
-    return ids
+        reason = _digest_coverage_reason(job.status)
+        for source_item_id in _job_source_item_ids(job):
+            current = coverage.get(source_item_id)
+            if current is None or priority.get(job.status, 99) < priority.get(current["job"].status, 99):
+                coverage[source_item_id] = {"reason": reason, "job": job}
+    return coverage
+
+
+def _digest_coverage_reason(status: str) -> str:
+    if status in {"queued", "running"}:
+        return "active_digest_job"
+    if status == "succeeded":
+        return "completed_digest_job"
+    if status == "failed":
+        return "failed_digest_job_requires_force_or_new_trigger"
+    if status == "canceled":
+        return "canceled_digest_job_requires_force_or_new_trigger"
+    return "covered_by_digest_job"
+
+
+def _digest_source_explanation(source_item: Any, *, selected: bool, reason: str, job: Any | None) -> dict[str, Any]:
+    payload = {
+        "source_item_id": source_item.source_item_id,
+        "source_channel": source_item.source_channel,
+        "title": source_item.title,
+        "selected": selected,
+        "reason": reason,
+        "created_at": source_item.created_at,
+    }
+    if job is not None:
+        payload["covering_job"] = {
+            "job_id": job.job_id,
+            "status": job.status,
+            "job_type": job.job_type,
+            "updated_at": job.updated_at,
+        }
+    return payload
+
+
+def _digest_budget_policy(*, limit: int, batch_size: int, force: bool) -> dict[str, Any]:
+    return {
+        "dedupe": "skip any source already covered by digest_via_fastreact unless force=true",
+        "successful_source_repeat": "skip completed digest sources until force=true or a future trigger policy selects them",
+        "failed_source_repeat": "skip failed digest sources unless force=true to avoid infinite retry loops",
+        "frequency": "optional quota_window_seconds/max_jobs_per_window limits new jobs",
+        "max_source_items": limit,
+        "max_source_items_per_job": batch_size,
+        "token_budget": "not enforced yet; digest worker owns model token limits",
+        "trigger_policy": "new_or_explicit_source_ids; similarity/tag/entity triggers are reserved for a later policy revision",
+        "force": force,
+    }
 
 
 def _digest_schedule_quota(store: PostgresKnowledgeStore, *, owner_user_id: str, payload: dict[str, Any], force: bool) -> dict[str, Any]:

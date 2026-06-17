@@ -222,7 +222,7 @@ commit_evidence: "Implemented relationship_candidate review apply path with requ
 id: HW-008
 track: Human Workflow
 priority: P1
-status: ready
+status: verified
 user_value: 空闲 digest 能重新联想相关资料，但不会无限重复处理或失控消耗 token。
 dependencies: []
 implementation_hint: 在现有 quota window 基础上明确 token、frequency、dedupe、max source/chunk set、similarity/tag/entity trigger 策略。
@@ -234,7 +234,7 @@ acceptance_gates:
   - 已成功且无新关联触发的资料不会被无限重复排队。
 verification_commands:
   - cd core && ../.pska/venvs/pska-py312/bin/python -m pytest -q
-commit_evidence: ""
+commit_evidence: "Implemented digest scheduler budget/explanation policy. `schedule_digest` now returns a policy object plus selected/skipped source item explanations, dedupes active/succeeded/failed/canceled digest-covered sources unless force=true, explains limit_reached selections, preserves quota window limits, and documents current trigger/token boundaries. Successful digest-covered sources are skipped until force=true or a future trigger policy selects them, preventing infinite repeat scheduling. Verification on 2026-06-17: targeted digest tests `3 passed in 0.10s`; core pytest `193 passed in 8.52s`; twitter-x pytest `9 passed in 0.02s`; sample Postgres smoke `./scripts/pska digest-schedule --owner-user-id user_primary --limit 2` created a digest job for 2 sources and returned selected_reasons=[new_or_triggered_source], skipped_reasons=[active_digest_job,completed_digest_job,limit_reached], with policy fields for dedupe, successful_source_repeat, failed_source_repeat, frequency, max_source_items=2, max_source_items_per_job=20, token_budget, trigger_policy, and force=false."
 ```
 
 ## 基线门禁
