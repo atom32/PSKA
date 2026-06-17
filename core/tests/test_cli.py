@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import json
 
 import pska_core.cli as cli_module
@@ -196,6 +197,7 @@ def test_cli_accepts_review_commands() -> None:
 
 
 def test_review_items_payload_filters_and_summarizes() -> None:
+    created_at = datetime(2026, 6, 17, 9, 0, tzinfo=timezone.utc)
     payload = _review_items_payload(
         [
             ReviewItem(
@@ -203,7 +205,12 @@ def test_review_items_payload_filters_and_summarizes() -> None:
                 owner_user_id="user_primary",
                 review_type=ReviewType.PROFILE_UPDATE,
                 title="Profile update",
-                proposal={"profile_delta": {"topic": "PSKA"}},
+                proposal={
+                    "profile_delta": {"topic": "PSKA"},
+                    "source_refs": [{"source_item_id": "src_1", "chunk_id": "chk_1"}],
+                    "confidence": 0.7,
+                },
+                created_at=created_at,
             ),
             ReviewItem(
                 review_item_id="rev_2",
@@ -228,12 +235,55 @@ def test_review_items_payload_filters_and_summarizes() -> None:
                 "review_type": "profile_update",
                 "status": "pending",
                 "title": "Profile update",
+                "confidence": 0.7,
+                "source_refs": [{"source_item_id": "src_1", "chunk_id": "chk_1"}],
+                "source_ref_status": "present",
+                "created_at": created_at,
+                "recommended_actions": [
+                    "./scripts/pska review-approve rev_1",
+                    "./scripts/pska review-approve rev_1 --apply",
+                    "./scripts/pska review-reject rev_1",
+                ],
+                "apply_supported": True,
+                "can_apply_now": False,
             }
         ],
         "count": 1,
         "total_matching": 1,
         "limit": 10,
     }
+
+
+def test_review_summary_distinguishes_candidate_types_and_missing_sources() -> None:
+    review_types = [
+        ReviewType.MEMORY_CANDIDATE,
+        ReviewType.PROFILE_UPDATE,
+        ReviewType.RELATIONSHIP_CANDIDATE,
+        ReviewType.ACTION_CANDIDATE,
+        ReviewType.CONFLICT,
+        ReviewType.LOW_CONFIDENCE,
+    ]
+    items = [
+        ReviewItem(
+            review_item_id=f"rev_{review_type.value}",
+            owner_user_id="user_primary",
+            review_type=review_type,
+            title=review_type.value,
+            proposal={"confidence": 0.6, "source_refs": [{"source_item_id": f"src_{index}"}]} if index % 2 == 0 else {},
+        )
+        for index, review_type in enumerate(review_types)
+    ]
+
+    payload = _review_items_payload(items, status="pending", owner_user_id="user_primary", limit=10, summary=True)
+    by_type = {item["review_type"]: item for item in payload["review_items"]}
+
+    assert set(by_type) == {review_type.value for review_type in review_types}
+    assert by_type["memory_candidate"]["source_ref_status"] == "present"
+    assert by_type["profile_update"]["source_ref_status"] == "missing"
+    assert by_type["profile_update"]["apply_supported"] is True
+    assert by_type["memory_candidate"]["apply_supported"] is False
+    assert by_type["relationship_candidate"]["confidence"] == 0.6
+    assert "./scripts/pska review-reject rev_conflict" in by_type["conflict"]["recommended_actions"]
 
 
 def test_cli_accepts_job_worker_commands() -> None:

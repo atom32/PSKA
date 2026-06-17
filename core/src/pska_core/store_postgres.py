@@ -1076,6 +1076,8 @@ class PostgresKnowledgeStore:
             title=row["title"],
             proposal=dict(row["proposal"] or {}),
             status=row["status"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
         )
 
     def _job_event_from_row(self, row: dict[str, Any]) -> JobEvent:

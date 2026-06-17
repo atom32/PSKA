@@ -241,6 +241,8 @@ class ReviewItem:
     title: str
     proposal: dict[str, Any]
     status: str = "pending"
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
 
 
 @dataclass(slots=True)

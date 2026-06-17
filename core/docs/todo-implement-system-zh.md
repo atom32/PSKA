@@ -93,7 +93,7 @@ commit_evidence: "Implemented deterministic `pska-core daily-status` entry. Veri
 id: HW-002
 track: Human Workflow
 priority: P0
-status: ready
+status: verified
 user_value: 用户能快速判断 pending review 里哪些值得处理，哪些可以拒绝或延后。
 dependencies: []
 implementation_hint: 增强 review-list 摘要，展示 type、confidence、source refs、created_at、推荐操作和可 apply 状态。
@@ -105,7 +105,7 @@ acceptance_gates:
   - 每条 review 能显示 source refs 或明确标记缺失出处。
 verification_commands:
   - cd core && ../.pska/venvs/pska-py312/bin/python -m pytest -q
-commit_evidence: ""
+commit_evidence: "Implemented enhanced `review-list --summary` rows with review_type, confidence, source_refs/source_ref_status, created_at, recommended_actions, apply_supported, and can_apply_now. Verification on 2026-06-17: targeted CLI tests `23 passed in 0.21s`; core pytest `185 passed in 8.50s`; twitter-x pytest `9 passed in 0.02s`; sample Postgres smoke `./scripts/pska review-list --status pending --owner-user-id user_primary --limit 5 --summary` returned successfully with count=0,total_matching=0 because the current sample DB has no pending review items. Unit coverage distinguishes memory_candidate, profile_update, relationship_candidate, action_candidate, conflict, and low_confidence, including present vs missing source refs."
 ```
 
 ### HW-003 Memory/Profile Read-only View

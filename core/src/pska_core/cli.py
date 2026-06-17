@@ -1082,13 +1082,7 @@ def _review_items_payload(
     limited = filtered[: max(0, limit)]
     if summary:
         payload_items = [
-            {
-                "review_item_id": item.review_item_id,
-                "owner_user_id": item.owner_user_id,
-                "review_type": item.review_type.value if hasattr(item.review_type, "value") else str(item.review_type),
-                "status": item.status,
-                "title": item.title,
-            }
+            _review_item_summary(item)
             for item in limited
         ]
     else:
@@ -1099,6 +1093,71 @@ def _review_items_payload(
         "total_matching": len(filtered),
         "limit": max(0, limit),
     }
+
+
+def _review_item_summary(item: ReviewItem) -> dict[str, Any]:
+    review_type = item.review_type.value if hasattr(item.review_type, "value") else str(item.review_type)
+    source_refs = _review_source_refs(item.proposal)
+    apply_supported = review_type in {"profile_update", "share_proposal"}
+    return {
+        "review_item_id": item.review_item_id,
+        "owner_user_id": item.owner_user_id,
+        "review_type": review_type,
+        "status": item.status,
+        "title": item.title,
+        "confidence": _review_confidence(item.proposal),
+        "source_refs": source_refs,
+        "source_ref_status": "present" if source_refs else "missing",
+        "created_at": item.created_at,
+        "recommended_actions": _review_recommended_actions(item, apply_supported=apply_supported),
+        "apply_supported": apply_supported,
+        "can_apply_now": item.status == "approved" and apply_supported,
+    }
+
+
+def _review_confidence(proposal: dict[str, Any]) -> float | None:
+    value = proposal.get("confidence")
+    if value is None and isinstance(proposal.get("candidate"), dict):
+        value = proposal["candidate"].get("confidence")
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _review_source_refs(proposal: dict[str, Any]) -> list[dict[str, Any]]:
+    refs = proposal.get("source_refs")
+    if not isinstance(refs, list) and isinstance(proposal.get("candidate"), dict):
+        refs = proposal["candidate"].get("source_refs")
+    if not isinstance(refs, list):
+        return []
+    allowed = set(SourceRef.__dataclass_fields__)
+    normalized = []
+    for ref in refs:
+        if not isinstance(ref, dict):
+            continue
+        normalized_ref = {key: value for key, value in ref.items() if key in allowed and value}
+        if normalized_ref:
+            normalized.append(normalized_ref)
+    return normalized
+
+
+def _review_recommended_actions(item: ReviewItem, *, apply_supported: bool) -> list[str]:
+    base = f"./scripts/pska review-approve {item.review_item_id}"
+    reject = f"./scripts/pska review-reject {item.review_item_id}"
+    if item.status == "pending":
+        actions = [base, reject]
+        if apply_supported:
+            actions.insert(1, f"{base} --apply")
+        return actions
+    if item.status == "approved":
+        actions = [reject]
+        if apply_supported:
+            actions.insert(0, f"./scripts/pska review-apply {item.review_item_id}")
+        return actions
+    return []
 
 
 def review_reject(args: argparse.Namespace) -> int:
