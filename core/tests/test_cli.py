@@ -8,6 +8,7 @@ from pska_core.config import PSKAConfig
 from pska_core.cli import (
     build_parser,
     digest_scheduler,
+    _daily_briefing_payload,
     _fastreact_digest_worker_command_payload,
     _daily_status_payload,
     _memory_list_payload,
@@ -17,8 +18,8 @@ from pska_core.cli import (
     _profile_list_payload,
     _review_items_payload,
 )
-from pska_core.enums import MemoryLayer, ReviewType
-from pska_core.models import AgentMemory, ReviewItem, SourceRef, UserProfileCard
+from pska_core.enums import MemoryLayer, ReviewType, Visibility
+from pska_core.models import AgentMemory, ReviewItem, SourceItem, SourceRef, UserProfileCard
 from pska_core.store import InMemoryKnowledgeStore
 
 
@@ -69,6 +70,7 @@ def test_cli_accepts_search_and_smoke() -> None:
     mvp_bootstrap = build_parser().parse_args(["mvp-bootstrap", "--notes-root", "notes", "--dry-run", "--extract"])
     mvp_status = build_parser().parse_args(["mvp-status", "--summary"])
     daily_status = build_parser().parse_args(["daily-status", "--owner-user-id", "user_primary", "--limit", "3"])
+    daily_briefing = build_parser().parse_args(["daily-briefing", "--owner-user-id", "user_primary", "--limit", "3"])
     digest_worker_command = build_parser().parse_args(["fastreact-digest-worker-command", "--batch-limit", "3"])
     memory_list = build_parser().parse_args(["memory-list", "--owner-user-id", "user_primary", "--limit", "2"])
     profile_list = build_parser().parse_args(["profile-list", "--owner-user-id", "user_primary", "--limit", "2"])
@@ -107,6 +109,9 @@ def test_cli_accepts_search_and_smoke() -> None:
     assert daily_status.command == "daily-status"
     assert daily_status.owner_user_id == "user_primary"
     assert daily_status.limit == 3
+    assert daily_briefing.command == "daily-briefing"
+    assert daily_briefing.owner_user_id == "user_primary"
+    assert daily_briefing.limit == 3
     assert memory_list.command == "memory-list"
     assert memory_list.owner_user_id == "user_primary"
     assert memory_list.limit == 2
@@ -696,6 +701,96 @@ def test_daily_status_payload_is_deterministic_and_fastreact_optional(monkeypatc
     assert payload["failed_jobs"]["count"] == 1
     assert "./scripts/pska review-list --status pending --owner-user-id user_primary --summary" in payload["recommended_commands"]
     assert "./scripts/pska jobs list --status failed" in payload["recommended_commands"]
+
+
+def test_daily_briefing_payload_includes_deterministic_next_actions(monkeypatch) -> None:
+    created_at = datetime(2026, 6, 17, 8, 30, tzinfo=timezone.utc)
+
+    class FakeStore:
+        def list_review_items(self):
+            return [
+                ReviewItem(
+                    review_item_id="rev_1",
+                    owner_user_id="user_primary",
+                    review_type=ReviewType.CONFLICT,
+                    title="Check conflict",
+                    proposal={"source_refs": [{"source_item_id": "src_1"}], "confidence": 0.4},
+                )
+            ]
+
+        def list_source_items(self):
+            return [
+                SourceItem(
+                    source_item_id="src_1",
+                    source_channel="manual",
+                    record_type="note",
+                    source_id="note_1",
+                    owner_user_id="user_primary",
+                    space_id="private_primary",
+                    visibility=Visibility.PRIVATE,
+                    visible_team_ids=[],
+                    title="Daily source",
+                    url=None,
+                    content_text="Daily briefing source.",
+                    content_hash="hash_1",
+                    created_at=created_at,
+                )
+            ]
+
+    class FakeApi:
+        def __init__(self, database_url: str) -> None:
+            assert database_url == "postgresql:///example"
+            self.store = FakeStore()
+
+        def ready(self):
+            return {
+                "ok": True,
+                "checks": {
+                    "database": {"ok": True},
+                    "schema": {"ok": True},
+                    "mcp": {"ok": True},
+                    "jobs": {"ok": True},
+                    "metrics": {"ok": True},
+                    "fastreact": {"ok": False, "error": "offline"},
+                },
+            }
+
+        def metrics(self):
+            return {
+                "index": {"source_items": 1, "chunks": 2, "entities": 1, "hyperedges": 1, "review_items": 1, "jobs": 2},
+                "connectors": {
+                    "source_channels": {"manual": {"count": 1}},
+                    "state_count": 1,
+                    "enabled_state_count": 1,
+                    "state_sync_status": {"succeeded": 1},
+                },
+            }
+
+        def job_stats(self):
+            return {
+                "stats": {
+                    "by_status": {"queued": 1, "running": 0, "failed": 1, "succeeded": 0, "canceled": 0},
+                    "digest_backlog": {"jobs": 1, "source_items": 1},
+                    "running_stale_count": 0,
+                    "recent_failed": [{"job_id": "job_1", "job_type": "digest_via_fastreact", "error": "offline"}],
+                }
+            }
+
+    monkeypatch.setattr(cli_module, "PSKAApi", FakeApi)
+
+    payload = _daily_briefing_payload("postgresql:///example", owner_user_id="user_primary", limit=3)
+
+    assert payload["briefing_type"] == "deterministic_daily_v0"
+    assert payload["requires_llm"] is False
+    assert payload["requires_fastreact_online"] is False
+    assert payload["service_readiness"]["fastreact_ok"] is False
+    assert payload["source_summary"]["recent_sources"][0]["source_item_id"] == "src_1"
+    assert payload["connector_state"]["source_channels"] == ["manual"]
+    assert payload["pending_reviews"]["total_matching"] == 1
+    assert payload["failed_jobs"]["count"] == 1
+    assert "./scripts/pska review-list --status pending --owner-user-id user_primary --summary" in payload["deterministic_next_actions"]
+    assert "./scripts/pska jobs list --status failed" in payload["deterministic_next_actions"]
+    assert "./scripts/pska fastreact-digest-worker-command" in payload["deterministic_next_actions"]
 
 
 def test_fastreact_digest_worker_command_payload_uses_config_urls() -> None:

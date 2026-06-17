@@ -135,7 +135,7 @@ commit_evidence: "Implemented read-only `memory-list` and `profile-list` CLI ent
 id: HW-004
 track: Human Workflow
 priority: P1
-status: ready
+status: verified
 user_value: 用户每天看到一个不依赖 LLM 的 briefing，知道新资料、待处理、失败任务和下一步建议。
 dependencies:
   - HW-001
@@ -149,7 +149,7 @@ acceptance_gates:
   - 输出包含 deterministic next actions。
 verification_commands:
   - cd core && ../.pska/venvs/pska-py312/bin/python -m pytest -q
-commit_evidence: ""
+commit_evidence: "Implemented deterministic `daily-briefing` CLI entry that assembles service readiness, recent sources, connector state, digest backlog, pending reviews, failed jobs, deterministic_next_actions, and recommended_commands without LLM use. Verification on 2026-06-17: targeted CLI tests `25 passed in 0.21s`; core pytest `187 passed in 8.03s`; twitter-x pytest `9 passed in 0.02s`; sample Postgres smoke `./scripts/pska daily-briefing --owner-user-id user_primary --limit 3` returned ok=true, source_items=24, chunks=135, recent_sources=3, connector source_channels=[files,manual,manual_canary], digest_backlog.jobs=1, pending_reviews.total_matching=0, failed_jobs.count=2, deterministic_next_actions populated. Offline FastReAct smoke with `PSKA_FASTREACT_URL=http://127.0.0.1:9` returned ok=true, requires_fastreact_online=false, fastreact_ok=false, and deterministic_next_actions still populated."
 ```
 
 ### HW-005 FastReAct Narrative Briefing

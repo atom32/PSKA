@@ -29,7 +29,7 @@ from pska_core.jobs import JOB_TYPES, JobService
 from pska_core.local_daemon import build_process_specs, run_supervisor
 from pska_core.memory import MemoryService
 from pska_core.mcp_server import MCPServer
-from pska_core.models import AgentMemory, ChannelIngestPayload, ReviewItem, SourceRef, UserProfileCard
+from pska_core.models import AgentMemory, ChannelIngestPayload, ReviewItem, SourceItem, SourceRef, UserProfileCard
 from pska_core.agentic import AgenticSearchService
 from pska_core.retrieval import RetrievalService
 from pska_core.review import ReviewService
@@ -175,6 +175,10 @@ def build_parser() -> argparse.ArgumentParser:
     daily_status_parser = subparsers.add_parser("daily-status", help="Show deterministic daily PSKA readiness, backlog, and next commands")
     daily_status_parser.add_argument("--owner-user-id", default="user_primary")
     daily_status_parser.add_argument("--limit", type=int, default=5, help="Maximum pending reviews and failed jobs to include")
+
+    daily_briefing_parser = subparsers.add_parser("daily-briefing", help="Show deterministic daily PSKA briefing and next actions")
+    daily_briefing_parser.add_argument("--owner-user-id", default="user_primary")
+    daily_briefing_parser.add_argument("--limit", type=int, default=5, help="Maximum source/review/job rows to include")
 
     digest_worker_command_parser = subparsers.add_parser(
         "fastreact-digest-worker-command",
@@ -364,6 +368,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return mvp_status(args)
     if args.command == "daily-status":
         return daily_status(args)
+    if args.command == "daily-briefing":
+        return daily_briefing(args)
     if args.command == "fastreact-digest-worker-command":
         return fastreact_digest_worker_command(args, config)
     if args.command == "service-check":
@@ -888,6 +894,12 @@ def mvp_status(args: argparse.Namespace) -> int:
 
 def daily_status(args: argparse.Namespace) -> int:
     payload = _daily_status_payload(args.database_url, owner_user_id=args.owner_user_id, limit=args.limit)
+    print(dumps(payload))
+    return 0
+
+
+def daily_briefing(args: argparse.Namespace) -> int:
+    payload = _daily_briefing_payload(args.database_url, owner_user_id=args.owner_user_id, limit=args.limit)
     print(dumps(payload))
     return 0
 
@@ -1523,6 +1535,104 @@ def _daily_status_payload(database_url: str, *, owner_user_id: str = "user_prima
         "recommended_commands": recommended_commands,
         "next_actions": status.get("next_actions") or [],
     }
+
+
+def _daily_briefing_payload(database_url: str, *, owner_user_id: str = "user_primary", limit: int = 5) -> dict[str, Any]:
+    limit = max(0, limit)
+    status = _mvp_status_payload(database_url)
+    summary = _mvp_status_summary(status)
+    daily = _daily_status_payload(database_url, owner_user_id=owner_user_id, limit=limit)
+    metrics = status.get("metrics") or {}
+    connectors = (metrics.get("connectors") or {})
+    store = PSKAApi(database_url).store
+    recent_sources = _recent_source_items(store.list_source_items(), owner_user_id=owner_user_id, limit=limit)
+    pending_review_count = int((daily.get("pending_reviews") or {}).get("total_matching") or 0)
+    failed_job_count = int((daily.get("failed_jobs") or {}).get("count") or 0)
+    digest_backlog_count = int((daily.get("digest_backlog") or {}).get("jobs") or 0)
+    next_actions = _daily_briefing_next_actions(
+        summary=summary,
+        pending_review_count=pending_review_count,
+        failed_job_count=failed_job_count,
+        digest_backlog_count=digest_backlog_count,
+    )
+    recommended_commands = list(dict.fromkeys([*daily.get("recommended_commands", []), *next_actions]))
+    return {
+        "ok": bool(daily.get("ok")),
+        "database_url": database_url,
+        "owner_user_id": owner_user_id,
+        "briefing_type": "deterministic_daily_v0",
+        "requires_llm": False,
+        "requires_fastreact_online": False,
+        "service_readiness": daily.get("service_readiness") or {},
+        "source_summary": {
+            "counts": daily.get("source_counts") or {},
+            "recent_sources": recent_sources,
+        },
+        "connector_state": {
+            "source_channels": sorted((connectors.get("source_channels") or {}).keys()),
+            "state_count": int(connectors.get("state_count") or 0),
+            "enabled_state_count": int(connectors.get("enabled_state_count") or 0),
+            "state_sync_status": connectors.get("state_sync_status") or {},
+        },
+        "digest_backlog": daily.get("digest_backlog") or {},
+        "pending_reviews": daily.get("pending_reviews") or {},
+        "failed_jobs": daily.get("failed_jobs") or {},
+        "deterministic_next_actions": next_actions,
+        "recommended_commands": recommended_commands,
+        "notes": [
+            "This briefing is deterministic JSON assembled from PSKA DB state.",
+            "FastReAct can be offline; narrative generation belongs to HW-005.",
+        ],
+    }
+
+
+def _recent_source_items(items: Sequence[SourceItem], *, owner_user_id: str, limit: int) -> list[dict[str, Any]]:
+    visible = [item for item in items if item.owner_user_id == owner_user_id]
+    recent = sorted(visible, key=lambda item: (item.created_at, item.source_item_id), reverse=True)[:limit]
+    return [
+        {
+            "source_item_id": item.source_item_id,
+            "source_channel": item.source_channel,
+            "record_type": item.record_type,
+            "title": item.title,
+            "url": item.url,
+            "created_at": item.created_at,
+        }
+        for item in recent
+    ]
+
+
+def _daily_briefing_next_actions(
+    *,
+    summary: dict[str, Any],
+    pending_review_count: int,
+    failed_job_count: int,
+    digest_backlog_count: int,
+) -> list[str]:
+    actions: list[str] = []
+    counts = summary.get("counts") or {}
+    connectors = summary.get("connectors") or {}
+    if not summary.get("database_ok") or not summary.get("schema_ok") or not summary.get("mcp_ok"):
+        actions.append("./scripts/pska db-init")
+        actions.append("./scripts/pska service-check")
+    if int(counts.get("source_items") or 0) == 0:
+        actions.append("./scripts/pska mvp-bootstrap")
+    if not connectors.get("state_count"):
+        actions.append("./scripts/pska files-sync")
+    if pending_review_count:
+        actions.append("./scripts/pska review-list --status pending --owner-user-id user_primary --summary")
+    if failed_job_count:
+        actions.append("./scripts/pska jobs list --status failed")
+    if digest_backlog_count:
+        actions.append("./scripts/pska fastreact-digest-worker-command")
+    elif int(counts.get("source_items") or 0) > 0:
+        actions.append("./scripts/pska digest-schedule --owner-user-id user_primary")
+    if int(counts.get("source_items") or 0) > 0:
+        actions.append("./scripts/pska memory-list --owner-user-id user_primary --limit 5")
+        actions.append("./scripts/pska profile-list --owner-user-id user_primary --limit 5")
+    if not actions:
+        actions.append("./scripts/pska daily-briefing")
+    return list(dict.fromkeys(actions))
 
 
 def _daily_status_recommended_commands(
