@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pska_core.agent_capture import capture_agent_conversation
 from pska_core.adapters.conversation import conversation_to_payload
 from pska_core.acl import ACLService
 from pska_core.enums import UserRole
@@ -49,6 +50,31 @@ def test_conversation_payload_ingests_as_source_document_and_chunk() -> None:
     assert source.metadata["author"]["participants"][0]["participant_id"] == "user_primary"
     assert "msg_1 Dawei [2026-06-11T10:00:00Z]" in source.content_text
     assert "Project Atlas uses PSKA" in next(iter(store.chunks.values())).text
+
+
+def test_agent_capture_saves_answer_citations_and_trace_summary() -> None:
+    store = InMemoryKnowledgeStore()
+    store.add_user(User("user_primary", "primary", UserRole.ADMIN))
+
+    source = capture_agent_conversation(
+        store,
+        owner_user_id="user_primary",
+        represented_user_id="user_primary",
+        purpose="agentic_search",
+        prompt="What does PSKA know?",
+        answer="PSKA knows a grounded answer.",
+        source_refs=[{"source_item_id": "src_evidence", "chunk_id": "chk_1"}],
+        trace_summary={"iterations": [{"query": "PSKA"}], "evidence_check": "has_citations"},
+    )
+
+    assert source.source_channel == "pska_agent"
+    assert source.record_type == "conversation"
+    assert source.metadata["extra"]["purpose"] == "agentic_search"
+    assert source.metadata["extra"]["represented_user_id"] == "user_primary"
+    assert source.metadata["extra"]["source_refs"] == [{"source_item_id": "src_evidence", "chunk_id": "chk_1"}]
+    assert source.metadata["content"]["trace_summary"]["evidence_check"] == "has_citations"
+    assert source.metadata["content"]["citations"] == [{"source_item_id": "src_evidence", "chunk_id": "chk_1"}]
+    assert "PSKA knows a grounded answer." in source.content_text
 
 
 def test_conversation_payload_requires_non_empty_messages() -> None:

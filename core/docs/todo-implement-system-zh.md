@@ -179,7 +179,7 @@ commit_evidence: "Implemented optional `daily-briefing --narrative` FastReAct pa
 id: HW-006
 track: Human Workflow
 priority: P1
-status: ready
+status: verified
 user_value: PSKA 调用 FastReAct 产生的重要对话、答案、引用和 trace summary 能回流为可检索资料。
 dependencies: []
 implementation_hint: 新增或复用 source material 类型，保存 PSKA-originated agentic QA/digest/briefing result；避免保存 FastReAct 内部私有对象。
@@ -191,7 +191,7 @@ acceptance_gates:
   - 存档记录包含 purpose、represented user、source refs、trace summary。
 verification_commands:
   - cd core && ../.pska/venvs/pska-py312/bin/python -m pytest -q
-commit_evidence: ""
+commit_evidence: "Implemented reusable `capture_agent_conversation` helper and `agentic-search --capture`. Captures PSKA-originated prompt/answer as standard conversation source material with citations/source_refs and trace_summary, while avoiding full FastReAct private response persistence. HW-005 narrative save now reuses the same capture path. Verification on 2026-06-17: targeted tests `31 passed in 0.23s`; core pytest `190 passed in 8.57s`; twitter-x pytest `9 passed in 0.02s`; sample Postgres smoke wrote `source_item_id=src_f62eaf0593c75d46be625e667b777d45` with source_channel=pska_agent, record_type=conversation, purpose=hw006_smoke_agentic_answer, source_refs=[src_537cf3713a1a525995179d0f930d6fb1], trace_summary.evidence_check=has_citations."
 ```
 
 ### HW-007 Grounded Graph Candidate Review

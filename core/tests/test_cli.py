@@ -64,7 +64,7 @@ def test_cli_accepts_import_twitter_zips() -> None:
 def test_cli_accepts_search_and_smoke() -> None:
     search = build_parser().parse_args(["search", "--query", "hello", "--top-k", "3"])
     smoke = build_parser().parse_args(["smoke-twitter-import"])
-    agentic = build_parser().parse_args(["agentic-search", "--query", "hello"])
+    agentic = build_parser().parse_args(["agentic-search", "--query", "hello", "--capture"])
     extract = build_parser().parse_args(["extract-all", "--owner-user-id", "user_primary"])
     serve = build_parser().parse_args(["serve", "--port", "8765"])
     local_daemon = build_parser().parse_args(["local-daemon", "--no-worker", "--digest-interval-seconds", "60"])
@@ -96,6 +96,7 @@ def test_cli_accepts_search_and_smoke() -> None:
     assert search.top_k == 3
     assert smoke.command == "smoke-twitter-import"
     assert agentic.command == "agentic-search"
+    assert agentic.capture is True
     assert extract.command == "extract-all"
     assert serve.command == "serve"
     assert local_daemon.command == "local-daemon"

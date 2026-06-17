@@ -15,6 +15,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from pska_core.acl import ACLService
+from pska_core.agent_capture import capture_agent_conversation
 from pska_core.api import PSKAApi, serve
 from pska_core.config import DEFAULT_DATABASE_URL, PSKAConfig
 from pska_core.connectors import connector_state_from_mapping, connector_record_to_payload
@@ -79,6 +80,7 @@ def build_parser() -> argparse.ArgumentParser:
     agentic_parser.add_argument("--query", required=True)
     agentic_parser.add_argument("--user-id", default="user_primary")
     agentic_parser.add_argument("--represented-user-id", default=None)
+    agentic_parser.add_argument("--capture", action="store_true", help="Save the agentic answer, citations, and trace as PSKA source material")
     _add_embedding_args(agentic_parser, default_provider=os.environ.get("PSKA_EMBEDDING_PROVIDER", "disabled"))
 
     embed_parser = subparsers.add_parser("embed-backfill", help="Backfill missing chunk embeddings")
@@ -533,7 +535,22 @@ def agentic_search(args: argparse.Namespace) -> int:
         user,
         represented_user_id=args.represented_user_id,
     )
-    print(dumps(response))
+    if args.capture:
+        captured = capture_agent_conversation(
+            store,
+            owner_user_id=args.represented_user_id or args.user_id,
+            represented_user_id=args.represented_user_id or args.user_id,
+            purpose="agentic_search",
+            prompt=args.query,
+            answer=response.answer,
+            source_refs=response.retrieval.citations,
+            trace_summary=asdict(response.trace),
+            title=f"PSKA agentic search: {args.query[:80]}",
+            source_channel="pska_agent",
+        )
+        print(dumps({"agentic_search": response, "capture": {"source_item_id": captured.source_item_id}}))
+    else:
+        print(dumps(response))
     return 0
 
 
@@ -1845,30 +1862,19 @@ def _save_narrative_briefing_source(
     trace_summary: dict[str, Any],
     response: dict[str, Any],
 ) -> SourceItem:
-    source_id = str(response.get("run_id") or f"daily_narrative_{int(time.time())}")
-    return IngestService(store).ingest_channel_payload(
-        {
-            "schema_version": "pska.channel_ingest.v1",
-            "source_channel": "pska_briefing",
-            "record_type": "daily_narrative",
-            "source_id": source_id,
-            "owner_user_id": owner_user_id,
-            "space_id": "private_primary",
-            "visibility": Visibility.PRIVATE.value,
-            "title": "FastReAct daily briefing",
-            "content": {
-                "text": answer,
-                "source_refs": source_refs,
-                "trace_summary": trace_summary,
-                "fastreact_response": response,
-            },
-            "extra": {
-                "purpose": "daily_briefing",
-                "represented_user_id": owner_user_id,
-                "source_refs": source_refs,
-                "trace_summary": trace_summary,
-            },
-        }
+    return capture_agent_conversation(
+        store,
+        owner_user_id=owner_user_id,
+        represented_user_id=owner_user_id,
+        purpose="daily_briefing",
+        prompt="Generate narrative daily briefing from deterministic PSKA context.",
+        answer=answer,
+        source_refs=source_refs,
+        trace_summary=trace_summary,
+        title="FastReAct daily briefing",
+        source_channel="pska_briefing",
+        conversation_id=str(response.get("run_id") or f"daily_narrative_{int(time.time())}"),
+        tool_calls=list(response.get("tool_calls") or []),
     )
 
 

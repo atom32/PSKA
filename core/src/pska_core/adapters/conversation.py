@@ -43,6 +43,7 @@ def conversation_to_payload(
             "participants": participants,
             "tool_calls": conversation.get("tool_calls") or [],
             "citations": conversation.get("citations") or [],
+            "trace_summary": conversation.get("trace_summary") or {},
         },
         created_at=created_at,
         captured_at=captured_at,
@@ -51,6 +52,7 @@ def conversation_to_payload(
             "conversation_id": conversation_id,
             "session_id": conversation.get("session_id"),
             "message_count": len(messages),
+            **dict(conversation.get("extra") or {}),
         },
     )
 
