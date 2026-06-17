@@ -114,7 +114,7 @@ commit_evidence: "Implemented enhanced `review-list --summary` rows with review_
 id: HW-003
 track: Human Workflow
 priority: P1
-status: ready
+status: verified
 user_value: 用户能检查 PSKA 长期记忆和 profile 里已经相信了什么。
 dependencies:
   - HW-002
@@ -126,7 +126,7 @@ acceptance_gates:
   - 不修改任何长期记忆。
 verification_commands:
   - cd core && ../.pska/venvs/pska-py312/bin/python -m pytest -q
-commit_evidence: ""
+commit_evidence: "Implemented read-only `memory-list` and `profile-list` CLI entries. Verification on 2026-06-17: targeted CLI tests `24 passed in 0.21s`; core pytest `186 passed in 8.00s`; twitter-x pytest `9 passed in 0.02s`. Sample Postgres data was prepared by adding one profile card with `./scripts/pska profile-propose ... --confidence 0.72`; existing agent memories were present. Sample smoke `./scripts/pska memory-list --owner-user-id user_primary --limit 3` returned count=3 agent memories with confidence/source_refs/status/read_only=true; `./scripts/pska profile-list --owner-user-id user_primary --limit 3` returned count=1 profile card with confidence=0.72, source_ref_status=present, status=active, read_only=true. The list commands only call store list methods and do not invoke MemoryService write/update paths."
 ```
 
 ### HW-004 Deterministic Daily Briefing v0

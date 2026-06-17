@@ -29,7 +29,7 @@ from pska_core.jobs import JOB_TYPES, JobService
 from pska_core.local_daemon import build_process_specs, run_supervisor
 from pska_core.memory import MemoryService
 from pska_core.mcp_server import MCPServer
-from pska_core.models import ChannelIngestPayload, ReviewItem, SourceRef
+from pska_core.models import AgentMemory, ChannelIngestPayload, ReviewItem, SourceRef, UserProfileCard
 from pska_core.agentic import AgenticSearchService
 from pska_core.retrieval import RetrievalService
 from pska_core.review import ReviewService
@@ -280,6 +280,14 @@ def build_parser() -> argparse.ArgumentParser:
     review_list_parser.add_argument("--limit", type=int, default=50)
     review_list_parser.add_argument("--summary", action="store_true", help="Print compact review item rows")
 
+    memory_list_parser = subparsers.add_parser("memory-list", help="List user-owned agent memories without modifying them")
+    memory_list_parser.add_argument("--owner-user-id", default="user_primary")
+    memory_list_parser.add_argument("--limit", type=int, default=50)
+
+    profile_list_parser = subparsers.add_parser("profile-list", help="List user profile cards without modifying them")
+    profile_list_parser.add_argument("--owner-user-id", default="user_primary")
+    profile_list_parser.add_argument("--limit", type=int, default=50)
+
     review_approve_parser = subparsers.add_parser("review-approve", help="Approve a pending review item")
     review_approve_parser.add_argument("review_item_id")
     review_approve_parser.add_argument("--actor-user-id", default="user_primary")
@@ -386,6 +394,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return digest_scheduler(args)
     if args.command == "review-list":
         return review_list(args)
+    if args.command == "memory-list":
+        return memory_list(args)
+    if args.command == "profile-list":
+        return profile_list(args)
     if args.command == "review-approve":
         return review_approve(args)
     if args.command == "review-reject":
@@ -1046,6 +1058,18 @@ def review_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def memory_list(args: argparse.Namespace) -> int:
+    store = PostgresKnowledgeStore(args.database_url)
+    print(dumps(_memory_list_payload(store, owner_user_id=args.owner_user_id, limit=args.limit)))
+    return 0
+
+
+def profile_list(args: argparse.Namespace) -> int:
+    store = PostgresKnowledgeStore(args.database_url)
+    print(dumps(_profile_list_payload(store, owner_user_id=args.owner_user_id, limit=args.limit)))
+    return 0
+
+
 def review_approve(args: argparse.Namespace) -> int:
     store = PostgresKnowledgeStore(args.database_url)
     service = ReviewService(store)
@@ -1158,6 +1182,74 @@ def _review_recommended_actions(item: ReviewItem, *, apply_supported: bool) -> l
             actions.insert(0, f"./scripts/pska review-apply {item.review_item_id}")
         return actions
     return []
+
+
+def _memory_list_payload(store, *, owner_user_id: str, limit: int = 50) -> dict[str, Any]:
+    memories = sorted(
+        store.list_agent_memories(owner_user_id=owner_user_id),
+        key=lambda memory: (memory.confidence, memory.last_verified_at.isoformat() if memory.last_verified_at else "", memory.agent_memory_id),
+        reverse=True,
+    )[: max(0, limit)]
+    return {
+        "owner_user_id": owner_user_id,
+        "agent_memories": [_agent_memory_summary(memory) for memory in memories],
+        "count": len(memories),
+        "limit": max(0, limit),
+        "read_only": True,
+    }
+
+
+def _profile_list_payload(store, *, owner_user_id: str, limit: int = 50) -> dict[str, Any]:
+    cards = sorted(
+        store.list_profile_cards(owner_user_id=owner_user_id),
+        key=lambda card: (card.confidence, card.profile_card_id),
+        reverse=True,
+    )[: max(0, limit)]
+    return {
+        "owner_user_id": owner_user_id,
+        "profile_cards": [_profile_card_summary(card) for card in cards],
+        "count": len(cards),
+        "limit": max(0, limit),
+        "read_only": True,
+    }
+
+
+def _agent_memory_summary(memory: AgentMemory) -> dict[str, Any]:
+    source_refs = _source_ref_summaries(memory.source_refs)
+    return {
+        "agent_memory_id": memory.agent_memory_id,
+        "owner_user_id": memory.owner_user_id,
+        "layer": memory.layer.value if hasattr(memory.layer, "value") else str(memory.layer),
+        "text": memory.text,
+        "confidence": memory.confidence,
+        "source_refs": source_refs,
+        "source_ref_status": "present" if source_refs else "missing",
+        "last_verified_at": memory.last_verified_at,
+        "status": "forgotten" if memory.decay_policy == "forgotten" or memory.confidence <= 0 else "active",
+        "decay_policy": memory.decay_policy,
+        "created_by_user_id": memory.created_by_user_id,
+    }
+
+
+def _profile_card_summary(card: UserProfileCard) -> dict[str, Any]:
+    source_refs = _source_ref_summaries(card.source_refs)
+    return {
+        "profile_card_id": card.profile_card_id,
+        "owner_user_id": card.owner_user_id,
+        "profile": card.profile,
+        "confidence": card.confidence,
+        "source_refs": source_refs,
+        "source_ref_status": "present" if source_refs else "missing",
+        "last_verified_at": None,
+        "status": "active",
+    }
+
+
+def _source_ref_summaries(source_refs: Sequence[SourceRef]) -> list[dict[str, Any]]:
+    return [
+        {key: value for key, value in asdict(ref).items() if value}
+        for ref in source_refs
+    ]
 
 
 def review_reject(args: argparse.Namespace) -> int:

@@ -10,13 +10,16 @@ from pska_core.cli import (
     digest_scheduler,
     _fastreact_digest_worker_command_payload,
     _daily_status_payload,
+    _memory_list_payload,
     _mvp_next_actions,
     _mvp_status_payload,
     _mvp_status_summary,
+    _profile_list_payload,
     _review_items_payload,
 )
-from pska_core.enums import ReviewType
-from pska_core.models import ReviewItem
+from pska_core.enums import MemoryLayer, ReviewType
+from pska_core.models import AgentMemory, ReviewItem, SourceRef, UserProfileCard
+from pska_core.store import InMemoryKnowledgeStore
 
 
 def test_cli_accepts_db_check() -> None:
@@ -67,6 +70,8 @@ def test_cli_accepts_search_and_smoke() -> None:
     mvp_status = build_parser().parse_args(["mvp-status", "--summary"])
     daily_status = build_parser().parse_args(["daily-status", "--owner-user-id", "user_primary", "--limit", "3"])
     digest_worker_command = build_parser().parse_args(["fastreact-digest-worker-command", "--batch-limit", "3"])
+    memory_list = build_parser().parse_args(["memory-list", "--owner-user-id", "user_primary", "--limit", "2"])
+    profile_list = build_parser().parse_args(["profile-list", "--owner-user-id", "user_primary", "--limit", "2"])
     service_check = build_parser().parse_args([
         "service-check",
         "--url",
@@ -102,6 +107,12 @@ def test_cli_accepts_search_and_smoke() -> None:
     assert daily_status.command == "daily-status"
     assert daily_status.owner_user_id == "user_primary"
     assert daily_status.limit == 3
+    assert memory_list.command == "memory-list"
+    assert memory_list.owner_user_id == "user_primary"
+    assert memory_list.limit == 2
+    assert profile_list.command == "profile-list"
+    assert profile_list.owner_user_id == "user_primary"
+    assert profile_list.limit == 2
     assert digest_worker_command.command == "fastreact-digest-worker-command"
     assert digest_worker_command.batch_limit == 3
     assert service_check.command == "service-check"
@@ -284,6 +295,60 @@ def test_review_summary_distinguishes_candidate_types_and_missing_sources() -> N
     assert by_type["memory_candidate"]["apply_supported"] is False
     assert by_type["relationship_candidate"]["confidence"] == 0.6
     assert "./scripts/pska review-reject rev_conflict" in by_type["conflict"]["recommended_actions"]
+
+
+def test_memory_and_profile_list_payloads_are_read_only() -> None:
+    store = InMemoryKnowledgeStore()
+    verified_at = datetime(2026, 6, 17, 10, 0, tzinfo=timezone.utc)
+    store.add_agent_memory(
+        AgentMemory(
+            agent_memory_id="agm_1",
+            owner_user_id="user_primary",
+            layer=MemoryLayer.SEMANTIC,
+            text="PSKA prefers deterministic summaries.",
+            confidence=0.86,
+            source_refs=[SourceRef(source_item_id="src_1", chunk_id="chk_1")],
+            last_verified_at=verified_at,
+            created_by_user_id="agent_service",
+        )
+    )
+    store.add_agent_memory(
+        AgentMemory(
+            agent_memory_id="agm_forgotten",
+            owner_user_id="user_primary",
+            layer=MemoryLayer.EPISODIC,
+            text="Old temporary note.",
+            confidence=0.0,
+            source_refs=[],
+            decay_policy="forgotten",
+        )
+    )
+    store.add_profile_card(
+        UserProfileCard(
+            profile_card_id="upc_1",
+            owner_user_id="user_primary",
+            profile={"communication": {"style": "concise"}},
+            confidence=0.9,
+            source_refs=[SourceRef(message_id="msg_profile")],
+        )
+    )
+
+    before_memory = store.get_agent_memory("agm_1")
+    memory_payload = _memory_list_payload(store, owner_user_id="user_primary", limit=10)
+    profile_payload = _profile_list_payload(store, owner_user_id="user_primary", limit=10)
+
+    assert memory_payload["read_only"] is True
+    assert memory_payload["count"] == 2
+    assert memory_payload["agent_memories"][0]["agent_memory_id"] == "agm_1"
+    assert memory_payload["agent_memories"][0]["confidence"] == 0.86
+    assert memory_payload["agent_memories"][0]["source_refs"] == [{"source_item_id": "src_1", "chunk_id": "chk_1"}]
+    assert memory_payload["agent_memories"][0]["last_verified_at"] == verified_at
+    assert memory_payload["agent_memories"][0]["status"] == "active"
+    assert memory_payload["agent_memories"][1]["status"] == "forgotten"
+    assert profile_payload["read_only"] is True
+    assert profile_payload["profile_cards"][0]["profile"] == {"communication": {"style": "concise"}}
+    assert profile_payload["profile_cards"][0]["source_ref_status"] == "present"
+    assert store.get_agent_memory("agm_1") == before_memory
 
 
 def test_cli_accepts_job_worker_commands() -> None:
