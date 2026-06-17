@@ -4,7 +4,7 @@ import json
 
 from pska_core.api import PSKAApi
 from pska_core.candidates import CandidateWriteError, CandidateWriteService
-from pska_core.enums import UserRole, Visibility
+from pska_core.enums import ReviewType, UserRole, Visibility
 from pska_core.ingest import IngestService
 from pska_core.jobs import EXTRACT_VIA_FASTREACT, JobService
 from pska_core.mcp_server import MCPServer
@@ -77,6 +77,57 @@ def test_write_candidates_requires_known_source_refs() -> None:
         assert "known source_items" in str(exc)
     else:
         raise AssertionError("expected CandidateWriteError")
+
+
+def test_low_confidence_memory_candidate_requires_review() -> None:
+    store = _store_with_source()
+    source_id = next(iter(store.source_items))
+
+    summary = CandidateWriteService(store).write_candidates(
+        {
+            "schema_version": "pska.candidates.v1",
+            "owner_user_id": "user_primary",
+            "source_refs": [{"source_item_id": source_id}],
+            "memory_candidates": [
+                {"kind": "agent_memory", "layer": "semantic", "text": "Maybe PSKA prefers very long answers.", "confidence": 0.4}
+            ],
+        }
+    )
+
+    review = store.get_review_item(summary["review_items"][0])
+    assert summary["agent_memories"] == []
+    assert review.review_type == ReviewType.LOW_CONFIDENCE
+    assert review.proposal["memory_candidate"] == "Maybe PSKA prefers very long answers."
+    assert review.proposal["confidence"] == 0.4
+
+
+def test_low_confidence_relationship_candidate_requires_review() -> None:
+    store = _store_with_source()
+    source_id = next(iter(store.source_items))
+
+    summary = CandidateWriteService(store).write_candidates(
+        {
+            "schema_version": "pska.candidates.v1",
+            "owner_user_id": "user_primary",
+            "source_refs": [{"source_item_id": source_id}],
+            "hyperedges": [
+                {
+                    "relation_type": "depends_on",
+                    "confidence": 0.3,
+                    "members": [
+                        {"entity_type": "project", "label": "PSKA", "role": "system"},
+                        {"entity_type": "service", "label": "Fastreact", "role": "dependency"},
+                    ],
+                }
+            ],
+        }
+    )
+
+    review = store.get_review_item(summary["review_items"][0])
+    assert summary["hyperedges"] == []
+    assert review.review_type == ReviewType.RELATIONSHIP_CANDIDATE
+    assert review.proposal["relation_type"] == "depends_on"
+    assert review.proposal["reason"] == "low_confidence_relationship_candidate"
 
 
 def test_write_candidates_rejects_unknown_schema_version() -> None:

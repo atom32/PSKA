@@ -102,8 +102,8 @@ Return a JSON object with exactly these keys:
 
 Hyperedge member objects must contain entity_type, label, role.
 directionality must be one of: directed, undirected, ambiguous.
-review_type must be one of: share_proposal, sensitive_content, profile_update, entity_merge, conflict.
-Only create review items for sharing, sensitive personal memory/profile updates, entity merges, or conflicting facts.
+review_type must be one of: share_proposal, sensitive_content, profile_update, entity_merge, conflict, memory_candidate, relationship_candidate, action_candidate, low_confidence.
+Only create review items for sharing, sensitive personal memory/profile updates, entity merges, conflicting facts, action candidates, or low-confidence memory/relationship candidates.
 If no grounded item exists, return an empty array for that key.
 
 Source metadata:
@@ -150,7 +150,7 @@ Convert this object to exactly:
   ],
   "review_items": [
     {{
-      "review_type": "share_proposal|sensitive_content|profile_update|entity_merge|conflict",
+      "review_type": "share_proposal|sensitive_content|profile_update|entity_merge|conflict|memory_candidate|relationship_candidate|action_candidate|low_confidence",
       "title": "string",
       "proposal": {{}}
     }}

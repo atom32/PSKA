@@ -307,8 +307,8 @@ FastReAct 仍然是重要消费者，但不应主导 PSKA 架构。
    - 优先复用：FastReAct 现有 worker/skill/event stream，PSKA 只补 contract/gate；不要在 PSKA 内重写 agent loop。
 
 2. **Review taxonomy 和候选质量**
-   - 明确 `review_items` 类型：memory_candidate、profile_update、relationship_candidate、action_candidate、conflict、low_confidence。
-   - 高影响/低置信候选进入 review；低风险摘要或关系候选可批量 approve。
+   - 明确 `review_items` 类型：memory_candidate、profile_update、relationship_candidate、action_candidate、conflict、low_confidence。已完成第一版：enum/schema/migration 已支持这些类型。
+   - 高影响/低置信候选进入 review；低风险摘要或关系候选可批量 approve。已完成第一版：低置信 memory/relationship candidate 会进入 review，不直接写 memory/graph。
    - Review apply 后必须写 audit event，并保留 source refs。
    - 优先复用：Pydantic/JSON Schema 类 schema validation、现成 diff/approval UI 组件；PSKA 自己保留 audit/source-ref/write boundary。
 

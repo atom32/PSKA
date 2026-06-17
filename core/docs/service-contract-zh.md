@@ -465,7 +465,9 @@ Rules:
 
 - `source_refs` are required and must reference known `source_items`.
 - referenced source items must belong to `owner_user_id`.
+- supported `review_type` values are `share_proposal`, `sensitive_content`, `profile_update`, `entity_merge`, `conflict`, `memory_candidate`, `relationship_candidate`, `action_candidate`, and `low_confidence`.
 - high/sensitive profile or memory candidates go through review.
+- low-confidence memory and relationship candidates go through review instead of being written directly to memory/graph.
 - writes emit an audit event and return a summary of created entities, hyperedges, review items, memories, and profile cards.
 
 External worker lifecycle:

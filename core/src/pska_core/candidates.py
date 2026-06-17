@@ -16,6 +16,7 @@ class CandidateWriteError(ValueError):
 
 
 SUPPORTED_CANDIDATE_SCHEMA_VERSION = "pska.candidates.v1"
+LOW_CONFIDENCE_REVIEW_THRESHOLD = 0.6
 
 
 class CandidateWriteService:
@@ -71,7 +72,8 @@ class CandidateWriteService:
                 job_id=job_id,
                 request_id=request_id,
             )
-            summary["hyperedges"].append(edge.hyperedge_id)
+            if edge is not None:
+                summary["hyperedges"].append(edge.hyperedge_id)
 
         for spec in _list_of_dicts(payload.get("review_items")):
             review_item = self._write_review_item(spec, defaults, producer=producer, job_id=job_id, request_id=request_id)
@@ -142,6 +144,26 @@ class CandidateWriteService:
         relation_type = str(spec["relation_type"])
         evidence_text = str(spec.get("evidence_text") or "")
         source_refs = _source_refs(spec.get("source_refs")) or defaults.source_refs
+        confidence = float(spec.get("confidence", 0.75))
+        if confidence < LOW_CONFIDENCE_REVIEW_THRESHOLD:
+            review_item = self._write_review_item(
+                {
+                    "review_type": ReviewType.RELATIONSHIP_CANDIDATE.value,
+                    "title": str(spec.get("title") or f"Review relationship candidate: {relation_type}"),
+                    "proposal": {
+                        **spec,
+                        "source_refs": [asdict(ref) for ref in source_refs],
+                        "confidence": confidence,
+                        "reason": "low_confidence_relationship_candidate",
+                    },
+                },
+                defaults,
+                producer=producer,
+                job_id=job_id,
+                request_id=request_id,
+            )
+            summary["review_items"].append(review_item.review_item_id)
+            return None
         members = []
         for member in _list_of_dicts(spec.get("members")):
             role = str(member.get("role") or "related")
@@ -175,7 +197,7 @@ class CandidateWriteService:
             members=members,
             evidence_text=evidence_text,
             source_refs=source_refs,
-            confidence=float(spec.get("confidence", 0.75)),
+            confidence=confidence,
         )
 
     def _write_review_item(self, spec: dict[str, Any], defaults: "_ContextDefaults", *, producer: str, job_id: Any, request_id: Any) -> ReviewItem:
@@ -228,6 +250,24 @@ class CandidateWriteService:
                         "profile_delta": {"memory_candidate": text, "layer": str(spec.get("layer") or MemoryLayer.SEMANTIC.value)},
                         "source_refs": [asdict(ref) for ref in source_refs],
                         "confidence": confidence,
+                    },
+                },
+                defaults,
+                producer=producer,
+                job_id=job_id,
+                request_id=request_id,
+            )
+        if confidence < LOW_CONFIDENCE_REVIEW_THRESHOLD:
+            return self._write_review_item(
+                {
+                    "review_type": ReviewType.LOW_CONFIDENCE.value,
+                    "title": str(spec.get("title") or "Review low-confidence memory candidate"),
+                    "proposal": {
+                        "memory_candidate": text,
+                        "layer": str(spec.get("layer") or MemoryLayer.SEMANTIC.value),
+                        "source_refs": [asdict(ref) for ref in source_refs],
+                        "confidence": confidence,
+                        "reason": "low_confidence_memory_candidate",
                     },
                 },
                 defaults,

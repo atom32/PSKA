@@ -13,7 +13,11 @@ CREATE TYPE pska_review_type AS ENUM (
   'sensitive_content',
   'profile_update',
   'entity_merge',
-  'conflict'
+  'conflict',
+  'memory_candidate',
+  'relationship_candidate',
+  'action_candidate',
+  'low_confidence'
 );
 CREATE TYPE pska_directionality AS ENUM ('directed', 'undirected', 'ambiguous');
 

@@ -36,6 +36,10 @@ class ReviewType(StrEnum):
     PROFILE_UPDATE = "profile_update"
     ENTITY_MERGE = "entity_merge"
     CONFLICT = "conflict"
+    MEMORY_CANDIDATE = "memory_candidate"
+    RELATIONSHIP_CANDIDATE = "relationship_candidate"
+    ACTION_CANDIDATE = "action_candidate"
+    LOW_CONFIDENCE = "low_confidence"
 
 
 class Directionality(StrEnum):
