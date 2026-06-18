@@ -377,7 +377,7 @@ commit_evidence: "Implemented deterministic `ops-briefing` CLI with JSON and hum
 id: HW-014
 track: Human Workflow
 priority: P2
-status: ready
+status: verified
 user_value: 用户能把 local-daemon 当作日常后台服务管理，知道 pid、日志、配置和重启状态，而不是只能前台盯着进程。
 dependencies: []
 implementation_hint: 在现有 foreground local-daemon 基础上补 status/pid/log path/config check/restart guidance；系统级安装器先做生成 launchd/supervisord 配置或 dry-run，不强制安装。优先薄封装成熟 supervisor，不自研完整进程管理。
@@ -393,7 +393,7 @@ acceptance_gates:
 verification_commands:
   - cd core && ../.pska/venvs/pska-py312/bin/python -m pytest -q
   - cd channels/twitter-x && ../../.pska/venvs/pska-py312/bin/python -m pytest -q
-commit_evidence: ""
+commit_evidence: "Implemented `local-daemon` management actions while preserving foreground `run` as the default. `local-daemon status` now reports each child process name, pid, running/stopped state, pid path, log path, command, and restart guidance. Foreground supervisor runs now write `.pska/run/*.pid` and redirect child stdout/stderr to `.pska/logs/*.log`. `local-daemon config-check` validates PostgreSQL URL shape, detects service port conflicts, and reports FastReAct URL/token diagnostics with deterministic recovery commands. `local-daemon supervisor-config --supervisor supervisord|launchd --dry-run` emits quoted supervisord config or launchd plists plus manual install/status commands without installing anything. Verification on 2026-06-18: targeted local-daemon/CLI tests `6 passed in 0.14s`; core pytest `209 passed in 8.69s`; twitter-x pytest `9 passed in 0.02s`; sample Postgres smoke `local-daemon status --run-dir .pska/run --log-dir .pska/logs` returned three stopped child specs with pid/log paths; `local-daemon config-check` on `postgresql:///pska` detected database_url ok, service_port conflict on 127.0.0.1:8765, FastReAct URL ok with missing token warning and recovery commands; `local-daemon supervisor-config --supervisor supervisord --dry-run` returned ok=true with quoted commands, log paths, and supervisord/supervisorctl guidance."
 ```
 
 ### HW-015 Agent Capture Retention Policy

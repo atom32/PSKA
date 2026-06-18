@@ -28,7 +28,7 @@ from pska_core.files_watcher import watch_files
 from pska_core.importers.twitter_zip import TwitterZipImporter
 from pska_core.ingest import IngestService
 from pska_core.jobs import JOB_TYPES, JobService
-from pska_core.local_daemon import build_process_specs, run_supervisor
+from pska_core.local_daemon import DEFAULT_LOG_DIR, DEFAULT_RUN_DIR, build_process_specs, config_check, daemon_status, run_supervisor, supervisor_config
 from pska_core.memory import MemoryService
 from pska_core.mcp_server import MCPServer
 from pska_core.models import AgentMemory, ChannelIngestPayload, ReviewItem, SourceItem, SourceRef, UserProfileCard, utc_now
@@ -145,10 +145,15 @@ def build_parser() -> argparse.ArgumentParser:
     serve_parser.add_argument("--host", default=None)
     serve_parser.add_argument("--port", type=int, default=None)
 
-    local_daemon_parser = subparsers.add_parser("local-daemon", help="Run PSKA service, worker, and digest scheduler under a local foreground supervisor")
+    local_daemon_parser = subparsers.add_parser("local-daemon", help="Run or inspect the local PSKA service supervisor")
+    local_daemon_parser.add_argument("action", choices=["run", "status", "config-check", "supervisor-config"], nargs="?", default="run")
     local_daemon_parser.add_argument("--no-worker", action="store_true")
     local_daemon_parser.add_argument("--no-digest-scheduler", action="store_true")
     local_daemon_parser.add_argument("--restart", action="store_true", help="Restart child processes if they exit")
+    local_daemon_parser.add_argument("--run-dir", type=Path, default=DEFAULT_RUN_DIR)
+    local_daemon_parser.add_argument("--log-dir", type=Path, default=DEFAULT_LOG_DIR)
+    local_daemon_parser.add_argument("--supervisor", choices=["supervisord", "launchd"], default="supervisord")
+    local_daemon_parser.add_argument("--dry-run", action="store_true", help="For supervisor-config, print config without installing it")
     local_daemon_parser.add_argument("--worker-id", default="pska-worker-local")
     local_daemon_parser.add_argument("--poll-interval", type=float, default=5.0)
     local_daemon_parser.add_argument("--lease-seconds", type=int, default=300)
@@ -827,6 +832,10 @@ def service_check(args: argparse.Namespace) -> int:
 
 
 def local_daemon(args: argparse.Namespace, config: PSKAConfig) -> int:
+    if args.action == "config-check":
+        payload = config_check(config, database_url=args.database_url)
+        print(dumps(payload))
+        return 0 if payload["ok"] else 1
     specs = build_process_specs(
         config_path=args.config,
         config=config,
@@ -842,7 +851,14 @@ def local_daemon(args: argparse.Namespace, config: PSKAConfig) -> int:
         digest_batch_size=args.digest_batch_size,
         digest_max_backlog_jobs=args.digest_max_backlog_jobs,
     )
-    return run_supervisor(specs, restart=args.restart)
+    if args.action == "status":
+        print(dumps(daemon_status(specs, run_dir=args.run_dir, log_dir=args.log_dir)))
+        return 0
+    if args.action == "supervisor-config":
+        payload = supervisor_config(specs, supervisor=args.supervisor, run_dir=args.run_dir, log_dir=args.log_dir)
+        print(dumps(payload))
+        return 0
+    return run_supervisor(specs, restart=args.restart, run_dir=args.run_dir, log_dir=args.log_dir)
 
 
 def mvp_bootstrap(args: argparse.Namespace) -> int:
