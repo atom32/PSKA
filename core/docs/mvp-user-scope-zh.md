@@ -2,6 +2,12 @@
 
 日期：2026-06-16
 
+相关上层文档：
+
+- [product-design-zh.md](product-design-zh.md)：完整产品设计和核心用户工作流。
+- [architecture-status-zh.md](architecture-status-zh.md)：模块成熟度和当前技术缺口。
+- [todo-implement-system-zh.md](todo-implement-system-zh.md)：当前可执行 TODO、选择规则和验收门禁。
+
 ## 判断
 
 PSKA 的 MVP 不应该继续优先横向扩 connector。更多 connector 会带来更多入口，但对核心输出格式没有本质变化：最后都应落到 source item、document、chunk、source refs、candidate knowledge、review、memory、search/QA。
@@ -59,7 +65,22 @@ MVP 阶段不追求：
 
 ## 当前下一步
 
-优先顺序：
+当前推进以 [todo-implement-system-zh.md](todo-implement-system-zh.md) 的结构化 backlog 为准。`Human Workflow` 第一轮已经完成，MVP+ 已经具备每日状态、deterministic briefing、optional narrative briefing、review summary、memory/profile read-only view、agent conversation capture、grounded relationship apply 和 digest budget policy 的第一版。
+
+已完成任务：
+
+1. `HW-001` Daily Status Entry。
+2. `HW-002` Review Summary。
+3. `HW-003` Memory/Profile Read-only View。
+4. `HW-004` Deterministic Daily Briefing v0。
+5. `HW-005` FastReAct Narrative Briefing。
+6. `HW-006` Agent Conversation Capture。
+7. `HW-007` Grounded Graph Candidate Review。
+8. `HW-008` Digest Budget Policy。
+
+下一轮结构化 TODO 已根据真实使用反馈和架构状态补充到 [todo-implement-system-zh.md](todo-implement-system-zh.md)。当前 `ready` tasks 从 `HW-009` Digest E2E Write-back Gate 开始，随后可按依赖继续 `HW-010` Review Batch Operations、`HW-013` Human-readable Ops Briefing 和 `HW-014` Local Daemon Productization。
+
+历史技术优先级仍保留为背景：
 
 1. 先用有限数据集跑稳真实 digest E2E：PSKA backlog -> Fastreact worker -> candidates/review/memory/profile 写回 -> job complete。
 2. 修 review taxonomy 和 apply path，让 digest 结果能被人类确认、拒绝、批量处理，并保留 audit/source refs。

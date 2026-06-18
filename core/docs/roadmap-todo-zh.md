@@ -4,6 +4,17 @@
 
 长期愿景见 [vision-zh.md](vision-zh.md)。
 
+## 系统化推进入口
+
+PSKA 后续不再靠用户不断说“继续，下一个 TODO”来推进。当前 repo 文档中的源头分工如下：
+
+- [product-design-zh.md](product-design-zh.md)：产品定位、人类日常工作流、PSKA/FastReAct 边界和产品原则。
+- [architecture-status-zh.md](architecture-status-zh.md)：模块级设计目标、实现状态、成熟度、缺口和 open-source-first 候选。
+- [todo-implement-system-zh.md](todo-implement-system-zh.md)：结构化 TODO、任务选择规则、验收门禁和当前 Human Workflow backlog。
+- [mvp-user-scope-zh.md](mvp-user-scope-zh.md)：MVP+ 数据源和功能 scope。
+
+当前 **Human Workflow** 第一轮已完成：`HW-001` 到 `HW-008` 均已实现并验证。下一轮 backlog 已在 [todo-implement-system-zh.md](todo-implement-system-zh.md) 生成，后续 coding agent 可从 `HW-009` 开始按规则自动选择。
+
 更新：2026-06-14
 
 - P0.1 service contract 已落地：HTTP `/mcp`、稳定 `/ready`、service contract 文档。
@@ -298,7 +309,20 @@ FastReAct 仍然是重要消费者，但不应主导 PSKA 架构。
 
 截至当前，P0.1/P0.2/P0.3/P0.4/P0.5 的核心机制都已有第一版，P1.2 Files connector 也已经覆盖 config sync、watch、PDF/DOCX optional extraction、manifest reconciliation 和缺失文件记录。下一步不再是补服务骨架，而是把 PSKA 从“机制可跑”推进到“人类日常可用”。
 
-优先顺序：
+结构化任务以 [todo-implement-system-zh.md](todo-implement-system-zh.md) 为准。Human Workflow 第一轮已完成并验证：
+
+1. `HW-001` Daily Status Entry。
+2. `HW-002` Review Summary。
+3. `HW-003` Memory/Profile Read-only View。
+4. `HW-004` Deterministic Daily Briefing v0。
+5. `HW-005` FastReAct Narrative Briefing。
+6. `HW-006` Agent Conversation Capture。
+7. `HW-007` Grounded Graph Candidate Review。
+8. `HW-008` Digest Budget Policy。
+
+下一轮结构化 backlog 已生成在 [todo-implement-system-zh.md](todo-implement-system-zh.md)：`HW-009` Digest E2E Write-back Gate、`HW-010` Review Batch Operations、`HW-013` Human-readable Ops Briefing 和 `HW-014` Local Daemon Productization 当前为 `ready`；`HW-011`、`HW-012`、`HW-015` 作为依赖后的 backlog。后续应从 `HW-009` 开始执行。
+
+历史优先顺序和技术线索保留如下：
 
 1. **真实 digest E2E 稳定化**
    - Fastreact digest worker 修复 tool budget/重复写回问题。

@@ -1,6 +1,6 @@
 # PSKA Todo Implement System
 
-日期：2026-06-17
+日期：2026-06-18
 
 ## 目标
 
@@ -62,7 +62,9 @@ commit_evidence: ""
 - 新增长期设计决策时，需要同步更新产品设计或架构状态文档。
 - 新增非核心能力时，必须记录 open-source-first 评估。
 
-## 当前 Ready Backlog
+## 当前 Human Workflow Backlog
+
+状态：`HW-001` 到 `HW-008` 已完成并验证。下一轮 Human Workflow backlog 已根据产品设计和架构状态生成，当前可从 `HW-009` 开始自动选择。
 
 ### HW-001 Daily Status Entry
 
@@ -237,6 +239,188 @@ verification_commands:
 commit_evidence: "Implemented digest scheduler budget/explanation policy. `schedule_digest` now returns a policy object plus selected/skipped source item explanations, dedupes active/succeeded/failed/canceled digest-covered sources unless force=true, explains limit_reached selections, preserves quota window limits, and documents current trigger/token boundaries. Successful digest-covered sources are skipped until force=true or a future trigger policy selects them, preventing infinite repeat scheduling. Verification on 2026-06-17: targeted digest tests `3 passed in 0.10s`; core pytest `193 passed in 8.52s`; twitter-x pytest `9 passed in 0.02s`; sample Postgres smoke `./scripts/pska digest-schedule --owner-user-id user_primary --limit 2` created a digest job for 2 sources and returned selected_reasons=[new_or_triggered_source], skipped_reasons=[active_digest_job,completed_digest_job,limit_reached], with policy fields for dedupe, successful_source_repeat, failed_source_repeat, frequency, max_source_items=2, max_source_items_per_job=20, token_budget, trigger_policy, and force=false."
 ```
 
+### HW-009 Digest E2E Write-back Gate
+
+```yaml
+id: HW-009
+track: Human Workflow
+priority: P0
+status: ready
+user_value: 用户能确认空闲 digest 不只是排队，而是真的从有限资料生成有出处的候选、review 或 memory/profile 写回，并正确完成或失败。
+dependencies:
+  - HW-006
+  - HW-008
+implementation_hint: 增加一个可重复的 digest E2E gate/smoke，优先复用现有 digest-schedule、job lease/context、FastReAct worker command、candidate write-back 和 job complete/fail；不要在 PSKA 内重写 agent loop。gate 应能在当前 postgresql:///pska 样例库上输出每一步的 job_id、source_refs、candidate/review counts、completion status 和失败诊断。
+open_source_candidates:
+  - pytest
+  - Pydantic
+  - FastReAct existing worker/event stream
+acceptance_gates:
+  - 命令或测试能解释 digest job 从 schedule 到 worker write-back 到 complete/fail 的全链路状态。
+  - 产生的 candidate/review/memory/profile/hyperedge 结果必须带 source_refs；缺 source_refs 的写回被拒绝或进入 review。
+  - FastReAct 不可用时 gate 给出明确诊断，不把 timeout 伪装成成功。
+verification_commands:
+  - cd core && ../.pska/venvs/pska-py312/bin/python -m pytest -q
+  - cd channels/twitter-x && ../../.pska/venvs/pska-py312/bin/python -m pytest -q
+commit_evidence: ""
+```
+
+### HW-010 Review Batch Operations
+
+```yaml
+id: HW-010
+track: Human Workflow
+priority: P1
+status: ready
+user_value: 用户能一次性处理低风险、同类型、出处完整的 review items，而不是逐条机械确认。
+dependencies:
+  - HW-002
+  - HW-007
+implementation_hint: 增加 review batch approve/reject/snooze 或等价 CLI/API；只允许对同 owner、同 review_type、source_ref_status=present、can_apply_now=true 的安全集合批量 apply，高影响 action 仍需单条确认。输出 dry-run summary、affected ids、skipped reasons 和 audit events。
+open_source_candidates:
+  - Rich
+  - JSON Patch
+  - Pydantic
+acceptance_gates:
+  - batch dry-run 能列出将处理、将跳过和原因。
+  - batch apply 后每条 review 都有 audit event，且 apply 结果保留 source_refs。
+  - 不满足安全条件的 review 不会被批量 apply。
+verification_commands:
+  - cd core && ../.pska/venvs/pska-py312/bin/python -m pytest -q
+  - cd channels/twitter-x && ../../.pska/venvs/pska-py312/bin/python -m pytest -q
+commit_evidence: ""
+```
+
+### HW-011 Memory Promotion Lifecycle
+
+```yaml
+id: HW-011
+track: Human Workflow
+priority: P1
+status: backlog
+user_value: digest/review 产生的候选能稳定进入 memory/profile，并能随新证据更新 confidence、last_verified_at 和状态。
+dependencies:
+  - HW-009
+  - HW-010
+implementation_hint: 明确 memory_candidate/profile_update 的 promotion path：candidate -> review -> apply -> memory/profile card；复用现有 review/audit/store 能力，补 confidence 更新、last_verified_at、source_refs merge 和拒绝/过期状态。自研范围限制在 PSKA 的 canonical lifecycle 和 ACL。
+open_source_candidates:
+  - Pydantic
+  - JSON Schema
+  - dateparser
+acceptance_gates:
+  - apply memory/profile candidate 会创建或更新对应记录，并保留 source_refs 和 audit trail。
+  - 重复候选不会无限创建重复 memory/profile；会合并证据或说明跳过原因。
+  - memory-list/profile-list 能显示 promoted/updated 状态、confidence 和 last_verified_at。
+verification_commands:
+  - cd core && ../.pska/venvs/pska-py312/bin/python -m pytest -q
+  - cd channels/twitter-x && ../../.pska/venvs/pska-py312/bin/python -m pytest -q
+commit_evidence: ""
+```
+
+### HW-012 Retrieval Evaluation Fixtures
+
+```yaml
+id: HW-012
+track: Human Workflow
+priority: P1
+status: backlog
+user_value: 用户能知道 search/agentic-search/GraphRAG 对真实样例问题是否找到了正确出处，而不是只看主观回答质量。
+dependencies:
+  - HW-003
+  - HW-007
+implementation_hint: 建立小型 retrieval eval fixture：固定 source/chunk/entity/hyperedge 样例、query、expected citations、expected graph paths 和 gap/conflict expectations；先用 pytest/JSON fixture 做离线回归，再决定是否引入 rerank 或外部 index。
+open_source_candidates:
+  - pytest
+  - rank-bm25
+  - sentence-transformers
+  - Postgres FTS
+acceptance_gates:
+  - eval 能报告 lexical/vector/graph context 是否命中 expected citations。
+  - graph path relevance 和 evidence coverage 有可读 explanation。
+  - 失败时输出 query、missing expected refs 和 diagnostics，而不是只给 pass/fail。
+verification_commands:
+  - cd core && ../.pska/venvs/pska-py312/bin/python -m pytest -q
+  - cd channels/twitter-x && ../../.pska/venvs/pska-py312/bin/python -m pytest -q
+commit_evidence: ""
+```
+
+### HW-013 Human-readable Ops Briefing
+
+```yaml
+id: HW-013
+track: Human Workflow
+priority: P2
+status: ready
+user_value: 服务、worker、FastReAct、digest backlog 和 connector 问题能用一条人类可读命令定位，不需要用户直接翻 job log。
+dependencies:
+  - HW-001
+  - HW-004
+  - HW-008
+implementation_hint: 扩展 daily-status/daily-briefing 或新增 ops-briefing，汇总 worker-level health、failed/stale jobs、digest quality signals、FastReAct readiness、connector state freshness、recommended recovery commands。保持 deterministic fallback；不依赖 LLM。
+open_source_candidates:
+  - Rich
+  - structlog
+  - prometheus-client
+acceptance_gates:
+  - 输出能区分 service down、FastReAct down、stale job、failed digest、connector stale、empty backlog 等状态。
+  - 每类问题给出一到两个确定性 recovery command。
+  - FastReAct 离线时命令仍能成功输出。
+verification_commands:
+  - cd core && ../.pska/venvs/pska-py312/bin/python -m pytest -q
+  - cd channels/twitter-x && ../../.pska/venvs/pska-py312/bin/python -m pytest -q
+commit_evidence: ""
+```
+
+### HW-014 Local Daemon Productization
+
+```yaml
+id: HW-014
+track: Human Workflow
+priority: P2
+status: ready
+user_value: 用户能把 local-daemon 当作日常后台服务管理，知道 pid、日志、配置和重启状态，而不是只能前台盯着进程。
+dependencies: []
+implementation_hint: 在现有 foreground local-daemon 基础上补 status/pid/log path/config check/restart guidance；系统级安装器先做生成 launchd/supervisord 配置或 dry-run，不强制安装。优先薄封装成熟 supervisor，不自研完整进程管理。
+open_source_candidates:
+  - launchd
+  - supervisord
+  - honcho
+  - foreman
+acceptance_gates:
+  - local-daemon status 能显示 service/job worker/digest scheduler 子进程状态、pid 和日志路径。
+  - config check 能发现缺 DB、端口冲突或 FastReAct URL/token 配置问题。
+  - 生成的 supervisor 配置有 dry-run 输出和人工确认路径。
+verification_commands:
+  - cd core && ../.pska/venvs/pska-py312/bin/python -m pytest -q
+  - cd channels/twitter-x && ../../.pska/venvs/pska-py312/bin/python -m pytest -q
+commit_evidence: ""
+```
+
+### HW-015 Agent Capture Retention Policy
+
+```yaml
+id: HW-015
+track: Human Workflow
+priority: P2
+status: backlog
+user_value: agentic answer 回流为资料时不会无限重复保存，也能控制敏感内容、保留期限和 review 入口。
+dependencies:
+  - HW-006
+implementation_hint: 为 capture_agent_conversation 增加 retention/dedupe/review policy：基于 purpose、prompt/content hash、source_refs、represented user 和 sensitivity flags 决定保存、跳过或写 review。保留 PSKA-originated answer/citations/trace summary，不保存 FastReAct 私有内部对象。
+open_source_candidates:
+  - Pydantic
+  - JSONL tracing conventions
+  - OpenTelemetry
+acceptance_gates:
+  - 重复 capture 会返回 existing/skipped explanation，不创建无限重复 source items。
+  - 高敏感或缺 source_refs 的 capture 可进入 review 或被拒绝保存。
+  - daily narrative 和 agentic-search capture 仍复用同一策略。
+verification_commands:
+  - cd core && ../.pska/venvs/pska-py312/bin/python -m pytest -q
+  - cd channels/twitter-x && ../../.pska/venvs/pska-py312/bin/python -m pytest -q
+commit_evidence: ""
+```
+
 ## 基线门禁
 
 常规代码改动后默认运行：
@@ -250,3 +434,12 @@ cd ../channels/twitter-x
 ```
 
 Human Workflow smoke 应使用当前 `postgresql:///pska` 样例数据跑通 status/review/jobs/briefing 入口。
+
+## 下一轮任务生成规则
+
+当当前轨道没有 `ready` 任务时，下一轮应先更新本文件，而不是让 agent 猜：
+
+1. 从 [product-design-zh.md](product-design-zh.md) 选一个产品缺口。
+2. 用 [architecture-status-zh.md](architecture-status-zh.md) 确认对应模块成熟度和主要缺口。
+3. 为新任务写入完整 TODO：id、track、priority、dependencies、open_source_candidates、acceptance_gates、verification_commands。
+4. 至少放入一个 `status: ready` 的任务后，agent 才能继续自动实施。
