@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pska_core.agent_capture import capture_agent_conversation
 from pska_core.adapters.conversation import conversation_to_payload
+from pska_core.enums import ReviewType
 from pska_core.acl import ACLService
 from pska_core.enums import UserRole
 from pska_core.ingest import IngestService
@@ -74,7 +75,95 @@ def test_agent_capture_saves_answer_citations_and_trace_summary() -> None:
     assert source.metadata["extra"]["source_refs"] == [{"source_item_id": "src_evidence", "chunk_id": "chk_1"}]
     assert source.metadata["content"]["trace_summary"]["evidence_check"] == "has_citations"
     assert source.metadata["content"]["citations"] == [{"source_item_id": "src_evidence", "chunk_id": "chk_1"}]
+    assert source.metadata["extra"]["capture_policy"]["retention_days"] == 90
+    assert source.metadata["extra"]["retention"]["expires_at"]
     assert "PSKA knows a grounded answer." in source.content_text
+
+
+def test_agent_capture_dedupes_repeated_answer() -> None:
+    store = InMemoryKnowledgeStore()
+    store.add_user(User("user_primary", "primary", UserRole.ADMIN))
+
+    first = capture_agent_conversation(
+        store,
+        owner_user_id="user_primary",
+        represented_user_id="user_primary",
+        purpose="agentic_search",
+        prompt="What does PSKA know?",
+        answer="A grounded answer.",
+        source_refs=[{"source_item_id": "src_evidence"}],
+    )
+    second = capture_agent_conversation(
+        store,
+        owner_user_id="user_primary",
+        represented_user_id="user_primary",
+        purpose="agentic_search",
+        prompt="What does PSKA know?",
+        answer="A grounded answer.",
+        source_refs=[{"source_item_id": "src_evidence"}],
+    )
+
+    assert first.action == "saved"
+    assert second.action == "existing"
+    assert second.source_item_id == first.source_item_id
+    assert len(store.source_items) == 1
+    assert "duplicate capture skipped" in second.explanation
+
+
+def test_agent_capture_missing_refs_goes_to_review() -> None:
+    store = InMemoryKnowledgeStore()
+    store.add_user(User("user_primary", "primary", UserRole.ADMIN))
+
+    result = capture_agent_conversation(
+        store,
+        owner_user_id="user_primary",
+        represented_user_id="user_primary",
+        purpose="agentic_search",
+        prompt="Ungrounded?",
+        answer="Maybe.",
+        source_refs=[],
+    )
+
+    assert result.action == "review_required"
+    assert result.source_item_id is None
+    assert result.review_item_id
+    assert len(store.source_items) == 0
+    review = next(iter(store.review_items.values()))
+    assert review.review_type == ReviewType.LOW_CONFIDENCE
+    assert review.proposal["violation"] == "capture requires source_refs before saving"
+
+
+def test_agent_capture_sensitive_content_goes_to_review_and_sanitizes_tool_calls() -> None:
+    store = InMemoryKnowledgeStore()
+    store.add_user(User("user_primary", "primary", UserRole.ADMIN))
+
+    sensitive = capture_agent_conversation(
+        store,
+        owner_user_id="user_primary",
+        represented_user_id="user_primary",
+        purpose="agentic_search",
+        prompt="private",
+        answer="sensitive answer",
+        source_refs=[{"source_item_id": "src_evidence"}],
+        sensitivity="high",
+        tool_calls=[{"name": "internal_tool", "raw_response": {"secret": "nope"}, "status": "ok"}],
+    )
+    saved = capture_agent_conversation(
+        store,
+        owner_user_id="user_primary",
+        represented_user_id="user_primary",
+        purpose="agentic_search",
+        prompt="safe",
+        answer="safe answer",
+        source_refs=[{"source_item_id": "src_evidence"}],
+        tool_calls=[{"name": "internal_tool", "raw_response": {"secret": "nope"}, "status": "ok"}],
+    )
+
+    assert sensitive.action == "review_required"
+    review = next(iter(store.review_items.values()))
+    assert review.review_type == ReviewType.SENSITIVE_CONTENT
+    assert review.proposal["sensitivity"] == "high"
+    assert saved.metadata["content"]["tool_calls"] == [{"name": "internal_tool", "status": "ok"}]
 
 
 def test_conversation_payload_requires_non_empty_messages() -> None:

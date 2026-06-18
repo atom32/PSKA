@@ -588,7 +588,20 @@ def agentic_search(args: argparse.Namespace) -> int:
             title=f"PSKA agentic search: {args.query[:80]}",
             source_channel="pska_agent",
         )
-        print(dumps({"agentic_search": response, "capture": {"source_item_id": captured.source_item_id}}))
+        print(
+            dumps(
+                {
+                    "agentic_search": response,
+                    "capture": {
+                        "action": captured.action,
+                        "explanation": captured.explanation,
+                        "source_item_id": captured.source_item_id,
+                        "review_item_id": captured.review_item_id,
+                        "policy": captured.policy,
+                    },
+                }
+            )
+        )
     else:
         print(dumps(response))
     return 0

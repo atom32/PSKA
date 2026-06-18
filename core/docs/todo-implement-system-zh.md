@@ -402,7 +402,7 @@ commit_evidence: "Implemented `local-daemon` management actions while preserving
 id: HW-015
 track: Human Workflow
 priority: P2
-status: backlog
+status: verified
 user_value: agentic answer 回流为资料时不会无限重复保存，也能控制敏感内容、保留期限和 review 入口。
 dependencies:
   - HW-006
@@ -418,7 +418,7 @@ acceptance_gates:
 verification_commands:
   - cd core && ../.pska/venvs/pska-py312/bin/python -m pytest -q
   - cd channels/twitter-x && ../../.pska/venvs/pska-py312/bin/python -m pytest -q
-commit_evidence: ""
+commit_evidence: "Implemented agent capture retention/dedupe/review policy in `capture_agent_conversation`. The helper now returns an `AgentCaptureResult` with action/explanation/source_item_id/review_item_id/policy while remaining source-item compatible for existing callers. Captures get a stable dedupe key based on purpose, prompt, answer, represented user, owner, and source_refs; repeated captures return action=existing instead of creating infinite source items. Saved captures store capture_policy and retention metadata with expires_at, preserve PSKA-originated answer/citations/trace_summary, and sanitize tool_calls to avoid persisting private raw FastReAct objects. High/sensitive captures create `sensitive_content` review items; missing source_refs create `low_confidence` review items unless policy rejection is requested. `agentic-search --capture` now reports capture action/explanation/policy, and daily narrative continues to use the same helper. Verification on 2026-06-18: targeted conversation/daily narrative tests `9 passed in 0.08s`; core pytest `212 passed in 8.72s`; twitter-x pytest `9 passed in 0.02s`; sample Postgres smoke on `postgresql:///pska` saved `src_03a6741ab3175bc39da89a72b3337e6a`, repeated the same capture as action=existing with the same source_item_id, and routed a missing-source_refs capture to review `rev_capture_b4213324adb45823a2f94c69233c3c23` with explanation `capture requires source_refs before saving`."
 ```
 
 ## 基线门禁
