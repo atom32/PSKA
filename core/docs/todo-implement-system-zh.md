@@ -271,7 +271,7 @@ commit_evidence: "Implemented repeatable `core/scripts/digest_e2e_gate.py` for t
 id: HW-010
 track: Human Workflow
 priority: P1
-status: ready
+status: verified
 user_value: 用户能一次性处理低风险、同类型、出处完整的 review items，而不是逐条机械确认。
 dependencies:
   - HW-002
@@ -288,7 +288,7 @@ acceptance_gates:
 verification_commands:
   - cd core && ../.pska/venvs/pska-py312/bin/python -m pytest -q
   - cd channels/twitter-x && ../../.pska/venvs/pska-py312/bin/python -m pytest -q
-commit_evidence: ""
+commit_evidence: "Implemented `review-batch` CLI for dry-run-first batch review operations. It supports `approve`, `reject`, and `apply`, accepts explicit review IDs or owner/type/status filters, reports selected/to_process/skipped/affected counts, returns skipped reasons, and only mutates when `--execute` is present. Batch apply is constrained to approved items with source_refs, apply_supported/can_apply_now, same owner, same review_type, and safe apply review types (`profile_update`, `relationship_candidate`); high-impact/share/action/unsupported items remain single-item flows. Execution reuses `ReviewService` single-item methods, so each changed item emits the existing audit event and apply output keeps source_refs. Verification on 2026-06-18: targeted CLI/review tests `36 passed in 0.22s`; core pytest `199 passed in 8.63s`; twitter-x pytest `9 passed in 0.02s`; sample Postgres smoke on `postgresql:///pska` created `rev_16527d3671ff48d896564a2a420fb60f`, dry-run approve reported to_process=1/affected=0, execute approve produced audit `aud_f57994bff3d74bd996811cc60588b48f`, execute batch apply produced audit `aud_37cf59ad04754bb999ee56e3c7c66cd8`, affected_ids=[rev_16527d3671ff48d896564a2a420fb60f], and `profile-list` showed profile card `upc_bdc29cff80b34ba69378598f6472497d` with source_ref `src_678b2cfbbbe45f60a130dbd2efe239c1`."
 ```
 
 ### HW-011 Memory Promotion Lifecycle

@@ -16,6 +16,7 @@ from pska_core.cli import (
     _mvp_status_payload,
     _mvp_status_summary,
     _profile_list_payload,
+    _review_batch_payload,
     _review_items_payload,
 )
 from pska_core.enums import MemoryLayer, ReviewType, Visibility
@@ -219,6 +220,29 @@ def test_cli_accepts_review_commands() -> None:
     assert apply.command == "review-apply"
     assert apply.review_item_id == "rev_123"
 
+    batch = build_parser().parse_args(
+        [
+            "review-batch",
+            "apply",
+            "--review-item-id",
+            "rev_123",
+            "--owner-user-id",
+            "user_primary",
+            "--review-type",
+            "profile_update",
+            "--status",
+            "approved",
+            "--execute",
+        ]
+    )
+    assert batch.command == "review-batch"
+    assert batch.action == "apply"
+    assert batch.review_item_ids == ["rev_123"]
+    assert batch.owner_user_id == "user_primary"
+    assert batch.review_type == "profile_update"
+    assert batch.status == "approved"
+    assert batch.execute is True
+
 
 def test_review_items_payload_filters_and_summarizes() -> None:
     created_at = datetime(2026, 6, 17, 9, 0, tzinfo=timezone.utc)
@@ -276,6 +300,148 @@ def test_review_items_payload_filters_and_summarizes() -> None:
         "total_matching": 1,
         "limit": 10,
     }
+
+
+def test_review_batch_dry_run_lists_processable_and_skipped_items() -> None:
+    store = InMemoryKnowledgeStore()
+    store.add_review_item(
+        ReviewItem(
+            review_item_id="rev_profile",
+            owner_user_id="user_primary",
+            review_type=ReviewType.PROFILE_UPDATE,
+            title="Profile update",
+            proposal={
+                "profile_delta": {"topic": "PSKA"},
+                "source_refs": [{"source_item_id": "src_1"}],
+                "confidence": 0.8,
+            },
+            status="approved",
+        )
+    )
+    store.add_review_item(
+        ReviewItem(
+            review_item_id="rev_missing_refs",
+            owner_user_id="user_primary",
+            review_type=ReviewType.PROFILE_UPDATE,
+            title="Missing refs",
+            proposal={"profile_delta": {"topic": "No refs"}},
+            status="approved",
+        )
+    )
+    store.add_review_item(
+        ReviewItem(
+            review_item_id="rev_share",
+            owner_user_id="user_primary",
+            review_type=ReviewType.SHARE_PROPOSAL,
+            title="Share proposal",
+            proposal={"source_refs": [{"source_item_id": "src_2"}]},
+            status="approved",
+        )
+    )
+
+    payload = _review_batch_payload(
+        store,
+        action="apply",
+        review_item_ids=[],
+        owner_user_id="user_primary",
+        review_type=None,
+        status="approved",
+        limit=10,
+        actor_user_id="user_primary",
+        reason="batch dry run",
+        dry_run=True,
+    )
+
+    assert payload["dry_run"] is True
+    assert payload["summary"] == {"selected": 3, "to_process": 1, "skipped": 2, "affected": 0}
+    assert [item["review_item_id"] for item in payload["to_process"]] == ["rev_profile"]
+    skipped = {item["review_item_id"]: item["reason"] for item in payload["skipped"]}
+    assert skipped == {
+        "rev_missing_refs": "missing_source_refs",
+        "rev_share": "batch_apply_requires_single_item_for_review_type",
+    }
+    assert store.list_audit_events() == []
+
+
+def test_review_batch_apply_executes_safe_items_with_audit_and_source_refs() -> None:
+    store = InMemoryKnowledgeStore()
+    store.add_review_item(
+        ReviewItem(
+            review_item_id="rev_profile",
+            owner_user_id="user_primary",
+            review_type=ReviewType.PROFILE_UPDATE,
+            title="Profile update",
+            proposal={
+                "profile_delta": {"topic": "PSKA"},
+                "source_refs": [{"source_item_id": "src_1", "chunk_id": "chk_1"}],
+                "confidence": 0.8,
+            },
+            status="approved",
+        )
+    )
+
+    payload = _review_batch_payload(
+        store,
+        action="apply",
+        review_item_ids=["rev_profile"],
+        owner_user_id=None,
+        review_type=None,
+        status=None,
+        limit=10,
+        actor_user_id="user_primary",
+        reason="batch apply",
+        dry_run=False,
+    )
+
+    assert payload["summary"] == {"selected": 1, "to_process": 1, "skipped": 0, "affected": 1}
+    assert payload["affected_ids"] == ["rev_profile"]
+    assert payload["results"][0]["review_item"]["status"] == "applied"
+    assert payload["results"][0]["audit_events"][0]["decision"] == "applied"
+    card = next(iter(store.profile_cards.values()))
+    assert card.source_refs[0].source_item_id == "src_1"
+    assert card.source_refs[0].chunk_id == "chk_1"
+
+
+def test_review_batch_apply_requires_same_owner_and_type() -> None:
+    store = InMemoryKnowledgeStore()
+    store.add_review_item(
+        ReviewItem(
+            review_item_id="rev_primary",
+            owner_user_id="user_primary",
+            review_type=ReviewType.PROFILE_UPDATE,
+            title="Primary profile",
+            proposal={"profile_delta": {"topic": "PSKA"}, "source_refs": [{"source_item_id": "src_1"}]},
+            status="approved",
+        )
+    )
+    store.add_review_item(
+        ReviewItem(
+            review_item_id="rev_other",
+            owner_user_id="other",
+            review_type=ReviewType.PROFILE_UPDATE,
+            title="Other profile",
+            proposal={"profile_delta": {"topic": "Other"}, "source_refs": [{"source_item_id": "src_2"}]},
+            status="approved",
+        )
+    )
+
+    payload = _review_batch_payload(
+        store,
+        action="apply",
+        review_item_ids=[],
+        owner_user_id=None,
+        review_type="profile_update",
+        status="approved",
+        limit=10,
+        actor_user_id="user_primary",
+        reason="batch apply",
+        dry_run=False,
+    )
+
+    assert payload["summary"] == {"selected": 2, "to_process": 0, "skipped": 2, "affected": 0}
+    assert {item["reason"] for item in payload["skipped"]} == {"batch_apply_requires_same_owner_and_review_type"}
+    assert store.profile_cards == {}
+    assert store.list_audit_events() == []
 
 
 def test_review_summary_distinguishes_candidate_types_and_missing_sources() -> None:

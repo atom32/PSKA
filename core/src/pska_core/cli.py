@@ -20,7 +20,7 @@ from pska_core.api import PSKAApi, serve
 from pska_core.config import DEFAULT_DATABASE_URL, PSKAConfig
 from pska_core.connectors import connector_state_from_mapping, connector_record_to_payload
 from pska_core.embeddings import EmbeddingConfig, EmbeddingService, build_embedding_provider
-from pska_core.enums import Visibility
+from pska_core.enums import ReviewType, Visibility
 from pska_core.extraction import ExtractionService
 from pska_core.fastreact_client import FastreactConfig, FastreactError, HttpFastreactClient
 from pska_core.files_connector import scan_files
@@ -35,7 +35,7 @@ from pska_core.models import AgentMemory, ChannelIngestPayload, ReviewItem, Sour
 from pska_core.agentic import AgenticSearchService
 from pska_core.retrieval import RetrievalService
 from pska_core.review import ReviewService
-from pska_core.serde import dumps
+from pska_core.serde import dumps, to_jsonable
 from pska_core.store_postgres import PostgresKnowledgeStore
 
 
@@ -321,6 +321,17 @@ def build_parser() -> argparse.ArgumentParser:
     review_apply_parser.add_argument("--actor-user-id", default="user_primary")
     review_apply_parser.add_argument("--reason", default="")
 
+    review_batch_parser = subparsers.add_parser("review-batch", help="Dry-run or execute safe batch review operations")
+    review_batch_parser.add_argument("action", choices=["approve", "reject", "apply"])
+    review_batch_parser.add_argument("--review-item-id", action="append", dest="review_item_ids", default=[])
+    review_batch_parser.add_argument("--owner-user-id", default=None)
+    review_batch_parser.add_argument("--review-type", choices=[item.value for item in ReviewType], default=None)
+    review_batch_parser.add_argument("--status", default=None)
+    review_batch_parser.add_argument("--limit", type=int, default=50)
+    review_batch_parser.add_argument("--actor-user-id", default="user_primary")
+    review_batch_parser.add_argument("--reason", default="")
+    review_batch_parser.add_argument("--execute", action="store_true", help="Write changes; default is dry-run")
+
     profile_parser = subparsers.add_parser("profile-propose", help="Propose a profile card update")
     profile_parser.add_argument("--owner-user-id", default="user_primary")
     profile_parser.add_argument("--profile-delta-json", required=True)
@@ -423,6 +434,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return review_reject(args)
     if args.command == "review-apply":
         return review_apply(args)
+    if args.command == "review-batch":
+        return review_batch(args)
     if args.command == "profile-propose":
         return profile_propose(args)
     return 2
@@ -1112,6 +1125,168 @@ def review_list(args: argparse.Namespace) -> int:
     items = store.list_review_items()
     print(dumps(_review_items_payload(items, status=args.status, owner_user_id=args.owner_user_id, limit=args.limit, summary=args.summary)))
     return 0
+
+
+def review_batch(args: argparse.Namespace) -> int:
+    store = PostgresKnowledgeStore(args.database_url)
+    payload = _review_batch_payload(
+        store,
+        action=args.action,
+        review_item_ids=args.review_item_ids,
+        owner_user_id=args.owner_user_id,
+        review_type=args.review_type,
+        status=args.status,
+        limit=args.limit,
+        actor_user_id=args.actor_user_id,
+        reason=args.reason,
+        dry_run=not args.execute,
+    )
+    print(dumps(payload))
+    return 0 if payload["ok"] else 1
+
+
+BATCH_APPLY_SAFE_REVIEW_TYPES = {"profile_update", "relationship_candidate"}
+
+
+def _review_batch_payload(
+    store,
+    *,
+    action: str,
+    review_item_ids: Sequence[str],
+    owner_user_id: str | None,
+    review_type: str | None,
+    status: str | None,
+    limit: int,
+    actor_user_id: str,
+    reason: str,
+    dry_run: bool,
+) -> dict[str, Any]:
+    items = _review_batch_candidates(
+        store.list_review_items(),
+        review_item_ids=review_item_ids,
+        owner_user_id=owner_user_id,
+        review_type=review_type,
+        status=status,
+        limit=limit,
+    )
+    plan = _review_batch_plan(items, action=action)
+    results = []
+    if not dry_run:
+        service = ReviewService(store)
+        for row in plan["to_process"]:
+            review_item_id = row["review_item_id"]
+            before = {event.audit_event_id for event in store.list_audit_events("review_item", review_item_id)}
+            try:
+                if action == "approve":
+                    review_item = service.approve(review_item_id, actor_user_id=actor_user_id, reason=reason)
+                elif action == "reject":
+                    review_item = service.reject(review_item_id, actor_user_id=actor_user_id, reason=reason)
+                elif action == "apply":
+                    review_item = service.apply(review_item_id, actor_user_id=actor_user_id, reason=reason)
+                else:
+                    raise ValueError(f"Unsupported review batch action: {action}")
+            except Exception as exc:  # noqa: BLE001 - batch output should explain per-item failures.
+                plan["skipped"].append({**row, "reason": f"execution_failed:{type(exc).__name__}", "error": str(exc)})
+                continue
+            after_events = store.list_audit_events("review_item", review_item_id)
+            new_events = [event for event in after_events if event.audit_event_id not in before]
+            results.append(
+                {
+                    "review_item": _review_item_summary(review_item),
+                    "audit_events": to_jsonable(new_events),
+                }
+            )
+        plan["to_process"] = [
+            row
+            for row in plan["to_process"]
+            if row["review_item_id"] in {result["review_item"]["review_item_id"] for result in results}
+        ]
+    return {
+        "ok": True,
+        "action": action,
+        "dry_run": dry_run,
+        "filters": {
+            "review_item_ids": list(review_item_ids),
+            "owner_user_id": owner_user_id,
+            "review_type": review_type,
+            "status": status,
+            "limit": max(0, limit),
+        },
+        "summary": {
+            "selected": len(items),
+            "to_process": len(plan["to_process"]),
+            "skipped": len(plan["skipped"]),
+            "affected": len(results) if not dry_run else 0,
+        },
+        "affected_ids": [result["review_item"]["review_item_id"] for result in results],
+        "to_process": plan["to_process"],
+        "skipped": plan["skipped"],
+        "results": results,
+    }
+
+
+def _review_batch_candidates(
+    items: Sequence[ReviewItem],
+    *,
+    review_item_ids: Sequence[str],
+    owner_user_id: str | None,
+    review_type: str | None,
+    status: str | None,
+    limit: int,
+) -> list[ReviewItem]:
+    requested = set(review_item_ids)
+    filtered = [
+        item
+        for item in items
+        if (not requested or item.review_item_id in requested)
+        and (owner_user_id is None or item.owner_user_id == owner_user_id)
+        and (review_type is None or _review_type_value(item) == review_type)
+        and (status is None or item.status == status)
+    ]
+    return filtered[: max(0, limit)]
+
+
+def _review_batch_plan(items: Sequence[ReviewItem], *, action: str) -> dict[str, list[dict[str, Any]]]:
+    to_process = []
+    skipped = []
+    for item in items:
+        summary = _review_item_summary(item)
+        reason = _review_batch_skip_reason(summary, action=action)
+        if reason:
+            skipped.append({**summary, "reason": reason})
+        else:
+            to_process.append(summary)
+    if action == "apply" and to_process:
+        owners = {item["owner_user_id"] for item in to_process}
+        review_types = {item["review_type"] for item in to_process}
+        if len(owners) > 1 or len(review_types) > 1:
+            skipped.extend(
+                {**item, "reason": "batch_apply_requires_same_owner_and_review_type"}
+                for item in to_process
+            )
+            to_process = []
+    return {"to_process": to_process, "skipped": skipped}
+
+
+def _review_batch_skip_reason(summary: dict[str, Any], *, action: str) -> str | None:
+    status = summary["status"]
+    if action in {"approve", "reject"}:
+        return None if status == "pending" else f"status_not_pending:{status}"
+    if action != "apply":
+        return f"unsupported_batch_action:{action}"
+    if status != "approved":
+        return f"status_not_approved:{status}"
+    if not summary["apply_supported"] or not summary["can_apply_now"]:
+        return "apply_not_supported"
+    if summary["source_ref_status"] != "present":
+        return "missing_source_refs"
+    if summary["review_type"] not in BATCH_APPLY_SAFE_REVIEW_TYPES:
+        return "batch_apply_requires_single_item_for_review_type"
+    return None
+
+
+def _review_type_value(item: ReviewItem) -> str:
+    return item.review_type.value if hasattr(item.review_type, "value") else str(item.review_type)
 
 
 def memory_list(args: argparse.Namespace) -> int:
