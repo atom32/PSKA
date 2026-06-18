@@ -186,6 +186,12 @@ def build_parser() -> argparse.ArgumentParser:
     daily_briefing_parser.add_argument("--narrative", action="store_true", help="Ask FastReAct for a narrative summary and save it when available")
     daily_briefing_parser.add_argument("--narrative-timeout-seconds", type=float, default=None, help="Override FastReAct chat timeout for --narrative")
 
+    ops_briefing_parser = subparsers.add_parser("ops-briefing", help="Show deterministic human-readable PSKA ops diagnostics")
+    ops_briefing_parser.add_argument("--owner-user-id", default="user_primary")
+    ops_briefing_parser.add_argument("--limit", type=int, default=5, help="Maximum failed/stale rows to include")
+    ops_briefing_parser.add_argument("--connector-stale-seconds", type=int, default=86_400)
+    ops_briefing_parser.add_argument("--format", choices=["json", "text"], default="json")
+
     retrieval_eval_parser = subparsers.add_parser("retrieval-eval", help="Run offline retrieval/GraphRAG eval fixture")
     retrieval_eval_parser.add_argument("--fixture", type=Path, default=DEFAULT_RETRIEVAL_EVAL_FIXTURE)
 
@@ -398,6 +404,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return daily_status(args)
     if args.command == "daily-briefing":
         return daily_briefing(args)
+    if args.command == "ops-briefing":
+        return ops_briefing(args)
     if args.command == "retrieval-eval":
         return retrieval_eval(args)
     if args.command == "fastreact-digest-worker-command":
@@ -954,6 +962,17 @@ def daily_briefing(args: argparse.Namespace) -> int:
         narrative_timeout_seconds=args.narrative_timeout_seconds,
     )
     print(dumps(payload))
+    return 0
+
+
+def ops_briefing(args: argparse.Namespace) -> int:
+    payload = _ops_briefing_payload(
+        args.database_url,
+        owner_user_id=args.owner_user_id,
+        limit=args.limit,
+        connector_stale_seconds=args.connector_stale_seconds,
+    )
+    print(_ops_briefing_text(payload) if args.format == "text" else dumps(payload))
     return 0
 
 
@@ -1837,6 +1856,275 @@ def _daily_briefing_payload(
             fastreact_client=fastreact_client,
         )
     return payload
+
+
+def _ops_briefing_payload(
+    database_url: str,
+    *,
+    owner_user_id: str = "user_primary",
+    limit: int = 5,
+    connector_stale_seconds: int = 86_400,
+) -> dict[str, Any]:
+    limit = max(0, limit)
+    connector_stale_seconds = max(0, connector_stale_seconds)
+    api = PSKAApi(database_url)
+    try:
+        ready = api.ready()
+    except Exception as exc:  # noqa: BLE001 - ops should report service diagnostics, not crash.
+        ready = {"ok": False, "error": f"{type(exc).__name__}: {exc}", "checks": {}}
+    try:
+        metrics = api.metrics()
+    except Exception as exc:  # noqa: BLE001
+        metrics = {"ok": False, "error": f"{type(exc).__name__}: {exc}", "index": {}, "connectors": {}}
+    try:
+        jobs = api.job_stats()["stats"]
+    except Exception as exc:  # noqa: BLE001
+        jobs = {"ok": False, "error": f"{type(exc).__name__}: {exc}", "by_status": {}, "digest_backlog": {}, "stale_running": []}
+
+    store = getattr(api, "store", None)
+    failed_jobs = _ops_list_jobs(store, status="failed", limit=max(limit, 20))
+    running_jobs = _ops_list_jobs(store, status="running", limit=max(limit, 20))
+    connector_states = _ops_connector_states(store, owner_user_id=owner_user_id)
+    ready_checks = (ready.get("checks") or {}) if isinstance(ready, dict) else {}
+    connectors = (metrics.get("connectors") or {}) if isinstance(metrics, dict) else {}
+    digest_backlog = jobs.get("digest_backlog") or {}
+    recent_failed = list(jobs.get("recent_failed") or [])
+    if not recent_failed:
+        recent_failed = [_ops_job_summary(job) for job in failed_jobs[:limit]]
+    failed_digest_jobs = [
+        item
+        for item in recent_failed
+        if str(item.get("job_type") or "") == "digest_via_fastreact"
+    ][:limit]
+    stale_running = list(jobs.get("stale_running") or [])
+    if not stale_running:
+        stale_running = [_ops_job_summary(job) for job in running_jobs if _ops_job_is_stale(job)][:limit]
+    connector_findings = _ops_connector_findings(connector_states, stale_seconds=connector_stale_seconds)
+
+    issues = [
+        _ops_service_issue(ready, ready_checks),
+        _ops_fastreact_issue(ready_checks.get("fastreact") or {}),
+        _ops_stale_job_issue(stale_running),
+        _ops_failed_digest_issue(failed_digest_jobs),
+        _ops_connector_stale_issue(connector_findings),
+        _ops_empty_backlog_issue(digest_backlog),
+    ]
+    recommended_commands = []
+    for issue in issues:
+        recommended_commands.extend(issue["recovery_commands"])
+
+    by_status = jobs.get("by_status") or {}
+    return {
+        "ok": not any(issue["severity"] == "critical" for issue in issues),
+        "database_url": database_url,
+        "owner_user_id": owner_user_id,
+        "briefing_type": "deterministic_ops_v0",
+        "requires_llm": False,
+        "requires_fastreact_online": False,
+        "service_readiness": {
+            "ok": bool(ready.get("ok")) if isinstance(ready, dict) else False,
+            "database_ok": bool((ready_checks.get("database") or {}).get("ok")),
+            "schema_ok": bool((ready_checks.get("schema") or {}).get("ok")),
+            "mcp_ok": bool((ready_checks.get("mcp") or {}).get("ok")),
+            "jobs_ok": bool((ready_checks.get("jobs") or {}).get("ok")),
+            "metrics_ok": bool((ready_checks.get("metrics") or {}).get("ok")),
+            "fastreact_ok": bool((ready_checks.get("fastreact") or {}).get("ok")),
+            "error": ready.get("error") if isinstance(ready, dict) else None,
+        },
+        "worker_health": {
+            "by_status": by_status,
+            "running": int(by_status.get("running") or len(running_jobs)),
+            "failed": int(by_status.get("failed") or len(failed_jobs)),
+            "active_worker_ids": sorted(set(jobs.get("active_worker_ids") or [getattr(job, "worker_id", None) for job in running_jobs if getattr(job, "worker_id", None)])),
+            "stale_running_count": len(stale_running),
+            "stale_running": stale_running[:limit],
+        },
+        "digest_quality": {
+            "backlog": digest_backlog,
+            "failed_digest_count": len(failed_digest_jobs),
+            "failed_digest_jobs": failed_digest_jobs,
+        },
+        "connector_state": {
+            "source_channels": sorted((connectors.get("source_channels") or {}).keys()),
+            "state_count": int(connectors.get("state_count") or len(connector_states)),
+            "enabled_state_count": int(connectors.get("enabled_state_count") or sum(1 for state in connector_states if getattr(state, "enabled", False))),
+            "state_sync_status": connectors.get("state_sync_status") or {},
+            "stale_seconds": connector_stale_seconds,
+            "findings": connector_findings[:limit],
+        },
+        "issues": issues,
+        "recommended_recovery_commands": list(dict.fromkeys(recommended_commands)),
+        "notes": [
+            "This briefing is deterministic and does not call an LLM.",
+            "FastReAct can be offline; digest jobs remain visible as backlog until a FastReAct worker handles them.",
+        ],
+    }
+
+
+def _ops_service_issue(ready: dict[str, Any], checks: dict[str, Any]) -> dict[str, Any]:
+    failed = [
+        name
+        for name in ["database", "schema", "mcp", "jobs", "metrics"]
+        if (checks.get(name) or {}).get("ok") is not True
+    ]
+    if ready.get("ok") is True and not failed:
+        status = "ok"
+        severity = "info"
+        summary = "PSKA service checks are healthy."
+    else:
+        status = "service_down"
+        severity = "critical"
+        summary = "PSKA service readiness is failing."
+    return {
+        "id": "service_readiness",
+        "status": status,
+        "severity": severity,
+        "summary": summary,
+        "diagnostics": {"failed_checks": failed, "error": ready.get("error")},
+        "recovery_commands": [] if status == "ok" else ["./scripts/pska db-init", "./scripts/pska service-check"],
+    }
+
+
+def _ops_fastreact_issue(fastreact: dict[str, Any]) -> dict[str, Any]:
+    ok = fastreact.get("ok") is True
+    return {
+        "id": "fastreact",
+        "status": "ok" if ok else "fastreact_down",
+        "severity": "info" if ok else "warning",
+        "summary": "FastReAct is reachable." if ok else "FastReAct is offline or not authorized.",
+        "diagnostics": {"error": fastreact.get("error"), "pska_tools_loaded": fastreact.get("pska_tools_loaded")},
+        "recovery_commands": [] if ok else ["./scripts/pska fastreact-digest-worker-command", "./scripts/pska service-check"],
+    }
+
+
+def _ops_stale_job_issue(stale_running: list[dict[str, Any]]) -> dict[str, Any]:
+    has_stale = bool(stale_running)
+    return {
+        "id": "stale_jobs",
+        "status": "stale_job" if has_stale else "ok",
+        "severity": "warning" if has_stale else "info",
+        "summary": f"{len(stale_running)} stale running job(s) need recovery." if has_stale else "No stale running jobs detected.",
+        "diagnostics": {"stale_running": stale_running},
+        "recovery_commands": ["./scripts/pska job-recover --max-age-seconds 900", "./scripts/pska jobs list --status running"] if has_stale else [],
+    }
+
+
+def _ops_failed_digest_issue(failed_digest_jobs: list[dict[str, Any]]) -> dict[str, Any]:
+    has_failed = bool(failed_digest_jobs)
+    return {
+        "id": "failed_digest",
+        "status": "failed_digest" if has_failed else "ok",
+        "severity": "warning" if has_failed else "info",
+        "summary": f"{len(failed_digest_jobs)} failed digest job(s) need inspection." if has_failed else "No failed digest jobs in the recent sample.",
+        "diagnostics": {"failed_digest_jobs": failed_digest_jobs},
+        "recovery_commands": ["./scripts/pska jobs list --status failed --job-type digest_via_fastreact", "./scripts/pska fastreact-digest-worker-command"] if has_failed else [],
+    }
+
+
+def _ops_connector_stale_issue(findings: list[dict[str, Any]]) -> dict[str, Any]:
+    stale = [finding for finding in findings if finding["status"] != "ok"]
+    return {
+        "id": "connector_freshness",
+        "status": "connector_stale" if stale else "ok",
+        "severity": "warning" if stale else "info",
+        "summary": f"{len(stale)} connector state(s) are stale or failing." if stale else "Connector states look fresh.",
+        "diagnostics": {"stale_or_failing": stale},
+        "recovery_commands": ["./scripts/pska files-sync", "./scripts/pska connector-state list"] if stale else [],
+    }
+
+
+def _ops_empty_backlog_issue(digest_backlog: dict[str, Any]) -> dict[str, Any]:
+    jobs = int(digest_backlog.get("jobs") or 0)
+    return {
+        "id": "digest_backlog",
+        "status": "empty_backlog" if jobs == 0 else "backlog_present",
+        "severity": "info",
+        "summary": "Digest backlog is empty." if jobs == 0 else f"Digest backlog has {jobs} job(s).",
+        "diagnostics": {"digest_backlog": digest_backlog},
+        "recovery_commands": ["./scripts/pska digest-schedule --owner-user-id user_primary"] if jobs == 0 else ["./scripts/pska fastreact-digest-worker-command"],
+    }
+
+
+def _ops_connector_states(store, *, owner_user_id: str) -> list[Any]:
+    if store is None or not hasattr(store, "list_connector_states"):
+        return []
+    try:
+        return list(store.list_connector_states(owner_user_id=owner_user_id))
+    except TypeError:
+        return list(store.list_connector_states())
+    except Exception:
+        return []
+
+
+def _ops_connector_findings(states: Sequence[Any], *, stale_seconds: int) -> list[dict[str, Any]]:
+    now = utc_now()
+    findings = []
+    for state in states:
+        last_success_at = getattr(state, "last_success_at", None)
+        last_error_at = getattr(state, "last_error_at", None)
+        sync_status = str(getattr(state, "sync_status", "") or "unknown")
+        age_seconds = int((now - last_success_at).total_seconds()) if last_success_at else None
+        stale = bool(getattr(state, "enabled", False)) and (last_success_at is None or age_seconds > stale_seconds or sync_status in {"failed", "error"})
+        findings.append(
+            {
+                "connector_state_id": getattr(state, "connector_state_id", None),
+                "connector_id": getattr(state, "connector_id", None),
+                "status": "connector_stale" if stale else "ok",
+                "sync_status": sync_status,
+                "last_success_at": last_success_at,
+                "last_error_at": last_error_at,
+                "last_error": getattr(state, "last_error", None),
+                "age_seconds": age_seconds,
+            }
+        )
+    return findings
+
+
+def _ops_list_jobs(store, *, status: str, limit: int) -> list[Any]:
+    if store is None or not hasattr(store, "list_jobs"):
+        return []
+    try:
+        return list(store.list_jobs(status=status, limit=limit))
+    except TypeError:
+        return [job for job in store.list_jobs(limit=limit) if getattr(job, "status", None) == status]
+    except Exception:
+        return []
+
+
+def _ops_job_is_stale(job) -> bool:
+    leased_until = getattr(job, "leased_until", None)
+    return bool(getattr(job, "status", None) == "running" and leased_until and leased_until < utc_now())
+
+
+def _ops_job_summary(job) -> dict[str, Any]:
+    return {
+        "job_id": getattr(job, "job_id", None),
+        "job_type": getattr(job, "job_type", None),
+        "status": getattr(job, "status", None),
+        "worker_id": getattr(job, "worker_id", None),
+        "leased_until": getattr(job, "leased_until", None),
+        "error": getattr(job, "error", None),
+    }
+
+
+def _ops_briefing_text(payload: dict[str, Any]) -> str:
+    lines = [
+        f"PSKA Ops Briefing ({payload.get('database_url')})",
+        f"ok={str(payload.get('ok')).lower()} type={payload.get('briefing_type')}",
+        "",
+        "Issues:",
+    ]
+    for issue in payload.get("issues") or []:
+        lines.append(f"- {issue['id']}: {issue['status']} [{issue['severity']}] {issue['summary']}")
+        for command in issue.get("recovery_commands") or []:
+            lines.append(f"  recovery: {command}")
+    lines.append("")
+    lines.append("Recommended recovery commands:")
+    for command in payload.get("recommended_recovery_commands") or []:
+        lines.append(f"- {command}")
+    if not payload.get("recommended_recovery_commands"):
+        lines.append("- none")
+    return "\n".join(lines)
 
 
 def _recent_source_items(items: Sequence[SourceItem], *, owner_user_id: str, limit: int) -> list[dict[str, Any]]:

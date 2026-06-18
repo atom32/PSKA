@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 
 import pska_core.cli as cli_module
@@ -15,13 +15,15 @@ from pska_core.cli import (
     _mvp_next_actions,
     _mvp_status_payload,
     _mvp_status_summary,
+    _ops_briefing_payload,
+    _ops_briefing_text,
     _profile_list_payload,
     _review_batch_payload,
     _review_items_payload,
 )
 from pska_core.enums import MemoryLayer, ReviewType, Visibility
 from pska_core.fastreact_client import FastreactError
-from pska_core.models import AgentMemory, ReviewItem, SourceItem, SourceRef, UserProfileCard
+from pska_core.models import AgentMemory, ConnectorState, Job, ReviewItem, SourceItem, SourceRef, UserProfileCard
 from pska_core.store import InMemoryKnowledgeStore
 
 
@@ -74,6 +76,7 @@ def test_cli_accepts_search_and_smoke() -> None:
     mvp_status = build_parser().parse_args(["mvp-status", "--summary"])
     daily_status = build_parser().parse_args(["daily-status", "--owner-user-id", "user_primary", "--limit", "3"])
     daily_briefing = build_parser().parse_args(["daily-briefing", "--owner-user-id", "user_primary", "--limit", "3"])
+    ops_briefing = build_parser().parse_args(["ops-briefing", "--owner-user-id", "user_primary", "--limit", "3", "--format", "text"])
     retrieval_eval = build_parser().parse_args(["retrieval-eval", "--fixture", "eval.json"])
     digest_worker_command = build_parser().parse_args(["fastreact-digest-worker-command", "--batch-limit", "3"])
     memory_list = build_parser().parse_args(["memory-list", "--owner-user-id", "user_primary", "--limit", "2"])
@@ -119,6 +122,10 @@ def test_cli_accepts_search_and_smoke() -> None:
     assert daily_briefing.command == "daily-briefing"
     assert daily_briefing.owner_user_id == "user_primary"
     assert daily_briefing.limit == 3
+    assert ops_briefing.command == "ops-briefing"
+    assert ops_briefing.owner_user_id == "user_primary"
+    assert ops_briefing.limit == 3
+    assert ops_briefing.format == "text"
     assert retrieval_eval.command == "retrieval-eval"
     assert str(retrieval_eval.fixture) == "eval.json"
     narrative_briefing = build_parser().parse_args(["daily-briefing", "--narrative", "--narrative-timeout-seconds", "90"])
@@ -972,6 +979,148 @@ def test_daily_briefing_payload_includes_deterministic_next_actions(monkeypatch)
     assert "./scripts/pska review-list --status pending --owner-user-id user_primary --summary" in payload["deterministic_next_actions"]
     assert "./scripts/pska jobs list --status failed" in payload["deterministic_next_actions"]
     assert "./scripts/pska fastreact-digest-worker-command" in payload["deterministic_next_actions"]
+
+
+def test_ops_briefing_payload_distinguishes_recovery_categories(monkeypatch) -> None:
+    stale_until = datetime.now(timezone.utc) - timedelta(minutes=5)
+    stale_connector_at = datetime.now(timezone.utc) - timedelta(days=3)
+    failed_digest = Job(
+        job_id="job_digest_failed",
+        job_type="digest_via_fastreact",
+        payload={},
+        status="failed",
+        error="FastReAct offline",
+    )
+    stale_job = Job(
+        job_id="job_stale",
+        job_type="extract_all",
+        payload={},
+        status="running",
+        worker_id="worker_old",
+        leased_until=stale_until,
+    )
+    connector_state = ConnectorState(
+        connector_state_id="conn_files",
+        connector_id="files",
+        owner_user_id="user_primary",
+        sync_status="succeeded",
+        last_success_at=stale_connector_at,
+    )
+
+    class FakeStore:
+        def list_jobs(self, *, status=None, limit=50):
+            jobs = [failed_digest, stale_job]
+            if status:
+                jobs = [job for job in jobs if job.status == status]
+            return jobs[:limit]
+
+        def list_connector_states(self, *, owner_user_id=None, connector_id=None):
+            return [connector_state]
+
+    class FakeApi:
+        def __init__(self, database_url: str) -> None:
+            assert database_url == "postgresql:///example"
+            self.store = FakeStore()
+
+        def ready(self):
+            return {
+                "ok": True,
+                "checks": {
+                    "database": {"ok": True},
+                    "schema": {"ok": True},
+                    "mcp": {"ok": True},
+                    "jobs": {"ok": True},
+                    "metrics": {"ok": True},
+                    "fastreact": {"ok": False, "error": "service token required"},
+                },
+            }
+
+        def metrics(self):
+            return {
+                "index": {"source_items": 3, "chunks": 4, "jobs": 2},
+                "connectors": {
+                    "source_channels": {"files": {"count": 3}},
+                    "state_count": 1,
+                    "enabled_state_count": 1,
+                    "state_sync_status": {"succeeded": 1},
+                },
+            }
+
+        def job_stats(self):
+            return {
+                "stats": {
+                    "by_status": {"queued": 0, "running": 1, "failed": 1, "succeeded": 0, "canceled": 0},
+                    "digest_backlog": {"jobs": 0, "source_items": 0},
+                    "running_stale_count": 1,
+                    "stale_running": [{"job_id": "job_stale", "job_type": "extract_all", "worker_id": "worker_old"}],
+                    "recent_failed": [{"job_id": "job_digest_failed", "job_type": "digest_via_fastreact", "error": "FastReAct offline"}],
+                }
+            }
+
+    monkeypatch.setattr(cli_module, "PSKAApi", FakeApi)
+
+    payload = _ops_briefing_payload("postgresql:///example", owner_user_id="user_primary", limit=3, connector_stale_seconds=3600)
+    statuses = {issue["id"]: issue["status"] for issue in payload["issues"]}
+
+    assert payload["ok"] is True
+    assert payload["requires_llm"] is False
+    assert payload["requires_fastreact_online"] is False
+    assert statuses["service_readiness"] == "ok"
+    assert statuses["fastreact"] == "fastreact_down"
+    assert statuses["stale_jobs"] == "stale_job"
+    assert statuses["failed_digest"] == "failed_digest"
+    assert statuses["connector_freshness"] == "connector_stale"
+    assert statuses["digest_backlog"] == "empty_backlog"
+    assert "./scripts/pska job-recover --max-age-seconds 900" in payload["recommended_recovery_commands"]
+    assert "./scripts/pska jobs list --status failed --job-type digest_via_fastreact" in payload["recommended_recovery_commands"]
+    text = _ops_briefing_text(payload)
+    assert "fastreact_down" in text
+    assert "connector_stale" in text
+
+
+def test_ops_briefing_reports_service_down_without_crashing(monkeypatch) -> None:
+    class FakeStore:
+        def list_jobs(self, *, status=None, limit=50):
+            return []
+
+        def list_connector_states(self, *, owner_user_id=None, connector_id=None):
+            return []
+
+    class FakeApi:
+        def __init__(self, database_url: str) -> None:
+            self.store = FakeStore()
+
+        def ready(self):
+            return {
+                "ok": False,
+                "checks": {
+                    "database": {"ok": False, "error": "connection refused"},
+                    "schema": {"ok": False},
+                    "mcp": {"ok": False},
+                    "jobs": {"ok": False},
+                    "metrics": {"ok": False},
+                    "fastreact": {"ok": False},
+                },
+            }
+
+        def metrics(self):
+            raise RuntimeError("metrics unavailable")
+
+        def job_stats(self):
+            raise RuntimeError("jobs unavailable")
+
+    monkeypatch.setattr(cli_module, "PSKAApi", FakeApi)
+
+    payload = _ops_briefing_payload("postgresql:///example")
+    service = next(issue for issue in payload["issues"] if issue["id"] == "service_readiness")
+    backlog = next(issue for issue in payload["issues"] if issue["id"] == "digest_backlog")
+
+    assert payload["ok"] is False
+    assert service["status"] == "service_down"
+    assert service["severity"] == "critical"
+    assert "database" in service["diagnostics"]["failed_checks"]
+    assert backlog["status"] == "empty_backlog"
+    assert "./scripts/pska db-init" in payload["recommended_recovery_commands"]
 
 
 def test_daily_briefing_narrative_saves_fastreact_answer(monkeypatch) -> None:

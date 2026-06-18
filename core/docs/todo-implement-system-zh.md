@@ -350,7 +350,7 @@ commit_evidence: "Implemented offline retrieval/GraphRAG eval fixture and `pska_
 id: HW-013
 track: Human Workflow
 priority: P2
-status: ready
+status: verified
 user_value: 服务、worker、FastReAct、digest backlog 和 connector 问题能用一条人类可读命令定位，不需要用户直接翻 job log。
 dependencies:
   - HW-001
@@ -368,7 +368,7 @@ acceptance_gates:
 verification_commands:
   - cd core && ../.pska/venvs/pska-py312/bin/python -m pytest -q
   - cd channels/twitter-x && ../../.pska/venvs/pska-py312/bin/python -m pytest -q
-commit_evidence: ""
+commit_evidence: "Implemented deterministic `ops-briefing` CLI with JSON and human-readable text output. The briefing aggregates PSKA readiness, worker/job health, stale running jobs, failed digest jobs, digest backlog, FastReAct readiness, connector freshness, diagnostics, and deterministic recovery commands without LLM use. It distinguishes service_down, fastreact_down, stale_job, failed_digest, connector_stale, and empty_backlog states, while returning successfully when FastReAct is offline. Verification on 2026-06-18: targeted CLI/ops tests `3 passed in 0.17s`; core pytest `206 passed in 8.69s`; twitter-x pytest `9 passed in 0.03s`; sample Postgres smoke `cd core && ../.pska/venvs/pska-py312/bin/python -m pska_core.cli --database-url postgresql:///pska ops-briefing --format text --limit 5` returned ok=true and reported service_readiness=ok, fastreact_down with recovery commands, no stale jobs, failed_digest count=5, connector_stale count=1, empty_backlog, and deterministic recommended recovery commands."
 ```
 
 ### HW-014 Local Daemon Productization
