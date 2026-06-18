@@ -34,6 +34,7 @@ from pska_core.mcp_server import MCPServer
 from pska_core.models import AgentMemory, ChannelIngestPayload, ReviewItem, SourceItem, SourceRef, UserProfileCard, utc_now
 from pska_core.agentic import AgenticSearchService
 from pska_core.retrieval import RetrievalService
+from pska_core.retrieval_eval import DEFAULT_RETRIEVAL_EVAL_FIXTURE, run_retrieval_eval
 from pska_core.review import ReviewService
 from pska_core.serde import dumps, to_jsonable
 from pska_core.store_postgres import PostgresKnowledgeStore
@@ -184,6 +185,9 @@ def build_parser() -> argparse.ArgumentParser:
     daily_briefing_parser.add_argument("--limit", type=int, default=5, help="Maximum source/review/job rows to include")
     daily_briefing_parser.add_argument("--narrative", action="store_true", help="Ask FastReAct for a narrative summary and save it when available")
     daily_briefing_parser.add_argument("--narrative-timeout-seconds", type=float, default=None, help="Override FastReAct chat timeout for --narrative")
+
+    retrieval_eval_parser = subparsers.add_parser("retrieval-eval", help="Run offline retrieval/GraphRAG eval fixture")
+    retrieval_eval_parser.add_argument("--fixture", type=Path, default=DEFAULT_RETRIEVAL_EVAL_FIXTURE)
 
     digest_worker_command_parser = subparsers.add_parser(
         "fastreact-digest-worker-command",
@@ -394,6 +398,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return daily_status(args)
     if args.command == "daily-briefing":
         return daily_briefing(args)
+    if args.command == "retrieval-eval":
+        return retrieval_eval(args)
     if args.command == "fastreact-digest-worker-command":
         return fastreact_digest_worker_command(args, config)
     if args.command == "service-check":
@@ -949,6 +955,12 @@ def daily_briefing(args: argparse.Namespace) -> int:
     )
     print(dumps(payload))
     return 0
+
+
+def retrieval_eval(args: argparse.Namespace) -> int:
+    payload = run_retrieval_eval(args.fixture)
+    print(dumps(payload))
+    return 0 if payload["ok"] else 1
 
 
 def fastreact_digest_worker_command(args: argparse.Namespace, config: PSKAConfig) -> int:

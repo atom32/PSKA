@@ -1,0 +1,236 @@
+{
+  "user_id": "user_primary",
+  "users": [
+    {
+      "user_id": "user_primary",
+      "handle": "primary",
+      "role": "admin"
+    }
+  ],
+  "query_vectors": {
+    "图谱": [1.0, 0.0, 1.0]
+  },
+  "sources": [
+    {
+      "source_item_id": "src_eval_fastreact",
+      "source_channel": "fixture",
+      "record_type": "note",
+      "source_id": "eval-fastreact",
+      "title": "PSKA FastReAct delegation",
+      "text": "PSKA delegates complex agentic work to FastReAct.",
+      "chunks": [
+        {
+          "chunk_id": "chk_eval_fastreact_0",
+          "text": "PSKA delegates complex agentic work to FastReAct.",
+          "embedding": [0.0, 0.0, 1.0]
+        }
+      ]
+    },
+    {
+      "source_item_id": "src_eval_digest",
+      "source_channel": "fixture",
+      "record_type": "note",
+      "source_id": "eval-digest",
+      "title": "FastReAct digest execution",
+      "text": "FastReAct executes digest loops for PSKA.",
+      "chunks": [
+        {
+          "chunk_id": "chk_eval_digest_0",
+          "text": "FastReAct executes digest loops for PSKA.",
+          "embedding": [0.0, 0.0, 1.0]
+        }
+      ]
+    },
+    {
+      "source_item_id": "src_eval_codegraph",
+      "source_channel": "fixture",
+      "record_type": "note",
+      "source_id": "eval-codegraph",
+      "title": "CodeGraph vector note",
+      "text": "CodeGraph builds a code knowledge graph for agents.",
+      "chunks": [
+        {
+          "chunk_id": "chk_eval_codegraph_0",
+          "text": "CodeGraph builds a code knowledge graph for agents.",
+          "embedding": [1.0, 0.0, 1.0]
+        }
+      ]
+    },
+    {
+      "source_item_id": "src_eval_conflict",
+      "source_channel": "fixture",
+      "record_type": "note",
+      "source_id": "eval-conflict",
+      "title": "Conflict note",
+      "text": "Claim A contradicts Claim B.",
+      "chunks": [
+        {
+          "chunk_id": "chk_eval_conflict_0",
+          "text": "Claim A contradicts Claim B.",
+          "embedding": [0.0, 0.0, 1.0]
+        }
+      ]
+    }
+  ],
+  "entities": [
+    {
+      "entity_id": "ent_eval_pska",
+      "entity_type": "project",
+      "label": "PSKA"
+    },
+    {
+      "entity_id": "ent_eval_fastreact",
+      "entity_type": "service",
+      "label": "FastReAct"
+    },
+    {
+      "entity_id": "ent_eval_digest",
+      "entity_type": "workflow",
+      "label": "Digest"
+    },
+    {
+      "entity_id": "ent_eval_claim_a",
+      "entity_type": "claim",
+      "label": "Claim A"
+    },
+    {
+      "entity_id": "ent_eval_claim_b",
+      "entity_type": "claim",
+      "label": "Claim B"
+    }
+  ],
+  "hyperedges": [
+    {
+      "relation_type": "delegates_to",
+      "directionality": "directed",
+      "members": [
+        {
+          "entity_id": "ent_eval_pska",
+          "role": "caller"
+        },
+        {
+          "entity_id": "ent_eval_fastreact",
+          "role": "executor"
+        }
+      ],
+      "evidence_text": "PSKA delegates complex agentic work to FastReAct.",
+      "source_refs": [
+        {
+          "source_item_id": "src_eval_fastreact"
+        }
+      ],
+      "confidence": 0.9
+    },
+    {
+      "relation_type": "executes",
+      "directionality": "directed",
+      "members": [
+        {
+          "entity_id": "ent_eval_fastreact",
+          "role": "executor"
+        },
+        {
+          "entity_id": "ent_eval_digest",
+          "role": "workflow"
+        }
+      ],
+      "evidence_text": "FastReAct executes digest loops for PSKA.",
+      "source_refs": [
+        {
+          "source_item_id": "src_eval_digest"
+        }
+      ],
+      "confidence": 0.85
+    },
+    {
+      "relation_type": "contradicts",
+      "directionality": "undirected",
+      "members": [
+        {
+          "entity_id": "ent_eval_claim_a",
+          "role": "claim"
+        },
+        {
+          "entity_id": "ent_eval_claim_b",
+          "role": "claim"
+        }
+      ],
+      "evidence_text": "Claim A contradicts Claim B.",
+      "source_refs": [
+        {
+          "source_item_id": "src_eval_conflict"
+        }
+      ],
+      "confidence": 0.8
+    }
+  ],
+  "cases": [
+    {
+      "id": "lexical_fastreact",
+      "query": "FastReAct delegates agentic work",
+      "top_k": 3,
+      "expected_citations": [
+        "src_eval_fastreact#chk_eval_fastreact_0"
+      ],
+      "expected_lexical_source_item_ids": [
+        "src_eval_fastreact"
+      ],
+      "expected_vector_source_item_ids": [],
+      "expected_graph_paths": [],
+      "expected_gaps": [],
+      "expected_conflicts": []
+    },
+    {
+      "id": "vector_codegraph",
+      "query": "图谱",
+      "top_k": 2,
+      "expected_citations": [
+        "src_eval_codegraph#chk_eval_codegraph_0"
+      ],
+      "expected_lexical_source_item_ids": [],
+      "expected_vector_source_item_ids": [
+        "src_eval_codegraph"
+      ],
+      "expected_graph_paths": [],
+      "expected_gaps": [],
+      "expected_conflicts": []
+    },
+    {
+      "id": "graph_two_hop_digest",
+      "query": "PSKA 到 Digest 的关系路径",
+      "top_k": 4,
+      "expected_citations": [
+        "src_eval_fastreact#chk_eval_fastreact_0",
+        "src_eval_digest#chk_eval_digest_0"
+      ],
+      "expected_lexical_source_item_ids": [],
+      "expected_vector_source_item_ids": [],
+      "expected_graph_paths": [
+        {
+          "entity_labels": ["PSKA", "FastReAct", "Digest"],
+          "relation_types": ["delegates_to", "executes"],
+          "evidence_source_item_ids": ["src_eval_fastreact", "src_eval_digest"]
+        }
+      ],
+      "expected_gaps": [],
+      "expected_conflicts": []
+    },
+    {
+      "id": "graph_conflict",
+      "query": "Claim A Claim B conflict",
+      "top_k": 3,
+      "expected_citations": [
+        "src_eval_conflict#chk_eval_conflict_0"
+      ],
+      "expected_lexical_source_item_ids": [
+        "src_eval_conflict"
+      ],
+      "expected_vector_source_item_ids": [],
+      "expected_graph_paths": [],
+      "expected_gaps": [],
+      "expected_conflicts": [
+        "graph_conflict:hed_ec6c7a21c3aa5694a136db1097c02e22:contradicts"
+      ]
+    }
+  ]
+}

@@ -323,7 +323,7 @@ commit_evidence: "Implemented memory/profile promotion lifecycle. `MemoryService
 id: HW-012
 track: Human Workflow
 priority: P1
-status: backlog
+status: verified
 user_value: 用户能知道 search/agentic-search/GraphRAG 对真实样例问题是否找到了正确出处，而不是只看主观回答质量。
 dependencies:
   - HW-003
@@ -341,7 +341,7 @@ acceptance_gates:
 verification_commands:
   - cd core && ../.pska/venvs/pska-py312/bin/python -m pytest -q
   - cd channels/twitter-x && ../../.pska/venvs/pska-py312/bin/python -m pytest -q
-commit_evidence: ""
+commit_evidence: "Implemented offline retrieval/GraphRAG eval fixture and `pska_core.cli retrieval-eval`. The JSON fixture contains 4 deterministic cases covering lexical hit, vector/context hit, two-hop graph path relevance with evidence coverage, and conflict expectations. The eval report includes expected/actual/missing refs for citations, lexical/vector sources, graph paths, gaps, and conflicts, plus readable diagnostics such as query, score_debug, result counts, missing expected refs, and graph path explanations. Verification on 2026-06-18: targeted retrieval/CLI tests `3 passed in 0.17s`; core pytest `204 passed in 8.70s`; twitter-x pytest `9 passed in 0.02s`; default fixture smoke `cd core && ../.pska/venvs/pska-py312/bin/python -m pska_core.cli retrieval-eval` returned ok=true with case_count=4, graph path explanation `PSKA -[delegates_to]-> FastReAct -[executes]-> Digest`, evidence_coverage=1.0, and conflict id `graph_conflict:hed_ec6c7a21c3aa5694a136db1097c02e22:contradicts`."
 ```
 
 ### HW-013 Human-readable Ops Briefing

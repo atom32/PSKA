@@ -74,6 +74,7 @@ def test_cli_accepts_search_and_smoke() -> None:
     mvp_status = build_parser().parse_args(["mvp-status", "--summary"])
     daily_status = build_parser().parse_args(["daily-status", "--owner-user-id", "user_primary", "--limit", "3"])
     daily_briefing = build_parser().parse_args(["daily-briefing", "--owner-user-id", "user_primary", "--limit", "3"])
+    retrieval_eval = build_parser().parse_args(["retrieval-eval", "--fixture", "eval.json"])
     digest_worker_command = build_parser().parse_args(["fastreact-digest-worker-command", "--batch-limit", "3"])
     memory_list = build_parser().parse_args(["memory-list", "--owner-user-id", "user_primary", "--limit", "2"])
     profile_list = build_parser().parse_args(["profile-list", "--owner-user-id", "user_primary", "--limit", "2"])
@@ -118,6 +119,8 @@ def test_cli_accepts_search_and_smoke() -> None:
     assert daily_briefing.command == "daily-briefing"
     assert daily_briefing.owner_user_id == "user_primary"
     assert daily_briefing.limit == 3
+    assert retrieval_eval.command == "retrieval-eval"
+    assert str(retrieval_eval.fixture) == "eval.json"
     narrative_briefing = build_parser().parse_args(["daily-briefing", "--narrative", "--narrative-timeout-seconds", "90"])
     assert narrative_briefing.narrative is True
     assert narrative_briefing.narrative_timeout_seconds == 90
