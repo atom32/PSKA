@@ -245,7 +245,7 @@ commit_evidence: "Implemented digest scheduler budget/explanation policy. `sched
 id: HW-009
 track: Human Workflow
 priority: P0
-status: ready
+status: verified
 user_value: 用户能确认空闲 digest 不只是排队，而是真的从有限资料生成有出处的候选、review 或 memory/profile 写回，并正确完成或失败。
 dependencies:
   - HW-006
@@ -262,7 +262,7 @@ acceptance_gates:
 verification_commands:
   - cd core && ../.pska/venvs/pska-py312/bin/python -m pytest -q
   - cd channels/twitter-x && ../../.pska/venvs/pska-py312/bin/python -m pytest -q
-commit_evidence: ""
+commit_evidence: "Implemented repeatable `core/scripts/digest_e2e_gate.py` for the digest write-back gate. The gate creates a canary source, schedules a forced scoped `digest_via_fastreact` job, leases it as a worker, verifies batch context/chunks, confirms missing `source_refs` candidate write-back is rejected, writes grounded entity/review/agent-memory candidates with `source_refs`, completes the job with result metadata, and separately exercises a non-retryable fail path. It reports `contract.ok` separately from `fastreact.ok`, so FastReAct offline/auth failures are explicit diagnostics and strict runs can use `--require-fastreact-online`. Also fixed `job-worker --exclude-job-type` to actually pass exclusions into `JobService`, keeping the local worker from claiming digest jobs reserved for FastReAct. Verification on 2026-06-18: targeted gate/jobs/CLI/daemon/candidate tests `50 passed in 0.35s`; core pytest `196 passed in 8.67s`; twitter-x pytest `9 passed in 0.03s`; sample Postgres smoke `cd core && ../.pska/venvs/pska-py312/bin/python scripts/digest_e2e_gate.py --database-url postgresql:///pska --fastreact-timeout-seconds 1` returned ok=true with all contract checks true, source_item_id=src_678b2cfbbbe45f60a130dbd2efe239c1, job_id=3d3b4482-f19e-4734-9d9d-5a76f40f21f8, review_item=rev_5e37b140f3225ba0a090a7d72c71522a, agent_memory=agm_404be4b638d7475c9b9117021f56b318, failed diagnostic job_id=979f6065-9a07-42ce-8d73-ff5b3d4ec6f1, and fastreact.ok=false with explicit `Fastreact GET /ready failed with HTTP 401: service token required` diagnostic rather than pretending real FastReAct worker success."
 ```
 
 ### HW-010 Review Batch Operations

@@ -25,6 +25,8 @@ def test_build_process_specs_includes_service_worker_and_digest_scheduler() -> N
     assert [spec.name for spec in specs] == ["pska-service", "pska-job-worker", "pska-digest-scheduler"]
     assert specs[0].command[-4:] == ["serve", "--host", "127.0.0.1", "--port", "8765"][-4:]
     assert "worker_test" in specs[1].command
+    assert "--exclude-job-type" in specs[1].command
+    assert "digest_via_fastreact" in specs[1].command
     assert "digest-scheduler" in specs[2].command
     assert "60" in specs[2].command
 

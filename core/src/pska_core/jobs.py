@@ -55,6 +55,7 @@ class JobService:
         fastreact: FastreactClient | None = None,
         worker_id: str | None = None,
         lease_seconds: int | None = None,
+        excluded_job_types: set[str] | None = None,
     ) -> None:
         self.store = store
         self.embedding_provider = embedding_provider
@@ -62,6 +63,7 @@ class JobService:
         self.fastreact = fastreact
         self.worker_id = worker_id
         self.lease_seconds = lease_seconds
+        self.excluded_job_types = excluded_job_types or set()
 
     def submit(self, job_type: str, payload: dict[str, Any] | None = None, *, max_attempts: int = 3, priority: int = 0) -> Job:
         if job_type not in JOB_TYPES:
@@ -72,7 +74,11 @@ class JobService:
         return self.store.create_job(job_type, payload, max_attempts=max_attempts, priority=priority)
 
     def run_next(self) -> Job | None:
-        job = self.store.claim_next_job(worker_id=self.worker_id, lease_seconds=self.lease_seconds)
+        job = self.store.claim_next_job(
+            worker_id=self.worker_id,
+            lease_seconds=self.lease_seconds,
+            excluded_job_types=self.excluded_job_types,
+        )
         if job is None:
             return None
         try:

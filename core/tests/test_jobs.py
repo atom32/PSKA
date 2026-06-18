@@ -6,7 +6,7 @@ import zipfile
 
 from pska_core.enums import UserRole
 from pska_core.ingest import IngestService
-from pska_core.jobs import EMBED_BACKFILL, EXTRACT_ALL, FULL_REPORT, IMPORT_TWITTER_ZIPS, JobService
+from pska_core.jobs import DIGEST_VIA_FASTREACT, EMBED_BACKFILL, EXTRACT_ALL, FULL_REPORT, IMPORT_TWITTER_ZIPS, JobService
 from pska_core.models import User, utc_now
 from pska_core.store import InMemoryKnowledgeStore
 from tests.fakes import FakeLLM, extraction_response
@@ -95,6 +95,19 @@ def test_job_priority_controls_claim_order() -> None:
     assert claimed is not None
     assert claimed.job_id == high.job_id
     assert store.get_job(low.job_id).status == "queued"
+
+
+def test_job_service_can_exclude_job_types_from_claiming() -> None:
+    store = _store()
+    service = JobService(store, excluded_job_types={DIGEST_VIA_FASTREACT})
+    digest = service.submit(DIGEST_VIA_FASTREACT, {}, priority=10)
+    extract = service.submit(EXTRACT_ALL, {"owner_user_id": "user_primary"}, priority=1)
+
+    report = service.run_available(limit=1)
+
+    assert report.succeeded == 1
+    assert store.get_job(extract.job_id).status == "succeeded"
+    assert store.get_job(digest.job_id).status == "queued"
 
 
 def test_retryable_failure_uses_backoff_before_reclaim() -> None:

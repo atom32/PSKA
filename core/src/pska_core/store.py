@@ -73,7 +73,13 @@ class KnowledgeStore(Protocol):
     def vector_search_chunks(self, source_item_ids: set[str], query_embedding: list[float], *, top_k: int) -> list[tuple[Chunk, float]]: ...
     def list_hyperedges_for_entities(self, entity_ids: set[str]) -> list[tuple[Hyperedge, list[HyperedgeMember]]]: ...
     def count_table(self, table: str) -> int: ...
-    def claim_next_job(self, *, worker_id: str | None = None, lease_seconds: int | None = None) -> Job | None: ...
+    def claim_next_job(
+        self,
+        *,
+        worker_id: str | None = None,
+        lease_seconds: int | None = None,
+        excluded_job_types: set[str] | None = None,
+    ) -> Job | None: ...
     def lease_job(self, job_id: str, *, worker_id: str | None = None, lease_seconds: int | None = None) -> Job: ...
     def heartbeat_job(self, job_id: str, *, worker_id: str | None = None, lease_seconds: int | None = None, external_run_id: str | None = None) -> Job: ...
     def create_job(self, job_type: str, payload: dict, *, max_attempts: int = 3, priority: int = 0) -> Job: ...
@@ -324,13 +330,21 @@ class InMemoryKnowledgeStore:
         self.job_events.append(event)
         return event
 
-    def claim_next_job(self, *, worker_id: str | None = None, lease_seconds: int | None = None) -> Job | None:
+    def claim_next_job(
+        self,
+        *,
+        worker_id: str | None = None,
+        lease_seconds: int | None = None,
+        excluded_job_types: set[str] | None = None,
+    ) -> Job | None:
         now = utc_now()
+        excluded_job_types = excluded_job_types or set()
         queued = sorted(
             (
                 job
                 for job in self.jobs.values()
                 if job.status == "queued" and (job.run_after is None or job.run_after <= now)
+                and job.job_type not in excluded_job_types
             ),
             key=lambda job: (-job.priority, job.run_after or job.created_at, job.created_at, job.job_id),
         )

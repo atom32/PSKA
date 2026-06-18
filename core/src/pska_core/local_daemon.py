@@ -29,6 +29,7 @@ def build_process_specs(
     poll_interval: float = 5.0,
     lease_seconds: int = 300,
     recover_stale_seconds: int = 900,
+    worker_excluded_job_types: Sequence[str] = ("digest_via_fastreact",),
     digest_interval_seconds: float = 300.0,
     digest_limit: int = 20,
     digest_batch_size: int = 20,
@@ -67,6 +68,11 @@ def build_process_specs(
                     str(lease_seconds),
                     "--recover-stale-seconds",
                     str(recover_stale_seconds),
+                    *[
+                        item
+                        for job_type in worker_excluded_job_types
+                        for item in ("--exclude-job-type", job_type)
+                    ],
                 ],
             )
         )

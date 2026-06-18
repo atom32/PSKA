@@ -679,7 +679,14 @@ class PostgresKnowledgeStore:
             ).fetchone()
         return self._job_event_from_row(row)
 
-    def claim_next_job(self, *, worker_id: str | None = None, lease_seconds: int | None = None) -> Job | None:
+    def claim_next_job(
+        self,
+        *,
+        worker_id: str | None = None,
+        lease_seconds: int | None = None,
+        excluded_job_types: set[str] | None = None,
+    ) -> Job | None:
+        excluded = sorted(excluded_job_types or set())
         with self.connect() as conn:
             row = conn.execute(
                 """
@@ -698,13 +705,14 @@ class PostgresKnowledgeStore:
                     from jobs
                     where status = 'queued'
                       and run_after <= now()
+                      and (cardinality(%s::text[]) = 0 or not (job_type = any(%s::text[])))
                     order by priority desc, run_after, created_at, job_id
                     for update skip locked
                     limit 1
                 )
                 returning *
                 """,
-                (worker_id, lease_seconds, lease_seconds),
+                (worker_id, lease_seconds, lease_seconds, excluded, excluded),
             ).fetchone()
         if not row:
             return None

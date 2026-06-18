@@ -31,7 +31,7 @@ from pska_core.jobs import JOB_TYPES, JobService
 from pska_core.local_daemon import build_process_specs, run_supervisor
 from pska_core.memory import MemoryService
 from pska_core.mcp_server import MCPServer
-from pska_core.models import AgentMemory, ChannelIngestPayload, ReviewItem, SourceItem, SourceRef, UserProfileCard
+from pska_core.models import AgentMemory, ChannelIngestPayload, ReviewItem, SourceItem, SourceRef, UserProfileCard, utc_now
 from pska_core.agentic import AgenticSearchService
 from pska_core.retrieval import RetrievalService
 from pska_core.review import ReviewService
@@ -229,6 +229,14 @@ def build_parser() -> argparse.ArgumentParser:
     worker_parser.add_argument("--recover-stale-seconds", type=int, default=0)
     worker_parser.add_argument("--worker-id", default=None)
     worker_parser.add_argument("--lease-seconds", type=int, default=300)
+    worker_parser.add_argument(
+        "--exclude-job-type",
+        action="append",
+        dest="excluded_job_types",
+        default=[],
+        choices=sorted(JOB_TYPES),
+        help="Do not claim this job type; repeat to exclude multiple types",
+    )
 
     status_parser = subparsers.add_parser("job-status", help="Show durable jobs and events")
     status_parser.add_argument("--job-id")
@@ -950,7 +958,12 @@ def job_submit(args: argparse.Namespace) -> int:
 
 def job_run(args: argparse.Namespace) -> int:
     store = PostgresKnowledgeStore(args.database_url)
-    service = JobService(store, worker_id=args.worker_id or _default_worker_id(), lease_seconds=args.lease_seconds)
+    service = JobService(
+        store,
+        worker_id=args.worker_id or _default_worker_id(),
+        lease_seconds=args.lease_seconds,
+        excluded_job_types=set(args.excluded_job_types or []),
+    )
     report = service.run_until_empty(limit=args.limit if args.limit > 0 else None) if args.until_empty else service.run_available(limit=args.limit)
     print(dumps(report))
     return 1 if report.failed else 0
@@ -958,7 +971,12 @@ def job_run(args: argparse.Namespace) -> int:
 
 def job_worker(args: argparse.Namespace) -> int:
     store = PostgresKnowledgeStore(args.database_url)
-    service = JobService(store, worker_id=args.worker_id or _default_worker_id(), lease_seconds=args.lease_seconds)
+    service = JobService(
+        store,
+        worker_id=args.worker_id or _default_worker_id(),
+        lease_seconds=args.lease_seconds,
+        excluded_job_types=set(args.excluded_job_types or []),
+    )
     if args.recover_stale_seconds:
         recovered = service.recover_stale(max_age_seconds=args.recover_stale_seconds)
         if recovered:

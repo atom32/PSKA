@@ -68,6 +68,7 @@ def test_cli_accepts_search_and_smoke() -> None:
     extract = build_parser().parse_args(["extract-all", "--owner-user-id", "user_primary"])
     serve = build_parser().parse_args(["serve", "--port", "8765"])
     local_daemon = build_parser().parse_args(["local-daemon", "--no-worker", "--digest-interval-seconds", "60"])
+    job_worker = build_parser().parse_args(["job-worker", "--exclude-job-type", "digest_via_fastreact"])
     mvp_bootstrap = build_parser().parse_args(["mvp-bootstrap", "--notes-root", "notes", "--dry-run", "--extract"])
     mvp_status = build_parser().parse_args(["mvp-status", "--summary"])
     daily_status = build_parser().parse_args(["daily-status", "--owner-user-id", "user_primary", "--limit", "3"])
@@ -102,6 +103,8 @@ def test_cli_accepts_search_and_smoke() -> None:
     assert local_daemon.command == "local-daemon"
     assert local_daemon.no_worker is True
     assert local_daemon.digest_interval_seconds == 60
+    assert job_worker.command == "job-worker"
+    assert job_worker.excluded_job_types == ["digest_via_fastreact"]
     assert mvp_bootstrap.command == "mvp-bootstrap"
     assert str(mvp_bootstrap.notes_root[0]) == "notes"
     assert mvp_bootstrap.dry_run is True
