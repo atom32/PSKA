@@ -271,17 +271,29 @@ class PostgresKnowledgeStore:
         confidence: float,
         decay_policy: str,
         last_verified_at,
+        source_refs: list[SourceRef] | None = None,
     ) -> AgentMemory:
         with self.connect() as conn:
-            row = conn.execute(
-                """
-                update agent_memories
-                set confidence = %s, decay_policy = %s, last_verified_at = %s, updated_at = now()
-                where agent_memory_id = %s
-                returning *
-                """,
-                (confidence, decay_policy, last_verified_at, agent_memory_id),
-            ).fetchone()
+            if source_refs is None:
+                row = conn.execute(
+                    """
+                    update agent_memories
+                    set confidence = %s, decay_policy = %s, last_verified_at = %s, updated_at = now()
+                    where agent_memory_id = %s
+                    returning *
+                    """,
+                    (confidence, decay_policy, last_verified_at, agent_memory_id),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    """
+                    update agent_memories
+                    set confidence = %s, decay_policy = %s, last_verified_at = %s, source_refs = %s, updated_at = now()
+                    where agent_memory_id = %s
+                    returning *
+                    """,
+                    (confidence, decay_policy, last_verified_at, Jsonb(to_jsonable(source_refs)), agent_memory_id),
+                ).fetchone()
         if not row:
             raise KeyError(agent_memory_id)
         return self._agent_memory_from_row(row)
@@ -302,6 +314,28 @@ class PostgresKnowledgeStore:
                     Jsonb(to_jsonable(profile_card.source_refs)),
                 ),
             )
+
+    def update_profile_card_lifecycle(
+        self,
+        profile_card_id: str,
+        *,
+        confidence: float,
+        source_refs: list[SourceRef],
+        last_verified_at,
+    ) -> UserProfileCard:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                update user_profile_cards
+                set confidence = %s, source_refs = %s, updated_at = %s
+                where profile_card_id = %s
+                returning *
+                """,
+                (confidence, Jsonb(to_jsonable(source_refs)), last_verified_at, profile_card_id),
+            ).fetchone()
+        if not row:
+            raise KeyError(profile_card_id)
+        return self._profile_card_from_row(row)
 
     def list_profile_cards(self, *, owner_user_id: str) -> list[UserProfileCard]:
         with self.connect() as conn:
@@ -1051,6 +1085,7 @@ class PostgresKnowledgeStore:
             profile=dict(row["profile"] or {}),
             source_refs=[SourceRef(**item) for item in row["source_refs"]],
             confidence=float(row["confidence"]),
+            last_verified_at=row.get("updated_at"),
         )
 
     def _job_from_row(self, row: dict[str, Any]) -> Job:

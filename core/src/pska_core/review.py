@@ -4,9 +4,10 @@ from dataclasses import asdict
 from typing import Any
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
-from pska_core.enums import Directionality, ReviewType, Visibility
+from pska_core.enums import Directionality, MemoryLayer, ReviewType, Visibility
 from pska_core.hypergraph import HypergraphService
-from pska_core.models import AuditEvent, Entity, ReviewItem, SourceRef, UserProfileCard
+from pska_core.memory import MemoryService
+from pska_core.models import AuditEvent, Entity, ReviewItem, SourceRef
 from pska_core.store import KnowledgeStore
 
 
@@ -45,7 +46,11 @@ class ReviewService:
 
         apply_metadata: dict[str, Any] = {}
         if review_item.review_type == ReviewType.PROFILE_UPDATE:
-            self._apply_profile_update(review_item)
+            apply_metadata = self._apply_profile_update(review_item)
+        elif review_item.review_type == ReviewType.MEMORY_CANDIDATE:
+            apply_metadata = self._apply_memory_candidate(review_item)
+        elif review_item.review_type == ReviewType.LOW_CONFIDENCE and _is_memory_candidate_review(review_item):
+            apply_metadata = self._apply_memory_candidate(review_item)
         elif review_item.review_type == ReviewType.SHARE_PROPOSAL:
             self._apply_share_proposal(review_item)
         elif review_item.review_type == ReviewType.RELATIONSHIP_CANDIDATE:
@@ -68,21 +73,51 @@ class ReviewService:
         self._audit(updated, actor_user_id=actor_user_id, action="review.expire", decision=REVIEW_EXPIRED, reason=reason)
         return updated
 
-    def _apply_profile_update(self, review_item: ReviewItem) -> None:
+    def _apply_profile_update(self, review_item: ReviewItem) -> dict[str, Any]:
         proposal = review_item.proposal
         profile_delta = proposal.get("profile_delta") or proposal.get("profile")
         if not isinstance(profile_delta, dict) or not profile_delta:
             raise ValueError("Profile update review requires a non-empty profile_delta")
 
         source_refs = [_source_ref_from_dict(item) for item in _list_of_dicts(proposal.get("source_refs"))]
-        card = UserProfileCard(
-            profile_card_id=f"upc_{uuid4().hex}",
+        if not source_refs:
+            raise ValueError("Profile update review requires source_refs before it can be applied")
+        card, metadata = MemoryService(self.store).promote_profile_card(
             owner_user_id=review_item.owner_user_id,
             profile=profile_delta,
             source_refs=source_refs,
             confidence=float(proposal.get("confidence", 0.8)),
         )
-        self.store.add_profile_card(card)
+        return {
+            **metadata,
+            "profile_card_id": card.profile_card_id,
+            "source_refs": [asdict(item) for item in card.source_refs],
+            "promotion_type": "profile_card",
+        }
+
+    def _apply_memory_candidate(self, review_item: ReviewItem) -> dict[str, Any]:
+        proposal = review_item.proposal
+        text = str(proposal.get("memory_candidate") or proposal.get("text") or "").strip()
+        if not text:
+            raise ValueError("Memory candidate review requires memory_candidate text")
+        source_refs = [_source_ref_from_dict(item) for item in _list_of_dicts(proposal.get("source_refs"))]
+        if not source_refs:
+            raise ValueError("Memory candidate review requires source_refs before it can be applied")
+        memory, metadata = MemoryService(self.store).promote_agent_memory(
+            owner_user_id=review_item.owner_user_id,
+            layer=MemoryLayer(str(proposal.get("layer") or MemoryLayer.SEMANTIC.value)),
+            text=text,
+            confidence=float(proposal.get("confidence", 0.8)),
+            source_refs=source_refs,
+            created_by_user_id=str(proposal.get("created_by_user_id") or "agent_service"),
+            decay_policy=str(proposal.get("decay_policy") or "manual"),
+        )
+        return {
+            **metadata,
+            "agent_memory_id": memory.agent_memory_id,
+            "source_refs": [asdict(item) for item in memory.source_refs],
+            "promotion_type": "agent_memory",
+        }
 
     def _apply_share_proposal(self, review_item: ReviewItem) -> None:
         proposal = review_item.proposal
@@ -218,6 +253,10 @@ def _list_of_dicts(value: Any) -> list[dict[str, Any]]:
 def _source_ref_from_dict(value: dict[str, Any]) -> SourceRef:
     allowed_keys = set(SourceRef.__dataclass_fields__)
     return SourceRef(**{key: item for key, item in value.items() if key in allowed_keys})
+
+
+def _is_memory_candidate_review(review_item: ReviewItem) -> bool:
+    return bool(review_item.proposal.get("memory_candidate") or review_item.proposal.get("text"))
 
 
 def _visibility(value: Any, default: Visibility) -> Visibility:

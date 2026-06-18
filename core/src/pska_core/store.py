@@ -46,8 +46,17 @@ class KnowledgeStore(Protocol):
         confidence: float,
         decay_policy: str,
         last_verified_at,
+        source_refs: list[SourceRef] | None = None,
     ) -> AgentMemory: ...
     def add_profile_card(self, profile_card: UserProfileCard) -> None: ...
+    def update_profile_card_lifecycle(
+        self,
+        profile_card_id: str,
+        *,
+        confidence: float,
+        source_refs: list[SourceRef],
+        last_verified_at,
+    ) -> UserProfileCard: ...
     def list_profile_cards(self, *, owner_user_id: str) -> list[UserProfileCard]: ...
     def add_entity(self, entity: Entity) -> None: ...
     def add_hyperedge(self, hyperedge: Hyperedge, members: list[HyperedgeMember]) -> None: ...
@@ -173,15 +182,32 @@ class InMemoryKnowledgeStore:
         confidence: float,
         decay_policy: str,
         last_verified_at,
+        source_refs: list[SourceRef] | None = None,
     ) -> AgentMemory:
         memory = self.agent_memories[agent_memory_id]
         memory.confidence = confidence
         memory.decay_policy = decay_policy
         memory.last_verified_at = last_verified_at
+        if source_refs is not None:
+            memory.source_refs = list(source_refs)
         return memory
 
     def add_profile_card(self, profile_card: UserProfileCard) -> None:
         self.profile_cards[profile_card.profile_card_id] = profile_card
+
+    def update_profile_card_lifecycle(
+        self,
+        profile_card_id: str,
+        *,
+        confidence: float,
+        source_refs: list[SourceRef],
+        last_verified_at,
+    ) -> UserProfileCard:
+        card = self.profile_cards[profile_card_id]
+        card.confidence = confidence
+        card.source_refs = list(source_refs)
+        card.last_verified_at = last_verified_at
+        return card
 
     def list_profile_cards(self, *, owner_user_id: str) -> list[UserProfileCard]:
         return [

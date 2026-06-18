@@ -471,7 +471,7 @@ def test_review_summary_distinguishes_candidate_types_and_missing_sources() -> N
     assert by_type["memory_candidate"]["source_ref_status"] == "present"
     assert by_type["profile_update"]["source_ref_status"] == "missing"
     assert by_type["profile_update"]["apply_supported"] is True
-    assert by_type["memory_candidate"]["apply_supported"] is False
+    assert by_type["memory_candidate"]["apply_supported"] is True
     assert by_type["relationship_candidate"]["apply_supported"] is True
     assert by_type["relationship_candidate"]["confidence"] == 0.6
     assert "./scripts/pska review-reject rev_conflict" in by_type["conflict"]["recommended_actions"]
@@ -524,10 +524,13 @@ def test_memory_and_profile_list_payloads_are_read_only() -> None:
     assert memory_payload["agent_memories"][0]["source_refs"] == [{"source_item_id": "src_1", "chunk_id": "chk_1"}]
     assert memory_payload["agent_memories"][0]["last_verified_at"] == verified_at
     assert memory_payload["agent_memories"][0]["status"] == "active"
+    assert memory_payload["agent_memories"][0]["promotion_status"] == "updated"
     assert memory_payload["agent_memories"][1]["status"] == "forgotten"
+    assert memory_payload["agent_memories"][1]["promotion_status"] == "forgotten"
     assert profile_payload["read_only"] is True
     assert profile_payload["profile_cards"][0]["profile"] == {"communication": {"style": "concise"}}
     assert profile_payload["profile_cards"][0]["source_ref_status"] == "present"
+    assert profile_payload["profile_cards"][0]["promotion_status"] == "promoted"
     assert store.get_agent_memory("agm_1") == before_memory
 
 

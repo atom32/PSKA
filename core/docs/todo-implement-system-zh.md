@@ -297,7 +297,7 @@ commit_evidence: "Implemented `review-batch` CLI for dry-run-first batch review 
 id: HW-011
 track: Human Workflow
 priority: P1
-status: backlog
+status: verified
 user_value: digest/review 产生的候选能稳定进入 memory/profile，并能随新证据更新 confidence、last_verified_at 和状态。
 dependencies:
   - HW-009
@@ -314,7 +314,7 @@ acceptance_gates:
 verification_commands:
   - cd core && ../.pska/venvs/pska-py312/bin/python -m pytest -q
   - cd channels/twitter-x && ../../.pska/venvs/pska-py312/bin/python -m pytest -q
-commit_evidence: ""
+commit_evidence: "Implemented memory/profile promotion lifecycle. `MemoryService` now promotes agent memories and profile cards through dedupe-aware create/update helpers, merging source_refs, preserving max confidence, and refreshing last_verified_at. `ReviewService.apply` now promotes `profile_update`, `memory_candidate`, and memory-shaped `low_confidence` reviews through those helpers and records created/updated promotion metadata plus source_refs in review.apply audit events. `memory-list` and `profile-list` now expose promotion_status and last_verified_at. Verification on 2026-06-18: targeted review/CLI/memory/candidate tests `69 passed in 0.25s`; core pytest `202 passed in 8.69s`; twitter-x pytest `9 passed in 0.02s`; sample Postgres smoke on `postgresql:///pska` applied duplicate profile reviews `rev_621e1ffcb9824286a78cc02cb79de97b` and `rev_d029fef09e6e4079a24bbd9009de2abf` into one profile card `upc_46f02ada575942ceb97409f261207e14` with confidence=0.88 and merged source_refs `[src_678b2cfbbbe45f60a130dbd2efe239c1, src_0fe2a7a4b13055c691b40f00824655a0]`; duplicate memory reviews `rev_hw011_memory_a` and `rev_hw011_memory_b` promoted one agent memory `agm_80d2e6b264c84c64b29f3b7adceb24f6` with confidence=0.91, merged source_refs, last_verified_at set, and review.apply audit metadata showing action=created then action=updated with source_refs_merged=1."
 ```
 
 ### HW-012 Retrieval Evaluation Fixtures

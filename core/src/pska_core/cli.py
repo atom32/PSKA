@@ -1145,7 +1145,7 @@ def review_batch(args: argparse.Namespace) -> int:
     return 0 if payload["ok"] else 1
 
 
-BATCH_APPLY_SAFE_REVIEW_TYPES = {"profile_update", "relationship_candidate"}
+BATCH_APPLY_SAFE_REVIEW_TYPES = {"profile_update", "relationship_candidate", "memory_candidate", "low_confidence"}
 
 
 def _review_batch_payload(
@@ -1353,7 +1353,9 @@ def _review_items_payload(
 def _review_item_summary(item: ReviewItem) -> dict[str, Any]:
     review_type = item.review_type.value if hasattr(item.review_type, "value") else str(item.review_type)
     source_refs = _review_source_refs(item.proposal)
-    apply_supported = review_type in {"profile_update", "share_proposal", "relationship_candidate"}
+    apply_supported = review_type in {"profile_update", "share_proposal", "relationship_candidate", "memory_candidate"} or (
+        review_type == "low_confidence" and bool(item.proposal.get("memory_candidate") or item.proposal.get("text"))
+    )
     return {
         "review_item_id": item.review_item_id,
         "owner_user_id": item.owner_user_id,
@@ -1447,6 +1449,7 @@ def _profile_list_payload(store, *, owner_user_id: str, limit: int = 50) -> dict
 
 def _agent_memory_summary(memory: AgentMemory) -> dict[str, Any]:
     source_refs = _source_ref_summaries(memory.source_refs)
+    status = "forgotten" if memory.decay_policy == "forgotten" or memory.confidence <= 0 else "active"
     return {
         "agent_memory_id": memory.agent_memory_id,
         "owner_user_id": memory.owner_user_id,
@@ -1456,7 +1459,8 @@ def _agent_memory_summary(memory: AgentMemory) -> dict[str, Any]:
         "source_refs": source_refs,
         "source_ref_status": "present" if source_refs else "missing",
         "last_verified_at": memory.last_verified_at,
-        "status": "forgotten" if memory.decay_policy == "forgotten" or memory.confidence <= 0 else "active",
+        "status": status,
+        "promotion_status": "forgotten" if status == "forgotten" else ("updated" if memory.last_verified_at else "promoted"),
         "decay_policy": memory.decay_policy,
         "created_by_user_id": memory.created_by_user_id,
     }
@@ -1471,8 +1475,9 @@ def _profile_card_summary(card: UserProfileCard) -> dict[str, Any]:
         "confidence": card.confidence,
         "source_refs": source_refs,
         "source_ref_status": "present" if source_refs else "missing",
-        "last_verified_at": None,
+        "last_verified_at": card.last_verified_at,
         "status": "active",
+        "promotion_status": "updated" if card.last_verified_at else "promoted",
     }
 
 

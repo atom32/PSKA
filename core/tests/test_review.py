@@ -51,6 +51,98 @@ def test_profile_update_applies_only_after_approval() -> None:
     ]
 
 
+def test_repeated_profile_update_merges_source_refs_and_confidence() -> None:
+    store = _store()
+    service = MemoryService(store)
+    first = service.propose_profile_update(
+        owner_user_id="user_primary",
+        profile_delta={"communication": "concise"},
+        source_refs=[SourceRef(message_id="msg_1")],
+        sensitivity="sensitive",
+        confidence=0.6,
+    )
+    second = service.propose_profile_update(
+        owner_user_id="user_primary",
+        profile_delta={"communication": "concise"},
+        source_refs=[SourceRef(message_id="msg_2")],
+        sensitivity="sensitive",
+        confidence=0.9,
+    )
+
+    ReviewService(store).approve_and_apply(first.review_item_id, actor_user_id="user_primary")
+    ReviewService(store).approve_and_apply(second.review_item_id, actor_user_id="user_primary")
+
+    assert len(store.profile_cards) == 1
+    card = next(iter(store.profile_cards.values()))
+    assert card.confidence == 0.9
+    assert card.last_verified_at is not None
+    assert card.source_refs == [SourceRef(message_id="msg_1"), SourceRef(message_id="msg_2")]
+    second_events = store.list_audit_events("review_item", second.review_item_id)
+    assert second_events[-1].metadata["action"] == "updated"
+    assert second_events[-1].metadata["source_refs_merged"] == 1
+
+
+def test_memory_candidate_review_promotes_agent_memory_with_audit() -> None:
+    store = _store()
+    review = ReviewItem(
+        review_item_id="rev_memory_candidate",
+        owner_user_id="user_primary",
+        review_type=ReviewType.MEMORY_CANDIDATE,
+        title="Review memory candidate",
+        proposal={
+            "memory_candidate": "PSKA prefers evidence-first answers.",
+            "layer": "semantic",
+            "confidence": 0.72,
+            "source_refs": [{"message_id": "msg_memory"}],
+        },
+    )
+    store.add_review_item(review)
+
+    applied = ReviewService(store).approve_and_apply(review.review_item_id, actor_user_id="user_primary")
+
+    assert applied.status == "applied"
+    assert len(store.agent_memories) == 1
+    memory = next(iter(store.agent_memories.values()))
+    assert memory.text == "PSKA prefers evidence-first answers."
+    assert memory.confidence == 0.72
+    assert memory.last_verified_at is not None
+    assert memory.source_refs == [SourceRef(message_id="msg_memory")]
+    events = store.list_audit_events("review_item", review.review_item_id)
+    assert events[-1].metadata["promotion_type"] == "agent_memory"
+    assert events[-1].metadata["action"] == "created"
+    assert events[-1].metadata["agent_memory_id"] == memory.agent_memory_id
+
+
+def test_repeated_low_confidence_memory_candidate_updates_existing_memory() -> None:
+    store = _store()
+    reviews = [
+        ReviewItem(
+            review_item_id=f"rev_low_{index}",
+            owner_user_id="user_primary",
+            review_type=ReviewType.LOW_CONFIDENCE,
+            title="Review low-confidence memory",
+            proposal={
+                "memory_candidate": "PSKA likes grounded summaries.",
+                "layer": "semantic",
+                "confidence": confidence,
+                "source_refs": [{"message_id": message_id}],
+            },
+        )
+        for index, (confidence, message_id) in enumerate([(0.4, "msg_a"), (0.8, "msg_b")], start=1)
+    ]
+    for review in reviews:
+        store.add_review_item(review)
+        ReviewService(store).approve_and_apply(review.review_item_id, actor_user_id="user_primary")
+
+    assert len(store.agent_memories) == 1
+    memory = next(iter(store.agent_memories.values()))
+    assert memory.confidence == 0.8
+    assert memory.source_refs == [SourceRef(message_id="msg_a"), SourceRef(message_id="msg_b")]
+    second_events = store.list_audit_events("review_item", "rev_low_2")
+    assert second_events[-1].metadata["action"] == "updated"
+    assert second_events[-1].metadata["source_refs_merged"] == 1
+
+
 def test_share_proposal_updates_visibility_only_when_applied() -> None:
     store = _store()
     source = IngestService(store).ingest_channel_payload(

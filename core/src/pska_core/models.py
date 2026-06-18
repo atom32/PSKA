@@ -197,6 +197,7 @@ class UserProfileCard:
     profile: dict[str, Any]
     source_refs: list[SourceRef] = field(default_factory=list)
     confidence: float = 0.0
+    last_verified_at: datetime | None = None
 
 
 @dataclass(slots=True)
