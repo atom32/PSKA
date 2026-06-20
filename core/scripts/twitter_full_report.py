@@ -374,7 +374,7 @@ class ReportRunner:
         )
         result["cli_search"] = search.get("json")
         agentic = self.run_command(
-            f"pska_agentic_search:{question[:30]}",
+            f"agentic_service_search:{question[:30]}",
             [
                 "python3",
                 "-m",
@@ -469,15 +469,6 @@ class ReportRunner:
                     "method": "tools/call",
                     "params": {
                         "name": "pska_search",
-                        "arguments": {"query": question, "user_id": self.args.owner_user_id, "top_k": self.args.top_k},
-                    },
-                },
-                {
-                    "jsonrpc": "2.0",
-                    "id": 4,
-                    "method": "tools/call",
-                    "params": {
-                        "name": "pska_agentic_search",
                         "arguments": {"query": question, "user_id": self.args.owner_user_id, "top_k": self.args.top_k},
                     },
                 },
@@ -654,11 +645,10 @@ async def main():
         await agent._load_mcp_servers()
         tools = [name for name in agent._tools.list_all() if name.startswith("pska_")]
         search_text = await agent._tools.get("pska_pska_search").execute(query=QUESTION, user_id="user_primary", top_k=5)
-        agentic_text = await agent._tools.get("pska_pska_agentic_search").execute(query=QUESTION, user_id="user_primary", top_k=5)
         prompt = (
             "You must answer using PSKA MCP tools, not model-only knowledge. "
             "Question: " + QUESTION + "\n"
-            "Use pska_pska_search or pska_pska_agentic_search and cite evidence. "
+            "Use pska_pska_search and cite evidence. "
             "If evidence is insufficient, say insufficient evidence."
         )
         try:
@@ -685,7 +675,6 @@ async def main():
         print(json.dumps({
             "tools": tools,
             "direct_search": json.loads(search_text),
-            "direct_agentic_search": json.loads(agentic_text),
             "agent_answer": answer,
             "events": events,
         }, ensure_ascii=False))
@@ -818,7 +807,7 @@ def fastreact_payload_passed(returncode: int, payload: dict[str, Any]) -> bool:
 
 
 def fastreact_direct_answer(payload: dict[str, Any]) -> str:
-    answer = ((payload.get("direct_agentic_search") or {}).get("answer") or "").strip()
+    answer = ((payload.get("agentic_search") or {}).get("answer") or "").strip()
     if answer:
         return answer
     search = payload.get("direct_search") or {}
@@ -847,7 +836,7 @@ def fastreact_event_stream(payload: dict[str, Any]) -> list[dict[str, Any]]:
         return []
 
     events: list[dict[str, Any]] = []
-    for name, key in (("pska_pska_search", "direct_search"), ("pska_pska_agentic_search", "direct_agentic_search")):
+    for name, key in (("pska_pska_search", "direct_search"),):
         value = payload.get(key)
         if value:
             events.append({"kind": "tool_call", "tool_name": name, "summary": "Fastreact direct MCP call"})

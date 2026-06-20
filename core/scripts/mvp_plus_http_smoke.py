@@ -13,7 +13,6 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from pska_core.acl import ACLService
-from pska_core.agentic import AgenticSearchService
 from pska_core.api import PSKAApi, PSKARequestHandler
 from pska_core.candidates import CandidateWriteService
 from pska_core.enums import UserRole
@@ -25,9 +24,9 @@ from pska_core.memory import MemoryService
 from pska_core.models import User
 from pska_core.retrieval import RetrievalService
 from pska_core.review import ReviewService
-from pska_core.serde import dumps
+from pska_core.serde import dumps, to_jsonable
 from pska_core.store import InMemoryKnowledgeStore
-from scripts.mvp_plus_smoke import FakeLLM, _agentic_answer_response, _agentic_plan_response, _extraction_response
+from scripts.mvp_plus_smoke import FakeLLM, _extraction_response
 
 
 def build_http_smoke_report() -> dict[str, Any]:
@@ -123,7 +122,7 @@ def build_http_smoke_report() -> dict[str, Any]:
             "profile_context": profile["profile_context"],
             "conflicts": conflict["conflicts"],
             "sensitivity": sensitive["sensitivity"],
-            "ready_fastreact_ok": ready["checks"]["fastreact"]["ok"],
+            "ready_agentic_service_ok": ready["checks"]["agentic_service"]["ok"],
         },
     }
 
@@ -158,11 +157,11 @@ def _api() -> PSKAApi:
     store = InMemoryKnowledgeStore()
     store.add_user(User("user_primary", "primary", UserRole.ADMIN))
     store.add_user(User("agent_service", "agent_service", UserRole.AGENT_SERVICE))
-    llm = FakeLLM([_extraction_response(), _agentic_plan_response(), _agentic_answer_response()])
+    llm = FakeLLM([_extraction_response()])
     api = object.__new__(PSKAApi)
     api.store = store
     api.retrieval = RetrievalService(store, ACLService(store))
-    api.agentic = AgenticSearchService(api.retrieval, llm=llm)
+    api.agentic_service = _FakeAgenticService(api.retrieval)
     api.ingest = IngestService(store)
     api.extraction = ExtractionService(store, llm=llm)
     api.jobs = JobService(store)
@@ -171,6 +170,23 @@ def _api() -> PSKAApi:
     api.candidates = CandidateWriteService(store)
     api.mcp = MCPServer("postgresql:///unused", store=store)
     return api
+
+
+class _FakeAgenticService:
+    def __init__(self, retrieval: RetrievalService) -> None:
+        self.retrieval = retrieval
+
+    def ready(self) -> dict[str, Any]:
+        return {"ok": True, "provider": "test", "adapter": "fake"}
+
+    def search(self, query: str, user: User, *, represented_user_id: str | None = None, max_iterations: int = 3) -> dict[str, Any]:
+        retrieval = self.retrieval.search(query, user, represented_user_id=represented_user_id)
+        return {
+            "answer": "Policy P-204 covers dependent K during education enrollment.",
+            "retrieval": to_jsonable(retrieval),
+            "trace": {"retrieval_plan": ["external_agentic_service", "pska_search"]},
+            "agentic_service": {"provider": "test", "adapter": "fake"},
+        }
 
 
 def _http_json(base_url: str, method: str, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:

@@ -11,7 +11,6 @@ from pska_core.mcp_server import MCPServer
 from pska_core.models import User
 from pska_core.retrieval import RetrievalService
 from pska_core.acl import ACLService
-from pska_core.agentic import AgenticSearchService
 from pska_core.review import ReviewService
 from pska_core.store import InMemoryKnowledgeStore
 
@@ -319,7 +318,6 @@ def _api() -> PSKAApi:
     api = object.__new__(PSKAApi)
     api.store = _store()
     api.retrieval = RetrievalService(api.store, ACLService(api.store))
-    api.agentic = AgenticSearchService(api.retrieval)
     api.reviews = ReviewService(api.store)
     api.candidates = CandidateWriteService(api.store)
     return api

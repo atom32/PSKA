@@ -269,7 +269,7 @@ asyncio.run(main())
         payload = json.loads(result.stdout)
     except json.JSONDecodeError as exc:
         return {"ok": False, "error": f"invalid fastreact smoke JSON: {exc}", **output}
-    required = {"pska_pska_search", "pska_pska_agentic_search", "pska_pska_index_status"}
+    required = {"pska_pska_search", "pska_pska_index_status"}
     tools = set(payload.get("tools", []))
     return {
         "ok": required.issubset(tools),

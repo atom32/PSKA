@@ -82,6 +82,31 @@ class FastreactConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class AgenticServiceConfigFile:
+    provider: str = "fastreact"
+    url: str = "http://127.0.0.1:8000"
+    service_token: str | None = None
+    timeout_seconds: float | None = None
+
+    @classmethod
+    def from_dict(
+        cls,
+        data: dict[str, Any] | None,
+        *,
+        fallback: FastreactConfig,
+        api_key_file: Path | None = None,
+    ) -> "AgenticServiceConfigFile":
+        data = data or {}
+        token = data.get("service_token") or data.get("token") or fallback.service_token or _fastreact_token_from_key_file(api_key_file)
+        return cls(
+            provider=str(data.get("provider") or "fastreact"),
+            url=str(data.get("url") or fallback.url or "http://127.0.0.1:8000").rstrip("/"),
+            service_token=str(token).strip() if token else None,
+            timeout_seconds=float(data["timeout_seconds"]) if data.get("timeout_seconds") else fallback.timeout_seconds,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class EmbeddingConfigFile:
     provider: str = "disabled"
     model: str | None = None
@@ -127,6 +152,7 @@ class PSKAConfig:
     service: ServiceConfig = field(default_factory=ServiceConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
     fastreact: FastreactConfig = field(default_factory=FastreactConfig)
+    agentic_service: AgenticServiceConfigFile = field(default_factory=AgenticServiceConfigFile)
     embedding: EmbeddingConfigFile = field(default_factory=EmbeddingConfigFile)
     files: FilesConfig = field(default_factory=FilesConfig)
 
@@ -144,11 +170,13 @@ class PSKAConfig:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "PSKAConfig":
         llm = LLMConfig.from_dict(data.get("llm"))
+        fastreact = FastreactConfig.from_dict(data.get("fastreact"), api_key_file=llm.api_key_file)
         return cls(
             database=DatabaseConfig.from_dict(data.get("database")),
             service=ServiceConfig.from_dict(data.get("service"), api_key_file=llm.api_key_file),
             llm=llm,
-            fastreact=FastreactConfig.from_dict(data.get("fastreact"), api_key_file=llm.api_key_file),
+            fastreact=fastreact,
+            agentic_service=AgenticServiceConfigFile.from_dict(data.get("agentic_service"), fallback=fastreact, api_key_file=llm.api_key_file),
             embedding=EmbeddingConfigFile.from_dict(data.get("embedding")),
             files=FilesConfig.from_dict(data.get("files")),
         )
@@ -156,6 +184,16 @@ class PSKAConfig:
     @classmethod
     def from_env(cls, base: "PSKAConfig | None" = None) -> "PSKAConfig":
         base = base or cls()
+        default_agentic = AgenticServiceConfigFile()
+        agentic_url = os.getenv("PSKA_AGENTIC_SERVICE_URL")
+        if not agentic_url and base.agentic_service.url == default_agentic.url:
+            agentic_url = os.getenv("PSKA_FASTREACT_URL")
+        agentic_token = os.getenv("PSKA_AGENTIC_SERVICE_TOKEN")
+        if not agentic_token and base.agentic_service.service_token == default_agentic.service_token:
+            agentic_token = os.getenv("PSKA_FASTREACT_SERVICE_TOKEN")
+        agentic_timeout = os.getenv("PSKA_AGENTIC_SERVICE_TIMEOUT_SECONDS")
+        if not agentic_timeout and base.agentic_service.timeout_seconds == default_agentic.timeout_seconds:
+            agentic_timeout = os.getenv("PSKA_FASTREACT_TIMEOUT_SECONDS")
         return cls(
             database=DatabaseConfig(url=os.getenv("PSKA_DATABASE_URL", base.database.url)),
             service=ServiceConfig(
@@ -173,6 +211,14 @@ class PSKAConfig:
                 url=os.getenv("PSKA_FASTREACT_URL", base.fastreact.url).rstrip("/"),
                 service_token=os.getenv("PSKA_FASTREACT_SERVICE_TOKEN") or base.fastreact.service_token,
                 timeout_seconds=float(os.getenv("PSKA_FASTREACT_TIMEOUT_SECONDS")) if os.getenv("PSKA_FASTREACT_TIMEOUT_SECONDS") else base.fastreact.timeout_seconds,
+            ),
+            agentic_service=AgenticServiceConfigFile(
+                provider=os.getenv("PSKA_AGENTIC_SERVICE_PROVIDER") or os.getenv("PSKA_AGENTIC_PROVIDER") or base.agentic_service.provider,
+                url=(agentic_url or base.agentic_service.url).rstrip("/"),
+                service_token=agentic_token or base.agentic_service.service_token,
+                timeout_seconds=float(agentic_timeout)
+                if agentic_timeout
+                else base.agentic_service.timeout_seconds,
             ),
             embedding=EmbeddingConfigFile(
                 provider=os.getenv("PSKA_EMBEDDING_PROVIDER", base.embedding.provider),
@@ -210,6 +256,12 @@ class PSKAConfig:
             _setdefault("PSKA_FASTREACT_SERVICE_TOKEN", self.fastreact.service_token)
         if self.fastreact.timeout_seconds:
             _setdefault("PSKA_FASTREACT_TIMEOUT_SECONDS", str(self.fastreact.timeout_seconds))
+        _setdefault("PSKA_AGENTIC_SERVICE_PROVIDER", self.agentic_service.provider)
+        _setdefault("PSKA_AGENTIC_SERVICE_URL", self.agentic_service.url.rstrip("/"))
+        if self.agentic_service.service_token:
+            _setdefault("PSKA_AGENTIC_SERVICE_TOKEN", self.agentic_service.service_token)
+        if self.agentic_service.timeout_seconds:
+            _setdefault("PSKA_AGENTIC_SERVICE_TIMEOUT_SECONDS", str(self.agentic_service.timeout_seconds))
         _setdefault("PSKA_EMBEDDING_PROVIDER", self.embedding.provider)
         if self.embedding.model:
             _setdefault("PSKA_EMBEDDING_MODEL", self.embedding.model)

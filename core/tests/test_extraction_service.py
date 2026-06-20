@@ -39,6 +39,8 @@ def test_extraction_creates_entities_hyperedges_and_review_items() -> None:
     assert {"covers", "depends_on", "requires_review"} <= relations
     assert report.review_items_created
     assert "knowledge extraction agent" in llm.prompts[0]["system"]
+    assert "Chinese" in llm.prompts[0]["system"]
+    assert "Prefer Chinese" in llm.prompts[0]["prompt"]
 
 
 def test_extraction_repairs_one_member_hyperedge_schema() -> None:
@@ -76,6 +78,7 @@ def test_extraction_repairs_one_member_hyperedge_schema() -> None:
     assert report.hyperedges_created
     assert len(llm.prompts) == 2
     assert "schema correction agent" in llm.prompts[1]["system"]
+    assert "Chinese" in llm.prompts[1]["system"]
 
 
 def test_conversation_review_item_preserves_message_provenance() -> None:

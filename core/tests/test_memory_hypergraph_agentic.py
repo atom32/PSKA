@@ -4,8 +4,9 @@ import sys
 import types
 
 from pska_core.acl import ACLService
-from pska_core.agentic import AgenticSearchService
+from pska_core.agentic_service import AgenticServiceConfig, FastreactAgenticServiceAdapter
 from pska_core.enums import Directionality, MemoryLayer, ReviewType, UserRole, Visibility
+from pska_core.hipporag_index import HippoRAGOfflineIndex
 from pska_core.hypergraph import HypergraphService
 from pska_core.ingest import IngestService
 from pska_core.memory import MemoryService
@@ -13,7 +14,6 @@ from pska_core.models import Entity, SourceRef, User
 from pska_core.retrieval import RetrievalService
 from pska_core.review import ReviewService
 from pska_core.store import InMemoryKnowledgeStore
-from tests.fakes import FakeLLM, agentic_answer_response, agentic_plan_response
 
 
 def make_store() -> InMemoryKnowledgeStore:
@@ -22,6 +22,22 @@ def make_store() -> InMemoryKnowledgeStore:
     store.add_user(User("user_secondary", "secondary", UserRole.USER))
     store.add_user(User("agent_service", "agent_service", UserRole.AGENT_SERVICE))
     return store
+
+
+class HippoFixtureEmbeddingProvider:
+    provider_name = "fixture-hippo"
+    model_name = "fixture-hippo-model"
+    dimensions = 2
+
+    def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        vectors = []
+        for text in texts:
+            lower = text.lower()
+            if "semanticquery" in lower or "latent bridge" in lower or "semantic target" in lower:
+                vectors.append([1.0, 0.0])
+            else:
+                vectors.append([0.0, 1.0])
+        return vectors
 
 
 def test_agent_memory_belongs_to_represented_user() -> None:
@@ -427,6 +443,225 @@ def test_graph_paths_rank_grounded_high_confidence_paths_first() -> None:
     assert weak_path["score_debug"]["evidence_coverage"] == 0.0
 
 
+def test_retrieval_ppr_expands_to_graph_connected_chunks() -> None:
+    store = make_store()
+    seed_source = IngestService(store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "note_project_a_seed",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "ProjectA seed",
+            "content": {"text": "ProjectA has a starting point for graph-aware retrieval."},
+        }
+    )
+    hidden_source = IngestService(store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "note_hidden_ppr_evidence",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "Unmatched downstream note",
+            "content": {"text": "The downstream implementation decision is preserved in this evidence chunk."},
+        }
+    )
+    graph = HypergraphService(store)
+    graph.create_entity(Entity("ent_project_a_ppr", "project", "ProjectA", "user_primary", "private_primary", Visibility.PRIVATE))
+    graph.create_entity(Entity("ent_downstream_ppr", "decision", "DownstreamDecision", "user_primary", "private_primary", Visibility.PRIVATE))
+    graph.create_hyperedge(
+        relation_type="depends_on",
+        owner_user_id="user_primary",
+        space_id="private_primary",
+        visibility=Visibility.PRIVATE,
+        directionality=Directionality.DIRECTED,
+        members=[("ent_project_a_ppr", "subject"), ("ent_downstream_ppr", "decision")],
+        evidence_text="ProjectA depends on the downstream implementation decision.",
+        source_refs=[SourceRef(source_item_id=hidden_source.source_item_id)],
+        confidence=0.92,
+    )
+
+    response = RetrievalService(store, ACLService(store)).search(
+        "ProjectA starting point",
+        store.get_user("user_primary"),
+        top_k=2,
+    )
+
+    assert {result.source_item_id for result in response.results} == {seed_source.source_item_id, hidden_source.source_item_id}
+    expanded = next(result for result in response.results if result.source_item_id == hidden_source.source_item_id)
+    assert expanded.score_debug["graph_expansion"] == 1.0
+    assert expanded.score_debug["graph_ppr"] > 0
+    assert response.score_debug["graph_ranker"] == "ppr_chunk_entity_fusion"
+    assert response.score_debug["graph_ppr_enabled"] is True
+    assert response.score_debug["graph_expanded_candidates"] >= 1
+    assert response.score_debug["hipporag_offline_graph"]["num_fact_nodes"] == 1
+    assert response.score_debug["offline_index_freshness"]["dirty"] >= 2
+    assert response.score_debug["offline_index_freshness"]["fallback"] == "request_scoped_rebuild"
+
+
+def test_hipporag_offline_index_builds_fact_entity_passage_graph() -> None:
+    store = make_store()
+    source = IngestService(store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "note_hipporag_offline",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "Offline HippoRAG note",
+            "content": {"text": "ProjectA delegates offline indexing to the GraphBuilder fact layer."},
+        }
+    )
+    graph = HypergraphService(store)
+    graph.create_entity(Entity("ent_offline_project", "project", "ProjectA", "user_primary", "private_primary", Visibility.PRIVATE))
+    graph.create_entity(Entity("ent_offline_builder", "component", "GraphBuilder", "user_primary", "private_primary", Visibility.PRIVATE))
+    graph.create_hyperedge(
+        relation_type="delegates_to",
+        owner_user_id="user_primary",
+        space_id="private_primary",
+        visibility=Visibility.PRIVATE,
+        directionality=Directionality.DIRECTED,
+        members=[("ent_offline_project", "subject"), ("ent_offline_builder", "object")],
+        evidence_text="ProjectA delegates offline indexing to GraphBuilder.",
+        source_refs=[SourceRef(source_item_id=source.source_item_id)],
+        confidence=0.93,
+    )
+    chunks = store.list_chunks_for_sources({source.source_item_id})
+    index = HippoRAGOfflineIndex.build(
+        entities=store.list_entities(),
+        hyperedges=store.list_hyperedges_for_entities({"ent_offline_project", "ent_offline_builder"}),
+        chunks=chunks,
+        item_by_id={source.source_item_id: source},
+    )
+
+    assert index.graph_info["num_fact_nodes"] == 1
+    assert index.graph_info["num_phrase_nodes"] == 2
+    assert index.graph_info["num_passage_nodes"] == 1
+    assert index.graph_info["num_fact_to_entity_edges"] == 2
+    assert index.graph_info["num_fact_to_passage_edges"] == 1
+    top_facts = index.score_facts("ProjectA offline indexing")
+    assert top_facts[0]["summary"]["relation_type"] == "delegates_to"
+    assert top_facts[0]["score"] > 0
+
+
+def test_hipporag_offline_index_scores_facts_and_entities_with_embeddings() -> None:
+    store = make_store()
+    source = IngestService(store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "note_hipporag_embedding",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "Embedding HippoRAG note",
+            "content": {"text": "Latent bridge evidence points at the semantic target."},
+        }
+    )
+    graph = HypergraphService(store)
+    graph.create_entity(Entity("ent_latent_bridge", "concept", "Latent Bridge", "user_primary", "private_primary", Visibility.PRIVATE))
+    graph.create_entity(Entity("ent_semantic_target", "concept", "Semantic Target", "user_primary", "private_primary", Visibility.PRIVATE))
+    graph.create_hyperedge(
+        relation_type="supports",
+        owner_user_id="user_primary",
+        space_id="private_primary",
+        visibility=Visibility.PRIVATE,
+        members=[("ent_latent_bridge", "subject"), ("ent_semantic_target", "object")],
+        evidence_text="Latent bridge evidence points at the semantic target.",
+        source_refs=[SourceRef(source_item_id=source.source_item_id)],
+        confidence=0.9,
+    )
+    index = HippoRAGOfflineIndex.build(
+        entities=store.list_entities(),
+        hyperedges=store.list_hyperedges_for_entities({"ent_latent_bridge", "ent_semantic_target"}),
+        chunks=store.list_chunks_for_sources({source.source_item_id}),
+        item_by_id={source.source_item_id: source},
+    ).with_embeddings(HippoFixtureEmbeddingProvider())
+    query_embedding = HippoFixtureEmbeddingProvider().embed_texts(["SemanticQuery"])[0]
+
+    top_facts = index.score_facts("SemanticQuery", query_embedding=query_embedding)
+    linked_entities = index.link_entities("SemanticQuery", query_embedding=query_embedding)
+
+    assert top_facts[0]["summary"]["relation_type"] == "supports"
+    assert top_facts[0]["score_debug"]["lexical"] == 0
+    assert top_facts[0]["score_debug"]["embedding"] > 0.99
+    assert linked_entities[0].entity_id in {"ent_latent_bridge", "ent_semantic_target"}
+    assert linked_entities[0].score_debug["embedding"] > 0.99
+
+
+def test_retrieval_uses_hipporag_embedding_linking_for_fact_seeds() -> None:
+    store = make_store()
+    source = IngestService(store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "note_retrieval_embedding_link",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "Retrieval embedding link note",
+            "content": {"text": "Latent bridge evidence points at the semantic target."},
+        }
+    )
+    graph = HypergraphService(store)
+    graph.create_entity(Entity("ent_retrieval_latent", "concept", "Latent Bridge", "user_primary", "private_primary", Visibility.PRIVATE))
+    graph.create_entity(Entity("ent_retrieval_target", "concept", "Semantic Target", "user_primary", "private_primary", Visibility.PRIVATE))
+    graph.create_hyperedge(
+        relation_type="supports",
+        owner_user_id="user_primary",
+        space_id="private_primary",
+        visibility=Visibility.PRIVATE,
+        members=[("ent_retrieval_latent", "subject"), ("ent_retrieval_target", "object")],
+        evidence_text="Latent bridge evidence points at the semantic target.",
+        source_refs=[SourceRef(source_item_id=source.source_item_id)],
+        confidence=0.9,
+    )
+
+    response = RetrievalService(
+        store,
+        ACLService(store),
+        embedding_provider=HippoFixtureEmbeddingProvider(),
+    ).search("SemanticQuery", store.get_user("user_primary"))
+
+    assert response.score_debug["hipporag_embedding_linking"]["enabled"] is True
+    assert response.score_debug["graph_fact_seed_count"] == 1
+    assert response.score_debug["graph_ranker"] == "ppr_chunk_entity_fusion"
+    assert response.results[0].source_item_id == source.source_item_id
+
+
+def test_retrieval_without_graph_edges_falls_back_to_plain_rag() -> None:
+    store = make_store()
+    IngestService(store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "note_plain_rag",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "Plain retrieval note",
+            "content": {"text": "Plain RAG should still answer when no graph is available."},
+        }
+    )
+
+    response = RetrievalService(store, ACLService(store)).search("plain RAG", store.get_user("user_primary"))
+
+    assert response.results
+    assert response.score_debug["graph_ranker"] == "rag_fallback"
+    assert response.score_debug["graph_ppr_enabled"] is False
+    assert response.score_debug["graph_expanded_candidates"] == 0
+
+
 def test_graph_paths_link_entities_by_alias_metadata() -> None:
     store = make_store()
     source = IngestService(store).ingest_channel_payload(
@@ -583,29 +818,112 @@ def test_multi_party_relation_preserves_member_roles_and_ambiguous_direction() -
     assert {member.role for member in members} == {"policy", "beneficiary", "stage"}
 
 
-def test_agentic_search_returns_trace_and_citations() -> None:
+def test_external_agentic_adapter_returns_trace_and_citations() -> None:
     store = make_store()
-    IngestService(store).ingest_channel_payload(
-        {
-            "schema_version": "pska.channel_ingest.v1",
-            "source_channel": "manual",
-            "record_type": "note",
-            "source_id": "note-agentic",
-            "owner_user_id": "user_primary",
-            "space_id": "private_primary",
-            "visibility": "private",
-            "content": {"text": "agentic search should cite this source"},
-        }
-    )
-    retrieval = RetrievalService(store, ACLService(store))
-    llm = FakeLLM([
-        agentic_plan_response("agentic source"),
-        agentic_answer_response("The note cites agentic search evidence."),
-    ])
-    response = AgenticSearchService(retrieval, llm=llm).search("agentic source", store.get_user("user_primary"))
 
-    assert response.trace.retrieval_plan[0] == "acl_filter"
-    assert response.retrieval.citations
-    assert response.trace.evidence_check == "has_citations"
-    assert response.answer == "The note cites agentic search evidence."
-    assert len(llm.prompts) == 2
+    class FakeFastreactClient:
+        def ready(self):
+            return {"ok": True, "pska_tools_loaded": True}
+
+        def chat_completion(self, **kwargs):
+            return {
+                "run_id": "run_agentic",
+                "session_id": "session_agentic",
+                "answer": "The note cites",
+                "retrieval": {
+                    "citations": [{"source_item_id": "src_agentic", "chunk_id": "chk_agentic"}],
+                    "results": [{"title": "Agentic source", "citation": {"source_item_id": "src_agentic", "chunk_id": "chk_agentic"}}],
+                },
+                "events": [
+                    {"type": "tool_call", "tool_name": "pska_pska_search", "tool_args": {"query": "agentic source"}},
+                    {"type": "session_end", "content": "The note cites external agentic evidence."},
+                ],
+                "tool_calls": [{"tool_name": "pska_pska_search", "tool_args": {"query": "agentic source"}}],
+                "metadata": {"event_count": 2},
+                "trace": {
+                    "retrieval_plan": ["external_agentic_service", "pska_search"],
+                    "evidence_check": "has_citations",
+                },
+            }
+
+    service = FastreactAgenticServiceAdapter(
+        AgenticServiceConfig(provider="fastreact", url="http://agentic.test", service_token="token"),
+        client=FakeFastreactClient(),
+    )
+
+    response = service.search("agentic source", store.get_user("user_primary"))
+
+    assert response["trace"]["retrieval_plan"][0] == "external_agentic_service"
+    assert response["retrieval"]["citations"]
+    assert response["trace"]["evidence_check"] == "has_citations"
+    assert response["trace"]["run_id"] == "run_agentic"
+    assert response["trace"]["event_count"] == 2
+    assert response["trace"]["tool_calls"][0]["tool_name"] == "pska_pska_search"
+    assert response["trace"]["events"][0]["type"] == "tool_call"
+    assert response["answer"] == "The note cites external agentic evidence."
+    assert response["agentic_service"]["provider"] == "fastreact"
+
+
+def test_external_agentic_adapter_prefers_background_run_events() -> None:
+    store = make_store()
+
+    class FakeFastreactClient:
+        def create_run(self, **kwargs):
+            return {"run_id": "run_background", "session_id": "session_background"}
+
+        def wait_for_run(self, run_id):
+            return {"run_id": run_id, "session_id": "session_background", "status": "completed", "metadata": {"snapshot": True}}
+
+        def run_events(self, run_id):
+            return {
+                "run_id": run_id,
+                "total_event_count": 4,
+                "events": [
+                    {"type": "session_start", "content": "summarize"},
+                    {"type": "tool_call", "tool_call_id": "call_1", "tool_name": "exec", "tool_args": {"command": "date"}},
+                    {"type": "tool_result", "tool_call_id": "call_1", "tool_name": "exec", "content": "Fri Jun 19"},
+                    {"type": "session_end", "content": "完整回答\\n第二行"},
+                ],
+            }
+
+        def chat_completion(self, **kwargs):
+            raise AssertionError("background run protocol should be used first")
+
+    service = FastreactAgenticServiceAdapter(
+        AgenticServiceConfig(provider="fastreact", url="http://agentic.test"),
+        client=FakeFastreactClient(),
+    )
+
+    response = service.search("使用 bash 命令查看当前时间", store.get_user("user_primary"))
+
+    assert response["answer"] == "完整回答\\n第二行"
+    assert response["trace"]["event_count"] == 4
+    assert response["trace"]["events"][-1]["type"] == "session_end"
+    assert response["trace"]["tool_calls"][0]["tool_name"] == "exec"
+    assert response["agentic_service"]["run_id"] == "run_background"
+
+
+def test_external_agentic_adapter_extracts_fenced_json_payload() -> None:
+    store = make_store()
+
+    class FakeFastreactClient:
+        def chat_completion(self, **kwargs):
+            return {
+                "run_id": "run_fenced",
+                "content": (
+                    "Here is the answer.\n"
+                    "```json\n"
+                    '{"answer":"你好啊！很高兴见到你。","retrieval":{"citations":[]},"trace":{"status":"ok"},"source_refs":[]}\n'
+                    "```"
+                ),
+            }
+
+    service = FastreactAgenticServiceAdapter(
+        AgenticServiceConfig(provider="fastreact", url="http://agentic.test"),
+        client=FakeFastreactClient(),
+    )
+
+    response = service.search("你好啊", store.get_user("user_primary"))
+
+    assert response["answer"] == "你好啊！很高兴见到你。"
+    assert response["trace"]["status"] == "ok"

@@ -20,6 +20,7 @@ from pska_core.models import (
     Job,
     JobEvent,
     AuditEvent,
+    OfflineIndexState,
     ReviewItem,
     SourceRef,
     SourceItem,
@@ -523,17 +524,216 @@ class PostgresKnowledgeStore:
                 update {table}
                 set visibility = %s, visible_team_ids = %s
                 where {id_column} = %s
-                returning {id_column}
+                returning *
                 """,
                 (visibility, visible_team_ids, target_id),
             ).fetchone()
         if not row:
             raise KeyError(target_id)
+        source_item_id = row.get("source_item_id") or (target_id if target_type == "source_item" else None)
+        self.mark_offline_index_dirty(
+            object_type=target_type,
+            object_id=target_id,
+            owner_user_id=str(row.get("owner_user_id") or ""),
+            source_item_id=source_item_id,
+            visibility_version=_visibility_version(str(row.get("owner_user_id") or ""), visibility, visible_team_ids),
+            dirty_reason="visibility_changed",
+        )
 
     def list_source_items(self) -> list[SourceItem]:
         with self.connect() as conn:
             rows = conn.execute("select * from source_items order by created_at, source_item_id").fetchall()
         return [self._source_item_from_row(row) for row in rows]
+
+    def upsert_offline_index_state(self, state: OfflineIndexState) -> OfflineIndexState:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                insert into offline_index_states(
+                    object_type, object_id, owner_user_id, source_item_id, content_hash, mtime,
+                    visibility_version, embedding_provider, embedding_model, index_version,
+                    status, dirty_reason, last_indexed_at
+                )
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                on conflict (object_type, object_id) do update
+                set owner_user_id = excluded.owner_user_id,
+                    source_item_id = excluded.source_item_id,
+                    content_hash = excluded.content_hash,
+                    mtime = excluded.mtime,
+                    visibility_version = excluded.visibility_version,
+                    embedding_provider = excluded.embedding_provider,
+                    embedding_model = excluded.embedding_model,
+                    index_version = excluded.index_version,
+                    status = excluded.status,
+                    dirty_reason = excluded.dirty_reason,
+                    last_indexed_at = excluded.last_indexed_at,
+                    updated_at = now()
+                returning *
+                """,
+                (
+                    state.object_type,
+                    state.object_id,
+                    state.owner_user_id,
+                    state.source_item_id,
+                    state.content_hash,
+                    state.mtime,
+                    state.visibility_version,
+                    state.embedding_provider,
+                    state.embedding_model,
+                    state.index_version,
+                    state.status,
+                    state.dirty_reason,
+                    state.last_indexed_at,
+                ),
+            ).fetchone()
+        return self._offline_index_state_from_row(row)
+
+    def list_offline_index_states(
+        self,
+        *,
+        status: str | None = None,
+        source_item_id: str | None = None,
+        object_type: str | None = None,
+        limit: int | None = None,
+    ) -> list[OfflineIndexState]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if status:
+            clauses.append("status = %s")
+            params.append(status)
+        if source_item_id:
+            clauses.append("source_item_id = %s")
+            params.append(source_item_id)
+        if object_type:
+            clauses.append("object_type = %s")
+            params.append(object_type)
+        where = f"where {' and '.join(clauses)}" if clauses else ""
+        params.append(limit if limit is not None else 2147483647)
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                select * from offline_index_states
+                {where}
+                order by updated_at desc, object_type, object_id
+                limit %s
+                """,
+                tuple(params),
+            ).fetchall()
+        return [self._offline_index_state_from_row(row) for row in rows]
+
+    def mark_offline_index_dirty(
+        self,
+        *,
+        object_type: str,
+        object_id: str,
+        owner_user_id: str,
+        source_item_id: str | None = None,
+        content_hash: str | None = None,
+        visibility_version: str | None = None,
+        dirty_reason: str,
+        embedding_provider: str | None = None,
+        embedding_model: str | None = None,
+        index_version: str = "hipporag_offline.v1",
+    ) -> OfflineIndexState:
+        with self.connect() as conn:
+            existing = conn.execute(
+                "select * from offline_index_states where object_type = %s and object_id = %s",
+                (object_type, object_id),
+            ).fetchone()
+        state = OfflineIndexState(
+            object_type=object_type,
+            object_id=object_id,
+            owner_user_id=owner_user_id or (existing["owner_user_id"] if existing else ""),
+            source_item_id=source_item_id if source_item_id is not None else (existing["source_item_id"] if existing else None),
+            content_hash=content_hash if content_hash is not None else (existing["content_hash"] if existing else None),
+            visibility_version=visibility_version if visibility_version is not None else (existing["visibility_version"] if existing else None),
+            embedding_provider=embedding_provider if embedding_provider is not None else (existing["embedding_provider"] if existing else None),
+            embedding_model=embedding_model if embedding_model is not None else (existing["embedding_model"] if existing else None),
+            index_version=index_version,
+            status="dirty",
+            dirty_reason=dirty_reason,
+            last_indexed_at=existing["last_indexed_at"] if existing else None,
+        )
+        return self.upsert_offline_index_state(state)
+
+    def mark_offline_indexed(
+        self,
+        *,
+        object_type: str,
+        object_id: str,
+        embedding_provider: str | None = None,
+        embedding_model: str | None = None,
+        index_version: str = "hipporag_offline.v1",
+    ) -> OfflineIndexState:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                update offline_index_states
+                set status = 'indexed',
+                    dirty_reason = null,
+                    embedding_provider = coalesce(%s, embedding_provider),
+                    embedding_model = coalesce(%s, embedding_model),
+                    index_version = %s,
+                    last_indexed_at = now(),
+                    updated_at = now()
+                where object_type = %s and object_id = %s
+                returning *
+                """,
+                (embedding_provider, embedding_model, index_version, object_type, object_id),
+            ).fetchone()
+        if not row:
+            raise KeyError(f"{object_type}:{object_id}")
+        return self._offline_index_state_from_row(row)
+
+    def tombstone_offline_index_for_source(self, source_item_id: str, *, reason: str) -> list[OfflineIndexState]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                update offline_index_states
+                set status = 'tombstoned',
+                    dirty_reason = %s,
+                    updated_at = now()
+                where source_item_id = %s or (object_type = 'source_item' and object_id = %s)
+                returning *
+                """,
+                (reason, source_item_id, source_item_id),
+            ).fetchall()
+        return [self._offline_index_state_from_row(row) for row in rows]
+
+    def offline_index_status(self, *, owner_user_id: str | None = None) -> dict:
+        clause = "where owner_user_id = %s" if owner_user_id else ""
+        params = (owner_user_id,) if owner_user_id else ()
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                select status, object_type, count(*) as count, max(last_indexed_at) as last_indexed_at
+                from offline_index_states
+                {clause}
+                group by status, object_type
+                """,
+                params,
+            ).fetchall()
+        by_status: dict[str, int] = {}
+        by_object_type: dict[str, int] = {}
+        last_indexed = None
+        total = 0
+        for row in rows:
+            count = int(row["count"])
+            total += count
+            by_status[row["status"]] = by_status.get(row["status"], 0) + count
+            by_object_type[row["object_type"]] = by_object_type.get(row["object_type"], 0) + count
+            if row["last_indexed_at"] and (last_indexed is None or row["last_indexed_at"] > last_indexed):
+                last_indexed = row["last_indexed_at"]
+        return {
+            "index_version": "hipporag_offline.v1",
+            "total": total,
+            "dirty": by_status.get("dirty", 0),
+            "indexed": by_status.get("indexed", 0),
+            "tombstoned": by_status.get("tombstoned", 0),
+            "by_status": by_status,
+            "by_object_type": by_object_type,
+            "last_indexed_at": last_indexed.isoformat() if last_indexed else None,
+        }
 
     def list_entities(self) -> list[Entity]:
         with self.connect() as conn:
@@ -991,6 +1191,7 @@ class PostgresKnowledgeStore:
             "jobs",
             "job_events",
             "connector_states",
+            "offline_index_states",
         }:
             raise ValueError(f"Unsupported table: {table}")
         with self.connect() as conn:
@@ -1013,6 +1214,24 @@ class PostgresKnowledgeStore:
             content_hash=row["content_hash"],
             metadata=dict(row["metadata"] or {}),
             created_at=row["created_at"],
+        )
+
+    def _offline_index_state_from_row(self, row: dict[str, Any]) -> OfflineIndexState:
+        return OfflineIndexState(
+            object_type=row["object_type"],
+            object_id=row["object_id"],
+            owner_user_id=row["owner_user_id"],
+            source_item_id=row.get("source_item_id"),
+            content_hash=row.get("content_hash"),
+            mtime=row.get("mtime"),
+            visibility_version=row.get("visibility_version"),
+            embedding_provider=row.get("embedding_provider"),
+            embedding_model=row.get("embedding_model"),
+            index_version=row["index_version"],
+            status=row["status"],
+            dirty_reason=row.get("dirty_reason"),
+            last_indexed_at=row.get("last_indexed_at"),
+            updated_at=row["updated_at"],
         )
 
     def _connector_state_from_row(self, row: dict[str, Any]) -> ConnectorState:
@@ -1138,6 +1357,10 @@ def _vector_literal(vector: list[float] | None) -> str | None:
     if vector is None:
         return None
     return "[" + ",".join(f"{float(value):.9g}" for value in vector) + "]"
+
+
+def _visibility_version(owner_user_id: str, visibility: str, visible_team_ids: list[str]) -> str:
+    return "|".join([owner_user_id, visibility, ",".join(sorted(visible_team_ids))])
 
 
 def _retry_delay_seconds(payload: dict[str, Any], attempts: int) -> int:

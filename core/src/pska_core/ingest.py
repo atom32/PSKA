@@ -5,6 +5,7 @@ import re
 from uuid import uuid5, NAMESPACE_URL
 
 from pska_core.models import ChannelIngestPayload, Chunk, Document, SourceItem
+from pska_core.offline_index import OfflineIndexService
 from pska_core.store import KnowledgeStore
 from pska_core.embeddings import EmbeddingProvider
 
@@ -65,25 +66,31 @@ class IngestService:
         self.store.add_document(document)
         chunk_texts = self._chunk_text(stored.content_text)
         chunk_embeddings = self.embedding_provider.embed_texts(chunk_texts) if self.embedding_provider else [None] * len(chunk_texts)
+        chunks: list[Chunk] = []
         for ordinal, (chunk_text, embedding) in enumerate(zip(chunk_texts, chunk_embeddings)):
-            self.store.add_chunk(
-                Chunk(
-                    chunk_id=f"chk_{source_item_id[4:]}_{ordinal}",
-                    document_id=document.document_id,
-                    source_item_id=stored.source_item_id,
-                    owner_user_id=stored.owner_user_id,
-                    space_id=stored.space_id,
-                    visibility=stored.visibility,
-                    visible_team_ids=stored.visible_team_ids,
-                    text=chunk_text,
-                    ordinal=ordinal,
-                    embedding=embedding,
-                    metadata={
-                        "embedding_provider": self.embedding_provider.provider_name if self.embedding_provider else None,
-                        "embedding_model": self.embedding_provider.model_name if self.embedding_provider else None,
-                    },
-                )
+            chunk = Chunk(
+                chunk_id=f"chk_{source_item_id[4:]}_{ordinal}",
+                document_id=document.document_id,
+                source_item_id=stored.source_item_id,
+                owner_user_id=stored.owner_user_id,
+                space_id=stored.space_id,
+                visibility=stored.visibility,
+                visible_team_ids=stored.visible_team_ids,
+                text=chunk_text,
+                ordinal=ordinal,
+                embedding=embedding,
+                metadata={
+                    "embedding_provider": self.embedding_provider.provider_name if self.embedding_provider else None,
+                    "embedding_model": self.embedding_provider.model_name if self.embedding_provider else None,
+                },
             )
+            self.store.add_chunk(chunk)
+            chunks.append(chunk)
+        OfflineIndexService(self.store, embedding_provider=self.embedding_provider).mark_source_dirty(
+            stored,
+            chunks,
+            reason="source_ingested",
+        )
         return stored
 
     def _hash_payload(self, payload: ChannelIngestPayload, text: str) -> str:

@@ -105,8 +105,47 @@ def normalize_event_stream(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return events
 
 
+def compact_trace_for_context(trace: dict[str, Any], *, max_events: int = 40) -> dict[str, Any]:
+    """Return the PSKA-safe context/capture view of a FastReAct trace.
+
+    Full raw events are useful for UI replay, but they are too noisy and often too
+    sensitive for prompts, capture records, or long-term memory.
+    """
+    if not isinstance(trace, dict):
+        return {}
+    raw_events = trace.get("events") if isinstance(trace.get("events"), list) else []
+    normalized_events = [normalize_event(event) for event in raw_events if isinstance(event, dict)]
+    kept_events = [
+        event
+        for event in normalized_events
+        if event.get("kind") in {"tool_call", "tool_result", "final_answer", "error"}
+        or str(event.get("type") or "").lower() in {"ask_user", "context_compression"}
+    ][:max_events]
+    tool_calls = trace.get("tool_calls") if isinstance(trace.get("tool_calls"), list) else []
+    compacted: dict[str, Any] = {
+        key: trace[key]
+        for key in ["run_id", "session_id", "event_count", "model", "usage", "fastreact_metadata", "retrieval_plan", "evidence_check", "status"]
+        if key in trace
+    }
+    compacted["events_kept"] = kept_events
+    compacted["raw_event_count"] = len(raw_events)
+    compacted["raw_events_retained"] = False
+    compacted["tool_calls"] = [
+        {
+            key: call.get(key)
+            for key in ["event_id", "tool_call_id", "tool_name", "tool_args", "status"]
+            if isinstance(call, dict) and call.get(key) is not None
+        }
+        for call in tool_calls[:max_events]
+        if isinstance(call, dict)
+    ]
+    return compacted
+
+
 def compact(text: str, limit: int) -> str:
     text = str(text or "").strip()
     if len(text) <= limit:
         return text
-    return f"{text[: limit - 1]}..."
+    if limit <= 3:
+        return "." * max(0, limit)
+    return f"{text[: limit - 3]}..."

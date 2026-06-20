@@ -5,9 +5,10 @@ import types
 
 from pska_core.acl import ACLService
 from pska_core.embeddings import EmbeddingService
-from pska_core.enums import UserRole
+from pska_core.enums import UserRole, Visibility
 from pska_core.ingest import IngestService
 from pska_core.models import TeamMembership, User
+from pska_core.offline_index import OfflineIndexService
 from pska_core.retrieval import RetrievalService
 from pska_core.store import InMemoryKnowledgeStore
 
@@ -96,6 +97,64 @@ def test_backfill_skips_chunks_that_already_match_provider_and_model() -> None:
     assert second.embedded == 0
     assert second.failed == 0
     assert len(provider.calls) == 1
+
+
+def test_ingest_marks_source_and_chunks_dirty_for_offline_index() -> None:
+    store = _store()
+
+    item = IngestService(store, chunk_chars=10).ingest_channel_payload(
+        _payload("offline-index-note", "alpha beta gamma delta")
+    )
+
+    states = store.list_offline_index_states(source_item_id=item.source_item_id)
+    assert {state.object_type for state in states} == {"source_item", "chunk"}
+    assert all(state.status == "dirty" for state in states)
+    assert all(state.dirty_reason == "source_ingested" for state in states)
+    assert store.offline_index_status()["dirty"] == 4
+
+
+def test_offline_index_processes_only_dirty_chunks() -> None:
+    store = _store()
+    first = IngestService(store).ingest_channel_payload(_payload("dirty-one", "CodeGraph builds graph memory."))
+    second = IngestService(store).ingest_channel_payload(_payload("dirty-two", "Browser captures pages."))
+    first_chunk = store.list_chunks_for_sources({first.source_item_id})[0]
+    second_chunk = store.list_chunks_for_sources({second.source_item_id})[0]
+    provider = FakeEmbeddingProvider()
+
+    report = OfflineIndexService(store, embedding_provider=provider).process_dirty_embeddings(limit=1)
+
+    assert report["embedded"] == 1
+    assert set(report["indexed_chunk_ids"]) <= {first_chunk.chunk_id, second_chunk.chunk_id}
+    assert provider.calls[0] in [["CodeGraph builds graph memory."], ["Browser captures pages."]]
+    assert len(store.list_offline_index_states(object_type="chunk", status="indexed")) == 1
+    assert len(store.list_offline_index_states(object_type="chunk", status="dirty")) == 1
+
+
+def test_visibility_change_invalidates_offline_index_state() -> None:
+    store = _store()
+    item = IngestService(store).ingest_channel_payload(_payload("visibility-dirty", "private note"))
+
+    store.update_visibility(
+        target_type="source_item",
+        target_id=item.source_item_id,
+        visibility=Visibility.TEAM.value,
+        visible_team_ids=["team_default"],
+    )
+
+    state = store.list_offline_index_states(object_type="source_item", source_item_id=item.source_item_id)[0]
+    assert state.status == "dirty"
+    assert state.dirty_reason == "visibility_changed"
+    assert state.visibility_version == "user_primary|team|team_default"
+
+
+def test_tombstone_source_invalidates_offline_index_state() -> None:
+    store = _store()
+    item = IngestService(store).ingest_channel_payload(_payload("delete-dirty", "temporary note"))
+
+    report = OfflineIndexService(store).tombstone_source(item.source_item_id, reason="source_deleted")
+
+    assert report["tombstoned"] == 2
+    assert store.offline_index_status()["tombstoned"] == 2
 
 
 def test_retrieval_uses_vector_results_when_lexical_has_no_match() -> None:

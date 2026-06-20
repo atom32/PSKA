@@ -185,6 +185,43 @@ PSKA consumer 规则：
 PSKA report/job 可以优先使用 SSE，以便展示过程；批处理或简单 QA 可以使用
 `stream=false`。
 
+## Context handoff 与事件保留原则
+
+PSKA 不把 FastReAct 事件流等同于知识上下文。事件流按用途分层处理：
+
+1. **Raw replay 层**：完整 `events` 只用于短期 UI 展开、debug、trace replay。它可以包含大段 tool output、路径、错误、临时推理状态，不进入 PSKA 长期知识，也不直接喂给下一轮 LLM。
+2. **Run summary 层**：PSKA agentic adapter 从 FastReAct run 读取 `events`，但最终回答以最后一个 `session_end.content` 为准；`tool_call/tool_result/error/ask_user/context_compression` 被压缩成 trace summary。
+3. **Prompt context 层**：下一轮传给 FastReAct 的 PSKA 上下文只应包含用户问题、必要会话摘要、source refs、citations、检索摘要、最近关键 tool state。不得传完整 raw events。
+4. **Capture 层**：用户勾选 capture 或系统保存 agent answer 时，只保存 `answer`、`source_refs/citations`、压缩后的 `trace_summary` 和安全的 `tool_calls`。完整 raw events 必须丢弃。
+5. **Memory/knowledge 层**：只有被证据支持、可引用、通过 ACL 和 review 策略的结论才能进入 PSKA memory/profile/graph；工具日志、模型思考、普通中间事件不能自动进入知识层。
+
+### 事件保留/丢弃矩阵
+
+| 事件类型 | UI replay | Prompt context | Capture | Long-term knowledge |
+| --- | --- | --- | --- | --- |
+| `session_start` | 可保留 | 只保留用户输入摘要 | 丢弃 raw，仅留 run/session id | 不保存 |
+| `think` / planning text | 可短期显示 | 默认丢弃，可由 FastReAct 自己压缩 | 丢弃 | 不保存 |
+| `tool_call` | 保留 | 保留工具名、必要参数摘要 | 保留安全字段 | 不保存 |
+| `tool_result` | 保留 | 只保留摘要、citations、source ids、错误状态 | 摘要化，截断大文本 | 仅证据化结论可保存 |
+| `session_end` / final answer | 保留 | 保留最终回答或摘要 | 保留 | 可进入 review/capture |
+| `error` | 保留 | 保留错误类别和简述 | 保留简述 | 不保存 |
+| `ask_user` / approval | 保留 | 保留待用户决策状态 | 保留决策摘要 | 不保存 |
+| `context_compression` | 保留 | 保留压缩摘要 id/内容 | 保留摘要 | 仅作为 trace，不保存为事实 |
+| `done` / keepalive | 丢弃 | 丢弃 | 丢弃 | 丢弃 |
+
+### PSKA 与 FastReAct 的压缩分工
+
+- FastReAct 压缩自己的 agent loop context：包括工具结果裁剪、上下文窗口管理、session 内部状态和 runtime replay。
+- PSKA 压缩知识交接 context：包括 ACL 后的检索结果、source refs、memory/profile/graph context、用户可复用的会话摘要。
+- PSKA 不应依赖 FastReAct 的内部压缩来决定什么进入知识库；进入 PSKA 的内容必须经过 PSKA 自己的 citation、ACL、review 和 retention 策略。
+- 当 FastReAct 已发出 context compression 事件时，PSKA 可以把它作为 trace summary 的一部分，但不能把它当作已验证知识。
+
+当前实现约束：
+
+- Workspace UI 可展开 `Raw FastReAct events`，但这是短期调试视图。
+- `capture_agent_conversation` 路径使用 `compact_trace_for_context`，不会保存完整 `trace.events`。
+- `session_end.content` 是最终回答的优先来源；非流式 `content/answer` 只作为 fallback。
+
 ## PSKA MCP Tool Contract
 
 PSKA 通过 MCP 提供工具，FastReAct 通过部署配置加载。

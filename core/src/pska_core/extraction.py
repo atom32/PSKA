@@ -92,7 +92,9 @@ class ExtractionService:
         system = (
             "You are PSKA's knowledge extraction agent. Extract only facts grounded in the document. "
             "Return strict JSON. Do not invent entities, relations, evidence, or directionality. "
-            "Use anonymous labels exactly as found when a real person is represented by an alias."
+            "Use anonymous labels exactly as found when a real person is represented by an alias. "
+            "Keep JSON keys and enum values exactly as specified, but write user-facing natural-language values "
+            "such as title, evidence_text, and proposal text in Chinese by default unless the source text requires another language."
         )
         prompt = f"""
 Return a JSON object with exactly these keys:
@@ -105,6 +107,7 @@ directionality must be one of: directed, undirected, ambiguous.
 review_type must be one of: share_proposal, sensitive_content, profile_update, entity_merge, conflict, memory_candidate, relationship_candidate, action_candidate, low_confidence.
 Only create review items for sharing, sensitive personal memory/profile updates, entity merges, conflicting facts, action candidates, or low-confidence memory/relationship candidates.
 If no grounded item exists, return an empty array for that key.
+Keep schema keys and enum values in English. Prefer Chinese for natural-language values that a user will read.
 
 Source metadata:
 source_item_id: {item.source_item_id}
@@ -130,7 +133,8 @@ Document text:
     def _repair_extraction_schema(self, llm: LLMClient, raw: dict, error: str) -> dict:
         system = (
             "You are PSKA's extraction schema correction agent. Return strict JSON only. "
-            "Do not add facts; only reshape the previous extraction to match the required schema."
+            "Do not add facts; only reshape the previous extraction to match the required schema. "
+            "Keep schema keys and enum values in English; preserve or convert user-facing natural-language values to Chinese when possible."
         )
         prompt = f"""
 The previous extraction failed PSKA schema validation:

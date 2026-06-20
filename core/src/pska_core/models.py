@@ -159,6 +159,24 @@ class Chunk:
 
 
 @dataclass(slots=True)
+class OfflineIndexState:
+    object_type: str
+    object_id: str
+    owner_user_id: str
+    source_item_id: str | None = None
+    content_hash: str | None = None
+    mtime: str | None = None
+    visibility_version: str | None = None
+    embedding_provider: str | None = None
+    embedding_model: str | None = None
+    index_version: str = "hipporag_offline.v1"
+    status: str = "dirty"
+    dirty_reason: str | None = None
+    last_indexed_at: datetime | None = None
+    updated_at: datetime = field(default_factory=utc_now)
+
+
+@dataclass(slots=True)
 class Memory:
     memory_id: str
     owner_user_id: str

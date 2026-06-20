@@ -108,6 +108,22 @@ Or use the Chrome extension:
   agentic-search --query "your question"
 ```
 
+### User Workspace
+
+```bash
+./start.sh
+```
+
+This starts the local PSKA backend supervisor and the React/TypeScript
+workspace frontend. Open <http://127.0.0.1:5173/>.
+
+Developer docs:
+
+- [Developer Quickstart](docs/DEVELOPER_QUICKSTART.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [API Reference](docs/API_REFERENCE.md)
+- [Telemetry Design](docs/TELEMETRY.md)
+
 ## Status
 
 | Component | Status |
@@ -118,7 +134,7 @@ Or use the Chrome extension:
 | LLM Extraction | ✅ Implemented |
 | Agentic Search | ✅ Implemented |
 | MCP Interface | ✅ Implemented |
-| Production UI | ❌ Not Started |
+| Production UI | 🟡 User Workspace scaffold in `frontend/` |
 | Async Jobs | ✅ Durable MVP |
 
 See [core/docs/mvp-status.md](core/docs/mvp-status.md) for detailed status and

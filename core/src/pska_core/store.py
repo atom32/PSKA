@@ -15,6 +15,7 @@ from pska_core.models import (
     Job,
     JobEvent,
     AuditEvent,
+    OfflineIndexState,
     ReviewItem,
     SourceRef,
     SourceItem,
@@ -76,6 +77,40 @@ class KnowledgeStore(Protocol):
     ) -> None: ...
     def list_entities(self) -> list[Entity]: ...
     def list_source_items(self) -> list[SourceItem]: ...
+    def upsert_offline_index_state(self, state: OfflineIndexState) -> OfflineIndexState: ...
+    def list_offline_index_states(
+        self,
+        *,
+        status: str | None = None,
+        source_item_id: str | None = None,
+        object_type: str | None = None,
+        limit: int | None = None,
+    ) -> list[OfflineIndexState]: ...
+    def mark_offline_index_dirty(
+        self,
+        *,
+        object_type: str,
+        object_id: str,
+        owner_user_id: str,
+        source_item_id: str | None = None,
+        content_hash: str | None = None,
+        visibility_version: str | None = None,
+        dirty_reason: str,
+        embedding_provider: str | None = None,
+        embedding_model: str | None = None,
+        index_version: str = "hipporag_offline.v1",
+    ) -> OfflineIndexState: ...
+    def mark_offline_indexed(
+        self,
+        *,
+        object_type: str,
+        object_id: str,
+        embedding_provider: str | None = None,
+        embedding_model: str | None = None,
+        index_version: str = "hipporag_offline.v1",
+    ) -> OfflineIndexState: ...
+    def tombstone_offline_index_for_source(self, source_item_id: str, *, reason: str) -> list[OfflineIndexState]: ...
+    def offline_index_status(self, *, owner_user_id: str | None = None) -> dict: ...
     def list_chunks_for_sources(self, source_item_ids: set[str]) -> list[Chunk]: ...
     def list_chunks_missing_embedding(self, *, provider: str, model: str, limit: int | None = None) -> list[Chunk]: ...
     def update_chunk_embedding(self, chunk_id: str, embedding: list[float], *, provider: str, model: str) -> None: ...
@@ -116,6 +151,7 @@ class InMemoryKnowledgeStore:
         self.audit_events: list[AuditEvent] = []
         self.jobs: dict[str, Job] = {}
         self.job_events: list[JobEvent] = []
+        self.offline_index_states: dict[tuple[str, str], OfflineIndexState] = {}
 
     def add_user(self, user: User) -> None:
         self.users[user.user_id] = user
@@ -270,12 +306,129 @@ class InMemoryKnowledgeStore:
         target = target_map[target_id]
         target.visibility = Visibility(visibility)
         target.visible_team_ids = list(visible_team_ids)
+        source_item_id = getattr(target, "source_item_id", target_id if target_type == "source_item" else None)
+        owner_user_id = getattr(target, "owner_user_id", "")
+        self.mark_offline_index_dirty(
+            object_type=target_type,
+            object_id=target_id,
+            owner_user_id=owner_user_id,
+            source_item_id=source_item_id,
+            visibility_version=_visibility_version(owner_user_id, visibility, visible_team_ids),
+            dirty_reason="visibility_changed",
+        )
 
     def list_entities(self) -> list[Entity]:
         return list(self.entities.values())
 
     def list_source_items(self) -> list[SourceItem]:
         return list(self.source_items.values())
+
+    def upsert_offline_index_state(self, state: OfflineIndexState) -> OfflineIndexState:
+        state.updated_at = utc_now()
+        self.offline_index_states[(state.object_type, state.object_id)] = state
+        return state
+
+    def list_offline_index_states(
+        self,
+        *,
+        status: str | None = None,
+        source_item_id: str | None = None,
+        object_type: str | None = None,
+        limit: int | None = None,
+    ) -> list[OfflineIndexState]:
+        states = list(self.offline_index_states.values())
+        if status:
+            states = [state for state in states if state.status == status]
+        if source_item_id:
+            states = [state for state in states if state.source_item_id == source_item_id]
+        if object_type:
+            states = [state for state in states if state.object_type == object_type]
+        states = sorted(states, key=lambda state: (state.updated_at, state.object_type, state.object_id), reverse=True)
+        return states[:limit] if limit else states
+
+    def mark_offline_index_dirty(
+        self,
+        *,
+        object_type: str,
+        object_id: str,
+        owner_user_id: str,
+        source_item_id: str | None = None,
+        content_hash: str | None = None,
+        visibility_version: str | None = None,
+        dirty_reason: str,
+        embedding_provider: str | None = None,
+        embedding_model: str | None = None,
+        index_version: str = "hipporag_offline.v1",
+    ) -> OfflineIndexState:
+        existing = self.offline_index_states.get((object_type, object_id))
+        state = OfflineIndexState(
+            object_type=object_type,
+            object_id=object_id,
+            owner_user_id=owner_user_id or (existing.owner_user_id if existing else ""),
+            source_item_id=source_item_id if source_item_id is not None else (existing.source_item_id if existing else None),
+            content_hash=content_hash if content_hash is not None else (existing.content_hash if existing else None),
+            visibility_version=visibility_version if visibility_version is not None else (existing.visibility_version if existing else None),
+            embedding_provider=embedding_provider if embedding_provider is not None else (existing.embedding_provider if existing else None),
+            embedding_model=embedding_model if embedding_model is not None else (existing.embedding_model if existing else None),
+            index_version=index_version,
+            status="dirty",
+            dirty_reason=dirty_reason,
+            last_indexed_at=existing.last_indexed_at if existing else None,
+        )
+        return self.upsert_offline_index_state(state)
+
+    def mark_offline_indexed(
+        self,
+        *,
+        object_type: str,
+        object_id: str,
+        embedding_provider: str | None = None,
+        embedding_model: str | None = None,
+        index_version: str = "hipporag_offline.v1",
+    ) -> OfflineIndexState:
+        existing = self.offline_index_states[(object_type, object_id)]
+        existing.status = "indexed"
+        existing.dirty_reason = None
+        existing.embedding_provider = embedding_provider or existing.embedding_provider
+        existing.embedding_model = embedding_model or existing.embedding_model
+        existing.index_version = index_version
+        existing.last_indexed_at = utc_now()
+        existing.updated_at = existing.last_indexed_at
+        return existing
+
+    def tombstone_offline_index_for_source(self, source_item_id: str, *, reason: str) -> list[OfflineIndexState]:
+        tombstoned = []
+        for state in self.offline_index_states.values():
+            if state.source_item_id != source_item_id and state.object_id != source_item_id:
+                continue
+            state.status = "tombstoned"
+            state.dirty_reason = reason
+            state.updated_at = utc_now()
+            tombstoned.append(state)
+        return tombstoned
+
+    def offline_index_status(self, *, owner_user_id: str | None = None) -> dict:
+        states = list(self.offline_index_states.values())
+        if owner_user_id:
+            states = [state for state in states if state.owner_user_id == owner_user_id]
+        by_status: dict[str, int] = {}
+        by_object_type: dict[str, int] = {}
+        last_indexed = None
+        for state in states:
+            by_status[state.status] = by_status.get(state.status, 0) + 1
+            by_object_type[state.object_type] = by_object_type.get(state.object_type, 0) + 1
+            if state.last_indexed_at and (last_indexed is None or state.last_indexed_at > last_indexed):
+                last_indexed = state.last_indexed_at
+        return {
+            "index_version": "hipporag_offline.v1",
+            "total": len(states),
+            "dirty": by_status.get("dirty", 0),
+            "indexed": by_status.get("indexed", 0),
+            "tombstoned": by_status.get("tombstoned", 0),
+            "by_status": by_status,
+            "by_object_type": by_object_type,
+            "last_indexed_at": last_indexed.isoformat() if last_indexed else None,
+        }
 
     def list_chunks_for_sources(self, source_item_ids: set[str]) -> list[Chunk]:
         return [chunk for chunk in self.chunks.values() if chunk.source_item_id in source_item_ids]
@@ -550,6 +703,7 @@ class InMemoryKnowledgeStore:
             "user_profile_cards": self.profile_cards,
             "jobs": self.jobs,
             "job_events": self.job_events,
+            "offline_index_states": self.offline_index_states,
         }
         if table not in tables:
             raise ValueError(f"Unsupported table: {table}")
@@ -576,6 +730,10 @@ def _source_refs_from_payload(value) -> list[SourceRef]:
         for ref in value
         if isinstance(ref, dict)
     ]
+
+
+def _visibility_version(owner_user_id: str, visibility: str, visible_team_ids: list[str]) -> str:
+    return "|".join([owner_user_id, visibility, ",".join(sorted(visible_team_ids))])
 
 
 def _retry_delay_seconds(payload: dict, attempts: int) -> int:

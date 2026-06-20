@@ -22,6 +22,12 @@ def test_retrieval_eval_fixture_reports_expected_hits() -> None:
     by_id = {case["case_id"]: case for case in report["cases"]}
     assert by_id["lexical_fastreact"]["lexical"]["missing"] == []
     assert by_id["vector_codegraph"]["vector"]["missing"] == []
+    zh_cases = [case for case in report["cases"] if str(case["case_id"]).startswith("zh_")]
+    assert len(zh_cases) >= 5
+    assert by_id["zh_workspace_components"]["citations"]["missing"] == []
+    assert by_id["zh_writer_evidence_graph_path"]["graph_paths"]["missing"] == []
+    assert by_id["zh_memory_preference"]["memory"]["missing"] == []
+    assert by_id["zh_profile_writing_preference"]["profile"]["missing"] == []
     graph = by_id["graph_two_hop_digest"]["graph_paths"]
     assert graph["missing"] == []
     assert any(
@@ -30,6 +36,8 @@ def test_retrieval_eval_fixture_reports_expected_hits() -> None:
         for detail in graph["details"]
     )
     assert by_id["graph_conflict"]["conflicts"]["missing"] == []
+    assert report["embedding"]["provider"] == "fixture-embeddings"
+    assert report["llm"]["required"] is False
 
 
 def test_retrieval_eval_failure_report_includes_missing_refs_and_diagnostics() -> None:

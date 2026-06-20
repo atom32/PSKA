@@ -13,7 +13,7 @@ PSKA 后续不再靠用户不断说“继续，下一个 TODO”来推进。当�
 - [todo-implement-system-zh.md](todo-implement-system-zh.md)：结构化 TODO、任务选择规则、验收门禁和当前 Human Workflow backlog。
 - [mvp-user-scope-zh.md](mvp-user-scope-zh.md)：MVP+ 数据源和功能 scope。
 
-当前 **Human Workflow** 第一轮已完成：`HW-001` 到 `HW-008` 均已实现并验证。下一轮 backlog 已在 [todo-implement-system-zh.md](todo-implement-system-zh.md) 生成，后续 coding agent 可从 `HW-009` 开始按规则自动选择。
+当前 **Human Workflow** 第一轮已完成：`HW-001` 到 `HW-008` 均已实现并验证；**Admin Console** 第一轮 `UI-001` 到 `UI-006` 也已实现并验证。下一轮 backlog 已在 [todo-implement-system-zh.md](todo-implement-system-zh.md) 生成；后端稳定化仍可从 `HW-009` 等任务继续，产品主入口应从 `APP-001` User Workspace Skeleton 开始。
 
 更新：2026-06-14
 
@@ -24,6 +24,7 @@ PSKA 后续不再靠用户不断说“继续，下一个 TODO”来推进。当�
 - P0.4 background digest loop 已完成 write-back + external worker lifecycle + backlog scheduling + foreground periodic scheduler + Fastreact worker slice：`pska_job_context`、`pska_write_candidates`、`POST /candidates`、`POST /jobs/{id}/lease`、`GET /digest/batches/{id}`、`POST /digest/candidates`、`POST /digest/schedule`、CLI `digest-scheduler`、`complete/fail`、priority、retry backoff、candidate schema version、batch cursor、Fastreact `pska_digest` worker 脚本。仍待补更细的 candidate taxonomy、daemon supervisor 化和真实 digest 质量调优。
 - P1.1 connector contract 已完成第一版：`pska.connector_record.v1`、`POST /connectors/records`、CLI `connector-ingest-record`，以及 `pska.connector_state.v1`、`GET/POST /connectors/states`、CLI `connector-state`。具体 Files/Browser/Git connector 实现仍待 P1.2+。
 - P2 retrieval quality 已补 GraphRAG grounding 第一版：hypergraph context 返回 ACL-filtered `source_refs` 和 `evidence_citations`，并能从 query seed entity 返回最多 2-hop 的 grounded `graph_paths`；实体链接支持 metadata aliases/canonical label/slug/handle 的轻量匹配，并可选用 `rapidfuzz` 处理长 alias typo；graph paths 已有基于 query mention、confidence、evidence coverage、path length 的第一版排序和 explanation；chunk retrieval 已有 recency/source authority tie-breaker，并可选用 `rank-bm25` 做 lexical scorer；retrieval diagnostics 已能输出 insufficient/ungrounded evidence、graph conflict、sensitivity flags；profile/memory context 已能带 source refs/citations 进入 retrieval response。当前仍是轻量路径扩展，不是 GNN，也不是 HippoRAG/PPR 级别的成熟 GraphRAG。
+- P4 Admin Console 已完成第一版：`/console`、`/console/reviews`、`/console/search`、`/console/memory`、`/console/jobs` 和 `/console/sources` 已通过测试和本地 HTTP smoke。这个成果证明 PSKA service、Postgres、service token、HTTP API 和管理入口可用；但它仍是管理台，不是最终用户的 chat/writer 产品。
 
 ## 当前判断
 
@@ -35,7 +36,7 @@ Twitter/X 归档 -> PostgreSQL + pgvector schema -> LLM 提取 -> 轻量超图
 -> FastReAct 通过服务边界调用 PSKA
 ```
 
-这证明了 PSKA 可以作为私有优先知识库运行，但还不是长期愿景里的完整 online personal context service。MVP 阶段应先收窄数据源到 Twitter/X archive 和本地文本文件，把主线从“继续扩 connector”转向“稳定服务化和分析闭环”：
+这证明了 PSKA 可以作为私有优先知识库运行，但还不是长期愿景里的完整 online personal context service。MVP 阶段应先收窄数据源到 Twitter/X archive 和本地文本文件，把主线从“继续扩 connector”转向“稳定服务化、分析闭环和用户工作台”：
 
 ```text
 online service daemon -> background jobs -> idle digest -> review/memory -> reliable retrieval/QA
@@ -282,12 +283,22 @@ FastReAct 侧：
 
 ## P4: Product UI
 
+已完成 Admin Console 第一轮：
+
+- Home dashboard。
 - Review console。
 - Source/connector 管理。
 - Job dashboard。
 - Search and citation viewer。
-- Memory graph explorer。
-- Proactive briefing inbox。
+- Memory/profile read-only view。
+
+下一轮 Product UI 不应继续堆管理 API，而应转向 User Workspace：
+
+- Chat Workspace：把 search/agentic search 变成对话主流程，答案以中文为默认，并展示 citations、graph evidence、gaps/conflicts、memory/profile 使用说明。
+- Corpus / Wiki Explorer：让用户看懂 source/document/chunk/entity/hyperedge/memory/profile 的内容、关系和出处。
+- Writer Mode：富文本创作、选中文本、基于 PSKA 数据的写作建议。
+- Evidence Inspector：统一展开任意回答、建议、记忆、profile、graph edge 的 source refs、证据片段、置信度和 review 状态。
+- Retrieval Quality Loop：把真实问题、expected citations、graph path relevance 和失败案例纳入回放，而不是只做主观 demo。
 
 ## FastReAct Integration Track
 
@@ -320,7 +331,7 @@ FastReAct 仍然是重要消费者，但不应主导 PSKA 架构。
 7. `HW-007` Grounded Graph Candidate Review。
 8. `HW-008` Digest Budget Policy。
 
-下一轮结构化 backlog 已生成在 [todo-implement-system-zh.md](todo-implement-system-zh.md)：`HW-009` Digest E2E Write-back Gate、`HW-010` Review Batch Operations、`HW-013` Human-readable Ops Briefing 和 `HW-014` Local Daemon Productization 当前为 `ready`；`HW-011`、`HW-012`、`HW-015` 作为依赖后的 backlog。后续应从 `HW-009` 开始执行。
+下一轮结构化 backlog 已生成在 [todo-implement-system-zh.md](todo-implement-system-zh.md)。后端稳定化 ready 起点仍是 `HW-009` Digest E2E Write-back Gate、`HW-010` Review Batch Operations、`HW-013` Human-readable Ops Briefing 和 `HW-014` Local Daemon Productization；产品入口的 ready 起点已从 Admin Console 转为 `APP-001` User Workspace Skeleton。
 
 历史优先顺序和技术线索保留如下：
 

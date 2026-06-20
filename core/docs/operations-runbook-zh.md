@@ -340,6 +340,11 @@ NO_PROXY=127.0.0.1,localhost PYTHONPATH=src \
 ./scripts/pska --config .pska/config.json service-check
 ```
 
+Fastreact 侧应只把 PSKA 当作工具提供方使用：`pska_search`、`pska_index_status`、
+`pska_job_context`、`pska_review_items`、`pska_write_candidates` 等。不要配置或调用
+`pska_agentic_search` / `pska_pska_agentic_search`；agentic loop 由 Fastreact 自己执行，
+PSKA 不再提供本地 agentic 工具。
+
 如果 Fastreact 使用 stdio MCP，生成配置时也必须使用同一个 `--database-url postgresql:///pska`。如果 Fastreact 使用 HTTP MCP，则它访问的是 `http://127.0.0.1:8765/mcp` 背后的 PSKA service，因此 PSKA service 自己必须通过 `service-check` 的 database alignment。
 
 PSKA owns storage, ACL, source refs, review, audit, jobs, citations, and MCP/API. Fastreact owns LLM calls, planning, tool orchestration, run lifecycle, SSE events, approval, and trace.

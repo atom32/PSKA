@@ -42,6 +42,9 @@ def test_pska_config_loads_json_and_keyfile_token(tmp_path: Path) -> None:
     assert config.service.service_token == "shared-local-token"
     assert config.fastreact.url == "http://127.0.0.1:9000"
     assert config.fastreact.service_token == "shared-local-token"
+    assert config.agentic_service.provider == "fastreact"
+    assert config.agentic_service.url == "http://127.0.0.1:9000"
+    assert config.agentic_service.service_token == "shared-local-token"
     assert config.llm.api_key_file == key_file
     assert config.files.roots == (tmp_path / "notes",)
     assert config.files.ignore == ("*.tmp",)
@@ -65,3 +68,30 @@ def test_pska_config_apply_to_env_does_not_overwrite_existing(tmp_path: Path, mo
     config.apply_to_env()
 
     assert os.environ["PSKA_DATABASE_URL"] == "postgresql:///existing"
+
+
+def test_pska_config_loads_generic_agentic_service(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("PSKA_AGENTIC_SERVICE_URL", raising=False)
+    monkeypatch.delenv("PSKA_AGENTIC_SERVICE_TOKEN", raising=False)
+    monkeypatch.delenv("PSKA_AGENTIC_SERVICE_TIMEOUT_SECONDS", raising=False)
+    config_file = tmp_path / "config.json"
+    config_file.write_text(
+        json.dumps(
+            {
+                "agentic_service": {
+                    "provider": "fastreact",
+                    "url": "http://127.0.0.1:9010",
+                    "service_token": "agent-token",
+                    "timeout_seconds": 12,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = PSKAConfig.load(config_file)
+
+    assert config.agentic_service.provider == "fastreact"
+    assert config.agentic_service.url == "http://127.0.0.1:9010"
+    assert config.agentic_service.service_token == "agent-token"
+    assert config.agentic_service.timeout_seconds == 12

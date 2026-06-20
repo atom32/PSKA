@@ -102,7 +102,7 @@ def test_parse_sse_events_reads_fastreact_agent_events() -> None:
 
 def test_fastreact_payload_requires_direct_and_full_agent_answers() -> None:
     payload = {
-        "direct_agentic_search": {"answer": "direct"},
+        "direct_search": {"results": [{"snippet": "direct"}]},
         "agent_answer": "",
     }
 
@@ -114,7 +114,6 @@ def test_fastreact_payload_requires_direct_and_full_agent_answers() -> None:
 def test_fastreact_event_stream_normalizes_tools_and_final_answer() -> None:
     payload = {
         "direct_search": {"results": [{"snippet": "direct search result"}]},
-        "direct_agentic_search": {"answer": "direct agentic result"},
         "agent_answer": "",
         "events": [
             {
@@ -280,7 +279,7 @@ def minimal_report() -> dict:
                 "status": "passed",
                 "direct_mcp_status": "passed",
                 "full_agent_status": "passed",
-                "payload": {"direct_agentic_search": {"answer": "D"}, "agent_answer": "A"},
+                "payload": {"direct_search": {"results": [{"snippet": "D"}]}, "agent_answer": "A"},
             }
         ],
         "recovery_events": [],

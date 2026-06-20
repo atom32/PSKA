@@ -78,16 +78,12 @@ def build_config(args: argparse.Namespace) -> dict:
             "servers": [mcp_server]
         },
         "policy": {
-            "default_action": "caution",
             "tenant_rules": {
                 "pska": {
                     "tools": {
-                        "exec": "deny",
-                        "read_file": "deny",
-                        "write_file": "deny",
-                        "edit_file": "deny",
+                        "write_file": "require_approval",
+                        "edit_file": "require_approval",
                         "pska_pska_search": "allow",
-                        "pska_pska_agentic_search": "allow",
                         "pska_pska_index_status": "allow",
                         "pska_pska_job_context": "allow",
                         "pska_pska_review_items": "allow",

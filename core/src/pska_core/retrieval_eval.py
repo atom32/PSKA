@@ -5,10 +5,11 @@ from pathlib import Path
 from typing import Any
 
 from pska_core.acl import ACLService
-from pska_core.embeddings import EmbeddingProvider
-from pska_core.enums import Directionality, UserRole, Visibility
+from pska_core.agentic_service import build_agentic_service_client
+from pska_core.embeddings import EmbeddingConfig, EmbeddingProvider, EmbeddingService, build_embedding_provider
+from pska_core.enums import Directionality, MemoryLayer, UserRole, Visibility
 from pska_core.hypergraph import HypergraphService
-from pska_core.models import Chunk, Document, Entity, SourceItem, SourceRef, User
+from pska_core.models import AgentMemory, Chunk, Document, Entity, SourceItem, SourceRef, User, UserProfileCard
 from pska_core.retrieval import RetrievalResponse, RetrievalService
 from pska_core.serde import to_jsonable
 from pska_core.store import InMemoryKnowledgeStore
@@ -39,19 +40,53 @@ class FixtureEmbeddingProvider:
         ]
 
 
-def run_retrieval_eval(fixture_path: str | Path = DEFAULT_RETRIEVAL_EVAL_FIXTURE) -> dict[str, Any]:
+def run_retrieval_eval(
+    fixture_path: str | Path = DEFAULT_RETRIEVAL_EVAL_FIXTURE,
+    *,
+    real: bool = False,
+    embedding_config: EmbeddingConfig | None = None,
+    require_llm: bool | None = None,
+) -> dict[str, Any]:
     fixture = json.loads(Path(fixture_path).read_text(encoding="utf-8"))
     store = build_eval_store(fixture)
-    provider = FixtureEmbeddingProvider(fixture.get("query_vectors") or {})
+    if real:
+        provider = build_embedding_provider(embedding_config or EmbeddingConfig.from_env(default_provider="bge-m3"))
+        if provider is None:
+            raise RuntimeError("real retrieval eval requires a non-disabled embedding provider")
+        chunks = store.list_chunks_for_sources({item.source_item_id for item in store.list_source_items()})
+        embedding_report = EmbeddingService(store, provider).embed_chunks(chunks)
+        if embedding_report.failed:
+            raise RuntimeError(f"real retrieval eval embedding failed: {embedding_report.errors}")
+    else:
+        provider = FixtureEmbeddingProvider(fixture.get("query_vectors") or {})
+        embedding_report = None
     retrieval = RetrievalService(store, ACLService(store), embedding_provider=provider)
+    agentic = build_agentic_service_client() if real or require_llm else None
     user = store.get_user(str(fixture.get("user_id") or "user_primary"))
     case_reports = []
     for case in fixture.get("cases") or []:
         response = retrieval.search(str(case["query"]), user, top_k=int(case.get("top_k") or 5))
-        case_reports.append(evaluate_response(case, response))
+        agentic_response = None
+        if agentic and case.get("agentic", True):
+            agentic_response = agentic.search(str(case["query"]), user, max_iterations=int(case.get("agentic_max_iterations") or 2))
+        case_reports.append(evaluate_response(case, response, agentic_response=agentic_response))
     return {
         "ok": all(report["ok"] for report in case_reports),
         "fixture": str(fixture_path),
+        "real": real,
+        "embedding": {
+            "provider": provider.provider_name,
+            "model": provider.model_name,
+            "dimensions": provider.dimensions,
+            "backfill": to_jsonable(embedding_report) if embedding_report else None,
+        },
+        "llm": {
+            "required": False,
+            "delegated_to_agentic_service": bool(real or require_llm),
+            "provider": getattr(getattr(agentic, "config", None), "provider", None),
+            "url": getattr(getattr(agentic, "config", None), "url", None),
+            "agentic_cases": len([case for case in case_reports if case.get("agentic", {}).get("ran")]),
+        },
         "case_count": len(case_reports),
         "cases": case_reports,
     }
@@ -135,10 +170,33 @@ def build_eval_store(fixture: dict[str, Any]) -> InMemoryKnowledgeStore:
             source_refs=[_source_ref(ref) for ref in edge.get("source_refs") or []],
             confidence=float(edge.get("confidence") or 0.0),
         )
+    for memory in fixture.get("agent_memories") or []:
+        store.add_agent_memory(
+            AgentMemory(
+                agent_memory_id=str(memory["agent_memory_id"]),
+                owner_user_id=str(memory.get("owner_user_id") or fixture.get("user_id") or "user_primary"),
+                layer=MemoryLayer(str(memory.get("layer") or MemoryLayer.SEMANTIC.value)),
+                text=str(memory["text"]),
+                confidence=float(memory.get("confidence") or 0.0),
+                source_refs=[_source_ref(ref) for ref in memory.get("source_refs") or []],
+                decay_policy=str(memory.get("decay_policy") or "manual"),
+                created_by_user_id=memory.get("created_by_user_id"),
+            )
+        )
+    for card in fixture.get("profile_cards") or []:
+        store.add_profile_card(
+            UserProfileCard(
+                profile_card_id=str(card["profile_card_id"]),
+                owner_user_id=str(card.get("owner_user_id") or fixture.get("user_id") or "user_primary"),
+                profile=dict(card.get("profile") or {}),
+                source_refs=[_source_ref(ref) for ref in card.get("source_refs") or []],
+                confidence=float(card.get("confidence") or 0.0),
+            )
+        )
     return store
 
 
-def evaluate_response(case: dict[str, Any], response: RetrievalResponse) -> dict[str, Any]:
+def evaluate_response(case: dict[str, Any], response: RetrievalResponse, *, agentic_response: Any | None = None) -> dict[str, Any]:
     expected_citations = list(case.get("expected_citations") or [])
     actual_citations = [_citation_key(item) for item in response.citations]
     citation_report = _expected_report(expected_citations, actual_citations)
@@ -167,6 +225,9 @@ def evaluate_response(case: dict[str, Any], response: RetrievalResponse) -> dict
     expected_conflicts = list(case.get("expected_conflicts") or [])
     gap_report = _expected_report(expected_gaps, response.gaps)
     conflict_report = _expected_report(expected_conflicts, response.conflicts)
+    memory_report = _expected_report(list(case.get("expected_memory_ids") or []), [item.get("agent_memory_id") for item in response.memory_context])
+    profile_report = _expected_report(list(case.get("expected_profile_card_ids") or []), [item.get("profile_card_id") for item in response.profile_context])
+    agentic_report = _agentic_report(case, agentic_response)
 
     checks = {
         "citations": citation_report["ok"],
@@ -175,6 +236,9 @@ def evaluate_response(case: dict[str, Any], response: RetrievalResponse) -> dict
         "graph_paths": graph_path_report["ok"],
         "gaps": gap_report["ok"],
         "conflicts": conflict_report["ok"],
+        "memory": memory_report["ok"],
+        "profile": profile_report["ok"],
+        "agentic": agentic_report["ok"],
     }
     return {
         "case_id": case.get("id"),
@@ -187,13 +251,43 @@ def evaluate_response(case: dict[str, Any], response: RetrievalResponse) -> dict
         "graph_paths": graph_path_report,
         "gaps": gap_report,
         "conflicts": conflict_report,
+        "memory": memory_report,
+        "profile": profile_report,
+        "agentic": agentic_report,
         "diagnostics": {
             "score_debug": to_jsonable(response.score_debug),
             "result_count": len(response.results),
             "citation_count": len(response.citations),
             "graph_path_count": len(response.graph_paths),
             "graph_path_explanations": [path.get("explanation") for path in response.graph_paths],
+            "memory_context_count": len(response.memory_context),
+            "profile_context_count": len(response.profile_context),
         },
+    }
+
+
+def _agentic_report(case: dict[str, Any], agentic_response: Any | None) -> dict[str, Any]:
+    if agentic_response is None:
+        return {"ok": True, "ran": False}
+    if isinstance(agentic_response, dict):
+        answer = str(agentic_response.get("answer") or "")
+        retrieval = agentic_response.get("retrieval") if isinstance(agentic_response.get("retrieval"), dict) else {}
+        trace = agentic_response.get("trace") if isinstance(agentic_response.get("trace"), dict) else {}
+        raw_citations = retrieval.get("citations") or agentic_response.get("source_refs") or []
+    else:
+        answer = getattr(agentic_response, "answer", "")
+        retrieval = getattr(agentic_response, "retrieval", None)
+        trace = getattr(agentic_response, "trace", None)
+        raw_citations = getattr(retrieval, "citations", [])
+    citations = [_citation_key(item) for item in raw_citations if isinstance(item, dict)]
+    expected = list(case.get("expected_agentic_citations") or case.get("expected_citations") or [])
+    citation_report = _expected_report(expected, citations)
+    return {
+        "ok": bool(answer.strip()) and citation_report["ok"],
+        "ran": True,
+        "answer": answer,
+        "trace": to_jsonable(trace),
+        "citations": citation_report,
     }
 
 

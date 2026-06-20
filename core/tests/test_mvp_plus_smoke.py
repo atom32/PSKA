@@ -12,7 +12,7 @@ def test_mvp_plus_smoke_covers_limited_end_to_end_flow() -> None:
     assert report["counts"]["agent_memories"] == 1
     assert report["counts"]["profile_cards"] == 1
     assert report["counts"]["jobs"] == 1
-    assert report["sample"]["agentic_answer"] == "Policy P-204 covers dependent K during education enrollment."
+    assert report["sample"]["direct_qa_citations"]
     assert report["sample"]["graph_path"]["explanation"]
     assert report["sample"]["memory_context"][0]["citations"]
     assert report["sample"]["profile_context"][0]["citations"]

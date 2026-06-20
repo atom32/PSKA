@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import json
 import os
+import time
 from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -26,6 +27,21 @@ class FastreactClient(Protocol):
         scope: dict[str, Any] | None = None,
         session_id: str | None = None,
     ) -> dict[str, Any]: ...
+
+    def create_run(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        user_id: str,
+        purpose: str,
+        job_id: str | None = None,
+        scope: dict[str, Any] | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]: ...
+
+    def wait_for_run(self, run_id: str) -> dict[str, Any]: ...
+
+    def run_events(self, run_id: str) -> dict[str, Any]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +114,45 @@ class HttpFastreactClient:
             payload["session_id"] = session_id
         return self._request_json("POST", "/v1/chat/completions", payload)
 
+    def create_run(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        user_id: str,
+        purpose: str,
+        job_id: str | None = None,
+        scope: dict[str, Any] | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        payload = {
+            "messages": messages,
+            "stream": True,
+            "user_key": f"pska:{user_id}",
+            "metadata": {
+                "caller": "pska",
+                "purpose": purpose,
+                "pska_user_id": user_id,
+                "pska_job_id": job_id,
+                "scope": scope or {},
+            },
+        }
+        if session_id:
+            payload["session_id"] = session_id
+        return self._request_json("POST", "/v1/runs", payload)
+
+    def wait_for_run(self, run_id: str) -> dict[str, Any]:
+        deadline = time.monotonic() + self.config.timeout_seconds
+        snapshot: dict[str, Any] = {}
+        while time.monotonic() < deadline:
+            snapshot = self._request_json("GET", f"/v1/runs/{run_id}")
+            if snapshot.get("status") in {"completed", "failed", "cancelled", "expired"}:
+                return snapshot
+            time.sleep(0.25)
+        raise FastreactError(f"Fastreact /v1/runs/{run_id} timed out")
+
+    def run_events(self, run_id: str) -> dict[str, Any]:
+        return self._request_json("GET", f"/v1/runs/{run_id}/events?limit=500")
+
     def _request_json(self, method: str, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         data = None if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
         request = Request(
@@ -133,7 +188,7 @@ class HttpFastreactClient:
         return headers
 
 
-REQUIRED_PSKA_TOOLS = {"pska_search", "pska_agentic_search", "pska_index_status", "pska_job_context", "pska_write_candidates"}
+REQUIRED_PSKA_TOOLS = {"pska_search", "pska_index_status", "pska_job_context", "pska_write_candidates"}
 
 
 def _pska_tools_loaded(tools_payload: dict[str, Any]) -> bool:

@@ -16,6 +16,7 @@ from urllib.request import Request, urlopen
 
 from pska_core.acl import ACLService
 from pska_core.agent_capture import capture_agent_conversation
+from pska_core.agentic_service import AgenticServiceError, build_agentic_service_client
 from pska_core.api import PSKAApi, serve
 from pska_core.config import DEFAULT_DATABASE_URL, PSKAConfig
 from pska_core.connectors import connector_state_from_mapping, connector_record_to_payload
@@ -32,7 +33,6 @@ from pska_core.local_daemon import DEFAULT_LOG_DIR, DEFAULT_RUN_DIR, build_proce
 from pska_core.memory import MemoryService
 from pska_core.mcp_server import MCPServer
 from pska_core.models import AgentMemory, ChannelIngestPayload, ReviewItem, SourceItem, SourceRef, UserProfileCard, utc_now
-from pska_core.agentic import AgenticSearchService
 from pska_core.retrieval import RetrievalService
 from pska_core.retrieval_eval import DEFAULT_RETRIEVAL_EVAL_FIXTURE, run_retrieval_eval
 from pska_core.review import ReviewService
@@ -197,8 +197,10 @@ def build_parser() -> argparse.ArgumentParser:
     ops_briefing_parser.add_argument("--connector-stale-seconds", type=int, default=86_400)
     ops_briefing_parser.add_argument("--format", choices=["json", "text"], default="json")
 
-    retrieval_eval_parser = subparsers.add_parser("retrieval-eval", help="Run offline retrieval/GraphRAG eval fixture")
+    retrieval_eval_parser = subparsers.add_parser("retrieval-eval", help="Run retrieval/GraphRAG eval fixture")
     retrieval_eval_parser.add_argument("--fixture", type=Path, default=DEFAULT_RETRIEVAL_EVAL_FIXTURE)
+    retrieval_eval_parser.add_argument("--real", action="store_true", help="Use real embedding model and LLM-backed agentic search")
+    _add_embedding_args(retrieval_eval_parser, default_provider=os.environ.get("PSKA_EMBEDDING_PROVIDER", "disabled"))
 
     digest_worker_command_parser = subparsers.add_parser(
         "fastreact-digest-worker-command",
@@ -568,23 +570,26 @@ def search(args: argparse.Namespace) -> int:
 def agentic_search(args: argparse.Namespace) -> int:
     store = PostgresKnowledgeStore(args.database_url)
     user = store.get_user(args.user_id)
-    response = AgenticSearchService(
-        RetrievalService(store, ACLService(store), embedding_provider=_embedding_provider_from_args(args))
-    ).search(
-        args.query,
-        user,
-        represented_user_id=args.represented_user_id,
-    )
+    try:
+        response = build_agentic_service_client().search(
+            args.query,
+            user,
+            represented_user_id=args.represented_user_id,
+        )
+    except AgenticServiceError as exc:
+        print(f"Agentic service unavailable: {exc}", file=sys.stderr)
+        return 2
     if args.capture:
+        retrieval = response.get("retrieval") if isinstance(response.get("retrieval"), dict) else {}
         captured = capture_agent_conversation(
             store,
             owner_user_id=args.represented_user_id or args.user_id,
             represented_user_id=args.represented_user_id or args.user_id,
             purpose="agentic_search",
             prompt=args.query,
-            answer=response.answer,
-            source_refs=response.retrieval.citations,
-            trace_summary=asdict(response.trace),
+            answer=str(response.get("answer") or ""),
+            source_refs=retrieval.get("citations") or response.get("source_refs") or [],
+            trace_summary=response.get("trace") if isinstance(response.get("trace"), dict) else {},
             title=f"PSKA agentic search: {args.query[:80]}",
             source_channel="pska_agent",
         )
@@ -1006,7 +1011,18 @@ def ops_briefing(args: argparse.Namespace) -> int:
 
 
 def retrieval_eval(args: argparse.Namespace) -> int:
-    payload = run_retrieval_eval(args.fixture)
+    embedding_config = None
+    if args.real:
+        provider = getattr(args, "embedding_provider", None) or os.environ.get("PSKA_EMBEDDING_PROVIDER") or "bge-m3"
+        if str(provider).strip().lower() in {"", "disabled", "none", "off"}:
+            provider = "bge-m3"
+        embedding_config = EmbeddingConfig(
+            provider=provider,
+            model=getattr(args, "embedding_model", None) or os.environ.get("PSKA_EMBEDDING_MODEL", "BAAI/bge-m3"),
+            dimensions=getattr(args, "embedding_dimensions", None) or int(os.environ.get("PSKA_EMBEDDING_DIMENSIONS", "1024")),
+            batch_size=getattr(args, "batch_size", int(os.environ.get("PSKA_EMBEDDING_BATCH_SIZE", "16"))),
+        )
+    payload = run_retrieval_eval(args.fixture, real=bool(args.real), embedding_config=embedding_config)
     print(dumps(payload))
     return 0 if payload["ok"] else 1
 
@@ -1732,15 +1748,17 @@ def _mvp_status_summary(payload: dict[str, Any]) -> dict[str, Any]:
     index = metrics.get("index") or {}
     connectors = metrics.get("connectors") or {}
     jobs = payload.get("jobs") or {}
-    fastreact = checks.get("fastreact") or {}
+    agentic_service = checks.get("agentic_service") or {}
     return {
         "ok": bool(payload.get("ok")),
         "database_url": payload.get("database_url"),
         "database_ok": bool((checks.get("database") or {}).get("ok")),
         "schema_ok": bool((checks.get("schema") or {}).get("ok")),
         "mcp_ok": bool((checks.get("mcp") or {}).get("ok")),
-        "fastreact_ok": bool(fastreact.get("ok")),
-        "fastreact_pska_tools_loaded": bool(fastreact.get("pska_tools_loaded")),
+        "agentic_service_ok": bool(agentic_service.get("ok")),
+        "agentic_service_provider": agentic_service.get("provider"),
+        "agentic_service_adapter": agentic_service.get("adapter"),
+        "agentic_service_pska_tools_loaded": bool(agentic_service.get("pska_tools_loaded")),
         "counts": {
             "source_items": int(index.get("source_items") or 0),
             "chunks": int(index.get("chunks") or 0),
@@ -1796,15 +1814,17 @@ def _daily_status_payload(database_url: str, *, owner_user_id: str = "user_prima
         "ok": bool(summary.get("database_ok")) and bool(summary.get("schema_ok")) and bool(summary.get("mcp_ok")),
         "database_url": database_url,
         "owner_user_id": owner_user_id,
-        "requires_fastreact_online": False,
+        "requires_agentic_service_online": False,
         "service_readiness": {
             "database_ok": bool(summary.get("database_ok")),
             "schema_ok": bool(summary.get("schema_ok")),
             "mcp_ok": bool(summary.get("mcp_ok")),
             "jobs_ok": bool((checks.get("jobs") or {}).get("ok")),
             "metrics_ok": bool((checks.get("metrics") or {}).get("ok")),
-            "fastreact_ok": bool(summary.get("fastreact_ok")),
-            "fastreact_optional_for_daily_status": True,
+            "agentic_service_ok": bool(summary.get("agentic_service_ok")),
+            "agentic_service_provider": summary.get("agentic_service_provider"),
+            "agentic_service_adapter": summary.get("agentic_service_adapter"),
+            "agentic_service_optional_for_daily_status": True,
         },
         "source_counts": {
             "source_items": int(index.get("source_items") or 0),
@@ -1854,6 +1874,7 @@ def _daily_briefing_payload(
         "owner_user_id": owner_user_id,
         "briefing_type": "deterministic_daily_v0",
         "requires_llm": bool(narrative),
+        "requires_agentic_service_online": False,
         "requires_fastreact_online": bool(narrative),
         "service_readiness": daily.get("service_readiness") or {},
         "source_summary": {
@@ -1932,7 +1953,7 @@ def _ops_briefing_payload(
 
     issues = [
         _ops_service_issue(ready, ready_checks),
-        _ops_fastreact_issue(ready_checks.get("fastreact") or {}),
+        _ops_agentic_service_issue(ready_checks.get("agentic_service") or {}),
         _ops_stale_job_issue(stale_running),
         _ops_failed_digest_issue(failed_digest_jobs),
         _ops_connector_stale_issue(connector_findings),
@@ -1949,7 +1970,7 @@ def _ops_briefing_payload(
         "owner_user_id": owner_user_id,
         "briefing_type": "deterministic_ops_v0",
         "requires_llm": False,
-        "requires_fastreact_online": False,
+        "requires_agentic_service_online": False,
         "service_readiness": {
             "ok": bool(ready.get("ok")) if isinstance(ready, dict) else False,
             "database_ok": bool((ready_checks.get("database") or {}).get("ok")),
@@ -1957,7 +1978,9 @@ def _ops_briefing_payload(
             "mcp_ok": bool((ready_checks.get("mcp") or {}).get("ok")),
             "jobs_ok": bool((ready_checks.get("jobs") or {}).get("ok")),
             "metrics_ok": bool((ready_checks.get("metrics") or {}).get("ok")),
-            "fastreact_ok": bool((ready_checks.get("fastreact") or {}).get("ok")),
+            "agentic_service_ok": bool((ready_checks.get("agentic_service") or {}).get("ok")),
+            "agentic_service_provider": (ready_checks.get("agentic_service") or {}).get("provider"),
+            "agentic_service_adapter": (ready_checks.get("agentic_service") or {}).get("adapter"),
             "error": ready.get("error") if isinstance(ready, dict) else None,
         },
         "worker_health": {
@@ -1985,7 +2008,7 @@ def _ops_briefing_payload(
         "recommended_recovery_commands": list(dict.fromkeys(recommended_commands)),
         "notes": [
             "This briefing is deterministic and does not call an LLM.",
-            "FastReAct can be offline; digest jobs remain visible as backlog until a FastReAct worker handles them.",
+            "Agentic service can be offline; digest jobs remain visible as backlog until the configured adapter handles them.",
         ],
     }
 
@@ -2014,14 +2037,19 @@ def _ops_service_issue(ready: dict[str, Any], checks: dict[str, Any]) -> dict[st
     }
 
 
-def _ops_fastreact_issue(fastreact: dict[str, Any]) -> dict[str, Any]:
-    ok = fastreact.get("ok") is True
+def _ops_agentic_service_issue(agentic_service: dict[str, Any]) -> dict[str, Any]:
+    ok = agentic_service.get("ok") is True
     return {
-        "id": "fastreact",
-        "status": "ok" if ok else "fastreact_down",
+        "id": "agentic_service",
+        "status": "ok" if ok else "agentic_service_down",
         "severity": "info" if ok else "warning",
-        "summary": "FastReAct is reachable." if ok else "FastReAct is offline or not authorized.",
-        "diagnostics": {"error": fastreact.get("error"), "pska_tools_loaded": fastreact.get("pska_tools_loaded")},
+        "summary": "Agentic service is reachable." if ok else "Agentic service is offline or not authorized.",
+        "diagnostics": {
+            "provider": agentic_service.get("provider"),
+            "adapter": agentic_service.get("adapter"),
+            "error": agentic_service.get("error"),
+            "pska_tools_loaded": agentic_service.get("pska_tools_loaded"),
+        },
         "recovery_commands": [] if ok else ["./scripts/pska fastreact-digest-worker-command", "./scripts/pska service-check"],
     }
 
@@ -2494,10 +2522,10 @@ def _mvp_next_actions(payload: dict[str, Any], *, connectors: dict[str, Any]) ->
     digest_backlog = (jobs.get("digest_backlog") or {}).get("jobs") or 0
     if source_items and digest_backlog == 0 and (entities == 0 or hyperedges == 0):
         actions.append("Run ./scripts/pska digest-schedule --owner-user-id user_primary to queue digest work.")
-    if digest_backlog and checks.get("fastreact", {}).get("ok") is True:
-        actions.append("Run the Fastreact PSKA digest worker to consume queued digest jobs.")
-    if checks.get("fastreact", {}).get("ok") is False:
-        actions.append("Start Fastreact when you want agentic digest or Fastreact-backed QA.")
+    if digest_backlog and checks.get("agentic_service", {}).get("ok") is True:
+        actions.append("Run the configured agentic-service adapter worker to consume queued digest jobs.")
+    if checks.get("agentic_service", {}).get("ok") is False:
+        actions.append("Start the configured agentic service when you want agentic digest or agentic QA.")
     if payload.get("pending_review_items"):
         actions.append("Inspect pending candidates with ./scripts/pska review-list --status pending --summary, then use review-approve or review-reject.")
     if not actions:

@@ -6,7 +6,6 @@ import sys
 from typing import Any
 
 from pska_core.acl import ACLService
-from pska_core.agentic import AgenticSearchService
 from pska_core.auth import RequestContext
 from pska_core.candidates import CandidateWriteService
 from pska_core.embeddings import EmbeddingConfig, build_embedding_provider
@@ -25,20 +24,6 @@ TOOLS = [
     {
         "name": "pska_search",
         "description": "Search the PSKA knowledge base with ACL filtering and citations.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string"},
-                "user_id": {"type": "string", "default": "user_primary"},
-                "represented_user_id": {"type": "string"},
-                "top_k": {"type": "integer", "default": 5},
-            },
-            "required": ["query"],
-        },
-    },
-    {
-        "name": "pska_agentic_search",
-        "description": "Run a small agentic PSKA search plan and return retrieval trace plus citations.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -119,7 +104,6 @@ class MCPServer:
         self.store = store or PostgresKnowledgeStore(database_url)
         embedding_provider = build_embedding_provider(EmbeddingConfig.from_env())
         self.retrieval = RetrievalService(self.store, ACLService(self.store), embedding_provider=embedding_provider)
-        self.agentic = AgenticSearchService(self.retrieval, llm=llm)
         self.ingest = IngestService(self.store, embedding_provider=embedding_provider)
         self.extraction = ExtractionService(self.store, llm=llm)
         self.candidates = CandidateWriteService(self.store)
@@ -167,8 +151,6 @@ class MCPServer:
         arguments = context.apply_to_payload(arguments) if context else arguments
         if name == "pska_search":
             payload = self.pska_search(arguments)
-        elif name == "pska_agentic_search":
-            payload = self.pska_agentic_search(arguments)
         elif name == "pska_index_status":
             payload = self.pska_index_status()
         elif name == "pska_ingest_channel_payload":
@@ -192,15 +174,6 @@ class MCPServer:
             user,
             represented_user_id=arguments.get("represented_user_id"),
             top_k=int(arguments.get("top_k") or 5),
-        )
-
-    def pska_agentic_search(self, arguments: dict[str, Any]) -> Any:
-        user = self.store.get_user(arguments.get("user_id") or "user_primary")
-        return self.agentic.search(
-            arguments["query"],
-            user,
-            represented_user_id=arguments.get("represented_user_id"),
-            max_iterations=3,
         )
 
     def pska_index_status(self) -> dict[str, int]:

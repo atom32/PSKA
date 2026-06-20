@@ -70,6 +70,81 @@
           "embedding": [0.0, 0.0, 1.0]
         }
       ]
+    },
+    {
+      "source_item_id": "src_eval_workspace",
+      "source_channel": "fixture",
+      "record_type": "note",
+      "source_id": "eval-workspace",
+      "title": "User Workspace product note",
+      "text": "User Workspace includes Chat, Corpus Explorer, Writer Mode, and Evidence Inspector for PSKA.",
+      "chunks": [
+        {
+          "chunk_id": "chk_eval_workspace_0",
+          "text": "User Workspace includes Chat, Corpus Explorer, Writer Mode, and Evidence Inspector for PSKA.",
+          "embedding": [0.0, 0.0, 1.0]
+        }
+      ]
+    },
+    {
+      "source_item_id": "src_eval_writer",
+      "source_channel": "fixture",
+      "record_type": "note",
+      "source_id": "eval-writer",
+      "title": "Writer Mode note",
+      "text": "Writer Mode gives Chinese writing suggestions from selected text, citations, graph evidence, memory, and profile.",
+      "chunks": [
+        {
+          "chunk_id": "chk_eval_writer_0",
+          "text": "Writer Mode gives Chinese writing suggestions from selected text, citations, graph evidence, memory, and profile.",
+          "embedding": [0.0, 0.0, 1.0]
+        }
+      ]
+    },
+    {
+      "source_item_id": "src_eval_memory_pref",
+      "source_channel": "fixture",
+      "record_type": "note",
+      "source_id": "eval-memory-pref",
+      "title": "User memory preference",
+      "text": "用户 偏好 concise PSKA answers with evidence-first citations.",
+      "chunks": [
+        {
+          "chunk_id": "chk_eval_memory_pref_0",
+          "text": "用户 偏好 concise PSKA answers with evidence-first citations.",
+          "embedding": [0.0, 0.0, 1.0]
+        }
+      ]
+    },
+    {
+      "source_item_id": "src_eval_profile_pref",
+      "source_channel": "fixture",
+      "record_type": "note",
+      "source_id": "eval-profile-pref",
+      "title": "Profile writing preference",
+      "text": "profile 写作偏好 中文 evidence-first 简洁 grounded.",
+      "chunks": [
+        {
+          "chunk_id": "chk_eval_profile_pref_0",
+          "text": "profile 写作偏好 中文 evidence-first 简洁 grounded.",
+          "embedding": [0.0, 0.0, 1.0]
+        }
+      ]
+    },
+    {
+      "source_item_id": "src_eval_real_rag_gate",
+      "source_channel": "fixture",
+      "record_type": "note",
+      "source_id": "eval-real-rag-gate",
+      "title": "Real RAG gate note",
+      "text": "RAG evaluation real gate must use BGE-M3 embeddings and LLM agentic planning instead of fixture-only scoring.",
+      "chunks": [
+        {
+          "chunk_id": "chk_eval_real_rag_gate_0",
+          "text": "RAG evaluation real gate must use BGE-M3 embeddings and LLM agentic planning instead of fixture-only scoring.",
+          "embedding": [0.0, 0.0, 1.0]
+        }
+      ]
     }
   ],
   "entities": [
@@ -97,6 +172,21 @@
       "entity_id": "ent_eval_claim_b",
       "entity_type": "claim",
       "label": "Claim B"
+    },
+    {
+      "entity_id": "ent_eval_workspace",
+      "entity_type": "product_surface",
+      "label": "User Workspace"
+    },
+    {
+      "entity_id": "ent_eval_writer",
+      "entity_type": "mode",
+      "label": "Writer Mode"
+    },
+    {
+      "entity_id": "ent_eval_evidence",
+      "entity_type": "component",
+      "label": "Evidence Inspector"
     }
   ],
   "hyperedges": [
@@ -162,6 +252,76 @@
         }
       ],
       "confidence": 0.8
+    },
+    {
+      "relation_type": "contains",
+      "directionality": "directed",
+      "members": [
+        {
+          "entity_id": "ent_eval_workspace",
+          "role": "surface"
+        },
+        {
+          "entity_id": "ent_eval_writer",
+          "role": "mode"
+        }
+      ],
+      "evidence_text": "User Workspace includes Writer Mode.",
+      "source_refs": [
+        {
+          "source_item_id": "src_eval_workspace"
+        }
+      ],
+      "confidence": 0.88
+    },
+    {
+      "relation_type": "uses_evidence",
+      "directionality": "directed",
+      "members": [
+        {
+          "entity_id": "ent_eval_writer",
+          "role": "mode"
+        },
+        {
+          "entity_id": "ent_eval_evidence",
+          "role": "component"
+        }
+      ],
+      "evidence_text": "Writer Mode uses citations and graph evidence through the Evidence Inspector.",
+      "source_refs": [
+        {
+          "source_item_id": "src_eval_writer"
+        }
+      ],
+      "confidence": 0.86
+    }
+  ],
+  "agent_memories": [
+    {
+      "agent_memory_id": "agm_eval_concise_pref",
+      "layer": "semantic",
+      "text": "用户 偏好 concise PSKA answers with evidence-first citations.",
+      "confidence": 0.9,
+      "source_refs": [
+        {
+          "source_item_id": "src_eval_memory_pref"
+        }
+      ],
+      "created_by_user_id": "agent_service"
+    }
+  ],
+  "profile_cards": [
+    {
+      "profile_card_id": "upc_eval_writing_pref",
+      "profile": {
+        "写作偏好": "中文 evidence-first 简洁 grounded"
+      },
+      "confidence": 0.84,
+      "source_refs": [
+        {
+          "source_item_id": "src_eval_profile_pref"
+        }
+      ]
     }
   ],
   "cases": [
@@ -231,6 +391,95 @@
       "expected_conflicts": [
         "graph_conflict:hed_ec6c7a21c3aa5694a136db1097c02e22:contradicts"
       ]
+    },
+    {
+      "id": "zh_workspace_components",
+      "query": "PSKA User Workspace 包含哪些 Chat Corpus Writer Evidence 组件",
+      "top_k": 5,
+      "expected_citations": [
+        "src_eval_workspace#chk_eval_workspace_0"
+      ],
+      "expected_lexical_source_item_ids": [
+        "src_eval_workspace"
+      ],
+      "expected_vector_source_item_ids": [],
+      "expected_graph_paths": [],
+      "expected_gaps": [],
+      "expected_conflicts": []
+    },
+    {
+      "id": "zh_writer_evidence_graph_path",
+      "query": "User Workspace Writer Mode Evidence Inspector 的图路径",
+      "top_k": 6,
+      "expected_citations": [
+        "src_eval_workspace#chk_eval_workspace_0",
+        "src_eval_writer#chk_eval_writer_0"
+      ],
+      "expected_lexical_source_item_ids": [
+        "src_eval_workspace",
+        "src_eval_writer"
+      ],
+      "expected_vector_source_item_ids": [],
+      "expected_graph_paths": [
+        {
+          "entity_labels": ["User Workspace", "Writer Mode", "Evidence Inspector"],
+          "relation_types": ["contains", "uses_evidence"],
+          "evidence_source_item_ids": ["src_eval_workspace", "src_eval_writer"]
+        }
+      ],
+      "expected_gaps": [],
+      "expected_conflicts": []
+    },
+    {
+      "id": "zh_memory_preference",
+      "query": "用户 偏好 concise PSKA answers 是什么",
+      "top_k": 5,
+      "expected_citations": [
+        "src_eval_memory_pref#chk_eval_memory_pref_0"
+      ],
+      "expected_lexical_source_item_ids": [
+        "src_eval_memory_pref"
+      ],
+      "expected_vector_source_item_ids": [],
+      "expected_graph_paths": [],
+      "expected_memory_ids": [
+        "agm_eval_concise_pref"
+      ],
+      "expected_gaps": [],
+      "expected_conflicts": []
+    },
+    {
+      "id": "zh_profile_writing_preference",
+      "query": "profile 写作偏好 中文 evidence-first 简洁",
+      "top_k": 5,
+      "expected_citations": [
+        "src_eval_profile_pref#chk_eval_profile_pref_0"
+      ],
+      "expected_lexical_source_item_ids": [
+        "src_eval_profile_pref"
+      ],
+      "expected_vector_source_item_ids": [],
+      "expected_graph_paths": [],
+      "expected_profile_card_ids": [
+        "upc_eval_writing_pref"
+      ],
+      "expected_gaps": [],
+      "expected_conflicts": []
+    },
+    {
+      "id": "zh_real_rag_gate",
+      "query": "RAG evaluation real gate 为什么要使用 BGE-M3 embeddings 和 LLM agentic planning",
+      "top_k": 5,
+      "expected_citations": [
+        "src_eval_real_rag_gate#chk_eval_real_rag_gate_0"
+      ],
+      "expected_lexical_source_item_ids": [
+        "src_eval_real_rag_gate"
+      ],
+      "expected_vector_source_item_ids": [],
+      "expected_graph_paths": [],
+      "expected_gaps": [],
+      "expected_conflicts": []
     }
   ]
 }

@@ -726,7 +726,7 @@ def test_digest_scheduler_runs_one_foreground_cycle(monkeypatch, capsys) -> None
 def test_mvp_next_actions_prioritize_missing_data_and_fastreact() -> None:
     actions = _mvp_next_actions(
         {
-            "ready": {"ok": True, "checks": {"fastreact": {"ok": False}}},
+            "ready": {"ok": True, "checks": {"agentic_service": {"ok": False}}},
             "metrics": {"index": {"source_items": 0, "entities": 0, "hyperedges": 0}},
             "jobs": {"digest_backlog": {"jobs": 1}},
             "pending_review_items": 0,
@@ -736,13 +736,13 @@ def test_mvp_next_actions_prioritize_missing_data_and_fastreact() -> None:
 
     assert any("mvp-bootstrap" in action for action in actions)
     assert any("files-scan" in action for action in actions)
-    assert any("Fastreact" in action for action in actions)
+    assert any("agentic service" in action for action in actions)
 
 
 def test_mvp_next_actions_surface_graph_and_digest_work() -> None:
     actions = _mvp_next_actions(
         {
-            "ready": {"ok": True, "checks": {"fastreact": {"ok": True}}},
+            "ready": {"ok": True, "checks": {"agentic_service": {"ok": True}}},
             "metrics": {"index": {"source_items": 3, "entities": 0, "hyperedges": 0}},
             "jobs": {"digest_backlog": {"jobs": 1}},
             "pending_review_items": 0,
@@ -751,13 +751,13 @@ def test_mvp_next_actions_surface_graph_and_digest_work() -> None:
     )
 
     assert any("extract-all" in action for action in actions)
-    assert any("digest worker" in action for action in actions)
+    assert any("adapter worker" in action for action in actions)
 
 
 def test_mvp_next_actions_ready_state() -> None:
     actions = _mvp_next_actions(
         {
-            "ready": {"ok": True, "checks": {"fastreact": {"ok": True}}},
+            "ready": {"ok": True, "checks": {"agentic_service": {"ok": True}}},
             "metrics": {"index": {"source_items": 3, "entities": 1, "hyperedges": 1}},
             "jobs": {"digest_backlog": {"jobs": 0}},
             "pending_review_items": 0,
@@ -778,7 +778,7 @@ def test_mvp_status_summary_is_compact() -> None:
                     "database": {"ok": True},
                     "schema": {"ok": True},
                     "mcp": {"ok": True},
-                    "fastreact": {"ok": True, "pska_tools_loaded": True},
+                        "agentic_service": {"ok": True, "provider": "fastreact", "adapter": "fastreact", "pska_tools_loaded": True},
                 }
             },
             "metrics": {
@@ -798,7 +798,7 @@ def test_mvp_status_summary_is_compact() -> None:
 
     assert summary["ok"] is True
     assert summary["database_url"] == "postgresql:///pska"
-    assert summary["fastreact_pska_tools_loaded"] is True
+    assert summary["agentic_service_pska_tools_loaded"] is True
     assert summary["counts"]["source_items"] == 3
     assert summary["connectors"]["source_channels"] == ["files", "twitter"]
     assert summary["next_actions"] == ["ready"]
@@ -867,7 +867,7 @@ def test_daily_status_payload_is_deterministic_and_fastreact_optional(monkeypatc
                     "mcp": {"ok": True},
                     "jobs": {"ok": True},
                     "metrics": {"ok": True},
-                    "fastreact": {"ok": False, "error": "offline"},
+                        "agentic_service": {"ok": False, "provider": "test", "adapter": "fake", "error": "offline"},
                 },
             }
 
@@ -892,8 +892,8 @@ def test_daily_status_payload_is_deterministic_and_fastreact_optional(monkeypatc
     payload = _daily_status_payload("postgresql:///example", owner_user_id="user_primary", limit=5)
 
     assert payload["ok"] is True
-    assert payload["requires_fastreact_online"] is False
-    assert payload["service_readiness"]["fastreact_ok"] is False
+    assert payload["requires_agentic_service_online"] is False
+    assert payload["service_readiness"]["agentic_service_ok"] is False
     assert payload["source_counts"] == {"source_items": 3, "chunks": 4}
     assert payload["digest_backlog"] == {"jobs": 1, "source_items": 1}
     assert payload["pending_reviews"]["total_matching"] == 1
@@ -950,7 +950,7 @@ def test_daily_briefing_payload_includes_deterministic_next_actions(monkeypatch)
                     "mcp": {"ok": True},
                     "jobs": {"ok": True},
                     "metrics": {"ok": True},
-                    "fastreact": {"ok": False, "error": "offline"},
+                        "agentic_service": {"ok": False, "provider": "test", "adapter": "fake", "error": "offline"},
                 },
             }
 
@@ -981,8 +981,8 @@ def test_daily_briefing_payload_includes_deterministic_next_actions(monkeypatch)
 
     assert payload["briefing_type"] == "deterministic_daily_v0"
     assert payload["requires_llm"] is False
-    assert payload["requires_fastreact_online"] is False
-    assert payload["service_readiness"]["fastreact_ok"] is False
+    assert payload["requires_agentic_service_online"] is False
+    assert payload["service_readiness"]["agentic_service_ok"] is False
     assert payload["source_summary"]["recent_sources"][0]["source_item_id"] == "src_1"
     assert payload["connector_state"]["source_channels"] == ["manual"]
     assert payload["pending_reviews"]["total_matching"] == 1
@@ -1042,7 +1042,7 @@ def test_ops_briefing_payload_distinguishes_recovery_categories(monkeypatch) -> 
                     "mcp": {"ok": True},
                     "jobs": {"ok": True},
                     "metrics": {"ok": True},
-                    "fastreact": {"ok": False, "error": "service token required"},
+                        "agentic_service": {"ok": False, "provider": "test", "adapter": "fake", "error": "service token required"},
                 },
             }
 
@@ -1075,9 +1075,9 @@ def test_ops_briefing_payload_distinguishes_recovery_categories(monkeypatch) -> 
 
     assert payload["ok"] is True
     assert payload["requires_llm"] is False
-    assert payload["requires_fastreact_online"] is False
+    assert payload["requires_agentic_service_online"] is False
     assert statuses["service_readiness"] == "ok"
-    assert statuses["fastreact"] == "fastreact_down"
+    assert statuses["agentic_service"] == "agentic_service_down"
     assert statuses["stale_jobs"] == "stale_job"
     assert statuses["failed_digest"] == "failed_digest"
     assert statuses["connector_freshness"] == "connector_stale"
@@ -1085,7 +1085,7 @@ def test_ops_briefing_payload_distinguishes_recovery_categories(monkeypatch) -> 
     assert "./scripts/pska job-recover --max-age-seconds 900" in payload["recommended_recovery_commands"]
     assert "./scripts/pska jobs list --status failed --job-type digest_via_fastreact" in payload["recommended_recovery_commands"]
     text = _ops_briefing_text(payload)
-    assert "fastreact_down" in text
+    assert "agentic_service_down" in text
     assert "connector_stale" in text
 
 
@@ -1110,7 +1110,7 @@ def test_ops_briefing_reports_service_down_without_crashing(monkeypatch) -> None
                     "mcp": {"ok": False},
                     "jobs": {"ok": False},
                     "metrics": {"ok": False},
-                    "fastreact": {"ok": False},
+                    "agentic_service": {"ok": False, "provider": "test", "adapter": "fake"},
                 },
             }
 
@@ -1161,7 +1161,7 @@ def test_daily_briefing_narrative_saves_fastreact_answer(monkeypatch) -> None:
             self.store = store
 
         def ready(self):
-            return {"ok": True, "checks": {"database": {"ok": True}, "schema": {"ok": True}, "mcp": {"ok": True}, "jobs": {"ok": True}, "metrics": {"ok": True}, "fastreact": {"ok": True}}}
+            return {"ok": True, "checks": {"database": {"ok": True}, "schema": {"ok": True}, "mcp": {"ok": True}, "jobs": {"ok": True}, "metrics": {"ok": True}, "agentic_service": {"ok": True, "provider": "test", "adapter": "fake"}}}
 
         def metrics(self):
             return {
@@ -1217,7 +1217,7 @@ def test_daily_briefing_narrative_falls_back_when_fastreact_down(monkeypatch) ->
             self.store = store
 
         def ready(self):
-            return {"ok": True, "checks": {"database": {"ok": True}, "schema": {"ok": True}, "mcp": {"ok": True}, "jobs": {"ok": True}, "metrics": {"ok": True}, "fastreact": {"ok": False}}}
+            return {"ok": True, "checks": {"database": {"ok": True}, "schema": {"ok": True}, "mcp": {"ok": True}, "jobs": {"ok": True}, "metrics": {"ok": True}, "agentic_service": {"ok": False, "provider": "test", "adapter": "fake"}}}
 
         def metrics(self):
             return {

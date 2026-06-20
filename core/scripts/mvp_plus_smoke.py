@@ -4,7 +4,6 @@ import json
 from typing import Any
 
 from pska_core.acl import ACLService
-from pska_core.agentic import AgenticSearchService
 from pska_core.candidates import CandidateWriteService
 from pska_core.enums import UserRole
 from pska_core.extraction import ExtractionService
@@ -90,11 +89,7 @@ def build_smoke_report() -> dict[str, Any]:
         }
     )
 
-    llm = FakeLLM([
-        _extraction_response(),
-        _agentic_plan_response(),
-        _agentic_answer_response(),
-    ])
+    llm = FakeLLM([_extraction_response()])
     extraction_report = ExtractionService(store, llm=llm).extract_source_item(planning_source)
 
     candidate_summary = CandidateWriteService(store).write_candidates(
@@ -181,10 +176,7 @@ def build_smoke_report() -> dict[str, Any]:
     )
 
     retrieval = RetrievalService(store, ACLService(store))
-    qa = AgenticSearchService(retrieval, llm=llm).search(
-        "What covers dependent K during education enrollment?",
-        store.get_user("user_primary"),
-    )
+    qa = retrieval.search("What covers dependent K during education enrollment?", store.get_user("user_primary"))
     graph = retrieval.search("PSKA Digest FastReAct relation path", store.get_user("user_primary"))
     memory = retrieval.search("concise PSKA preference", store.get_user("user_primary"))
     profile = retrieval.search("profile communication style", store.get_user("user_primary"))
@@ -201,7 +193,7 @@ def build_smoke_report() -> dict[str, Any]:
             and candidate_summary["profile_cards"]
         ),
         "job_backlog_created": digest_job.status == "queued",
-        "agentic_qa_has_answer_and_citations": bool(qa.answer and qa.retrieval.citations),
+        "direct_qa_has_citations": bool(qa.citations),
         "graphrag_has_grounded_path": bool(graph.graph_paths and graph.graph_paths[0]["edges"][0]["evidence_citations"]),
         "memory_context_has_citation": bool(memory.memory_context and memory.memory_context[0]["citations"]),
         "profile_context_has_citation": bool(profile.profile_context and profile.profile_context[0]["citations"]),
@@ -228,8 +220,7 @@ def build_smoke_report() -> dict[str, Any]:
             "candidate_summary": candidate_summary,
             "conflict_summary": conflict_summary,
             "digest_job": to_jsonable(digest_job),
-            "agentic_answer": qa.answer,
-            "agentic_citations": to_jsonable(qa.retrieval.citations),
+            "direct_qa_citations": to_jsonable(qa.citations),
             "graph_path": to_jsonable(graph.graph_paths[0] if graph.graph_paths else None),
             "memory_context": to_jsonable(memory.memory_context),
             "profile_context": to_jsonable(profile.profile_context),

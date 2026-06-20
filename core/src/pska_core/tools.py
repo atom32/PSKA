@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import asdict
 
-from pska_core.agentic import AgenticSearchService
 from pska_core.ingest import IngestService
 from pska_core.memory import MemoryService
 from pska_core.models import ChannelIngestPayload, SourceRef, User
@@ -11,7 +10,6 @@ from pska_core.retrieval import RetrievalService
 
 PSKA_TOOL_NAMES = [
     "pska_search",
-    "pska_agentic_search",
     "pska_read_source",
     "pska_read_document",
     "pska_ingest_channel_payload",
@@ -33,19 +31,14 @@ class PSKAToolFacade:
         *,
         ingest: IngestService,
         retrieval: RetrievalService,
-        agentic_search: AgenticSearchService,
         memory: MemoryService,
     ) -> None:
         self.ingest = ingest
         self.retrieval = retrieval
-        self.agentic_search = agentic_search
         self.memory = memory
 
     def pska_search(self, query: str, user: User, represented_user_id: str | None = None) -> dict:
         return asdict(self.retrieval.search(query, user, represented_user_id=represented_user_id))
-
-    def pska_agentic_search(self, query: str, user: User, represented_user_id: str | None = None) -> dict:
-        return self.agentic_search.search(query, user, represented_user_id=represented_user_id).to_dict()
 
     def pska_ingest_channel_payload(self, payload: dict) -> dict:
         item = self.ingest.ingest_channel_payload(ChannelIngestPayload.from_mapping(payload))

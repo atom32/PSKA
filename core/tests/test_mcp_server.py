@@ -32,7 +32,7 @@ def test_mcp_lists_pska_tools() -> None:
 
     names = [tool["name"] for tool in response["result"]["tools"]]
     assert "pska_search" in names
-    assert "pska_agentic_search" in names
+    assert "pska_agentic_search" not in names
     assert "pska_index_status" in names
     assert "pska_ingest_channel_payload" in names
     assert "pska_extract_all" in names

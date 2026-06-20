@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pska_core.acl import ACLService
-from pska_core.agentic import AgenticSearchService
 from pska_core.extraction import ExtractionService
 from pska_core.ingest import IngestService
 from pska_core.models import User
@@ -43,7 +42,7 @@ def build_demo(llm: LLMClient | None = None) -> dict:
 
     query = "What covers dependent K during education enrollment?"
     retrieval = RetrievalService(store, ACLService(store))
-    agentic = AgenticSearchService(retrieval, llm=llm).search(query, store.get_user("user_primary"))
+    response = retrieval.search(query, store.get_user("user_primary"))
     return {
         "document": DEMO_DOCUMENT,
         "source_item_id": source_item.source_item_id,
@@ -51,10 +50,9 @@ def build_demo(llm: LLMClient | None = None) -> dict:
         "entities": [to_jsonable(entity) for entity in store.list_entities()],
         "review_items": to_jsonable(store.list_review_items()),
         "question": query,
-        "answer": agentic.answer,
-        "agentic_trace": to_jsonable(agentic.trace),
-        "citations": to_jsonable(agentic.retrieval.citations),
-        "hypergraph_context": to_jsonable(agentic.retrieval.hypergraph_context),
+        "retrieval_results": to_jsonable(response.results),
+        "citations": to_jsonable(response.citations),
+        "hypergraph_context": to_jsonable(response.hypergraph_context),
     }
 
 

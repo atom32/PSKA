@@ -9,7 +9,9 @@ from typing import Any
 
 from pska_core.acl import ACLService
 from pska_core.embeddings import EmbeddingProvider
+from pska_core.hipporag_index import HippoRAGOfflineIndex
 from pska_core.models import Chunk, Entity, Hyperedge, HyperedgeMember, SourceItem, SourceRef, User
+from pska_core.offline_index import OfflineIndexService
 from pska_core.serde import to_jsonable
 from pska_core.store import KnowledgeStore
 
@@ -74,7 +76,7 @@ class RetrievalResponse:
 
 
 class RetrievalService:
-    """Hybrid retrieval skeleton: ACL, lexical scoring, vector hook, graph expansion."""
+    """Hybrid retrieval: ACL, lexical/vector RRF, and request-scoped graph-aware expansion."""
 
     def __init__(self, store: KnowledgeStore, acl: ACLService, *, embedding_provider: EmbeddingProvider | None = None) -> None:
         self.store = store
@@ -96,7 +98,15 @@ class RetrievalService:
         )
         source_ids = {item.source_item_id for item in visible_items}
         chunks = self.store.list_chunks_for_sources(source_ids)
-        ranked, rank_debug = self._rank(query, visible_items, chunks, source_ids, top_k=top_k)
+        ranked, rank_debug = self._rank(
+            query,
+            visible_items,
+            chunks,
+            source_ids,
+            user=user,
+            represented_user_id=represented_user_id,
+            top_k=top_k,
+        )
         citations = [result.citation for result in ranked]
         visible_team_ids = sorted(self.acl.visible_team_ids_for_user(represented_user_id or user.user_id))
         hypergraph_context = self._hypergraph_context(
@@ -124,6 +134,10 @@ class RetrievalService:
             profile_context=profile_context,
             memory_context=memory_context,
         )
+        offline_index_freshness = OfflineIndexService(
+            self.store,
+            embedding_provider=self.embedding_provider,
+        ).freshness(owner_user_id=represented_user_id or user.user_id)
         return RetrievalResponse(
             query=query,
             request_user_id=represented_user_id or user.user_id,
@@ -146,6 +160,7 @@ class RetrievalService:
                 "graph_context_used": graph_context_used,
                 "graph_paths_used": bool(graph_paths),
                 "diagnostics": diagnostics["score_debug"],
+                "offline_index_freshness": offline_index_freshness,
                 **rank_debug,
             },
         )
@@ -157,6 +172,8 @@ class RetrievalService:
         chunks: list[Chunk],
         source_ids: set[str],
         *,
+        user: User,
+        represented_user_id: str | None,
         top_k: int,
     ) -> tuple[list[RetrievalResult], dict[str, Any]]:
         item_by_id = {item.source_item_id: item for item in items}
@@ -175,6 +192,17 @@ class RetrievalService:
                 vector_ranked.append(self._result_for_chunk(chunk, item, vector_score, {"lexical": 0.0, "vector": vector_score}))
 
         combined = self._merge_exact_then_rrf(exact_ranked, lexical_ranked, vector_ranked, top_k=top_k)
+        combined, graph_rank_debug = self._graph_augmented_rank(
+            query,
+            combined=combined,
+            lexical_ranked=lexical_ranked,
+            vector_ranked=vector_ranked,
+            chunks=chunks,
+            item_by_id=item_by_id,
+            user=user,
+            represented_user_id=represented_user_id,
+            top_k=top_k,
+        )
         self._apply_rank_quality_boosts(combined, item_by_id, reference_time=_latest_source_time(items))
         return combined, {
             "exact_candidates": len(exact_ranked),
@@ -183,6 +211,7 @@ class RetrievalService:
             "vector_enabled": vector_enabled,
             "vector_candidates": len(vector_ranked),
             "embedding_model": self.embedding_provider.model_name if self.embedding_provider else None,
+            **graph_rank_debug,
         }
 
     def _exact_source_results(
@@ -340,6 +369,256 @@ class RetrievalService:
             result.score_debug["source_authority"] = authority
             result.score_debug["quality_boost"] = boost
         results.sort(key=lambda result: result.score, reverse=True)
+
+    def _graph_augmented_rank(
+        self,
+        query: str,
+        *,
+        combined: list[RetrievalResult],
+        lexical_ranked: list[RetrievalResult],
+        vector_ranked: list[RetrievalResult],
+        chunks: list[Chunk],
+        item_by_id: dict[str, SourceItem],
+        user: User,
+        represented_user_id: str | None,
+        top_k: int,
+    ) -> tuple[list[RetrievalResult], dict[str, Any]]:
+        graph = self._build_retrieval_graph(
+            query=query,
+            combined=combined,
+            lexical_ranked=lexical_ranked,
+            vector_ranked=vector_ranked,
+            chunks=chunks,
+            item_by_id=item_by_id,
+            user=user,
+            represented_user_id=represented_user_id,
+        )
+        if (
+            not graph["seeds"]
+            or not graph["adjacency"]
+            or not graph["edge_count"]
+            or not (graph.get("fact_seed_count") or graph.get("query_entity_seed_count"))
+        ):
+            return combined, {
+                "graph_ranker": "rag_fallback",
+                "graph_ppr_enabled": False,
+                "graph_ppr_nodes": 0,
+                "graph_ppr_edges": graph["edge_count"],
+                "graph_ppr_seed_count": len(graph["seeds"]),
+                "graph_fact_seed_count": graph.get("fact_seed_count", 0),
+                "graph_query_entity_seed_count": graph.get("query_entity_seed_count", 0),
+                "hipporag_offline_graph": graph.get("offline_graph", {}),
+                "hipporag_embedding_linking": graph.get("embedding_linking", {}),
+                "graph_expanded_candidates": 0,
+            }
+
+        ppr_scores = _personalized_pagerank(graph["adjacency"], graph["seeds"])
+        if not ppr_scores:
+            return combined, {
+                "graph_ranker": "rag_fallback",
+                "graph_ppr_enabled": False,
+                "graph_ppr_nodes": len(graph["adjacency"]),
+                "graph_ppr_edges": graph["edge_count"],
+                "graph_ppr_seed_count": len(graph["seeds"]),
+                "graph_fact_seed_count": graph.get("fact_seed_count", 0),
+                "graph_query_entity_seed_count": graph.get("query_entity_seed_count", 0),
+                "hipporag_offline_graph": graph.get("offline_graph", {}),
+                "hipporag_embedding_linking": graph.get("embedding_linking", {}),
+                "graph_expanded_candidates": 0,
+            }
+
+        chunk_by_id = {chunk.chunk_id: chunk for chunk in chunks}
+        by_id = {result.result_id: result for result in combined}
+        expanded = 0
+        for node_id, ppr_score in sorted(ppr_scores.items(), key=lambda item: item[1], reverse=True):
+            if not node_id.startswith("chunk:") or ppr_score <= 0:
+                continue
+            chunk_id = node_id.removeprefix("chunk:")
+            chunk = chunk_by_id.get(chunk_id)
+            if chunk is None:
+                continue
+            is_expanded_candidate = chunk_id not in by_id
+            if is_expanded_candidate:
+                item = item_by_id.get(chunk.source_item_id)
+                if item is None:
+                    continue
+                by_id[chunk_id] = self._result_for_chunk(
+                    chunk,
+                    item,
+                    0.0,
+                    {
+                        "lexical": 0.0,
+                        "vector": 0.0,
+                        "graph_ppr": 0.0,
+                        "graph_expansion": 1.0,
+                    },
+                )
+                expanded += 1
+            result = by_id[chunk_id]
+            base_score = result.score
+            graph_boost = min(ppr_score * 0.18, 0.012) if is_expanded_candidate else min(ppr_score * 0.25, 0.018)
+            result.score = base_score + graph_boost
+            result.score_debug["graph_ppr"] = ppr_score
+            result.score_debug["graph_boost"] = graph_boost
+            result.score_debug["pre_graph_score"] = result.score_debug.get("pre_graph_score", base_score)
+
+        ranked = sorted(
+            by_id.values(),
+            key=lambda result: (
+                result.score,
+                result.score_debug.get("graph_ppr", 0.0),
+                result.result_id,
+            ),
+            reverse=True,
+        )[:top_k]
+        entity_scores = {
+            node_id.removeprefix("entity:"): score
+            for node_id, score in ppr_scores.items()
+            if node_id.startswith("entity:")
+        }
+        return ranked, {
+            "graph_ranker": "ppr_chunk_entity_fusion",
+            "graph_ppr_enabled": True,
+            "graph_ppr_nodes": len(graph["adjacency"]),
+            "graph_ppr_edges": graph["edge_count"],
+            "graph_ppr_seed_count": len(graph["seeds"]),
+            "graph_fact_seed_count": graph.get("fact_seed_count", 0),
+            "graph_query_entity_seed_count": graph.get("query_entity_seed_count", 0),
+            "hipporag_offline_graph": graph.get("offline_graph", {}),
+            "hipporag_embedding_linking": graph.get("embedding_linking", {}),
+            "graph_expanded_candidates": expanded,
+            "graph_top_facts": graph.get("top_facts", []),
+            "graph_top_entities": [
+                {"entity_id": entity_id, "score": round(score, 8)}
+                for entity_id, score in sorted(entity_scores.items(), key=lambda item: item[1], reverse=True)[:5]
+            ],
+        }
+
+    def _build_retrieval_graph(
+        self,
+        *,
+        query: str,
+        combined: list[RetrievalResult],
+        lexical_ranked: list[RetrievalResult],
+        vector_ranked: list[RetrievalResult],
+        chunks: list[Chunk],
+        item_by_id: dict[str, SourceItem],
+        user: User,
+        represented_user_id: str | None,
+    ) -> dict[str, Any]:
+        all_entities = self.store.list_entities()
+        visible_entities = self._visible_entities(all_entities, user=user, represented_user_id=represented_user_id)
+        entity_by_id = {entity.entity_id: entity for entity in visible_entities}
+        edge_ids_seen: set[str] = set()
+        visible_hyperedges: list[tuple[Hyperedge, list[HyperedgeMember]]] = []
+        if entity_by_id:
+            for edge, members in self.store.list_hyperedges_for_entities(set(entity_by_id)):
+                if edge.hyperedge_id in edge_ids_seen:
+                    continue
+                edge_ids_seen.add(edge.hyperedge_id)
+                if not self._can_read_graph_object(user, edge.owner_user_id, edge.visibility, edge.visible_team_ids, represented_user_id):
+                    continue
+                visible_hyperedges.append((edge, members))
+
+        offline_index = HippoRAGOfflineIndex.build(
+            entities=visible_entities,
+            hyperedges=visible_hyperedges,
+            chunks=chunks,
+            item_by_id=item_by_id,
+        )
+        query_embedding = None
+        embedding_error = None
+        if self.embedding_provider:
+            try:
+                offline_index.with_embeddings(self.embedding_provider)
+                query_embedding = self.embedding_provider.embed_texts([query])[0]
+            except Exception as exc:  # noqa: BLE001 - retrieval should keep lexical fallback alive.
+                query_embedding = None
+                embedding_error = f"{type(exc).__name__}: {exc}"
+        adjacency: dict[str, dict[str, float]] = {
+            node_id: dict(neighbors)
+            for node_id, neighbors in offline_index.adjacency.items()
+        }
+        seeds: dict[str, float] = {}
+
+        def add_seed(node_id: str, weight: float) -> None:
+            if weight > 0 and node_id in adjacency:
+                seeds[node_id] = seeds.get(node_id, 0.0) + weight
+
+        # HippoRAG 2 style: dense passages participate in PPR, but with a small
+        # passage-node prior so graph/fact seeds can still move probability mass.
+        for rank, result in enumerate(combined, start=1):
+            add_seed(f"chunk:{result.result_id}", 0.05 / rank)
+        for rank, result in enumerate(lexical_ranked[:10], start=1):
+            add_seed(f"chunk:{result.result_id}", 0.02 / rank)
+        for rank, result in enumerate(vector_ranked[:10], start=1):
+            add_seed(f"chunk:{result.result_id}", 0.02 / rank)
+
+        normalized_query = _normalize_match_text(query)
+        query_entity_seed_count = 0
+        entity_links = offline_index.link_entities(query, query_embedding=query_embedding, limit=8)
+        linked_entity_ids = {link.entity_id for link in entity_links}
+        for entity in visible_entities:
+            entity_node = f"entity:{entity.entity_id}"
+            query_mentioned = any(
+                _match_position(normalized_query, _normalize_match_text(alias)) is not None
+                or _fuzzy_alias_match(normalized_query, _normalize_match_text(alias))
+                for alias in _entity_aliases(entity)
+            )
+            if query_mentioned or entity.entity_id in linked_entity_ids:
+                link_score = next((link.score for link in entity_links if link.entity_id == entity.entity_id), 0.0)
+                add_seed(entity_node, max(0.35 if query_mentioned else 0.0, link_score))
+                query_entity_seed_count += 1
+
+        if not entity_by_id:
+            return {
+                "adjacency": adjacency,
+                "seeds": seeds,
+                "edge_count": _adjacency_edge_count(adjacency),
+                "offline_graph": offline_index.graph_info,
+                "fact_seed_count": 0,
+                "query_entity_seed_count": query_entity_seed_count,
+            }
+
+        top_fact_items = offline_index.score_facts(query, limit=8, query_embedding=query_embedding)
+        fact_seed_totals: dict[str, float] = {}
+        fact_seed_counts: dict[str, int] = {}
+        for item in top_fact_items:
+            fact = item["fact"]
+            fact_score = float(item["score"])
+            if fact_score <= 0:
+                continue
+            add_seed(fact.fact_id, fact_score)
+            for entity_id in fact.member_entity_ids:
+                fact_seed_totals[entity_id] = fact_seed_totals.get(entity_id, 0.0) + fact_score
+                fact_seed_counts[entity_id] = fact_seed_counts.get(entity_id, 0) + 1
+        for entity_id, total in fact_seed_totals.items():
+            add_seed(f"entity:{entity_id}", total / max(fact_seed_counts.get(entity_id, 1), 1))
+
+        return {
+            "adjacency": adjacency,
+            "seeds": seeds,
+            "edge_count": _adjacency_edge_count(adjacency),
+            "offline_graph": offline_index.graph_info,
+            "embedding_linking": {
+                "enabled": query_embedding is not None,
+                "error": embedding_error,
+                "fact_embeddings": len(offline_index.fact_embeddings),
+                "entity_embeddings": len(offline_index.entity_embeddings),
+                "linked_entities": [
+                    {
+                        "entity_id": link.entity_id,
+                        "label": link.label,
+                        "score": round(link.score, 8),
+                        "score_debug": link.score_debug,
+                    }
+                    for link in entity_links[:5]
+                ],
+            },
+            "fact_seed_count": len(top_fact_items),
+            "query_entity_seed_count": query_entity_seed_count,
+            "top_facts": [item["summary"] for item in top_fact_items[:5]],
+        }
 
     def _diagnostics(
         self,
@@ -1055,6 +1334,104 @@ def _is_graph_global_query(query: str) -> bool:
     graph_terms = {"graph", "knowledge", "entity", "entities", "relation", "relations", "relationship", "relationships"}
     graph_terms_zh = ("图谱", "实体", "关系", "关联")
     return bool(terms.intersection(graph_terms)) or any(term in normalized for term in graph_terms_zh)
+
+
+def _hipporag_fact_score(
+    *,
+    query_terms: list[str],
+    edge: Hyperedge,
+    members: list[HyperedgeMember],
+    entity_by_id: dict[str, Entity],
+) -> float:
+    labels = [
+        entity_by_id[member.entity_id].label
+        for member in members
+        if member.entity_id in entity_by_id
+    ]
+    fact_text = " ".join([*labels, edge.relation_type, edge.evidence_text])
+    fact_terms = re.findall(r"[\w\u4e00-\u9fff]+", fact_text.lower())
+    lexical = _term_overlap_score(query_terms, fact_terms)
+    mentioned = 0.0
+    normalized_fact = _normalize_match_text(fact_text)
+    for term in query_terms:
+        if _match_position(normalized_fact, _normalize_match_text(term)) is not None:
+            mentioned += 1.0
+    mention_coverage = mentioned / len(query_terms) if query_terms else 0.0
+    relevance = lexical * 0.7 + mention_coverage * 0.3
+    if relevance <= 0:
+        return 0.0
+    confidence = max(0.0, min(1.0, float(edge.confidence or 0.0)))
+    grounded = 1.0 if edge.source_refs else 0.0
+    return relevance * (0.7 + confidence * 0.2 + grounded * 0.1)
+
+
+def _top_fact_edges(
+    candidate_edges: list[tuple[Hyperedge, list[HyperedgeMember], float]],
+    *,
+    limit: int,
+) -> list[tuple[Hyperedge, list[HyperedgeMember], float]]:
+    return sorted(
+        [item for item in candidate_edges if item[2] > 0],
+        key=lambda item: (
+            item[2],
+            float(item[0].confidence or 0.0),
+            item[0].hyperedge_id,
+        ),
+        reverse=True,
+    )[:limit]
+
+
+def _term_overlap_score(query_terms: list[str], text_terms: list[str]) -> float:
+    if not query_terms or not text_terms:
+        return 0.0
+    text_set = set(text_terms)
+    overlap = sum(1 for term in set(query_terms) if term in text_set)
+    return overlap / math.sqrt(len(text_set))
+
+
+def _adjacency_edge_count(adjacency: dict[str, dict[str, float]]) -> int:
+    return sum(len(neighbors) for neighbors in adjacency.values()) // 2
+
+
+def _personalized_pagerank(
+    adjacency: dict[str, dict[str, float]],
+    seeds: dict[str, float],
+    *,
+    damping: float = 0.85,
+    iterations: int = 24,
+) -> dict[str, float]:
+    active_seeds = {node_id: weight for node_id, weight in seeds.items() if weight > 0 and node_id in adjacency}
+    seed_total = sum(active_seeds.values())
+    if seed_total <= 0:
+        return {}
+    personalization = {node_id: weight / seed_total for node_id, weight in active_seeds.items()}
+    nodes = set(adjacency)
+    for neighbors in adjacency.values():
+        nodes.update(neighbors)
+    if not nodes:
+        return {}
+
+    scores = {node_id: personalization.get(node_id, 0.0) for node_id in nodes}
+    for _ in range(iterations):
+        next_scores = {node_id: (1.0 - damping) * personalization.get(node_id, 0.0) for node_id in nodes}
+        dangling_mass = 0.0
+        for node_id in nodes:
+            neighbors = adjacency.get(node_id) or {}
+            score = scores.get(node_id, 0.0)
+            if not neighbors:
+                dangling_mass += score
+                continue
+            weight_total = sum(max(weight, 0.0) for weight in neighbors.values())
+            if weight_total <= 0:
+                dangling_mass += score
+                continue
+            for neighbor_id, weight in neighbors.items():
+                next_scores[neighbor_id] = next_scores.get(neighbor_id, 0.0) + damping * score * max(weight, 0.0) / weight_total
+        if dangling_mass:
+            for seed_node_id, seed_weight in personalization.items():
+                next_scores[seed_node_id] = next_scores.get(seed_node_id, 0.0) + damping * dangling_mass * seed_weight
+        scores = next_scores
+    return scores
 
 
 def _mean(values: list[float]) -> float:

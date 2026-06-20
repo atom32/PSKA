@@ -1,6 +1,7 @@
 from pska_core.fastreact_protocol import (
     SCHEMA_VERSION,
     agent_answer_from_events,
+    compact_trace_for_context,
     normalize_event,
     normalize_event_stream,
     parse_sse_events,
@@ -77,3 +78,29 @@ def test_normalize_event_stream_adds_final_answer_fallback() -> None:
     assert [event["kind"] for event in stream] == ["tool_result", "final_answer"]
     assert stream[0]["cited_source_ids"] == ["source-1"]
     assert stream[-1]["summary"] == "final answer"
+
+
+def test_compact_trace_for_context_drops_raw_events_and_keeps_decision_events() -> None:
+    trace = {
+        "run_id": "run_1",
+        "session_id": "session_1",
+        "event_count": 5,
+        "events": [
+            {"type": "session_start", "content": "large prompt"},
+            {"type": "think", "content": "private chain"},
+            {"type": "tool_call", "tool_name": "exec", "tool_args": {"command": "date"}},
+            {"type": "tool_result", "tool_name": "exec", "content": "Fri Jun 19\\n" * 200},
+            {"type": "session_end", "content": "final answer"},
+        ],
+        "tool_calls": [{"tool_name": "exec", "tool_args": {"command": "date"}, "raw_response": "nope"}],
+    }
+
+    compacted = compact_trace_for_context(trace)
+
+    assert compacted["run_id"] == "run_1"
+    assert compacted["raw_event_count"] == 5
+    assert compacted["raw_events_retained"] is False
+    assert "events" not in compacted
+    assert [event["kind"] for event in compacted["events_kept"]] == ["tool_call", "tool_result", "final_answer"]
+    assert len(compacted["events_kept"][1]["summary"]) <= 500
+    assert compacted["tool_calls"] == [{"tool_name": "exec", "tool_args": {"command": "date"}}]
