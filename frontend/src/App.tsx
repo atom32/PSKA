@@ -13,6 +13,7 @@ import {
   Image,
   Link2,
   Network,
+  Pin,
   PlayCircle,
   RefreshCw,
   Search,
@@ -30,9 +31,9 @@ import TableCell from "@tiptap/extension-table-cell";
 import TableHeader from "@tiptap/extension-table-header";
 import TableRow from "@tiptap/extension-table-row";
 import { useQuery } from "@tanstack/react-query";
-import { analyzeWorkspaceContext, approveReviewItem, loadCorpusContext, loadToday, rejectReviewItem } from "./api";
+import { analyzeWorkspaceContext, applyReviewItem, approveReviewItem, loadCorpusContext, loadReviewCenter, loadToday, recordWorkspaceActivity, rejectReviewItem } from "./api";
 import { useWorkspaceStore } from "./store";
-import type { BrainState, TodayContinueItem, TodayDiscoveryItem, TodayResponse, TodayReviewItem, WorkspaceMode } from "./types";
+import type { BrainState, ReviewCenterItem, TodayContinueItem, TodayDiscoveryItem, TodayResponse, TodayReviewItem, WorkspaceMode } from "./types";
 
 const nodeTypes = {
   pskaCard: CanvasCardNode
@@ -54,11 +55,13 @@ export default function App() {
     setBrain
   } = useWorkspaceStore();
   const lastAnalyzedText = useRef(documentText);
+  const lastEditedActivityAt = useRef(0);
+  const [pinStatus, setPinStatus] = useState<"idle" | "saved" | "failed">("idle");
 
   const corpusQuery = useQuery({
     queryKey: ["corpus-context", serviceToken],
     queryFn: () => loadCorpusContext(serviceToken),
-    enabled: mode !== "today"
+    enabled: mode !== "today" && mode !== "review"
   });
 
   useEffect(() => {
@@ -94,6 +97,10 @@ export default function App() {
       const changedEnough = Math.abs(text.length - lastAnalyzedText.current.length) > 180;
       if (changedEnough) {
         lastAnalyzedText.current = text;
+        void logWorkspaceActivity("edited", "document", {
+          summary: "编辑了当前文档草稿。",
+          metadata: { text_length: text.length }
+        });
         void runAnalysis("significant-change", text);
       }
     },
@@ -108,11 +115,20 @@ export default function App() {
     const handle = window.setTimeout(() => {
       if (documentText !== lastAnalyzedText.current) {
         lastAnalyzedText.current = documentText;
+        void logWorkspaceActivity("edited", "document", {
+          summary: "暂停后保存了文档编辑活动。",
+          metadata: { text_length: documentText.length }
+        });
         void runAnalysis("pause", documentText);
       }
     }, 3000);
     return () => window.clearTimeout(handle);
   }, [documentText, serviceToken]);
+
+  useEffect(() => {
+    void logWorkspaceActivity("opened", mode);
+    void logWorkspaceActivity("viewed", mode);
+  }, [mode, serviceToken]);
 
   async function runAnalysis(trigger: BrainState["lastTrigger"], text = documentText) {
     setBrain({ status: "analyzing", lastTrigger: trigger });
@@ -121,11 +137,57 @@ export default function App() {
   }
 
   function refreshCurrentSurface() {
-    if (mode === "today") {
+    if (mode === "today" || mode === "review") {
       setBrain({ status: "idle", lastTrigger: "manual", updatedAt: Date.now() });
       return;
     }
     void runAnalysis("manual");
+  }
+
+  async function logWorkspaceActivity(
+    activityType: "opened" | "edited" | "viewed" | "pinned",
+    surface: WorkspaceMode,
+    options: { summary?: string; metadata?: Record<string, unknown>; throwOnError?: boolean } = {}
+  ) {
+    if (!serviceToken) {
+      return;
+    }
+    if (activityType === "edited") {
+      const now = Date.now();
+      if (now - lastEditedActivityAt.current < 2500) {
+        return;
+      }
+      lastEditedActivityAt.current = now;
+    }
+    try {
+      const target = workspaceActivityTarget(surface);
+      await recordWorkspaceActivity(serviceToken, {
+        activity_type: activityType,
+        surface,
+        target_type: "workspace_surface",
+        target_id: surface,
+        title: target.title,
+        summary: options.summary || target.summary,
+        metadata: options.metadata
+      });
+    } catch {
+      if (options.throwOnError) {
+        throw new Error("activity logging failed");
+      }
+    }
+  }
+
+  function pinCurrentWorkspace() {
+    setPinStatus("idle");
+    void logWorkspaceActivity("pinned", mode, { throwOnError: true })
+      .then(() => {
+        setPinStatus("saved");
+        window.setTimeout(() => setPinStatus("idle"), 1800);
+      })
+      .catch(() => {
+        setPinStatus("failed");
+        window.setTimeout(() => setPinStatus("idle"), 2200);
+      });
   }
 
   return (
@@ -141,10 +203,12 @@ export default function App() {
         />
         {mode === "today" ? (
           <TodayWorkspace serviceToken={serviceToken} onOpenWorkspace={setMode} />
+        ) : mode === "review" ? (
+          <ReviewCenter serviceToken={serviceToken} onPinCurrent={pinCurrentWorkspace} pinStatus={pinStatus} />
         ) : mode === "document" ? (
-          <DocumentWorkspace editor={editor} selectedText={selectedText} />
+          <DocumentWorkspace editor={editor} selectedText={selectedText} onPinCurrent={pinCurrentWorkspace} pinStatus={pinStatus} />
         ) : (
-          <CanvasWorkspace />
+          <CanvasWorkspace onPinCurrent={pinCurrentWorkspace} pinStatus={pinStatus} />
         )}
       </section>
       <BrainSidebar brain={brain} onRefresh={refreshCurrentSurface} />
@@ -185,7 +249,7 @@ function LeftSidebar({
         <NavItem collapsed={collapsed} icon={<BookOpen size={18} />} label="项目" />
         <NavItem collapsed={collapsed} icon={<Tags size={18} />} label="标签" />
         <NavItem collapsed={collapsed} icon={<Search size={18} />} label="搜索" />
-        <NavItem collapsed={collapsed} icon={<GitPullRequest size={18} />} label="Review" />
+        <NavItem collapsed={collapsed} icon={<GitPullRequest size={18} />} label="Review" active={mode === "review"} onClick={() => onModeChange("review")} />
       </nav>
       {!collapsed && (
         <div className="tree">
@@ -247,6 +311,10 @@ function TopBar({
         <button className={mode === "canvas" ? "active" : ""} type="button" onClick={() => onModeChange("canvas")}>
           <Network size={17} />
           画布
+        </button>
+        <button className={mode === "review" ? "active" : ""} type="button" onClick={() => onModeChange("review")}>
+          <GitPullRequest size={17} />
+          Review
         </button>
       </div>
       <label className="token-field">
@@ -469,6 +537,164 @@ function TodayWorkspace({ serviceToken, onOpenWorkspace }: { serviceToken: strin
   );
 }
 
+type ReviewActionState = "处理中" | "已批准" | "已批准并应用" | "已拒绝" | "已应用" | "操作失败";
+
+function ReviewCenter({
+  serviceToken,
+  onPinCurrent,
+  pinStatus
+}: {
+  serviceToken: string;
+  onPinCurrent: () => void;
+  pinStatus: "idle" | "saved" | "failed";
+}) {
+  const [status, setStatus] = useState("pending");
+  const [actions, setActions] = useState<Record<string, ReviewActionState>>({});
+  const reviewQuery = useQuery({
+    queryKey: ["review-center", serviceToken, status],
+    queryFn: () => loadReviewCenter(serviceToken, status),
+    retry: 1
+  });
+  const items = reviewQuery.data?.review_items || [];
+  const total = reviewQuery.data?.total_matching ?? reviewQuery.data?.count ?? items.length;
+
+  function mark(reviewItemId: string, value: ReviewActionState) {
+    setActions((current) => ({ ...current, [reviewItemId]: value }));
+  }
+
+  async function runReviewAction(item: ReviewCenterItem, action: "approve" | "approve_apply" | "reject" | "apply") {
+    mark(item.review_item_id, "处理中");
+    try {
+      if (action === "reject") {
+        await rejectReviewItem(serviceToken, item.review_item_id);
+        mark(item.review_item_id, "已拒绝");
+      } else if (action === "apply") {
+        await applyReviewItem(serviceToken, item.review_item_id);
+        mark(item.review_item_id, "已应用");
+      } else {
+        await approveReviewItem(serviceToken, item.review_item_id, action === "approve_apply");
+        mark(item.review_item_id, action === "approve_apply" ? "已批准并应用" : "已批准");
+      }
+      await reviewQuery.refetch();
+    } catch {
+      mark(item.review_item_id, "操作失败");
+    }
+  }
+
+  return (
+    <section className="main-workspace review-surface" aria-label="Review Center">
+      <div className="review-center-header">
+        <div>
+          <span className="eyebrow">Review Center</span>
+          <h1>审核候选，再写入长期知识。</h1>
+          <p>数据来自真实 Review API：/console/reviews/data。</p>
+        </div>
+        <div className="review-summary" aria-label="Review 摘要">
+          <span>
+            <strong>{total}</strong>
+            {statusLabel(status)}
+          </span>
+          <span>
+            <strong>{items.filter((item) => item.source_ref_status === "present").length}</strong>
+            有证据
+          </span>
+          <button className="icon-button" type="button" onClick={() => reviewQuery.refetch()} title="刷新 Review">
+            <RefreshCw size={18} />
+          </button>
+        </div>
+        <button className="review-pin-action" type="button" onClick={onPinCurrent}>
+          <Pin size={16} />
+          {pinStatus === "saved" ? "已置顶" : pinStatus === "failed" ? "置顶失败" : "置顶 Review"}
+        </button>
+      </div>
+
+      <div className="review-filter" role="tablist" aria-label="Review 状态">
+        {["pending", "approved", "rejected", "applied"].map((value) => (
+          <button className={status === value ? "active" : ""} type="button" key={value} onClick={() => setStatus(value)}>
+            {statusLabel(value)}
+          </button>
+        ))}
+      </div>
+
+      {reviewQuery.isError ? (
+        <div className="review-empty error-state">Review Center 暂时无法加载。请检查服务令牌或后端服务。</div>
+      ) : reviewQuery.isLoading ? (
+        <div className="review-empty">正在加载 Review Center...</div>
+      ) : items.length === 0 ? (
+        <div className="review-empty">当前没有 {statusLabel(status)}。</div>
+      ) : (
+        <div className="review-list">
+          {items.map((item) => (
+            <article className="review-center-item" key={item.review_item_id}>
+              <div className="review-item-main">
+                <div className="review-item-title">
+                  <GitPullRequest size={17} />
+                  <h2>{item.title || item.review_item_id}</h2>
+                </div>
+                <div className="review-item-tags">
+                  <span className="pill">{item.review_type || "review"}</span>
+                  <span className={`pill ${item.source_ref_status === "present" ? "" : "warning"}`}>
+                    {item.source_ref_status === "present" ? "证据已连接" : "缺少证据"}
+                  </span>
+                  {!item.apply_supported && <span className="pill muted">不可应用</span>}
+                  {item.apply_supported && !item.apply_ready && <span className="pill warning">需检查后应用</span>}
+                </div>
+                <dl className="review-meta-grid">
+                  <div>
+                    <dt>置信度</dt>
+                    <dd>{confidenceLabel(item.confidence)}</dd>
+                  </div>
+                  <div>
+                    <dt>建议</dt>
+                    <dd>{recommendedActionLabel(item.recommended_action)}</dd>
+                  </div>
+                  <div>
+                    <dt>创建时间</dt>
+                    <dd>{formatReviewDate(item.created_at)}</dd>
+                  </div>
+                  <div>
+                    <dt>ID</dt>
+                    <dd>{item.review_item_id}</dd>
+                  </div>
+                </dl>
+                {item.source_refs?.length ? (
+                  <div className="source-ref-row">
+                    {item.source_refs.slice(0, 3).map((ref, index) => (
+                      <span key={`${item.review_item_id}-${index}`}>{ref.title || ref.source_item_id || ref.chunk_id || "source ref"}</span>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+              <div className="review-center-actions">
+                <small>{actions[item.review_item_id] || item.status || "pending"}</small>
+                {item.status === "pending" ? (
+                  <>
+                    <button type="button" onClick={() => runReviewAction(item, "approve")}>
+                      批准
+                    </button>
+                    {item.recommended_actions?.includes("approve_apply") && (
+                      <button className="primary" type="button" onClick={() => runReviewAction(item, "approve_apply")}>
+                        批准并应用
+                      </button>
+                    )}
+                    <button className="danger" type="button" onClick={() => runReviewAction(item, "reject")}>
+                      拒绝
+                    </button>
+                  </>
+                ) : item.can_apply_now ? (
+                  <button className="primary" type="button" onClick={() => runReviewAction(item, "apply")}>
+                    应用
+                  </button>
+                ) : null}
+              </div>
+            </article>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function normalizeContinueItems(data?: TodayResponse): TodayContinueItem[] {
   const items = data?.continue_working || [];
   if (items.length) {
@@ -538,6 +764,40 @@ function recommendedActionLabel(action?: string) {
   return "待处理";
 }
 
+function statusLabel(status: string) {
+  if (status === "pending") {
+    return "待审核";
+  }
+  if (status === "approved") {
+    return "已批准";
+  }
+  if (status === "rejected") {
+    return "已拒绝";
+  }
+  if (status === "applied") {
+    return "已应用";
+  }
+  return status;
+}
+
+function confidenceLabel(value?: number | null) {
+  if (value === null || value === undefined) {
+    return "未提供";
+  }
+  return `${Math.round(value * 100)}%`;
+}
+
+function formatReviewDate(value?: string) {
+  if (!value) {
+    return "未知";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return date.toLocaleDateString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
 function SectionTitle({ icon, title, subtitle }: { icon: JSX.Element; title: string; subtitle: string }) {
   return (
     <div className="section-title">
@@ -550,7 +810,17 @@ function SectionTitle({ icon, title, subtitle }: { icon: JSX.Element; title: str
   );
 }
 
-function DocumentWorkspace({ editor, selectedText }: { editor: ReturnType<typeof useEditor>; selectedText: string }) {
+function DocumentWorkspace({
+  editor,
+  selectedText,
+  onPinCurrent,
+  pinStatus
+}: {
+  editor: ReturnType<typeof useEditor>;
+  selectedText: string;
+  onPinCurrent: () => void;
+  pinStatus: "idle" | "saved" | "failed";
+}) {
   return (
     <section className="main-workspace document-surface" aria-label="文档工作区">
       <div className="document-toolbar">
@@ -569,6 +839,10 @@ function DocumentWorkspace({ editor, selectedText }: { editor: ReturnType<typeof
         <button type="button" onClick={() => editor?.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()} title="插入表格">
           表格
         </button>
+        <button type="button" onClick={onPinCurrent} title="置顶文档工作区">
+          <Pin size={15} />
+          {pinStatus === "saved" ? "已置顶" : pinStatus === "failed" ? "失败" : "置顶"}
+        </button>
         <span>{selectedText ? `已选中 ${selectedText.length} 个字符` : "环境上下文检测"}</span>
       </div>
       <EditorContent editor={editor} />
@@ -576,7 +850,13 @@ function DocumentWorkspace({ editor, selectedText }: { editor: ReturnType<typeof
   );
 }
 
-function CanvasWorkspace() {
+function CanvasWorkspace({
+  onPinCurrent,
+  pinStatus
+}: {
+  onPinCurrent: () => void;
+  pinStatus: "idle" | "saved" | "failed";
+}) {
   const nodes = useMemo(
     () => [
       {
@@ -618,6 +898,12 @@ function CanvasWorkspace() {
 
   return (
     <section className="main-workspace canvas-surface" aria-label="画布工作区">
+      <div className="canvas-toolbar">
+        <button type="button" onClick={onPinCurrent}>
+          <Pin size={15} />
+          {pinStatus === "saved" ? "已置顶" : pinStatus === "failed" ? "置顶失败" : "置顶画布"}
+        </button>
+      </div>
       <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} fitView>
         <Background gap={24} color="#d8d6cc" />
         <MiniMap pannable zoomable />
@@ -717,6 +1003,19 @@ function triggerLabel(trigger: BrainState["lastTrigger"]) {
     return "明显变更";
   }
   return "手动刷新";
+}
+
+function workspaceActivityTarget(surface: WorkspaceMode) {
+  if (surface === "review") {
+    return { title: "Review Center", summary: "查看真实 Review 队列。" };
+  }
+  if (surface === "canvas") {
+    return { title: "画布工作区", summary: "查看画布工作区。" };
+  }
+  if (surface === "document") {
+    return { title: "文档工作区", summary: "查看文档工作区。" };
+  }
+  return { title: "Today", summary: "查看 Today 工作区。" };
 }
 
 function BrainPanel({ title, children }: { title: string; children: React.ReactNode }) {

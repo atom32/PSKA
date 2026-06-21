@@ -22,7 +22,7 @@ from pska_core.hypergraph import HypergraphService
 from pska_core.ingest import IngestService
 from pska_core.jobs import DIGEST_VIA_FASTREACT, EXTRACT_VIA_FASTREACT, JobService
 from pska_core.mcp_server import MCPServer
-from pska_core.models import AgentMemory, ConnectorState, Entity, ReviewItem, SourceRef, User, UserProfileCard, utc_now
+from pska_core.models import AgentMemory, ConnectorState, DiscoveryItem, Entity, ReviewItem, SourceRef, User, UserProfileCard, utc_now
 from pska_core.retrieval import RetrievalService
 from pska_core.review import ReviewService
 from pska_core.serde import to_jsonable
@@ -1230,6 +1230,161 @@ def test_user_workspace_serves_assets_and_keeps_data_routes_token_protected(monk
     assert authed_status == 200
     assert authed["workspace"]["surface"] == "user_workspace"
     assert authed["workspace"]["evidence"]["citations"][0]["source_item_id"]
+
+
+def test_workspace_activity_drives_continue_working() -> None:
+    api = _api()
+
+    opened = api.record_workspace_activity(
+        {
+            "owner_user_id": "user_primary",
+            "activity_type": "opened",
+            "surface": "document",
+            "target_type": "workspace_surface",
+            "target_id": "document",
+            "title": "文档工作区",
+            "summary": "打开文档工作区。",
+        }
+    )
+    api.record_workspace_activity(
+        {
+            "owner_user_id": "user_primary",
+            "activity_type": "edited",
+            "surface": "document",
+            "target_type": "workspace_surface",
+            "target_id": "document",
+            "title": "文档工作区",
+            "summary": "编辑了当前草稿。",
+            "metadata": {"text_length": 42},
+        }
+    )
+    api.record_workspace_activity(
+        {
+            "owner_user_id": "user_primary",
+            "activity_type": "pinned",
+            "surface": "review",
+            "target_type": "workspace_surface",
+            "target_id": "review",
+            "title": "Review Center",
+        }
+    )
+
+    activity = api.workspace_activity(owner_user_id="user_primary", limit=10)
+    today = api.workspace_today(owner_user_id="user_primary", limit=10)
+
+    assert opened["activity"]["activity_type"] == "opened"
+    assert activity["activity"][0]["activity_type"] == "pinned"
+    assert activity["activity"][1]["activity_type"] == "edited"
+    assert activity["continue_working"][0]["target_id"] == "review"
+    assert activity["continue_working"][0]["pinned"] is True
+    assert today["source"]["uses_workspace_activity"] is True
+    assert today["continue_working"][0]["id"] == "review"
+    assert today["continue_working"][1]["activity_type"] == "edited"
+
+
+def test_workspace_activity_http_endpoint_is_token_protected(monkeypatch) -> None:
+    monkeypatch.setenv("PSKA_SERVICE_TOKEN", "secret")
+    api = _api()
+    payload = {
+        "owner_user_id": "user_primary",
+        "activity_type": "viewed",
+        "surface": "review",
+        "target_type": "workspace_surface",
+        "target_id": "review",
+        "title": "Review Center",
+    }
+
+    with _http_server(api) as base_url:
+        blocked_status, blocked = _http_json(base_url, "POST", "/workspace/activity", payload)
+        authed_status, authed = _http_json(
+            base_url,
+            "POST",
+            "/workspace/activity",
+            payload,
+            headers={"X-PSKA-Service-Token": "secret"},
+        )
+        data_status, data = _http_json(
+            base_url,
+            "GET",
+            "/workspace/activity/data?owner_user_id=user_primary",
+            headers={"X-PSKA-Service-Token": "secret"},
+        )
+
+    assert blocked_status == 401
+    assert "service token" in blocked["error"]
+    assert authed_status == 200
+    assert authed["activity"]["activity_type"] == "viewed"
+    assert data_status == 200
+    assert data["continue_working"][0]["target_id"] == "review"
+
+
+def test_discovery_producers_drive_today_discoveries() -> None:
+    api = _api()
+    IngestService(api.store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "discovery-topic-note",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "Discovery Topic Note",
+            "content": {"text": "Discovery producer should surface this as a topic."},
+        }
+    )
+    api.store.add_review_item(
+        ReviewItem(
+            review_item_id="rev_relationship_discovery",
+            owner_user_id="user_primary",
+            review_type=ReviewType.RELATIONSHIP_CANDIDATE,
+            title="Relationship candidate",
+            proposal={"confidence": 0.81, "source_refs": [{"source_item_id": "src_rel"}]},
+        )
+    )
+    api.store.add_review_item(
+        ReviewItem(
+            review_item_id="rev_conflict_discovery",
+            owner_user_id="user_primary",
+            review_type=ReviewType.CONFLICT,
+            title="Conflict candidate",
+            proposal={"confidence": 0.66, "source_refs": [{"source_item_id": "src_conflict"}]},
+        )
+    )
+    api.store.add_review_item(
+        ReviewItem(
+            review_item_id="rev_memory_discovery",
+            owner_user_id="user_primary",
+            review_type=ReviewType.MEMORY_CANDIDATE,
+            title="Memory candidate",
+            proposal={"memory_candidate": "PSKA prefers producer-backed discoveries.", "confidence": 0.74},
+        )
+    )
+    api.store.upsert_discovery_item(
+        DiscoveryItem(
+            discovery_id="disc_old",
+            owner_user_id="user_primary",
+            discovery_type="relationship",
+            title="Old discovery",
+            evidence=[],
+            confidence=0.5,
+            producer="RelationshipDiscoveryProducer",
+            created_at=utc_now() - timedelta(days=8),
+        )
+    )
+
+    discoveries = api.workspace_discoveries(owner_user_id="user_primary", limit=20)
+    today = api.workspace_today(owner_user_id="user_primary", limit=20)
+
+    by_type = {item["type"]: item for item in discoveries["discoveries"]}
+    assert {"relationship", "conflict", "memory", "topic"} <= set(by_type)
+    assert by_type["relationship"]["producer"] == "RelationshipDiscoveryProducer"
+    assert by_type["conflict"]["producer"] == "ConflictDiscoveryProducer"
+    assert by_type["memory"]["producer"] == "MemoryDiscoveryProducer"
+    assert by_type["topic"]["producer"] == "TopicDiscoveryProducer"
+    assert all(item["status"] == "new" for item in today["discoveries"])
+    assert all(item["id"] != "disc_old" for item in today["discoveries"])
+    assert today["source"]["uses_dedicated_discovery_feed"] is True
 
 
 def test_user_workspace_direct_search_returns_evidence_summary() -> None:

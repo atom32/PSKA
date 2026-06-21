@@ -176,6 +176,7 @@ def test_retrieval_uses_vector_results_when_lexical_has_no_match() -> None:
     assert response.score_debug["lexical_candidates"] == 0
     assert response.score_debug["vector_enabled"] is True
     assert response.score_debug["vector_candidates"] == 1
+    assert response.results[0].source == "vector"
     assert response.results[0].score_debug["vector_rank"] == 1.0
 
 

@@ -13,6 +13,7 @@ from pska_core.models import (
     AgentMemory,
     Chunk,
     ConnectorState,
+    DiscoveryItem,
     Document,
     Entity,
     Hyperedge,
@@ -27,6 +28,7 @@ from pska_core.models import (
     TeamMembership,
     User,
     UserProfileCard,
+    WorkspaceActivityEvent,
     utc_now,
 )
 from pska_core.serde import to_jsonable
@@ -812,6 +814,116 @@ class PostgresKnowledgeStore:
             ).fetchall()
         return [(self._chunk_from_row(row), max(0.0, 1.0 - float(row["distance"]))) for row in rows]
 
+    def add_workspace_activity_event(self, event: WorkspaceActivityEvent) -> WorkspaceActivityEvent:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                insert into workspace_activity_events(
+                    workspace_activity_event_id, owner_user_id, actor_user_id, activity_type,
+                    target_type, target_id, surface, title, summary, metadata, created_at
+                )
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                returning *
+                """,
+                (
+                    event.workspace_activity_event_id,
+                    event.owner_user_id,
+                    event.actor_user_id,
+                    event.activity_type,
+                    event.target_type,
+                    event.target_id,
+                    event.surface,
+                    event.title,
+                    event.summary,
+                    Jsonb(to_jsonable(event.metadata)),
+                    event.created_at,
+                ),
+            ).fetchone()
+        return self._workspace_activity_event_from_row(row)
+
+    def list_workspace_activity_events(
+        self,
+        *,
+        owner_user_id: str,
+        activity_types: set[str] | None = None,
+        limit: int = 50,
+    ) -> list[WorkspaceActivityEvent]:
+        clauses = ["owner_user_id = %s"]
+        params: list[Any] = [owner_user_id]
+        if activity_types:
+            clauses.append("activity_type = any(%s)")
+            params.append(sorted(activity_types))
+        params.append(max(0, limit))
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                select *
+                from workspace_activity_events
+                where {" and ".join(clauses)}
+                order by created_at desc, workspace_activity_event_id desc
+                limit %s
+                """,  # noqa: S608 - clauses are fixed.
+                params,
+            ).fetchall()
+        return [self._workspace_activity_event_from_row(row) for row in rows]
+
+    def upsert_discovery_item(self, item: DiscoveryItem) -> DiscoveryItem:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                insert into discovery_items(
+                    discovery_id, owner_user_id, discovery_type, title, evidence,
+                    confidence, producer, status, created_at
+                )
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                on conflict (discovery_id) do update
+                set status = discovery_items.status
+                returning *
+                """,
+                (
+                    item.discovery_id,
+                    item.owner_user_id,
+                    item.discovery_type,
+                    item.title,
+                    Jsonb(to_jsonable(item.evidence)),
+                    item.confidence,
+                    item.producer,
+                    item.status,
+                    item.created_at,
+                ),
+            ).fetchone()
+        return self._discovery_item_from_row(row)
+
+    def list_discovery_items(
+        self,
+        *,
+        owner_user_id: str,
+        status: str | None = None,
+        since=None,
+        limit: int = 50,
+    ) -> list[DiscoveryItem]:
+        clauses = ["owner_user_id = %s"]
+        params: list[Any] = [owner_user_id]
+        if status:
+            clauses.append("status = %s")
+            params.append(status)
+        if since is not None:
+            clauses.append("created_at >= %s")
+            params.append(since)
+        params.append(max(0, limit))
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                select *
+                from discovery_items
+                where {" and ".join(clauses)}
+                order by created_at desc, discovery_id desc
+                limit %s
+                """,  # noqa: S608 - clauses are fixed.
+                params,
+            ).fetchall()
+        return [self._discovery_item_from_row(row) for row in rows]
+
     def list_hyperedges_for_entities(self, entity_ids: set[str]) -> list[tuple[Hyperedge, list[HyperedgeMember]]]:
         if not entity_ids:
             return []
@@ -1192,6 +1304,8 @@ class PostgresKnowledgeStore:
             "job_events",
             "connector_states",
             "offline_index_states",
+            "workspace_activity_events",
+            "discovery_items",
         }:
             raise ValueError(f"Unsupported table: {table}")
         with self.connect() as conn:
@@ -1232,6 +1346,34 @@ class PostgresKnowledgeStore:
             dirty_reason=row.get("dirty_reason"),
             last_indexed_at=row.get("last_indexed_at"),
             updated_at=row["updated_at"],
+        )
+
+    def _workspace_activity_event_from_row(self, row: dict[str, Any]) -> WorkspaceActivityEvent:
+        return WorkspaceActivityEvent(
+            workspace_activity_event_id=row["workspace_activity_event_id"],
+            owner_user_id=row["owner_user_id"],
+            actor_user_id=row["actor_user_id"],
+            activity_type=row["activity_type"],
+            target_type=row["target_type"],
+            target_id=row["target_id"],
+            surface=row["surface"],
+            title=row["title"],
+            summary=row["summary"],
+            metadata=dict(row.get("metadata") or {}),
+            created_at=row["created_at"],
+        )
+
+    def _discovery_item_from_row(self, row: dict[str, Any]) -> DiscoveryItem:
+        return DiscoveryItem(
+            discovery_id=row["discovery_id"],
+            owner_user_id=row["owner_user_id"],
+            discovery_type=row["discovery_type"],
+            title=row["title"],
+            evidence=list(row.get("evidence") or []),
+            confidence=float(row["confidence"]),
+            producer=row["producer"],
+            status=row["status"],
+            created_at=row["created_at"],
         )
 
     def _connector_state_from_row(self, row: dict[str, Any]) -> ConnectorState:

@@ -122,6 +122,7 @@ Developer docs:
 - [Developer Quickstart](docs/DEVELOPER_QUICKSTART.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [API Reference](docs/API_REFERENCE.md)
+- [Feature Reality Check](docs/FEATURE_REALITY_CHECK.md)
 - [Telemetry Design](docs/TELEMETRY.md)
 
 ## Status

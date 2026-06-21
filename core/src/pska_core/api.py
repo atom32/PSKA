@@ -16,6 +16,7 @@ from pska_core.agentic_service import AgenticServiceError, build_agentic_service
 from pska_core.auth import AuthError, RequestContext, authenticate_headers, context_from_headers, service_token_required
 from pska_core.candidates import CandidateWriteService
 from pska_core.connectors import connector_state_from_mapping, connector_record_to_payload
+from pska_core.discovery import DiscoveryService
 from pska_core.embeddings import EmbeddingConfig, build_embedding_provider
 from pska_core.extraction import ExtractionService
 from pska_core.fastreact_protocol import compact_trace_for_context
@@ -23,7 +24,7 @@ from pska_core.ingest import IngestService
 from pska_core.jobs import DIGEST_VIA_FASTREACT, JobService
 from pska_core.memory import MemoryService
 from pska_core.mcp_server import MCPServer, PROTOCOL_VERSION
-from pska_core.models import ChannelIngestPayload, ReviewItem, SourceRef
+from pska_core.models import ChannelIngestPayload, ReviewItem, SourceRef, WorkspaceActivityEvent
 from pska_core.offline_index import OfflineIndexService
 from pska_core.retrieval import RetrievalService
 from pska_core.review import ReviewService
@@ -598,23 +599,22 @@ class PSKAApi:
         owner_user_id = _workspace_owner_user_id(context, owner_user_id)
         limit = max(1, min(limit, 50))
         dashboard = self.console_dashboard(owner_user_id=owner_user_id, limit=limit)
-        sources = self.console_sources(owner_user_id=owner_user_id, limit=limit)
         reviews = self.console_reviews(status="pending", owner_user_id=owner_user_id, limit=limit)
         corpus = self.workspace_corpus(owner_user_id=owner_user_id, limit=limit, context=context)
+        activity = self.workspace_activity(owner_user_id=owner_user_id, limit=limit, context=context)
+        discoveries = self.workspace_discoveries(owner_user_id=owner_user_id, limit=limit, context=context)
         stats = self.job_stats()["stats"]
         review_items = reviews.get("review_items") if isinstance(reviews.get("review_items"), list) else []
-        recent_sources = sources.get("recent_sources") if isinstance(sources.get("recent_sources"), list) else []
-        hyperedges = corpus.get("hyperedges") if isinstance(corpus.get("hyperedges"), list) else []
         return {
             "ok": True,
             "owner_user_id": owner_user_id,
             "read_only": True,
             "surface": "today",
-            "continue_working": [_today_continue_item(item) for item in recent_sources[: min(limit, 6)]],
-            "discoveries": _today_discoveries(review_items, hyperedges, limit=limit),
+            "continue_working": [_today_continue_item_from_activity(item) for item in activity["continue_working"][: min(limit, 6)]],
+            "discoveries": discoveries["discoveries"][:limit],
             "needs_review": [_today_review_item(item) for item in review_items[:limit]],
             "system": {
-                "source_counts": dashboard.get("source_counts") or sources.get("source_counts") or {},
+                "source_counts": dashboard.get("source_counts") or {},
                 "digest_backlog": stats.get("digest_backlog") or dashboard.get("digest_backlog") or {},
                 "pending_reviews": {
                     "total_matching": reviews.get("total_matching") or 0,
@@ -627,14 +627,86 @@ class PSKAApi:
             "source": {
                 "composed_from": [
                     "console_dashboard",
-                    "console_sources",
                     "console_reviews",
                     "workspace_corpus",
+                    "workspace_activity",
+                    "workspace_discoveries",
                     "job_stats",
                 ],
-                "uses_workspace_activity": False,
-                "uses_dedicated_discovery_feed": False,
+                "uses_workspace_activity": True,
+                "uses_dedicated_discovery_feed": True,
             },
+        }
+
+    def workspace_discoveries(
+        self,
+        *,
+        owner_user_id: str | None = None,
+        limit: int = 50,
+        context: RequestContext | None = None,
+    ) -> dict[str, Any]:
+        owner_user_id = _workspace_owner_user_id(context, owner_user_id)
+        DiscoveryService(self.store, owner_user_id=owner_user_id).produce()
+        since = datetime.now(UTC) - timedelta(days=7)
+        items = self.store.list_discovery_items(
+            owner_user_id=owner_user_id,
+            status="new",
+            since=since,
+            limit=max(1, min(limit, 100)),
+        )
+        return {
+            "ok": True,
+            "owner_user_id": owner_user_id,
+            "window_days": 7,
+            "discoveries": [_discovery_item_payload(item) for item in items],
+            "count": len(items),
+        }
+
+    def record_workspace_activity(self, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
+        owner_user_id = _workspace_owner_user_id(context, payload.get("owner_user_id"))
+        actor_user_id = str(payload.get("actor_user_id") or owner_user_id)
+        activity_type = str(payload.get("activity_type") or "").strip().lower()
+        if activity_type not in {"opened", "edited", "viewed", "pinned"}:
+            raise ValueError("activity_type must be one of opened, edited, viewed, pinned")
+        target_type = str(payload.get("target_type") or "workspace_surface").strip() or "workspace_surface"
+        target_id = str(payload.get("target_id") or payload.get("surface") or activity_type).strip()
+        if not target_id:
+            raise ValueError("target_id is required")
+        surface = str(payload.get("surface") or target_type).strip() or target_type
+        event = WorkspaceActivityEvent(
+            workspace_activity_event_id=f"wact_{uuid4().hex}",
+            owner_user_id=owner_user_id,
+            actor_user_id=actor_user_id,
+            activity_type=activity_type,
+            target_type=target_type,
+            target_id=target_id,
+            surface=surface,
+            title=str(payload.get("title") or _workspace_activity_default_title(surface, target_id)),
+            summary=str(payload.get("summary") or ""),
+            metadata=dict(payload.get("metadata") or {}),
+        )
+        return {"ok": True, "activity": to_jsonable(self.store.add_workspace_activity_event(event))}
+
+    def workspace_activity(
+        self,
+        *,
+        owner_user_id: str | None = None,
+        limit: int = 50,
+        context: RequestContext | None = None,
+    ) -> dict[str, Any]:
+        owner_user_id = _workspace_owner_user_id(context, owner_user_id)
+        events = self.store.list_workspace_activity_events(
+            owner_user_id=owner_user_id,
+            activity_types={"opened", "edited", "viewed", "pinned"},
+            limit=max(1, min(limit, 100)),
+        )
+        activity_items = [_workspace_activity_item(event) for event in events]
+        return {
+            "ok": True,
+            "owner_user_id": owner_user_id,
+            "activity": activity_items,
+            "continue_working": _workspace_continue_working(activity_items, limit=limit),
+            "count": len(activity_items),
         }
 
     def workspace_corpus(
@@ -1156,6 +1228,24 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
                     context=context,
                 ),
             )
+        if path == "/workspace/activity/data":
+            return self._json(
+                200,
+                self.api.workspace_activity(
+                    owner_user_id=_first(query.get("owner_user_id")),
+                    limit=_int_first(query.get("limit")) or 50,
+                    context=context,
+                ),
+            )
+        if path == "/workspace/discoveries/data":
+            return self._json(
+                200,
+                self.api.workspace_discoveries(
+                    owner_user_id=_first(query.get("owner_user_id")),
+                    limit=_int_first(query.get("limit")) or 50,
+                    context=context,
+                ),
+            )
         if path == "/workspace/corpus/data":
             return self._json(
                 200,
@@ -1232,6 +1322,8 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
                 return self._json(200, self.api.workspace_search(payload, context=context))
             if path == "/workspace/writer/suggest":
                 return self._json(200, self.api.workspace_writer_suggest(payload, context=context))
+            if path == "/workspace/activity":
+                return self._json(200, self.api.record_workspace_activity(payload, context=context))
             if path == "/extract/all":
                 return self._json(200, self.api.extract_all(payload))
             if path == "/profile/update-proposals":
@@ -1942,6 +2034,128 @@ def _today_continue_item(item: dict[str, Any]) -> dict[str, Any]:
         if item.get("source_item_id")
         else [],
     }
+
+
+def _workspace_activity_item(event: WorkspaceActivityEvent) -> dict[str, Any]:
+    return {
+        "activity_id": event.workspace_activity_event_id,
+        "activity_type": event.activity_type,
+        "owner_user_id": event.owner_user_id,
+        "actor_user_id": event.actor_user_id,
+        "target_type": event.target_type,
+        "target_id": event.target_id,
+        "surface": event.surface,
+        "title": event.title or _workspace_activity_default_title(event.surface, event.target_id),
+        "summary": event.summary,
+        "metadata": to_jsonable(event.metadata),
+        "created_at": event.created_at.isoformat(),
+    }
+
+
+def _workspace_continue_working(activity_items: list[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:
+    by_target: dict[tuple[str, str], dict[str, Any]] = {}
+    pinned_keys: set[tuple[str, str]] = set()
+    for item in activity_items:
+        key = (str(item.get("target_type") or ""), str(item.get("target_id") or ""))
+        if item.get("activity_type") == "pinned":
+            pinned_keys.add(key)
+        if key not in by_target:
+            by_target[key] = dict(item)
+            continue
+        existing = by_target[key]
+        if item.get("activity_type") == "pinned" and existing.get("activity_type") != "pinned":
+            by_target[key] = dict(item)
+    result = []
+    for key, item in by_target.items():
+        item = dict(item)
+        item["pinned"] = key in pinned_keys
+        result.append(item)
+    result.sort(key=lambda item: (1 if item.get("pinned") else 0, str(item.get("created_at") or "")), reverse=True)
+    return result[: max(0, limit)]
+
+
+def _today_continue_item_from_activity(item: dict[str, Any]) -> dict[str, Any]:
+    surface = str(item.get("surface") or "document")
+    return {
+        "id": item.get("target_id") or item.get("activity_id"),
+        "type": item.get("target_type") or "workspace_activity",
+        "title": item.get("title") or _workspace_activity_default_title(surface, str(item.get("target_id") or "")),
+        "subtitle": " / ".join(
+            part
+            for part in [
+                _workspace_activity_label(str(item.get("activity_type") or "")),
+                surface,
+                "pinned" if item.get("pinned") else "",
+            ]
+            if part
+        ),
+        "summary": item.get("summary") or "最近在工作区发生的真实活动。",
+        "opened_surface": surface if surface in {"document", "canvas", "review"} else "document",
+        "created_at": item.get("created_at"),
+        "activity_type": item.get("activity_type"),
+        "target_type": item.get("target_type"),
+        "target_id": item.get("target_id"),
+        "pinned": bool(item.get("pinned")),
+    }
+
+
+def _workspace_activity_default_title(surface: str, target_id: str) -> str:
+    labels = {
+        "today": "Today",
+        "document": "文档工作区",
+        "canvas": "画布工作区",
+        "review": "Review Center",
+    }
+    return labels.get(surface, target_id or "Workspace")
+
+
+def _workspace_activity_label(activity_type: str) -> str:
+    labels = {
+        "opened": "打开",
+        "edited": "编辑",
+        "viewed": "查看",
+        "pinned": "置顶",
+    }
+    return labels.get(activity_type, activity_type)
+
+
+def _discovery_item_payload(item) -> dict[str, Any]:
+    evidence = to_jsonable(item.evidence)
+    discovery_type = str(item.discovery_type)
+    return {
+        "id": item.discovery_id,
+        "type": discovery_type,
+        "title": item.title,
+        "evidence": evidence,
+        "confidence": item.confidence,
+        "producer": item.producer,
+        "created_at": item.created_at.isoformat(),
+        "status": item.status,
+        "label": _discovery_type_label(discovery_type),
+        "summary": _discovery_summary(discovery_type, evidence),
+        "evidence_count": len(evidence),
+    }
+
+
+def _discovery_type_label(discovery_type: str) -> str:
+    labels = {
+        "relationship": "关系发现",
+        "conflict": "冲突发现",
+        "memory": "记忆发现",
+        "topic": "主题发现",
+    }
+    return labels.get(discovery_type, "发现")
+
+
+def _discovery_summary(discovery_type: str, evidence: list[dict[str, Any]]) -> str:
+    if not evidence:
+        return "Discovery producer 生成了一个待检查发现。"
+    first = evidence[0]
+    if discovery_type == "topic":
+        return f"来自 {first.get('source_channel') or 'source'} 的新主题线索。"
+    if first.get("review_item_id"):
+        return f"由 review candidate {first.get('review_item_id')} 生成，等待检查。"
+    return "Discovery producer 生成了一个待检查发现。"
 
 
 def _today_discoveries(review_items: list[dict[str, Any]], hyperedges: list[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:

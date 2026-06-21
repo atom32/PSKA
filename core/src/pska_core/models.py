@@ -177,6 +177,34 @@ class OfflineIndexState:
 
 
 @dataclass(slots=True)
+class WorkspaceActivityEvent:
+    workspace_activity_event_id: str
+    owner_user_id: str
+    actor_user_id: str
+    activity_type: str
+    target_type: str
+    target_id: str
+    surface: str
+    title: str = ""
+    summary: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: datetime = field(default_factory=utc_now)
+
+
+@dataclass(slots=True)
+class DiscoveryItem:
+    discovery_id: str
+    owner_user_id: str
+    discovery_type: str
+    title: str
+    evidence: list[dict[str, Any]]
+    confidence: float
+    producer: str
+    status: str = "new"
+    created_at: datetime = field(default_factory=utc_now)
+
+
+@dataclass(slots=True)
 class Memory:
     memory_id: str
     owner_user_id: str

@@ -9,6 +9,14 @@ export default defineConfig({
       "/workspace": {
         target: "http://127.0.0.1:8765",
         changeOrigin: true
+      },
+      "/console": {
+        target: "http://127.0.0.1:8765",
+        changeOrigin: true
+      },
+      "/review-items": {
+        target: "http://127.0.0.1:8765",
+        changeOrigin: true
       }
     }
   }

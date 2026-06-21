@@ -1,4 +1,13 @@
-import type { BrainState, TodayResponse, WorkspaceCorpusResponse, WorkspaceSearchResponse } from "./types";
+import type {
+  BrainState,
+  ReviewCenterResponse,
+  TodayResponse,
+  WorkspaceActivityResponse,
+  WorkspaceActivityType,
+  WorkspaceCorpusResponse,
+  WorkspaceMode,
+  WorkspaceSearchResponse
+} from "./types";
 
 const headers = (serviceToken: string) => {
   const result: Record<string, string> = { "Content-Type": "application/json" };
@@ -79,13 +88,53 @@ export async function loadToday(serviceToken: string): Promise<TodayResponse> {
   return (await response.json()) as TodayResponse;
 }
 
+export async function loadReviewCenter(serviceToken: string, status = "pending"): Promise<ReviewCenterResponse> {
+  const params = new URLSearchParams({
+    owner_user_id: "user_primary",
+    status,
+    limit: "50"
+  });
+  const response = await fetch(`/console/reviews/data?${params.toString()}`, { headers: headers(serviceToken) });
+  if (!response.ok) {
+    throw new Error(`reviews ${response.status}`);
+  }
+  return (await response.json()) as ReviewCenterResponse;
+}
+
+export async function recordWorkspaceActivity(
+  serviceToken: string,
+  payload: {
+    activity_type: WorkspaceActivityType;
+    surface: WorkspaceMode;
+    target_type: string;
+    target_id: string;
+    title: string;
+    summary?: string;
+    metadata?: Record<string, unknown>;
+  }
+): Promise<WorkspaceActivityResponse> {
+  const response = await fetch("/workspace/activity", {
+    method: "POST",
+    headers: headers(serviceToken),
+    body: JSON.stringify({
+      owner_user_id: "user_primary",
+      actor_user_id: "user_primary",
+      ...payload
+    })
+  });
+  if (!response.ok) {
+    throw new Error(`activity ${response.status}`);
+  }
+  return (await response.json()) as WorkspaceActivityResponse;
+}
+
 export async function approveReviewItem(serviceToken: string, reviewItemId: string, apply = false): Promise<void> {
   const response = await fetch(`/review-items/${encodeURIComponent(reviewItemId)}/approve`, {
     method: "POST",
     headers: headers(serviceToken),
     body: JSON.stringify({
       actor_user_id: "user_primary",
-      reason: "Approved from PSKA Today",
+      reason: "Approved from PSKA Review Center",
       apply
     })
   });
@@ -100,11 +149,25 @@ export async function rejectReviewItem(serviceToken: string, reviewItemId: strin
     headers: headers(serviceToken),
     body: JSON.stringify({
       actor_user_id: "user_primary",
-      reason: "Rejected from PSKA Today"
+      reason: "Rejected from PSKA Review Center"
     })
   });
   if (!response.ok) {
     throw new Error(`reject ${response.status}`);
+  }
+}
+
+export async function applyReviewItem(serviceToken: string, reviewItemId: string): Promise<void> {
+  const response = await fetch(`/review-items/${encodeURIComponent(reviewItemId)}/apply`, {
+    method: "POST",
+    headers: headers(serviceToken),
+    body: JSON.stringify({
+      actor_user_id: "user_primary",
+      reason: "Applied from PSKA Review Center"
+    })
+  });
+  if (!response.ok) {
+    throw new Error(`apply ${response.status}`);
   }
 }
 

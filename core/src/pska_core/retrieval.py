@@ -48,6 +48,7 @@ _SENSITIVE_TERMS = {
 class RetrievalResult:
     result_id: str
     source_item_id: str
+    source: str
     title: str
     snippet: str
     score: float
@@ -203,6 +204,7 @@ class RetrievalService:
             represented_user_id=represented_user_id,
             top_k=top_k,
         )
+        self._annotate_result_sources(combined)
         self._apply_rank_quality_boosts(combined, item_by_id, reference_time=_latest_source_time(items))
         return combined, {
             "exact_candidates": len(exact_ranked),
@@ -262,12 +264,17 @@ class RetrievalService:
         return RetrievalResult(
             result_id=chunk.chunk_id,
             source_item_id=item.source_item_id,
+            source=_primary_result_source(score_debug),
             title=item.title,
             snippet=chunk.text[:240],
             score=score,
             citation=citation,
             score_debug=score_debug,
         )
+
+    def _annotate_result_sources(self, results: list[RetrievalResult]) -> None:
+        for result in results:
+            result.source = _primary_result_source(result.score_debug)
 
     def _terms(self, text: str) -> list[str]:
         return re.findall(r"[\w\u4e00-\u9fff]+", text.lower())
@@ -1085,6 +1092,20 @@ def _latest_source_time(items: list[SourceItem]) -> datetime | None:
     timestamps = [_source_time(item) for item in items]
     timestamps = [timestamp for timestamp in timestamps if timestamp is not None]
     return max(timestamps) if timestamps else None
+
+
+def _primary_result_source(score_debug: dict[str, float]) -> str:
+    if score_debug.get("exact_source", 0.0) > 0:
+        return "exact_source"
+    if score_debug.get("vector_rank", 0.0) > 0 or score_debug.get("vector", 0.0) > 0:
+        return "vector"
+    if score_debug.get("graph_expansion", 0.0) > 0 or (
+        score_debug.get("graph_ppr", 0.0) > 0 and score_debug.get("lexical", 0.0) <= 0
+    ):
+        return "graph"
+    if score_debug.get("lexical_rank", 0.0) > 0 or score_debug.get("lexical", 0.0) > 0:
+        return "lexical"
+    return "unknown"
 
 
 def _source_time(item: SourceItem) -> datetime | None:

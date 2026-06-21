@@ -8,6 +8,7 @@ from pska_core.models import (
     AgentMemory,
     Chunk,
     ConnectorState,
+    DiscoveryItem,
     Document,
     Entity,
     Hyperedge,
@@ -22,6 +23,7 @@ from pska_core.models import (
     TeamMembership,
     User,
     UserProfileCard,
+    WorkspaceActivityEvent,
     utc_now,
 )
 from pska_core.enums import Visibility
@@ -111,6 +113,23 @@ class KnowledgeStore(Protocol):
     ) -> OfflineIndexState: ...
     def tombstone_offline_index_for_source(self, source_item_id: str, *, reason: str) -> list[OfflineIndexState]: ...
     def offline_index_status(self, *, owner_user_id: str | None = None) -> dict: ...
+    def add_workspace_activity_event(self, event: WorkspaceActivityEvent) -> WorkspaceActivityEvent: ...
+    def list_workspace_activity_events(
+        self,
+        *,
+        owner_user_id: str,
+        activity_types: set[str] | None = None,
+        limit: int = 50,
+    ) -> list[WorkspaceActivityEvent]: ...
+    def upsert_discovery_item(self, item: DiscoveryItem) -> DiscoveryItem: ...
+    def list_discovery_items(
+        self,
+        *,
+        owner_user_id: str,
+        status: str | None = None,
+        since=None,
+        limit: int = 50,
+    ) -> list[DiscoveryItem]: ...
     def list_chunks_for_sources(self, source_item_ids: set[str]) -> list[Chunk]: ...
     def list_chunks_missing_embedding(self, *, provider: str, model: str, limit: int | None = None) -> list[Chunk]: ...
     def update_chunk_embedding(self, chunk_id: str, embedding: list[float], *, provider: str, model: str) -> None: ...
@@ -152,6 +171,8 @@ class InMemoryKnowledgeStore:
         self.jobs: dict[str, Job] = {}
         self.job_events: list[JobEvent] = []
         self.offline_index_states: dict[tuple[str, str], OfflineIndexState] = {}
+        self.workspace_activity_events: list[WorkspaceActivityEvent] = []
+        self.discovery_items: dict[str, DiscoveryItem] = {}
 
     def add_user(self, user: User) -> None:
         self.users[user.user_id] = user
@@ -430,6 +451,46 @@ class InMemoryKnowledgeStore:
             "last_indexed_at": last_indexed.isoformat() if last_indexed else None,
         }
 
+    def add_workspace_activity_event(self, event: WorkspaceActivityEvent) -> WorkspaceActivityEvent:
+        self.workspace_activity_events.append(event)
+        return event
+
+    def list_workspace_activity_events(
+        self,
+        *,
+        owner_user_id: str,
+        activity_types: set[str] | None = None,
+        limit: int = 50,
+    ) -> list[WorkspaceActivityEvent]:
+        events = [event for event in self.workspace_activity_events if event.owner_user_id == owner_user_id]
+        if activity_types:
+            events = [event for event in events if event.activity_type in activity_types]
+        events = sorted(events, key=lambda event: (event.created_at, event.workspace_activity_event_id), reverse=True)
+        return events[: max(0, limit)]
+
+    def upsert_discovery_item(self, item: DiscoveryItem) -> DiscoveryItem:
+        existing = self.discovery_items.get(item.discovery_id)
+        if existing:
+            return existing
+        self.discovery_items[item.discovery_id] = item
+        return item
+
+    def list_discovery_items(
+        self,
+        *,
+        owner_user_id: str,
+        status: str | None = None,
+        since=None,
+        limit: int = 50,
+    ) -> list[DiscoveryItem]:
+        items = [item for item in self.discovery_items.values() if item.owner_user_id == owner_user_id]
+        if status:
+            items = [item for item in items if item.status == status]
+        if since is not None:
+            items = [item for item in items if item.created_at >= since]
+        items = sorted(items, key=lambda item: (item.created_at, item.discovery_id), reverse=True)
+        return items[: max(0, limit)]
+
     def list_chunks_for_sources(self, source_item_ids: set[str]) -> list[Chunk]:
         return [chunk for chunk in self.chunks.values() if chunk.source_item_id in source_item_ids]
 
@@ -704,6 +765,8 @@ class InMemoryKnowledgeStore:
             "jobs": self.jobs,
             "job_events": self.job_events,
             "offline_index_states": self.offline_index_states,
+            "workspace_activity_events": self.workspace_activity_events,
+            "discovery_items": self.discovery_items,
         }
         if table not in tables:
             raise ValueError(f"Unsupported table: {table}")
