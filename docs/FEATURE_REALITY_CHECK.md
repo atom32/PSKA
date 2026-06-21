@@ -24,6 +24,7 @@ real PSKA schema data plus development fixtures and smoke-test data:
 | Embeddings | 147 embedded chunks with BGE-M3 (`BAAI/bge-m3`, 1024 dimensions) |
 | Entities | 348 entities |
 | Hyperedges | 146 graph relationships |
+| Discovery Items | 8 new items, all from `TopicDiscoveryProducer` |
 | Review Items | 20 historical items, 0 pending items |
 | Agent Memories | 10 memories |
 | Profile Cards | 4 profile cards |
@@ -39,9 +40,9 @@ because the local corpus currently has no populated chunk embeddings.
 | Feature | Backend | Frontend | Reality | Notes |
 | --- | --- | --- | --- | --- |
 | One-command local startup | Real | Real | Real | `./start.sh` starts the backend supervisor and Vite frontend. |
-| Today aggregation | Real | Real | Partial | `GET /workspace/today/data` returns real sections, but it composes existing tables instead of a dedicated Today model. |
-| Continue Working | Partial | Real | Partial | Uses recent source/document data. There is no workspace activity model for opened/edited/pinned surfaces. |
-| Discovery Feed | Partial | Real | Partial | Currently wraps existing pending review items and hyperedges. Hyperedge-backed items are graph browsing, not newly produced discoveries. |
+| Today aggregation | Real | Real | Partial | `GET /workspace/today/data` returns real sections. Discoveries now come from a dedicated discovery feed, while other sections remain composed from existing workspace data. |
+| Continue Working | Real | Real | Partial | Uses persisted workspace activity events for opened/edited/viewed/pinned surfaces. It still needs stronger ranking and object-specific resume behavior. |
+| Discovery Feed | Real | Real | Partial | `DiscoveryItem` persistence and producer-backed feed exist. Current quality is low because `TopicDiscoveryProducer` mostly promotes recent source titles rather than synthesized discoveries. |
 | Needs Review | Real | Real | Partial | Review APIs work, but current DB has 0 pending items. Frontend must not show fallback review cards when real API returns an empty list. |
 | Review approve/reject | Real | Real | Real | `POST /review-items/{id}/approve` and `/reject` are wired from Today for real review ids. |
 | Review apply | Real | Partial | Partial | Backend supports `/apply`; Today uses `approve` with `apply=true` for recommended apply actions. A full Review page is not built. |
@@ -70,6 +71,9 @@ because the local corpus currently has no populated chunk embeddings.
 | `GET /index-status` | Real | No | Canonical table counts. |
 | `GET /metrics` | Real | No | Includes index, connector, embedding, and jobs metrics. |
 | `GET /workspace/today/data` | Real | Yes | Today source of truth. Aggregated, not dedicated domain model. |
+| `GET /workspace/discoveries/data` | Real | Yes | Producer-backed discovery feed limited to recent `new` discoveries. |
+| `POST /workspace/activity` | Real | Yes | Writes opened/edited/viewed/pinned workspace activity events. |
+| `GET /workspace/activity/data` | Real | Yes | Used by Continue Working. |
 | `GET /workspace/corpus/data` | Real | Yes | Used to populate Brain entities/timeline/connections outside Today. |
 | `POST /workspace/search/query` | Real | Yes | Used by Brain context analysis. Direct mode works without agentic service. |
 | `POST /workspace/writer/suggest` | Real | No | Backend exists; frontend editor does not expose it yet. |
@@ -88,7 +92,7 @@ because the local corpus currently has no populated chunk embeddings.
 | UI Control | Reality | Behavior |
 | --- | --- | --- |
 | Today refresh | Partial | Resets local Brain status; Today query refetch is handled by React Query load lifecycle rather than this button directly. |
-| Continue Working item | Mock/Partial | Opens local document/canvas mode. It does not open the selected source/document id. |
+| Continue Working item | Partial | Opens the relevant local workspace mode from persisted activity. It does not yet restore every object-specific state. |
 | Discovery `接受` | Partial | Calls review approve only if the item has `review_item_id`; otherwise local mark only. |
 | Discovery `忽略` | Partial | Calls review reject only if the item has `review_item_id`; otherwise local mark only. |
 | Discovery `稍后` | Mock | Local mark only. |
@@ -118,25 +122,37 @@ hits separately.
 
 ### Discovery
 
-The UI label says `Discoveries`, but the current feed mostly wraps existing
-hyperedges and pending review items. A true discovery feed needs freshness,
-novelty, lifecycle state, and action persistence.
+PSKA now has persisted `DiscoveryItem` records produced by discovery producers.
+Today reads only recent `new` discoveries from `GET /workspace/discoveries/data`
+instead of browsing all existing graph relationships.
 
 Reality: `Partial`.
 
-Next step: introduce a `DiscoveryItem` or equivalent view over candidate/review
-production with states such as `new`, `accepted`, `ignored`, and `snoozed`.
+Current local producer statistics:
+
+| Producer | Count | Avg Evidence | Avg Confidence | Accepted Rate |
+| --- | ---: | ---: | ---: | ---: |
+| `TopicDiscoveryProducer` | 8 | 1.00 | 0.620 | 0.000 |
+
+The current topic items prove the pipeline exists, but they mostly expose corpus
+metadata such as recent source titles. Topic extraction is not discovery. A
+high-value discovery should identify a new relationship, conflict, pattern,
+decision, or risk.
+
+Next step: implement discovery quality and ranking before adding more
+producers. Add stable fingerprints, frozen evidence snapshots, and a scorer that
+prioritizes novelty, cross-source support, temporal span, evidence strength,
+graph impact, and expected review likelihood.
 
 ### Continue Working
 
-Today uses recent source items as a proxy for work activity. PSKA does not yet
-know which document/canvas/search/review the user opened, edited, pinned, or
-viewed.
+Today uses persisted workspace activity events for opened, edited, viewed, and
+pinned surfaces.
 
 Reality: `Partial`.
 
-Next step: add a workspace activity model before presenting Continue Working as
-true work resumption.
+Next step: improve ranking and restore object-specific workspace state when the
+user resumes work.
 
 ### Editor and Canvas Persistence
 
@@ -154,8 +170,11 @@ before adding advanced editing behavior.
    section. Empty real data should render as empty state, not mock data.
 2. Add a visible development badge for `Mock`, `Partial`, and `Real` sections in
    the frontend while the product is still being wired.
-3. Backfill or explicitly disable embedding recall in the UI readiness panel.
-4. Add a real Review page using `GET /console/reviews/data`.
-5. Add discovery lifecycle persistence before presenting hyperedges as
-   actionable discoveries.
-6. Add workspace activity tracking for Continue Working.
+3. Add a readiness card that reports embedded chunk count versus total chunk
+   count.
+4. Add discovery lifecycle persistence for `accepted`, `rejected`, `dismissed`,
+   `snoozed`, and `expired`.
+5. Route every accepted discovery through Review before changing Graph, Memory,
+   or Profile state.
+6. Add discovery fingerprints, frozen evidence snapshots, and a quality/ranking
+   scorer before expanding producer count.
