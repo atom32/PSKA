@@ -12,6 +12,7 @@ from pska_core.cli import (
     _daily_briefing_payload,
     _fastreact_digest_worker_command_payload,
     _digest_now_candidate_summary,
+    _digest_now_diagnostics,
     _job_run_diagnostics,
     _daily_status_payload,
     _memory_list_payload,
@@ -102,7 +103,7 @@ def test_cli_accepts_search_and_smoke() -> None:
     connector = build_parser().parse_args(["connector-ingest-record", "record.json"])
     knowledge_source = build_parser().parse_args(["knowledge-source", "add-folder", "--path", "notes", "--mode", "manual"])
     files_scan = build_parser().parse_args(["files-scan", "--root", "notes", "--ignore", "*.tmp"])
-    files_sync = build_parser().parse_args(["files-sync", "--root", "notes", "--ignore", "*.tmp"])
+    files_sync = build_parser().parse_args(["files-sync", "--root", "notes", "--ignore", "*.tmp", "--skip-twitter-archives"])
     files_watch = build_parser().parse_args(["files-watch", "--root", "notes", "--initial-sync", "--max-events", "1"])
 
     assert search.command == "search"
@@ -174,6 +175,7 @@ def test_cli_accepts_search_and_smoke() -> None:
     assert files_sync.command == "files-sync"
     assert str(files_sync.root[0]) == "notes"
     assert files_sync.ignore == ["*.tmp"]
+    assert files_sync.skip_twitter_archives is True
     assert files_watch.command == "files-watch"
     assert str(files_watch.root[0]) == "notes"
     assert files_watch.initial_sync is True
@@ -183,15 +185,21 @@ def test_cli_accepts_search_and_smoke() -> None:
 def test_workspace_defaults_are_applied_after_config_load(tmp_path) -> None:
     workspace = tmp_path / "pska-workspace"
     import_args = build_parser().parse_args(["import-twitter-zips"])
+    files_sync_args = build_parser().parse_args(["files-sync"])
+    digest_now_args = build_parser().parse_args(["digest-now"])
     mvp_args = build_parser().parse_args(["mvp-bootstrap"])
     smoke_args = build_parser().parse_args(["smoke-twitter-import"])
     daemon_args = build_parser().parse_args(["local-daemon", "status"])
 
-    for args in [import_args, mvp_args, smoke_args, daemon_args]:
+    for args in [import_args, files_sync_args, digest_now_args, mvp_args, smoke_args, daemon_args]:
         _apply_workspace_defaults(args, workspace)
 
     assert import_args.input == workspace / "twitter_archive"
     assert import_args.archive_root == workspace / "imports"
+    assert files_sync_args.twitter_archive == workspace / "twitter_archive"
+    assert files_sync_args.archive_root == workspace / "imports"
+    assert digest_now_args.twitter_archive == workspace / "twitter_archive"
+    assert digest_now_args.archive_root == workspace / "imports"
     assert mvp_args.twitter_archive == workspace / "twitter_archive"
     assert mvp_args.archive_root == workspace / "imports"
     assert smoke_args.input == workspace / "twitter_archive"
@@ -791,6 +799,33 @@ def test_digest_now_candidate_summary_counts_fastreact_writes() -> None:
     }
 
 
+def test_digest_now_diagnostics_warns_when_worker_does_not_write_candidates() -> None:
+    diagnostics = _digest_now_diagnostics(
+        [
+            {
+                "ok": True,
+                "processed": 1,
+                "result": {
+                    "fastreact_runs": [
+                        {
+                            "tool_calls": [{"tool_name": "pska_pska_job_context"}],
+                            "write_call_count": 0,
+                            "job_context_call_count": 1,
+                        }
+                    ]
+                },
+            }
+        ]
+    )
+
+    assert diagnostics == {
+        "fastreact_run_count": 1,
+        "write_call_count": 0,
+        "job_context_call_count": 1,
+        "warnings": ["fastreact_digest_completed_without_write_candidates"],
+    }
+
+
 def test_cli_accepts_seed_review_candidates() -> None:
     args = build_parser().parse_args(
         [
@@ -1074,10 +1109,10 @@ def test_daily_status_payload_is_deterministic_and_fastreact_optional(monkeypatc
     assert payload["digest_backlog"] == {"jobs": 1, "source_items": 1}
     assert payload["pending_reviews"]["total_matching"] == 1
     assert payload["failed_jobs"]["count"] == 1
-    assert "./scripts/pska review-list --status pending --owner-user-id user_primary --summary" in payload["recommended_commands"]
-    assert "./scripts/pska review-approve <review_item_id> --apply" in payload["recommended_commands"]
-    assert "./scripts/pska jobs list --status failed" in payload["recommended_commands"]
-    assert "./scripts/pska job-status --job-id <job_id>" in payload["recommended_commands"]
+    assert "./scripts/pska --config .pska/config.json review-list --status pending --owner-user-id user_primary --summary" in payload["recommended_commands"]
+    assert "./scripts/pska --config .pska/config.json review-approve <review_item_id> --apply" in payload["recommended_commands"]
+    assert "./scripts/pska --config .pska/config.json jobs list --status failed" in payload["recommended_commands"]
+    assert "./scripts/pska --config .pska/config.json job-status --job-id <job_id>" in payload["recommended_commands"]
 
 
 def test_daily_briefing_payload_includes_deterministic_next_actions(monkeypatch) -> None:
@@ -1165,9 +1200,9 @@ def test_daily_briefing_payload_includes_deterministic_next_actions(monkeypatch)
     assert payload["connector_state"]["source_channels"] == ["manual"]
     assert payload["pending_reviews"]["total_matching"] == 1
     assert payload["failed_jobs"]["count"] == 1
-    assert "./scripts/pska review-list --status pending --owner-user-id user_primary --summary" in payload["deterministic_next_actions"]
-    assert "./scripts/pska jobs list --status failed" in payload["deterministic_next_actions"]
-    assert "./scripts/pska fastreact-digest-worker-command" in payload["deterministic_next_actions"]
+    assert "./scripts/pska --config .pska/config.json review-list --status pending --owner-user-id user_primary --summary" in payload["deterministic_next_actions"]
+    assert "./scripts/pska --config .pska/config.json jobs list --status failed" in payload["deterministic_next_actions"]
+    assert "./scripts/pska --config .pska/config.json fastreact-digest-worker-command" in payload["deterministic_next_actions"]
 
 
 def test_ops_briefing_payload_distinguishes_recovery_categories(monkeypatch) -> None:

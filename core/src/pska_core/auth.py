@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import hmac
 import json
-import os
 from typing import Any, Mapping
 
 
@@ -38,12 +37,12 @@ class RequestContext:
         return merged
 
 
-def service_token_required() -> bool:
-    return bool(os.environ.get("PSKA_SERVICE_TOKEN"))
+def service_token_required(service_token: str | None = None) -> bool:
+    return bool(service_token)
 
 
-def authenticate_headers(headers: Mapping[str, str]) -> bool:
-    expected = os.environ.get("PSKA_SERVICE_TOKEN")
+def authenticate_headers(headers: Mapping[str, str], service_token: str | None = None) -> bool:
+    expected = service_token
     if not expected:
         return False
     provided = headers.get("X-PSKA-Service-Token") or _bearer_token(headers.get("Authorization"))

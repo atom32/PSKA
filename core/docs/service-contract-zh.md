@@ -102,10 +102,14 @@ MCP：
 
 ## Authentication and Request Context
 
-默认本地开发不强制认证。设置 `PSKA_SERVICE_TOKEN` 后，除 `GET /health` 外的所有 HTTP route 都需要 service token：
+默认本地开发不强制认证。在 `.pska/config.json` 设置 `service.service_token` 后，除 `GET /health` 外的所有 HTTP route 都需要 service token：
 
-```bash
-export PSKA_SERVICE_TOKEN="replace-with-local-token"
+```json
+"service": {
+  "host": "127.0.0.1",
+  "port": 8765,
+  "service_token": "replace-with-local-token"
+}
 ```
 
 支持两种 header：
@@ -575,7 +579,7 @@ Unknown methods or tool errors return JSON-RPC error objects.
   --mcp-transport http \
   --output .pska/fastreact-pska-http.json
 
-# Fastreact credentials must contain mcp_api_keys.pska with PSKA_SERVICE_TOKEN.
+# Fastreact credentials must contain mcp_api_keys.pska with the PSKA service.service_token value.
 # Example shape, do not commit real tokens:
 # ~/.fastreact/credentials.json
 # {"mcp_api_keys":{"pska":"..."}}

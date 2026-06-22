@@ -15,7 +15,7 @@ from pska_core.agent_capture import capture_agent_conversation
 from pska_core.agentic_service import AgenticServiceError, build_agentic_service_client
 from pska_core.auth import AuthError, RequestContext, authenticate_headers, context_from_headers, service_token_required
 from pska_core.candidates import CandidateWriteService
-from pska_core.config import DEFAULT_DATABASE_URL, DatabaseConfig, PSKAConfig
+from pska_core.config import DEFAULT_DATABASE_URL, DatabaseConfig, PSKAConfig, ServiceConfig
 from pska_core.connectors import connector_state_from_mapping, connector_record_to_payload
 from pska_core.discovery import DISCOVERY_TODAY_SCORE_THRESHOLD, DiscoveryService
 from pska_core.embeddings import build_embedding_provider
@@ -36,9 +36,7 @@ from pska_core.store_postgres import PostgresKnowledgeStore
 class PSKAApi:
     def __init__(self, database_url: str | None = None, *, config: PSKAConfig | None = None) -> None:
         if config is None:
-            base = PSKAConfig(database=DatabaseConfig(url=database_url or os.environ.get("PSKA_DATABASE_URL", "postgresql:///pska")))
-            config = PSKAConfig.from_env(base)
-        config.apply_to_env()
+            config = PSKAConfig(database=DatabaseConfig(url=database_url or DEFAULT_DATABASE_URL))
         self.config = config
         self.store = PostgresKnowledgeStore(database_url or config.database.url)
         embedding_provider = build_embedding_provider(config.embedding_runtime_config())
@@ -46,7 +44,7 @@ class PSKAApi:
         self.agentic_service = build_agentic_service_client(config.agentic_service_runtime_config())
         self.ingest = IngestService(self.store, embedding_provider=embedding_provider, **config.ingest_kwargs())
         self.extraction = ExtractionService(self.store, llm_config=config.llm)
-        self.jobs = JobService(self.store)
+        self.jobs = JobService(self.store, workspace_root=config.workspace.root)
         self.reviews = ReviewService(self.store)
         self.memory = MemoryService(self.store)
         self.candidates = CandidateWriteService(self.store)
@@ -1445,12 +1443,13 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
         return json.loads(self.rfile.read(length).decode("utf-8"))
 
     def _context(self, payload: dict[str, Any]) -> RequestContext | None:
+        service_token = getattr(getattr(self.api, "config", None), "service", ServiceConfig()).service_token
         try:
-            authenticated = authenticate_headers(self.headers)
+            authenticated = authenticate_headers(self.headers, service_token)
         except AuthError as exc:
             self._json(401, {"error": str(exc)})
             return None
-        if service_token_required() and not authenticated:
+        if service_token_required(service_token) and not authenticated:
             self._json(401, {"error": "PSKA service token required"})
             return None
         context = context_from_headers(self.headers, payload, service_authenticated=authenticated)
@@ -1597,8 +1596,7 @@ def _api_config(api: Any) -> PSKAConfig:
     config = getattr(api, "config", None)
     if config is not None:
         return config
-    base = PSKAConfig(database=DatabaseConfig(url=os.environ.get("PSKA_DATABASE_URL", DEFAULT_DATABASE_URL)))
-    config = PSKAConfig.from_env(base)
+    config = PSKAConfig(database=DatabaseConfig(url=DEFAULT_DATABASE_URL))
     setattr(api, "config", config)
     return config
 

@@ -18,20 +18,7 @@
 }
 ```
 
-默认路径为 `~/.pska/config.json`、当前目录 `.pska/config.json` 或 `config.pska.json`。环境变量仍可覆盖 config file：
-
-```bash
-export PSKA_DATABASE_URL=postgresql:///pska
-export PSKA_SERVICE_URL=http://127.0.0.1:8765
-export PSKA_FASTREACT_URL=http://127.0.0.1:8000
-
-# P0.2 起支持。设置后 /health 以外的 HTTP route 都需要 token。
-export PSKA_SERVICE_TOKEN=replace-with-local-token
-
-# Optional。
-export PSKA_FASTREACT_SERVICE_TOKEN=replace-with-fastreact-token
-export PSKA_EMBEDDING_PROVIDER=disabled
-```
+默认启动配置路径为当前仓库 `.pska/config.json`，`./start.sh` 只读取这个文件。数据库、HTTP service、FastReAct、embedding、workspace、files roots、service token 和启动开关都应写在 config 里，不通过环境变量覆盖。
 
 当前产品化约定：
 
@@ -151,12 +138,12 @@ MVP 推荐用一个前台 supervisor 启动 PSKA service、job worker 和 digest
 ./scripts/pska service-check --url http://127.0.0.1:8765
 ```
 
-如果启用了 `PSKA_SERVICE_TOKEN`：
+如果启用了 `service.service_token`：
 
 ```bash
 ./scripts/pska service-check \
   --url http://127.0.0.1:8765 \
-  --service-token "$PSKA_SERVICE_TOKEN"
+  --service-token "<service.service_token>"
 ```
 
 `service-check` validates:
@@ -326,7 +313,7 @@ transport: http
   --output .pska/fastreact-pska-http.json
 
 # Fastreact credentials must include mcp_api_keys.pska.
-# Store PSKA_SERVICE_TOKEN there; do not commit credentials.json.
+# Store the PSKA service.service_token value there; do not commit credentials.json.
 
 cd ~/Fastreact/fastreact-nano
 NO_PROXY=127.0.0.1,localhost PYTHONPATH=src \

@@ -8,7 +8,7 @@ import sys
 from typing import Any
 
 from pska_core.candidates import CandidateWriteService
-from pska_core.config import WorkspaceConfig, expand_path
+from pska_core.config import WorkspaceConfig
 from pska_core.embeddings import EmbeddingConfig, EmbeddingProvider, EmbeddingService, build_embedding_provider
 from pska_core.enums import Visibility
 from pska_core.extraction import ExtractionService
@@ -38,8 +38,8 @@ JOB_TYPES = {
 }
 
 
-def _workspace_root() -> Path:
-    return expand_path(os.getenv("PSKA_WORKSPACE_ROOT")) if os.getenv("PSKA_WORKSPACE_ROOT") else WorkspaceConfig().root
+def _default_workspace_root() -> Path:
+    return WorkspaceConfig().root
 
 
 @dataclass(slots=True)
@@ -58,6 +58,7 @@ class JobService:
         embedding_provider: EmbeddingProvider | None = None,
         llm: LLMClient | None = None,
         fastreact: FastreactClient | None = None,
+        workspace_root: Path | None = None,
         worker_id: str | None = None,
         lease_seconds: int | None = None,
         excluded_job_types: set[str] | None = None,
@@ -66,6 +67,7 @@ class JobService:
         self.embedding_provider = embedding_provider
         self.llm = llm
         self.fastreact = fastreact
+        self.workspace_root = workspace_root or _default_workspace_root()
         self.worker_id = worker_id
         self.lease_seconds = lease_seconds
         self.excluded_job_types = excluded_job_types or set()
@@ -143,7 +145,7 @@ class JobService:
 
     def _import_twitter_zips(self, payload: dict[str, Any]) -> dict[str, Any]:
         embedding_provider = self._embedding_provider(payload)
-        workspace_root = _workspace_root()
+        workspace_root = self.workspace_root
         importer = TwitterZipImporter(
             self.store,
             archive_root=Path(payload.get("archive_root") or workspace_root / "imports"),
@@ -335,7 +337,7 @@ class JobService:
             output_path = payload.get("output")
             json_output_path = payload.get("json_output")
         else:
-            workspace_root = _workspace_root()
+            workspace_root = self.workspace_root
             output_path = str(payload.get("output") or core_root / "reports" / f"job_{job.job_id}.html")
             json_output_path = str(payload.get("json_output") or core_root / "reports" / f"job_{job.job_id}.json")
             command = [

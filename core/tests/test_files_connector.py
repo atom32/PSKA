@@ -137,3 +137,24 @@ def test_files_scan_reconciles_unchanged_changed_moved_and_missing_files(tmp_pat
     assert moved.changes[0]["previous_path"] == str(note.resolve())
     assert missing.missing_files == 1
     assert missing.connector_state.config["files_missing"][0]["source_item_id"] == changed_source_id
+
+
+def test_files_scan_keeps_manifests_isolated_by_root(tmp_path: Path) -> None:
+    first_root = tmp_path / "first"
+    second_root = tmp_path / "second"
+    first_root.mkdir()
+    second_root.mkdir()
+    (first_root / "a.txt").write_text("first root", encoding="utf-8")
+    (second_root / "b.txt").write_text("second root", encoding="utf-8")
+    store = InMemoryKnowledgeStore()
+
+    first = scan_files(store, root=first_root)
+    second = scan_files(store, root=second_root)
+    first_again = scan_files(store, root=first_root)
+
+    assert first.missing_files == 0
+    assert second.missing_files == 0
+    assert first_again.missing_files == 0
+    assert first_again.unchanged_files == 1
+    manifests_by_root = first_again.connector_state.config["files_manifests_by_root"]
+    assert set(manifests_by_root) == {str(first_root.resolve()), str(second_root.resolve())}

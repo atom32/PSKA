@@ -104,16 +104,31 @@ http://127.0.0.1:5173/
 
 只启动后端或只启动前端：
 
-```bash
-PSKA_SKIP_FRONTEND=1 ./start.sh
-PSKA_SKIP_BACKEND=1 ./start.sh
+```json
+"startup": {
+  "backend": true,
+  "frontend": { "enabled": false }
+}
+```
+
+或：
+
+```json
+"startup": {
+  "backend": false,
+  "frontend": { "enabled": true }
+}
 ```
 
 跳过启动前的 bootstrap：
 
-```bash
-PSKA_SKIP_BOOTSTRAP=1 ./start.sh
+```json
+"startup": {
+  "bootstrap": false
+}
 ```
+
+改完 `.pska/config.json` 后再运行 `./start.sh`。
 
 ## 4. 发布前检查
 
@@ -128,9 +143,8 @@ PSKA_SKIP_BOOTSTRAP=1 ./start.sh
 如果服务启用了 token：
 
 ```bash
-export PSKA_SERVICE_TOKEN="<pska-local-service-token>"
 ./scripts/pska --config .pska/config.json service-check \
-  --service-token "$PSKA_SERVICE_TOKEN"
+  --service-token "<service.service_token>"
 ```
 
 检查前端代理是否能读到真实后端数据：
@@ -202,12 +216,13 @@ http://127.0.0.1:8000
 
 PSKA 调用 FastReAct 时需要知道 FastReAct API 和 service token：
 
-```bash
-export PSKA_FASTREACT_URL="http://127.0.0.1:8000"
-export PSKA_FASTREACT_SERVICE_TOKEN="<fastreact-service-token>"
+```json
+"fastreact": {
+  "url": "http://127.0.0.1:8000",
+  "service_token": "<fastreact-service-token>",
+  "timeout_seconds": 30
+}
 ```
-
-也可以写入 `.pska/config.json` 的 `fastreact.service_token`。
 
 ## 6. FastReAct 兼容 stdio MCP 模式
 
@@ -293,8 +308,7 @@ lsof -nP -iTCP:8000 -sTCP:LISTEN
 
 FastReAct 返回 401：
 
-- PSKA 调 FastReAct：检查 `PSKA_FASTREACT_SERVICE_TOKEN` 或
-  `.pska/config.json` 的 `fastreact.service_token`。
+- PSKA 调 FastReAct：检查 `.pska/config.json` 的 `fastreact.service_token`。
 - FastReAct 调 PSKA HTTP MCP：检查 `~/.fastreact/credentials.json` 里的
   `mcp_api_keys.pska` 是否等于 PSKA service token。
 

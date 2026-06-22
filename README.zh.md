@@ -79,16 +79,64 @@ brew install python@3.12
 ./scripts/bootstrap_pska_env
 mkdir -p .pska
 cp core/config.pska.example.json .pska/config.json
-./scripts/pska --config .pska/config.json db-check
-./scripts/pska --config .pska/config.json db-create --name pska
-./scripts/pska --config .pska/config.json db-init
 ```
 
-运行 `./start.sh` 后，可以用下面这个命令完成一次最简单的本地 digest：
+编辑 `.pska/config.json`。这是唯一的本机配置文件，数据库、workspace、HTTP service、LLM、FastReAct、embedding、files roots 和启动行为都写在这里；不要再用 `PSKA_*` 环境变量配置启动。
+
+最小结构：
+
+```json
+{
+  "database": { "url": "postgresql:///pska" },
+  "workspace": { "root": "~/PSKA_workspaces/default" },
+  "startup": {
+    "bootstrap": true,
+    "backend": true,
+    "frontend": { "enabled": true, "host": "127.0.0.1", "port": 5173 }
+  },
+  "service": { "host": "127.0.0.1", "port": 8765, "service_token": null },
+  "llm": {
+    "api_key_file": "~/api_key.txt",
+    "model": "deepseek-v4-flash",
+    "base_url": "https://api.deepseek.com",
+    "timeout_seconds": 60
+  },
+  "fastreact": {
+    "url": "http://127.0.0.1:8000",
+    "service_token": null,
+    "timeout_seconds": 30
+  },
+  "agentic_service": {
+    "provider": "fastreact",
+    "url": "http://127.0.0.1:8000",
+    "service_token": null,
+    "timeout_seconds": 30
+  },
+  "embedding": {
+    "provider": "disabled",
+    "model": "BAAI/bge-m3",
+    "dimensions": 1024,
+    "batch_size": 16
+  },
+  "ingest": { "chunk_size": 1200, "chunk_overlap": 0 },
+  "files": {
+    "roots": ["~/PSKA_workspaces/default/notes"],
+    "ignore": ["*.tmp", "*.bak"],
+    "max_bytes": 1000000,
+    "owner_user_id": "user_primary",
+    "space_id": "private_primary",
+    "visibility": "private"
+  }
+}
+```
+
+然后启动：
 
 ```bash
-./scripts/pska --config .pska/config.json digest-now
+./start.sh
 ```
+
+`./start.sh` 会读取 `.pska/config.json`：`startup.bootstrap=true` 时准备数据库和知识源，`startup.backend=true` 时启动后端，`startup.frontend.enabled=true` 时启动前端。
 
 `.pska/config.json` 是本机配置，不要提交。
 

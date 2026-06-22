@@ -32,11 +32,7 @@ def certifi_path(python: Path) -> str | None:
 
 
 def build_config(args: argparse.Namespace) -> dict:
-    env = {
-        "PSKA_LLM_API_KEY_FILE": str(args.api_key_file),
-    }
-    if args.database_url:
-        env["PSKA_DATABASE_URL"] = args.database_url
+    env = {}
     ssl_cert_file = certifi_path(args.pska_python)
     if ssl_cert_file:
         env["SSL_CERT_FILE"] = ssl_cert_file
@@ -60,7 +56,7 @@ def build_config(args: argparse.Namespace) -> dict:
             {
                 "transport": "stdio",
                 "command": str(ROOT / "scripts" / "pska"),
-                "args": ["mcp-server"],
+                "args": ["--config", str(args.pska_config), "mcp-server"],
                 "env": env,
             }
         )
@@ -102,7 +98,8 @@ def main() -> None:
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--api-key-file", type=Path, default=DEFAULT_KEY_FILE)
     parser.add_argument("--pska-python", type=Path, default=DEFAULT_PSKA_PYTHON)
-    parser.add_argument("--database-url", default="postgresql:///pska")
+    parser.add_argument("--pska-config", type=Path, default=ROOT / ".pska" / "config.json")
+    parser.add_argument("--database-url", default="postgresql:///pska", help=argparse.SUPPRESS)
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--log-level", default="info")

@@ -6,6 +6,15 @@
   "workspace": {
     "root": "~/PSKA_workspaces/default"
   },
+  "startup": {
+    "bootstrap": true,
+    "backend": true,
+    "frontend": {
+      "enabled": true,
+      "host": "127.0.0.1",
+      "port": 5173
+    }
+  },
   "service": {
     "host": "127.0.0.1",
     "port": 8765,

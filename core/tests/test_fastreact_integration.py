@@ -14,6 +14,7 @@ from pska_core.agentic_service import AgenticServiceError
 from pska_core.api import PSKAApi, PSKARequestHandler
 from pska_core.candidates import CandidateWriteService
 from pska_core.cli import service_check
+from pska_core.config import PSKAConfig, ServiceConfig
 from pska_core.enums import Directionality, MemoryLayer, ReviewType, UserRole, Visibility
 from pska_core.fastreact_client import FastreactError, HttpFastreactClient, FastreactConfig
 import pska_core.fastreact_client as fastreact_module
@@ -545,10 +546,9 @@ def test_http_request_logs_include_request_job_and_source_refs(capsys) -> None:
     assert logs[1]["source_item_ids_count"] == 2
 
 
-def test_metrics_report_embedding_coverage_and_connector_freshness(monkeypatch) -> None:
+def test_metrics_report_embedding_coverage_and_connector_freshness() -> None:
     api = _api()
-    monkeypatch.setenv("PSKA_EMBEDDING_PROVIDER", "fake-bge")
-    monkeypatch.setenv("PSKA_EMBEDDING_MODEL", "fake-model")
+    api.config = PSKAConfig.from_dict({"embedding": {"provider": "fake-bge", "model": "fake-model"}})
     first = IngestService(api.store).ingest_channel_payload(
         {
             "schema_version": "pska.channel_ingest.v1",
@@ -846,9 +846,8 @@ def test_digest_schedule_agent_service_requires_represented_user_for_private_own
     assert rep["scheduled_source_item_ids"] == [source.source_item_id]
 
 
-def test_service_token_protects_non_health_routes(monkeypatch) -> None:
-    monkeypatch.setenv("PSKA_SERVICE_TOKEN", "secret")
-    api = _api()
+def test_service_token_protects_non_health_routes() -> None:
+    api = _api(service_token="secret")
     with _http_server(api) as base_url:
         health_status, health = _http_json(base_url, "GET", "/health")
         ready_status, ready = _http_json(base_url, "GET", "/ready")
@@ -875,9 +874,8 @@ def test_service_token_protects_non_health_routes(monkeypatch) -> None:
     assert bearer["ok"] is True
 
 
-def test_local_console_serves_dashboard_assets_when_service_token_enabled(monkeypatch) -> None:
-    monkeypatch.setenv("PSKA_SERVICE_TOKEN", "secret")
-    api = _api()
+def test_local_console_serves_dashboard_assets_when_service_token_enabled() -> None:
+    api = _api(service_token="secret")
     with _http_server(api) as base_url:
         status, headers, body = _http_text(base_url, "GET", "/console")
         data_status, data = _http_json(base_url, "GET", "/console/data")
@@ -1200,9 +1198,8 @@ def test_local_console_agentic_search_planning_error_falls_back_to_direct() -> N
     assert "retrieval" in payload["fallback"]
 
 
-def test_user_workspace_serves_assets_and_keeps_data_routes_token_protected(monkeypatch) -> None:
-    monkeypatch.setenv("PSKA_SERVICE_TOKEN", "secret")
-    api = _api()
+def test_user_workspace_serves_assets_and_keeps_data_routes_token_protected() -> None:
+    api = _api(service_token="secret")
     IngestService(api.store).ingest_channel_payload(
         {
             "schema_version": "pska.channel_ingest.v1",
@@ -1315,9 +1312,8 @@ def test_workspace_activity_drives_continue_working() -> None:
     assert today["continue_working"][1]["activity_type"] == "edited"
 
 
-def test_workspace_activity_http_endpoint_is_token_protected(monkeypatch) -> None:
-    monkeypatch.setenv("PSKA_SERVICE_TOKEN", "secret")
-    api = _api()
+def test_workspace_activity_http_endpoint_is_token_protected() -> None:
+    api = _api(service_token="secret")
     payload = {
         "owner_user_id": "user_primary",
         "activity_type": "viewed",
@@ -1930,13 +1926,12 @@ def test_cli_service_check_fails_on_database_mismatch(monkeypatch, capsys) -> No
     }
 
 
-def test_cli_service_check_uses_service_token(monkeypatch, capsys) -> None:
+def test_cli_service_check_uses_service_token(capsys) -> None:
     class DownAgenticService:
         def ready(self):
             return {"ok": False, "provider": "test", "adapter": "fake", "error": "not reachable"}
 
-    monkeypatch.setenv("PSKA_SERVICE_TOKEN", "secret")
-    api = _api()
+    api = _api(service_token="secret")
     api.agentic_service = DownAgenticService()
     with _http_server(api) as base_url:
         blocked = service_check(_namespace(url=f"http://{base_url}", service_token=None, timeout_seconds=2))
@@ -2107,13 +2102,14 @@ def _store() -> InMemoryKnowledgeStore:
     return store
 
 
-def _api() -> PSKAApi:
+def _api(*, service_token: str | None = None) -> PSKAApi:
     api = object.__new__(PSKAApi)
+    api.config = PSKAConfig(service=ServiceConfig(service_token=service_token))
     api.store = _store()
     api.retrieval = RetrievalService(api.store, ACLService(api.store))
     api.agentic_service = FakeAgenticService(api.retrieval)
     api.ingest = IngestService(api.store)
-    api.mcp = MCPServer("postgresql:///unused", store=api.store)
+    api.mcp = MCPServer("postgresql:///unused", store=api.store, config=api.config)
     api.jobs = JobService(api.store)
     api.reviews = ReviewService(api.store)
     api.candidates = CandidateWriteService(api.store)

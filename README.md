@@ -80,16 +80,70 @@ brew install python@3.12
 ./scripts/bootstrap_pska_env
 mkdir -p .pska
 cp core/config.pska.example.json .pska/config.json
-./scripts/pska --config .pska/config.json db-check
-./scripts/pska --config .pska/config.json db-create --name pska
-./scripts/pska --config .pska/config.json db-init
 ```
 
-After `./start.sh`, run a simple local digest pass with:
+Edit `.pska/config.json`; this is the single local configuration file for the
+database, workspace, HTTP service, LLM, FastReAct, embeddings, files roots, and
+startup behavior. Do not configure PSKA startup through `PSKA_*` environment
+variables.
+
+Minimal shape:
+
+```json
+{
+  "database": { "url": "postgresql:///pska" },
+  "workspace": { "root": "~/PSKA_workspaces/default" },
+  "startup": {
+    "bootstrap": true,
+    "backend": true,
+    "frontend": { "enabled": true, "host": "127.0.0.1", "port": 5173 }
+  },
+  "service": { "host": "127.0.0.1", "port": 8765, "service_token": null },
+  "llm": {
+    "api_key_file": "~/api_key.txt",
+    "model": "deepseek-v4-flash",
+    "base_url": "https://api.deepseek.com",
+    "timeout_seconds": 60
+  },
+  "fastreact": {
+    "url": "http://127.0.0.1:8000",
+    "service_token": null,
+    "timeout_seconds": 30
+  },
+  "agentic_service": {
+    "provider": "fastreact",
+    "url": "http://127.0.0.1:8000",
+    "service_token": null,
+    "timeout_seconds": 30
+  },
+  "embedding": {
+    "provider": "disabled",
+    "model": "BAAI/bge-m3",
+    "dimensions": 1024,
+    "batch_size": 16
+  },
+  "ingest": { "chunk_size": 1200, "chunk_overlap": 0 },
+  "files": {
+    "roots": ["~/PSKA_workspaces/default/notes"],
+    "ignore": ["*.tmp", "*.bak"],
+    "max_bytes": 1000000,
+    "owner_user_id": "user_primary",
+    "space_id": "private_primary",
+    "visibility": "private"
+  }
+}
+```
+
+Then start everything with:
 
 ```bash
-./scripts/pska --config .pska/config.json digest-now
+./start.sh
 ```
+
+`./start.sh` reads `.pska/config.json`, prepares the configured database and
+knowledge sources when `startup.bootstrap` is true, starts the backend when
+`startup.backend` is true, and starts the frontend when
+`startup.frontend.enabled` is true.
 
 ### Twitter/X Archiving
 

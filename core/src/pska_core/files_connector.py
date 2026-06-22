@@ -81,7 +81,15 @@ def scan_files(
     report = FilesScanReport(root=str(root), connector_state=state)
     latest_cursor = state.scan_cursor
     patterns = [*(ignore or []), *DEFAULT_IGNORE]
-    previous_manifest = dict((state.config or {}).get("files_manifest") or {})
+    root_key = str(root)
+    state_config = dict(state.config or {})
+    manifests_by_root = dict(state_config.get("files_manifests_by_root") or {})
+    missing_by_root = dict(state_config.get("files_missing_by_root") or {})
+    previous_manifest = dict(manifests_by_root.get(root_key) or {})
+    if not previous_manifest:
+        legacy_manifest = dict(state_config.get("files_manifest") or {})
+        if _manifest_belongs_to_root(legacy_manifest, root):
+            previous_manifest = legacy_manifest
     next_manifest: dict[str, dict[str, Any]] = {}
     previous_by_hash = _manifest_by_hash(previous_manifest)
 
@@ -164,8 +172,12 @@ def scan_files(
     status = "failed" if report.failed and not report.ingested else "succeeded"
     state.scan_cursor = latest_cursor
     state.sync_status = status
+    manifests_by_root[root_key] = next_manifest
+    missing_by_root[root_key] = missing
     state.config = {
-        **dict(state.config or {}),
+        **state_config,
+        "files_manifests_by_root": manifests_by_root,
+        "files_missing_by_root": missing_by_root,
         "files_manifest": next_manifest,
         "files_missing": missing,
     }
@@ -348,6 +360,23 @@ def _missing_manifest(previous_manifest: dict[str, Any], next_manifest: dict[str
             }
         )
     return missing
+
+
+def _manifest_belongs_to_root(manifest: dict[str, dict[str, Any]], root: Path) -> bool:
+    if not manifest:
+        return False
+    resolved_root = root.expanduser().resolve()
+    for entry in manifest.values():
+        if not isinstance(entry, dict):
+            return False
+        path = entry.get("path")
+        if not path:
+            return False
+        try:
+            Path(str(path)).expanduser().resolve().relative_to(resolved_root)
+        except (OSError, ValueError):
+            return False
+    return True
 
 
 def _max_scan_cursor(current: str | None, candidate: str) -> str:

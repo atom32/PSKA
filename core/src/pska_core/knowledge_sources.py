@@ -59,21 +59,25 @@ class KnowledgeSourceService:
         return self.store.upsert_knowledge_source(source)
 
     def seed_from_config(self, config: PSKAConfig) -> list[KnowledgeSource]:
-        existing = self.store.list_knowledge_sources(owner_user_id=config.files.owner_user_id)
-        if existing:
-            return []
+        existing_by_uri = {
+            source.uri: source
+            for source in self.store.list_knowledge_sources(owner_user_id=config.files.owner_user_id)
+        }
         seeded = []
         for root in config.files.roots:
-            seeded.append(
-                self.add_folder_source(
-                    root,
-                    owner_user_id=config.files.owner_user_id,
-                    space_id=config.files.space_id,
-                    visibility=Visibility(config.files.visibility),
-                    ignore=list(config.files.ignore),
-                    max_bytes=config.files.max_bytes,
-                )
+            resolved = root.expanduser().resolve()
+            existing = existing_by_uri.get(resolved.as_uri())
+            source = self.add_folder_source(
+                resolved,
+                owner_user_id=config.files.owner_user_id,
+                space_id=config.files.space_id,
+                visibility=Visibility(config.files.visibility),
+                ignore=list(config.files.ignore),
+                max_bytes=config.files.max_bytes,
+                status=existing.status if existing is not None else "authorized",
             )
+            if existing is None or _folder_source_differs(existing, source):
+                seeded.append(source)
         return seeded
 
     def source_path(self, source: KnowledgeSource) -> Path:
@@ -133,3 +137,20 @@ class KnowledgeSourceService:
 
 def knowledge_source_id(owner_user_id: str, uri: str) -> str:
     return f"ks_{uuid5(NAMESPACE_URL, f'{owner_user_id}:{uri}').hex}"
+
+
+def _folder_source_differs(existing: KnowledgeSource, desired: KnowledgeSource) -> bool:
+    return any(
+        [
+            existing.name != desired.name,
+            existing.source_type != desired.source_type,
+            existing.mode != desired.mode,
+            existing.status != desired.status,
+            existing.connector_id != desired.connector_id,
+            existing.space_id != desired.space_id,
+            existing.visibility != desired.visibility,
+            list(existing.visible_team_ids or []) != list(desired.visible_team_ids or []),
+            dict(existing.permission_scope or {}) != dict(desired.permission_scope or {}),
+            dict(existing.config or {}) != dict(desired.config or {}),
+        ]
+    )

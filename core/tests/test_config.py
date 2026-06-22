@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 from pska_core.config import DEFAULT_WORKSPACE_ROOT, PSKAConfig
@@ -62,7 +61,7 @@ def test_pska_config_loads_json_and_keyfile_token(tmp_path: Path, monkeypatch) -
     assert config.workspace.twitter_archive_dir == tmp_path / "workspace" / "twitter_archive"
 
 
-def test_pska_config_env_overrides_file(tmp_path: Path, monkeypatch) -> None:
+def test_pska_config_load_does_not_use_env_overrides(tmp_path: Path, monkeypatch) -> None:
     config_file = tmp_path / "config.json"
     config_file.write_text(
         json.dumps({"database": {"url": "postgresql:///from_file"}, "workspace": {"root": str(tmp_path / "from_file")}}),
@@ -75,21 +74,10 @@ def test_pska_config_env_overrides_file(tmp_path: Path, monkeypatch) -> None:
 
     config = PSKAConfig.load(config_file)
 
-    assert config.database.url == "postgresql:///from_env"
-    assert config.workspace.root == tmp_path / "from_env"
-    assert config.ingest.chunk_size == 512
-    assert config.ingest.chunk_overlap == 64
-
-
-def test_pska_config_apply_to_env_does_not_overwrite_existing(tmp_path: Path, monkeypatch) -> None:
-    config = PSKAConfig.from_dict({"database": {"url": "postgresql:///from_file"}, "workspace": {"root": str(tmp_path / "workspace")}})
-    monkeypatch.setenv("PSKA_DATABASE_URL", "postgresql:///existing")
-    monkeypatch.setenv("PSKA_WORKSPACE_ROOT", str(tmp_path / "existing"))
-
-    config.apply_to_env()
-
-    assert os.environ["PSKA_DATABASE_URL"] == "postgresql:///existing"
-    assert os.environ["PSKA_WORKSPACE_ROOT"] == str(tmp_path / "existing")
+    assert config.database.url == "postgresql:///from_file"
+    assert config.workspace.root == tmp_path / "from_file"
+    assert config.ingest.chunk_size == 1200
+    assert config.ingest.chunk_overlap == 0
 
 
 def test_pska_config_default_workspace_root(monkeypatch) -> None:
@@ -127,6 +115,24 @@ def test_pska_config_loads_generic_agentic_service(tmp_path: Path, monkeypatch) 
     assert config.agentic_service.timeout_seconds == 12
 
 
+def test_pska_config_loads_startup_config(tmp_path: Path) -> None:
+    config = PSKAConfig.from_dict(
+        {
+            "startup": {
+                "bootstrap": False,
+                "backend": True,
+                "frontend": {"enabled": False, "host": "127.0.0.2", "port": 5174},
+            }
+        }
+    )
+
+    assert config.startup.bootstrap is False
+    assert config.startup.backend is True
+    assert config.startup.frontend.enabled is False
+    assert config.startup.frontend.host == "127.0.0.2"
+    assert config.startup.frontend.port == 5174
+
+
 def test_pska_config_builds_runtime_configs(tmp_path: Path) -> None:
     config = PSKAConfig.from_dict(
         {
@@ -154,33 +160,14 @@ def test_pska_config_builds_runtime_configs(tmp_path: Path) -> None:
     assert config.ingest_kwargs() == {"chunk_size": 512, "chunk_overlap": 32}
 
 
-def test_pska_config_files_env_round_trip(tmp_path: Path, monkeypatch) -> None:
+def test_pska_config_from_env_remains_explicit_legacy_loader(tmp_path: Path, monkeypatch) -> None:
     notes = tmp_path / "notes"
     docs = tmp_path / "docs"
-    config = PSKAConfig.from_dict(
-        {
-            "files": {
-                "roots": [str(notes), str(docs)],
-                "ignore": ["*.tmp", "*.bak"],
-                "max_bytes": 777,
-                "owner_user_id": "user_primary",
-                "space_id": "private_primary",
-                "visibility": "private",
-            }
-        }
-    )
-    monkeypatch.delenv("PSKA_FILES_ROOTS", raising=False)
-    monkeypatch.delenv("PSKA_FILES_IGNORE", raising=False)
-    monkeypatch.delenv("PSKA_FILES_MAX_BYTES", raising=False)
-
-    config.apply_to_env()
+    monkeypatch.setenv("PSKA_FILES_ROOTS", f"{notes}:{docs}")
+    monkeypatch.setenv("PSKA_FILES_IGNORE", "*.tmp:*.bak")
+    monkeypatch.setenv("PSKA_FILES_MAX_BYTES", "777")
     reloaded = PSKAConfig.from_env(PSKAConfig.from_dict({}))
 
-    assert os.environ["PSKA_FILES_ROOTS"] == os.pathsep.join([str(notes), str(docs)])
-    assert os.environ["PSKA_FILES_IGNORE"] == os.pathsep.join(["*.tmp", "*.bak"])
     assert reloaded.files.roots == (notes, docs)
     assert reloaded.files.ignore == ("*.tmp", "*.bak")
     assert reloaded.files.max_bytes == 777
-    monkeypatch.delenv("PSKA_FILES_ROOTS", raising=False)
-    monkeypatch.delenv("PSKA_FILES_IGNORE", raising=False)
-    monkeypatch.delenv("PSKA_FILES_MAX_BYTES", raising=False)

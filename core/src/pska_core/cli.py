@@ -73,25 +73,25 @@ def build_parser() -> argparse.ArgumentParser:
     import_parser.add_argument("--space-id", default="private_primary")
     import_parser.add_argument("--visibility", choices=[item.value for item in Visibility], default=Visibility.PRIVATE.value)
     import_parser.add_argument("--visible-team-ids", default="")
-    _add_embedding_args(import_parser, default_provider=os.environ.get("PSKA_EMBEDDING_PROVIDER", "disabled"))
+    _add_embedding_args(import_parser, default_provider="disabled")
 
     search_parser = subparsers.add_parser("search", help="Search PSKA Core")
     search_parser.add_argument("--query", required=True)
     search_parser.add_argument("--user-id", default="user_primary")
     search_parser.add_argument("--represented-user-id", default=None)
     search_parser.add_argument("--top-k", type=int, default=5)
-    _add_embedding_args(search_parser, default_provider=os.environ.get("PSKA_EMBEDDING_PROVIDER", "disabled"))
+    _add_embedding_args(search_parser, default_provider="disabled")
 
     agentic_parser = subparsers.add_parser("agentic-search", help="Run agentic PSKA search")
     agentic_parser.add_argument("--query", required=True)
     agentic_parser.add_argument("--user-id", default="user_primary")
     agentic_parser.add_argument("--represented-user-id", default=None)
     agentic_parser.add_argument("--capture", action="store_true", help="Save the agentic answer, citations, and trace as PSKA source material")
-    _add_embedding_args(agentic_parser, default_provider=os.environ.get("PSKA_EMBEDDING_PROVIDER", "disabled"))
+    _add_embedding_args(agentic_parser, default_provider="disabled")
 
     embed_parser = subparsers.add_parser("embed-backfill", help="Backfill missing chunk embeddings")
-    _add_embedding_args(embed_parser, default_provider=os.environ.get("PSKA_EMBEDDING_PROVIDER", "bge-m3"))
-    embed_parser.add_argument("--batch-size", type=int, default=int(os.environ.get("PSKA_EMBEDDING_BATCH_SIZE", "16")))
+    _add_embedding_args(embed_parser, default_provider="bge-m3")
+    embed_parser.add_argument("--batch-size", type=int, default=None)
     embed_parser.add_argument("--limit", type=int, default=None)
 
     ingest_parser = subparsers.add_parser("ingest-payload", help="Ingest a channel payload JSON file")
@@ -131,7 +131,7 @@ def build_parser() -> argparse.ArgumentParser:
     files_scan_parser.add_argument("--visible-team-ids", default="")
     files_scan_parser.add_argument("--ignore", action="append", default=[])
     files_scan_parser.add_argument("--max-bytes", type=int, default=1_000_000)
-    _add_embedding_args(files_scan_parser, default_provider=os.environ.get("PSKA_EMBEDDING_PROVIDER", "disabled"))
+    _add_embedding_args(files_scan_parser, default_provider="disabled")
 
     files_sync_parser = subparsers.add_parser("files-sync", help="Scan configured Files connector roots from PSKA config")
     files_sync_parser.add_argument("--root", type=Path, action="append", default=[], help="Additional or override root to scan")
@@ -140,7 +140,10 @@ def build_parser() -> argparse.ArgumentParser:
     files_sync_parser.add_argument("--visibility", choices=[item.value for item in Visibility], default=None)
     files_sync_parser.add_argument("--ignore", action="append", default=[])
     files_sync_parser.add_argument("--max-bytes", type=int, default=None)
-    _add_embedding_args(files_sync_parser, default_provider=os.environ.get("PSKA_EMBEDDING_PROVIDER", "disabled"))
+    files_sync_parser.add_argument("--twitter-archive", type=Path, default=None, help="Twitter/X zip inbox to import during files sync")
+    files_sync_parser.add_argument("--archive-root", type=Path, default=None, help="Archive extraction root for imported Twitter/X zips")
+    files_sync_parser.add_argument("--skip-twitter-archives", action="store_true")
+    _add_embedding_args(files_sync_parser, default_provider="disabled")
 
     files_watch_parser = subparsers.add_parser("files-watch", help="Watch configured Files connector roots and sync changes")
     files_watch_parser.add_argument("--root", type=Path, action="append", default=[], help="Additional or override root to watch")
@@ -152,7 +155,7 @@ def build_parser() -> argparse.ArgumentParser:
     files_watch_parser.add_argument("--debounce-seconds", type=float, default=2.0)
     files_watch_parser.add_argument("--initial-sync", action="store_true")
     files_watch_parser.add_argument("--max-events", type=int, default=0, help="Stop after this many file events; 0 means no limit")
-    _add_embedding_args(files_watch_parser, default_provider=os.environ.get("PSKA_EMBEDDING_PROVIDER", "disabled"))
+    _add_embedding_args(files_watch_parser, default_provider="disabled")
 
     extract_parser = subparsers.add_parser("extract-all", help="Extract entities/hyperedges from source items")
     extract_parser.add_argument("--owner-user-id", default=None)
@@ -192,7 +195,7 @@ def build_parser() -> argparse.ArgumentParser:
     mvp_bootstrap_parser.add_argument("--digest-limit", type=int, default=20)
     mvp_bootstrap_parser.add_argument("--digest-batch-size", type=int, default=20)
     mvp_bootstrap_parser.add_argument("--dry-run", action="store_true")
-    _add_embedding_args(mvp_bootstrap_parser, default_provider=os.environ.get("PSKA_EMBEDDING_PROVIDER", "disabled"))
+    _add_embedding_args(mvp_bootstrap_parser, default_provider="disabled")
 
     mvp_status_parser = subparsers.add_parser("mvp-status", help="Show MVP readiness, metrics, and next actions")
     mvp_status_parser.add_argument("--summary", action="store_true", help="Print a compact human-scale MVP status summary")
@@ -216,7 +219,7 @@ def build_parser() -> argparse.ArgumentParser:
     retrieval_eval_parser = subparsers.add_parser("retrieval-eval", help="Run retrieval/GraphRAG eval fixture")
     retrieval_eval_parser.add_argument("--fixture", type=Path, default=DEFAULT_RETRIEVAL_EVAL_FIXTURE)
     retrieval_eval_parser.add_argument("--real", action="store_true", help="Use real embedding model and LLM-backed agentic search")
-    _add_embedding_args(retrieval_eval_parser, default_provider=os.environ.get("PSKA_EMBEDDING_PROVIDER", "disabled"))
+    _add_embedding_args(retrieval_eval_parser, default_provider="disabled")
 
     digest_worker_command_parser = subparsers.add_parser(
         "fastreact-digest-worker-command",
@@ -241,7 +244,7 @@ def build_parser() -> argparse.ArgumentParser:
     smoke_parser.add_argument("--input", type=Path, default=None)
     smoke_parser.add_argument("--archive-root", type=Path, default=None)
     smoke_parser.add_argument("--query", default="")
-    _add_embedding_args(smoke_parser, default_provider=os.environ.get("PSKA_EMBEDDING_PROVIDER", "disabled"))
+    _add_embedding_args(smoke_parser, default_provider="disabled")
 
     submit_parser = subparsers.add_parser("job-submit", help="Queue a durable local job")
     submit_parser.add_argument("job_type", choices=sorted(JOB_TYPES))
@@ -331,12 +334,15 @@ def build_parser() -> argparse.ArgumentParser:
     digest_now_parser.add_argument("--visibility", choices=[item.value for item in Visibility], default=None)
     digest_now_parser.add_argument("--ignore", action="append", default=[])
     digest_now_parser.add_argument("--max-bytes", type=int, default=None)
+    digest_now_parser.add_argument("--twitter-archive", type=Path, default=None, help="Twitter/X zip inbox to import before digest")
+    digest_now_parser.add_argument("--archive-root", type=Path, default=None, help="Archive extraction root for imported Twitter/X zips")
+    digest_now_parser.add_argument("--skip-twitter-archives", action="store_true")
     digest_now_parser.add_argument("--fastreact-root", type=Path, default=Path.home() / "Fastreact" / "fastreact-nano")
     digest_now_parser.add_argument("--python", default="python3")
     digest_now_parser.add_argument("--pska-url", default=None)
     digest_now_parser.add_argument("--fastreact-url", default=None)
     digest_now_parser.add_argument("--max-worker-runs", type=int, default=10)
-    _add_embedding_args(digest_now_parser, default_provider=os.environ.get("PSKA_EMBEDDING_PROVIDER", "disabled"))
+    _add_embedding_args(digest_now_parser, default_provider="disabled")
 
     digest_scheduler_parser = subparsers.add_parser("digest-scheduler", help="Foreground periodic digest backlog scheduler")
     digest_scheduler_parser.add_argument("--owner-user-id", default="user_primary")
@@ -418,14 +424,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     config = PSKAConfig.load(args.config)
     workspace_root = _resolve_workspace_root(args, config)
-    config.apply_to_env()
-    os.environ["PSKA_WORKSPACE_ROOT"] = str(workspace_root)
     args.pska_config = config
     args.database_url = args.database_url or config.database.url
     _apply_workspace_defaults(args, workspace_root)
     if args.command == "service-check":
-        args.url = args.url or os.environ.get("PSKA_SERVICE_URL") or f"http://{config.service.host}:{config.service.port}"
-        args.service_token = args.service_token or os.environ.get("PSKA_SERVICE_TOKEN")
+        args.url = args.url or f"http://{config.service.host}:{config.service.port}"
+        args.service_token = args.service_token or config.service.service_token
         args.expected_database_url = args.expected_database_url or config.database.url
     if args.command == "db-check":
         return db_check(args.database_url)
@@ -534,7 +538,7 @@ def _resolve_workspace_root(args: argparse.Namespace, config: PSKAConfig) -> Pat
 
 
 def _apply_workspace_defaults(args: argparse.Namespace, workspace_root: Path) -> None:
-    if args.command in {"import-twitter-zips", "mvp-bootstrap", "smoke-twitter-import"}:
+    if args.command in {"import-twitter-zips", "mvp-bootstrap", "smoke-twitter-import", "files-sync", "digest-now"}:
         if getattr(args, "input", None) is None:
             args.input = workspace_root / "twitter_archive"
         if getattr(args, "twitter_archive", None) is None:
@@ -819,6 +823,8 @@ def _files_sync_payload(args: argparse.Namespace, config: PSKAConfig) -> dict[st
     source_service = KnowledgeSourceService(store)
     try:
         seeded = source_service.seed_from_config(config)
+        configured_roots = [root.expanduser().resolve() for root in config.files.roots]
+        requested_roots = [root.expanduser().resolve() for root in args.root or []]
         for root in args.root or []:
             seeded.append(
                 source_service.add_folder_source(
@@ -830,10 +836,12 @@ def _files_sync_payload(args: argparse.Namespace, config: PSKAConfig) -> dict[st
                     max_bytes=args.max_bytes or config.files.max_bytes,
                 )
             )
+        active_uris = {root.as_uri() for root in [*configured_roots, *requested_roots]}
         sources = [
             source
             for source in source_service.list_sources(owner_user_id=args.owner_user_id or config.files.owner_user_id, source_type="folder")
             if source.mode != "paused" and source.status != "paused"
+            and source.uri in active_uris
         ]
     except Exception as exc:  # noqa: BLE001 - preserve old no-root behavior when the DB is not reachable.
         if args.root or config.files.roots:
@@ -876,6 +884,8 @@ def _files_sync_payload(args: argparse.Namespace, config: PSKAConfig) -> dict[st
             error = f"{type(exc).__name__}: {exc}"
             failed.append({"root": str(root), "knowledge_source_id": source.knowledge_source_id, "error": error})
             sync_runs.append(source_service.record_sync_error(source, error))
+    twitter_archives = _files_sync_twitter_archives(args, config, store)
+    failed.extend(twitter_archives.get("failed") or [])
     payload = {
         "ok": not failed,
         "database_url": args.database_url,
@@ -884,10 +894,13 @@ def _files_sync_payload(args: argparse.Namespace, config: PSKAConfig) -> dict[st
         "roots": [str(source_service.source_path(source).expanduser()) for source in sources],
         "reports": reports,
         "sync_runs": sync_runs,
+        "twitter_archives": twitter_archives,
         "totals": {
             "roots": len(sources),
             "scanned": sum(report.scanned for report in reports),
             "ingested": sum(report.ingested for report in reports),
+            "twitter_imported": int(twitter_archives.get("imported") or 0),
+            "twitter_skipped": int(twitter_archives.get("skipped") or 0),
             "new_files": sum(report.new_files for report in reports),
             "changed_files": sum(report.changed_files for report in reports),
             "unchanged_files": sum(report.unchanged_files for report in reports),
@@ -899,6 +912,42 @@ def _files_sync_payload(args: argparse.Namespace, config: PSKAConfig) -> dict[st
         "failed": failed,
     }
     return payload
+
+
+def _files_sync_twitter_archives(args: argparse.Namespace, config: PSKAConfig, store: PostgresKnowledgeStore) -> dict[str, Any]:
+    if getattr(args, "skip_twitter_archives", False):
+        return {"ok": True, "enabled": False, "reason": "skip_twitter_archives", "imported": 0, "skipped": 0, "failed": []}
+    input_dir = expand_path(getattr(args, "twitter_archive", None) or config.workspace.twitter_archive_dir)
+    archive_root = expand_path(getattr(args, "archive_root", None) or config.workspace.imports_dir)
+    if not input_dir.exists():
+        return {
+            "ok": True,
+            "enabled": True,
+            "input": str(input_dir),
+            "archive_root": str(archive_root),
+            "imported": 0,
+            "skipped": 0,
+            "failed": [],
+            "reason": "twitter_archive_directory_not_found",
+        }
+    importer = TwitterZipImporter(
+        store,
+        archive_root=archive_root,
+        owner_user_id=getattr(args, "owner_user_id", None) or config.files.owner_user_id,
+        space_id=getattr(args, "space_id", None) or config.files.space_id,
+        visibility=Visibility(getattr(args, "visibility", None) or config.files.visibility),
+        visible_team_ids=[],
+        embedding_provider=_embedding_provider_from_args(args),
+    )
+    result = importer.import_directory(input_dir)
+    payload = asdict(result)
+    return {
+        "ok": not payload.get("failed"),
+        "enabled": True,
+        "input": str(input_dir),
+        "archive_root": str(archive_root),
+        **payload,
+    }
 
 
 def files_watch(args: argparse.Namespace, config: PSKAConfig) -> int:
@@ -1045,11 +1094,12 @@ def local_daemon(args: argparse.Namespace, config: PSKAConfig) -> int:
 
 
 def mvp_bootstrap(args: argparse.Namespace) -> int:
+    pska_config = getattr(args, "pska_config", PSKAConfig.load(args.config))
     report: dict[str, Any] = {
         "database_url": args.database_url,
         "dry_run": bool(args.dry_run),
         "workspace": {
-            "root": str(args.workspace_root) if args.workspace_root else os.environ.get("PSKA_WORKSPACE_ROOT"),
+            "root": str(args.workspace_root or pska_config.workspace.root),
             "twitter_archive": str(args.twitter_archive),
             "archive_root": str(args.archive_root),
         },
@@ -1118,7 +1168,7 @@ def mvp_bootstrap(args: argparse.Namespace) -> int:
     elif args.dry_run:
         report["steps"].append({"name": "digest_schedule", "would_run": True, "limit": args.digest_limit, "batch_size": args.digest_batch_size})
     else:
-        digest = PSKAApi(args.database_url).schedule_digest(
+        digest = _build_api(args.database_url, pska_config).schedule_digest(
             {
                 "owner_user_id": args.owner_user_id,
                 "limit": args.digest_limit,
@@ -1136,7 +1186,7 @@ def mvp_bootstrap(args: argparse.Namespace) -> int:
             report["steps"].append({"name": "extract_all", "reports": reports})
 
     try:
-        report["status"] = _mvp_status_payload(args.database_url)
+        report["status"] = _mvp_status_payload(args.database_url, pska_config)
         report["ok"] = bool(report["status"].get("ok"))
     except Exception as exc:  # noqa: BLE001 - bootstrap should produce an actionable report.
         report["ok"] = False
@@ -1146,13 +1196,19 @@ def mvp_bootstrap(args: argparse.Namespace) -> int:
 
 
 def mvp_status(args: argparse.Namespace) -> int:
-    payload = _mvp_status_payload(args.database_url)
+    payload = _mvp_status_payload(args.database_url, getattr(args, "pska_config", PSKAConfig.load(args.config)))
     print(dumps(_mvp_status_summary(payload) if args.summary else payload))
     return 0
 
 
 def daily_status(args: argparse.Namespace) -> int:
-    payload = _daily_status_payload(args.database_url, owner_user_id=args.owner_user_id, limit=args.limit)
+    payload = _daily_status_payload(
+        args.database_url,
+        owner_user_id=args.owner_user_id,
+        limit=args.limit,
+        pska_config=getattr(args, "pska_config", PSKAConfig.load(args.config)),
+        config_path=args.config,
+    )
     print(dumps(payload))
     return 0
 
@@ -1166,6 +1222,7 @@ def daily_briefing(args: argparse.Namespace) -> int:
         narrative=args.narrative,
         narrative_timeout_seconds=args.narrative_timeout_seconds,
         pska_config=pska_config,
+        config_path=args.config,
     )
     print(dumps(payload))
     return 0
@@ -1177,6 +1234,7 @@ def ops_briefing(args: argparse.Namespace) -> int:
         owner_user_id=args.owner_user_id,
         limit=args.limit,
         connector_stale_seconds=args.connector_stale_seconds,
+        pska_config=getattr(args, "pska_config", PSKAConfig.load(args.config)),
     )
     print(_ops_briefing_text(payload) if args.format == "text" else dumps(payload))
     return 0
@@ -1185,14 +1243,15 @@ def ops_briefing(args: argparse.Namespace) -> int:
 def retrieval_eval(args: argparse.Namespace) -> int:
     embedding_config = None
     if args.real:
-        provider = getattr(args, "embedding_provider", None) or os.environ.get("PSKA_EMBEDDING_PROVIDER") or "bge-m3"
+        pska_config = getattr(args, "pska_config", PSKAConfig.load(args.config))
+        provider = getattr(args, "embedding_provider", None) or pska_config.embedding.provider or "bge-m3"
         if str(provider).strip().lower() in {"", "disabled", "none", "off"}:
             provider = "bge-m3"
         embedding_config = EmbeddingConfig(
             provider=provider,
-            model=getattr(args, "embedding_model", None) or os.environ.get("PSKA_EMBEDDING_MODEL", "BAAI/bge-m3"),
-            dimensions=getattr(args, "embedding_dimensions", None) or int(os.environ.get("PSKA_EMBEDDING_DIMENSIONS", "1024")),
-            batch_size=getattr(args, "batch_size", int(os.environ.get("PSKA_EMBEDDING_BATCH_SIZE", "16"))),
+            model=getattr(args, "embedding_model", None) or pska_config.embedding.model or "BAAI/bge-m3",
+            dimensions=getattr(args, "embedding_dimensions", None) or pska_config.embedding.dimensions or 1024,
+            batch_size=getattr(args, "batch_size", None) or pska_config.embedding.batch_size or 16,
         )
     payload = run_retrieval_eval(args.fixture, real=bool(args.real), embedding_config=embedding_config)
     print(dumps(payload))
@@ -1208,7 +1267,8 @@ def fastreact_digest_worker_command(args: argparse.Namespace, config: PSKAConfig
 def job_submit(args: argparse.Namespace) -> int:
     store = PostgresKnowledgeStore(args.database_url)
     payload = json.loads(args.payload.read_text(encoding="utf-8")) if args.payload else {}
-    service = JobService(store)
+    pska_config = getattr(args, "pska_config", PSKAConfig.load(args.config))
+    service = JobService(store, workspace_root=pska_config.workspace.root)
     job = service.submit(args.job_type, payload, max_attempts=args.max_attempts)
     result: dict[str, object] = {"job": job}
     if args.run_now:
@@ -1219,8 +1279,10 @@ def job_submit(args: argparse.Namespace) -> int:
 
 def job_run(args: argparse.Namespace) -> int:
     store = PostgresKnowledgeStore(args.database_url)
+    pska_config = getattr(args, "pska_config", PSKAConfig.load(args.config))
     service = JobService(
         store,
+        workspace_root=pska_config.workspace.root,
         worker_id=args.worker_id or _default_worker_id(),
         lease_seconds=args.lease_seconds,
         excluded_job_types=set(args.excluded_job_types or []),
@@ -1236,8 +1298,10 @@ def job_run(args: argparse.Namespace) -> int:
 
 def job_worker(args: argparse.Namespace) -> int:
     store = PostgresKnowledgeStore(args.database_url)
+    pska_config = getattr(args, "pska_config", PSKAConfig.load(args.config))
     service = JobService(
         store,
+        workspace_root=pska_config.workspace.root,
         worker_id=args.worker_id or _default_worker_id(),
         lease_seconds=args.lease_seconds,
         excluded_job_types=set(args.excluded_job_types or []),
@@ -1347,19 +1411,21 @@ def job_cancel(args: argparse.Namespace) -> int:
 
 def job_recover(args: argparse.Namespace) -> int:
     store = PostgresKnowledgeStore(args.database_url)
-    jobs = JobService(store).recover_stale(max_age_seconds=args.max_age_seconds)
+    pska_config = getattr(args, "pska_config", PSKAConfig.load(args.config))
+    jobs = JobService(store, workspace_root=pska_config.workspace.root).recover_stale(max_age_seconds=args.max_age_seconds)
     print(dumps({"recovered": jobs}))
     return 0
 
 
 def digest_schedule(args: argparse.Namespace) -> int:
     payload = _digest_schedule_payload(args)
-    print(dumps(PSKAApi(args.database_url).schedule_digest(payload)))
+    pska_config = getattr(args, "pska_config", PSKAConfig.load(args.config))
+    print(dumps(_build_api(args.database_url, pska_config).schedule_digest(payload)))
     return 0
 
 
 def digest_now(args: argparse.Namespace, config: PSKAConfig) -> int:
-    api = PSKAApi(args.database_url)
+    api = _build_api(args.database_url, config)
     sync_payload = None
     if not args.skip_sync:
         sync_payload = _files_sync_payload(args, config)
@@ -1383,6 +1449,8 @@ def digest_now(args: argparse.Namespace, config: PSKAConfig) -> int:
         job
         for job in api.store.list_jobs(status="failed", job_type=DIGEST_VIA_FASTREACT, limit=10)
     ]
+    candidate_summary = _digest_now_candidate_summary(worker_runs)
+    diagnostics = _digest_now_diagnostics(worker_runs)
     payload = {
         "ok": not any(run.get("ok") is False for run in worker_runs),
         "sync": sync_payload,
@@ -1392,7 +1460,8 @@ def digest_now(args: argparse.Namespace, config: PSKAConfig) -> int:
             "synced": None if sync_payload is None else sync_payload.get("totals"),
             "scheduled_source_items": len(scheduled.get("scheduled_source_item_ids") or []),
             "worker_processed": sum(int(run.get("processed") or 0) for run in worker_runs if isinstance(run, dict)),
-            "candidate_write": _digest_now_candidate_summary(worker_runs),
+            "candidate_write": candidate_summary,
+            "diagnostics": diagnostics,
             "discoveries_visible_count": int(discoveries.get("count") or 0),
             "discoveries_total_new": int(all_new_discoveries.get("total_new") or 0),
             "discoveries_min_score": discoveries.get("min_score"),
@@ -1429,6 +1498,37 @@ def _digest_now_candidate_summary(worker_runs: list[dict[str, Any]]) -> dict[str
                 summary["review_items"] += int(tool_call.get("review_item_count") or 0)
                 summary["memory_candidates"] += int(tool_call.get("memory_candidate_count") or 0)
     return summary
+
+
+def _digest_now_diagnostics(worker_runs: list[dict[str, Any]]) -> dict[str, Any]:
+    write_call_count = 0
+    job_context_call_count = 0
+    fastreact_run_count = 0
+    warnings: list[str] = []
+    for run in worker_runs:
+        for fastreact_run in ((run.get("result") or {}).get("fastreact_runs") or []):
+            if not isinstance(fastreact_run, dict):
+                continue
+            fastreact_run_count += 1
+            write_call_count += int(fastreact_run.get("write_call_count") or 0)
+            job_context_call_count += int(fastreact_run.get("job_context_call_count") or 0)
+            for tool_call in fastreact_run.get("tool_calls") or []:
+                if not isinstance(tool_call, dict):
+                    continue
+                tool_name = tool_call.get("tool_name")
+                if tool_name == "pska_pska_write_candidates":
+                    write_call_count += 1 if "write_call_count" not in fastreact_run else 0
+                if tool_name == "pska_pska_job_context":
+                    job_context_call_count += 1 if "job_context_call_count" not in fastreact_run else 0
+    processed = sum(int(run.get("processed") or 0) for run in worker_runs if isinstance(run, dict))
+    if processed and fastreact_run_count and write_call_count == 0:
+        warnings.append("fastreact_digest_completed_without_write_candidates")
+    return {
+        "fastreact_run_count": fastreact_run_count,
+        "write_call_count": write_call_count,
+        "job_context_call_count": job_context_call_count,
+        "warnings": warnings,
+    }
 
 
 def _run_fastreact_digest_worker(args: argparse.Namespace, config: PSKAConfig) -> list[dict[str, Any]]:
@@ -1503,8 +1603,18 @@ def _parse_json_process_output(stdout: str) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
+def _build_api(database_url: str, config: PSKAConfig | None = None):
+    if config is None:
+        return PSKAApi(database_url)
+    try:
+        return PSKAApi(database_url, config=config)
+    except TypeError:
+        return PSKAApi(database_url)
+
+
 def digest_scheduler(args: argparse.Namespace) -> int:
-    api = PSKAApi(args.database_url)
+    pska_config = getattr(args, "pska_config", PSKAConfig.load(args.config))
+    api = _build_api(args.database_url, pska_config)
     processed = 0
     idle_cycles = 0
     while True:
@@ -2122,11 +2232,13 @@ def _add_embedding_args(parser: argparse.ArgumentParser, *, default_provider: st
 
 
 def _embedding_provider_from_args(args: argparse.Namespace):
+    pska_config = getattr(args, "pska_config", PSKAConfig.load(getattr(args, "config", None)))
+    config = pska_config.embedding_runtime_config()
     config = EmbeddingConfig(
-        provider=getattr(args, "embedding_provider", None) or os.environ.get("PSKA_EMBEDDING_PROVIDER", "disabled"),
-        model=getattr(args, "embedding_model", None) or os.environ.get("PSKA_EMBEDDING_MODEL", "BAAI/bge-m3"),
-        dimensions=getattr(args, "embedding_dimensions", None) or int(os.environ.get("PSKA_EMBEDDING_DIMENSIONS", "1024")),
-        batch_size=getattr(args, "batch_size", int(os.environ.get("PSKA_EMBEDDING_BATCH_SIZE", "16"))),
+        provider=getattr(args, "embedding_provider", None) or config.provider,
+        model=getattr(args, "embedding_model", None) or config.model,
+        dimensions=getattr(args, "embedding_dimensions", None) or config.dimensions,
+        batch_size=getattr(args, "batch_size", None) or config.batch_size,
     )
     return build_embedding_provider(config)
 
@@ -2143,8 +2255,8 @@ def _default_worker_id() -> str:
     return f"pska-worker-{os.getpid()}"
 
 
-def _mvp_status_payload(database_url: str) -> dict[str, Any]:
-    api = PSKAApi(database_url)
+def _mvp_status_payload(database_url: str, config: PSKAConfig | None = None) -> dict[str, Any]:
+    api = _build_api(database_url, config)
     ready = api.ready()
     try:
         metrics = api.metrics()
@@ -2219,9 +2331,16 @@ def _mvp_status_summary(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _daily_status_payload(database_url: str, *, owner_user_id: str = "user_primary", limit: int = 5) -> dict[str, Any]:
+def _daily_status_payload(
+    database_url: str,
+    *,
+    owner_user_id: str = "user_primary",
+    limit: int = 5,
+    pska_config: PSKAConfig | None = None,
+    config_path: str | None = None,
+) -> dict[str, Any]:
     limit = max(0, limit)
-    status = _mvp_status_payload(database_url)
+    status = _mvp_status_payload(database_url, pska_config)
     summary = _mvp_status_summary(status)
     jobs = status.get("jobs") or {}
     metrics = status.get("metrics") or {}
@@ -2229,7 +2348,7 @@ def _daily_status_payload(database_url: str, *, owner_user_id: str = "user_prima
     checks = ((status.get("ready") or {}).get("checks") or {})
 
     try:
-        review_items = PSKAApi(database_url).store.list_review_items()
+        review_items = _build_api(database_url, pska_config).store.list_review_items()
     except Exception:
         review_items = []
     pending_reviews = _review_items_payload(
@@ -2244,6 +2363,7 @@ def _daily_status_payload(database_url: str, *, owner_user_id: str = "user_prima
         summary=summary,
         pending_review_count=int(pending_reviews.get("total_matching") or 0),
         failed_job_count=int((jobs.get("by_status") or {}).get("failed") or len(failed_jobs)),
+        config_path=config_path,
     )
 
     return {
@@ -2286,14 +2406,21 @@ def _daily_briefing_payload(
     narrative_timeout_seconds: float | None = None,
     fastreact_client=None,
     pska_config: PSKAConfig | None = None,
+    config_path: str | None = None,
 ) -> dict[str, Any]:
     limit = max(0, limit)
-    status = _mvp_status_payload(database_url)
+    status = _mvp_status_payload(database_url, pska_config)
     summary = _mvp_status_summary(status)
-    daily = _daily_status_payload(database_url, owner_user_id=owner_user_id, limit=limit)
+    daily = _daily_status_payload(
+        database_url,
+        owner_user_id=owner_user_id,
+        limit=limit,
+        pska_config=pska_config,
+        config_path=config_path,
+    )
     metrics = status.get("metrics") or {}
     connectors = (metrics.get("connectors") or {})
-    store = PSKAApi(database_url).store
+    store = _build_api(database_url, pska_config).store
     recent_sources = _recent_source_items(store.list_source_items(), owner_user_id=owner_user_id, limit=limit)
     pending_review_count = int((daily.get("pending_reviews") or {}).get("total_matching") or 0)
     failed_job_count = int((daily.get("failed_jobs") or {}).get("count") or 0)
@@ -2303,6 +2430,7 @@ def _daily_briefing_payload(
         pending_review_count=pending_review_count,
         failed_job_count=failed_job_count,
         digest_backlog_count=digest_backlog_count,
+        config_path=config_path,
     )
     recommended_commands = list(dict.fromkeys([*daily.get("recommended_commands", []), *next_actions]))
     payload = {
@@ -2352,10 +2480,11 @@ def _ops_briefing_payload(
     owner_user_id: str = "user_primary",
     limit: int = 5,
     connector_stale_seconds: int = 86_400,
+    pska_config: PSKAConfig | None = None,
 ) -> dict[str, Any]:
     limit = max(0, limit)
     connector_stale_seconds = max(0, connector_stale_seconds)
-    api = PSKAApi(database_url)
+    api = _build_api(database_url, pska_config)
     try:
         ready = api.ready()
     except Exception as exc:  # noqa: BLE001 - ops should report service diagnostics, not crash.
@@ -2644,30 +2773,32 @@ def _daily_briefing_next_actions(
     pending_review_count: int,
     failed_job_count: int,
     digest_backlog_count: int,
+    config_path: str | None = None,
 ) -> list[str]:
     actions: list[str] = []
+    pska = _pska_command(config_path)
     counts = summary.get("counts") or {}
     connectors = summary.get("connectors") or {}
     if not summary.get("database_ok") or not summary.get("schema_ok") or not summary.get("mcp_ok"):
-        actions.append("./scripts/pska db-init")
-        actions.append("./scripts/pska service-check")
+        actions.append(f"{pska} db-init")
+        actions.append(f"{pska} service-check")
     if int(counts.get("source_items") or 0) == 0:
-        actions.append("./scripts/pska mvp-bootstrap")
+        actions.append(f"{pska} mvp-bootstrap")
     if not connectors.get("state_count"):
-        actions.append("./scripts/pska files-sync")
+        actions.append(f"{pska} files-sync")
     if pending_review_count:
-        actions.append("./scripts/pska review-list --status pending --owner-user-id user_primary --summary")
+        actions.append(f"{pska} review-list --status pending --owner-user-id user_primary --summary")
     if failed_job_count:
-        actions.append("./scripts/pska jobs list --status failed")
+        actions.append(f"{pska} jobs list --status failed")
     if digest_backlog_count:
-        actions.append("./scripts/pska fastreact-digest-worker-command")
+        actions.append(f"{pska} fastreact-digest-worker-command")
     elif int(counts.get("source_items") or 0) > 0:
-        actions.append("./scripts/pska digest-schedule --owner-user-id user_primary")
+        actions.append(f"{pska} digest-schedule --owner-user-id user_primary")
     if int(counts.get("source_items") or 0) > 0:
-        actions.append("./scripts/pska memory-list --owner-user-id user_primary --limit 5")
-        actions.append("./scripts/pska profile-list --owner-user-id user_primary --limit 5")
+        actions.append(f"{pska} memory-list --owner-user-id user_primary --limit 5")
+        actions.append(f"{pska} profile-list --owner-user-id user_primary --limit 5")
     if not actions:
-        actions.append("./scripts/pska daily-briefing")
+        actions.append(f"{pska} daily-briefing")
     return list(dict.fromkeys(actions))
 
 
@@ -2889,25 +3020,32 @@ def _daily_status_recommended_commands(
     summary: dict[str, Any],
     pending_review_count: int,
     failed_job_count: int,
+    config_path: str | None = None,
 ) -> list[str]:
-    commands = ["./scripts/pska daily-status", "./scripts/pska mvp-status --summary"]
+    pska = _pska_command(config_path)
+    commands = [f"{pska} daily-status", f"{pska} mvp-status --summary"]
     counts = summary.get("counts") or {}
     digest_backlog = ((summary.get("jobs") or {}).get("digest_backlog") or {}).get("jobs") or 0
     if int(counts.get("source_items") or 0) == 0:
-        commands.append("./scripts/pska mvp-bootstrap")
+        commands.append(f"{pska} mvp-bootstrap")
     if int(counts.get("source_items") or 0) > 0 and int(counts.get("entities") or 0) == 0:
-        commands.append("./scripts/pska extract-all --owner-user-id user_primary")
+        commands.append(f"{pska} extract-all --owner-user-id user_primary")
     if digest_backlog:
-        commands.append("./scripts/pska fastreact-digest-worker-command")
+        commands.append(f"{pska} fastreact-digest-worker-command")
     elif int(counts.get("source_items") or 0) > 0:
-        commands.append("./scripts/pska digest-schedule --owner-user-id user_primary")
+        commands.append(f"{pska} digest-schedule --owner-user-id user_primary")
     if pending_review_count:
-        commands.append("./scripts/pska review-list --status pending --owner-user-id user_primary --summary")
-        commands.append("./scripts/pska review-approve <review_item_id> --apply")
+        commands.append(f"{pska} review-list --status pending --owner-user-id user_primary --summary")
+        commands.append(f"{pska} review-approve <review_item_id> --apply")
     if failed_job_count:
-        commands.append("./scripts/pska jobs list --status failed")
-        commands.append("./scripts/pska job-status --job-id <job_id>")
+        commands.append(f"{pska} jobs list --status failed")
+        commands.append(f"{pska} job-status --job-id <job_id>")
     return commands
+
+
+def _pska_command(config_path: str | None = None) -> str:
+    config = str(config_path or ".pska/config.json")
+    return f"./scripts/pska --config {shlex_quote(config)}"
 
 
 def _fastreact_digest_worker_command_payload(args: argparse.Namespace, config: PSKAConfig) -> dict[str, Any]:

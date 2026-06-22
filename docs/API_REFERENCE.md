@@ -6,7 +6,7 @@ Default local service:
 http://127.0.0.1:8765
 ```
 
-If `PSKA_SERVICE_TOKEN` is configured, pass:
+If `.pska/config.json` sets `service.service_token`, pass:
 
 ```http
 Authorization: Bearer <token>

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import sys
 from typing import Any
 
@@ -172,8 +171,7 @@ TOOLS = [
 
 
 def main() -> int:
-    config = PSKAConfig.load(os.getenv("PSKA_CONFIG") or None)
-    config.apply_to_env()
+    config = PSKAConfig.load()
     server = MCPServer(config.database.url, config=config)
     return server.run()
 
@@ -181,7 +179,7 @@ def main() -> int:
 class MCPServer:
     def __init__(self, database_url: str, store: Any | None = None, llm: Any | None = None, config: PSKAConfig | None = None) -> None:
         if config is None:
-            config = PSKAConfig.from_env(PSKAConfig(database=DatabaseConfig(url=database_url)))
+            config = PSKAConfig(database=DatabaseConfig(url=database_url))
         self.config = config
         self.store = store or PostgresKnowledgeStore(database_url)
         embedding_provider = build_embedding_provider(config.embedding_runtime_config())

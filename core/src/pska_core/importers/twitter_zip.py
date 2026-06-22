@@ -44,14 +44,16 @@ class TwitterZipImporter:
 
     def import_directory(self, input_dir: Path) -> TwitterZipImportResult:
         result = TwitterZipImportResult()
+        existing_source_item_ids = {item.source_item_id for item in self.store.list_source_items()}
         for zip_path in sorted(input_dir.glob("*.zip")):
             try:
                 item = self.import_zip(zip_path)
-                if item.source_item_id in result.source_item_ids:
+                if item.source_item_id in existing_source_item_ids or item.source_item_id in result.source_item_ids:
                     result.skipped += 1
                 else:
                     result.imported += 1
                     result.source_item_ids.append(item.source_item_id)
+                    existing_source_item_ids.add(item.source_item_id)
             except Exception as exc:  # noqa: BLE001 - import should report all failures.
                 result.failed.append({"path": str(zip_path), "error": f"{type(exc).__name__}: {exc}"})
         return result

@@ -398,10 +398,9 @@ def _config_check_recovery_commands(checks: dict[str, dict[str, Any]]) -> list[s
         commands.append("./scripts/pska --database-url postgresql:///pska db-init")
     if not checks["service_port"]["ok"]:
         commands.append("lsof -iTCP:<port> -sTCP:LISTEN")
-        commands.append("PSKA_SERVICE_PORT=<free-port> ./scripts/pska local-daemon")
+        commands.append("edit .pska/config.json service.port, then run ./start.sh")
     if not checks["fastreact"]["ok"] or not checks["fastreact"].get("service_token_present"):
-        commands.append("export PSKA_FASTREACT_URL=http://127.0.0.1:8000")
-        commands.append("export PSKA_FASTREACT_SERVICE_TOKEN=<token>")
+        commands.append("edit .pska/config.json fastreact.url and fastreact.service_token")
     return commands
 
 

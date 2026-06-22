@@ -78,11 +78,15 @@ For a clean workspace and full backend/frontend check:
 The reset path is guarded by a `.pska_workspace.json` sentinel so the script
 will not delete an arbitrary directory.
 
-FastReAct agentic search requires the FastReAct API token explicitly:
+FastReAct agentic search requires the FastReAct API endpoint and token in
+`.pska/config.json`:
 
-```bash
-export PSKA_FASTREACT_URL="http://127.0.0.1:8000"
-export PSKA_FASTREACT_SERVICE_TOKEN="<fastreact-service-token>"
+```json
+"fastreact": {
+  "url": "http://127.0.0.1:8000",
+  "service_token": "<fastreact-service-token>",
+  "timeout_seconds": 30
+}
 ```
 
 The FastReAct UI at `http://127.0.0.1:3000/service` can work while PSKA
@@ -150,10 +154,10 @@ curl -s http://127.0.0.1:8765/workspace/today/data?owner_user_id=user_primary\&l
   | ./.pska/venvs/pska-py312/bin/python -m json.tool
 ```
 
-If `PSKA_SERVICE_TOKEN` is configured, add:
+If `.pska/config.json` sets `service.service_token`, add:
 
 ```bash
--H "Authorization: Bearer $PSKA_SERVICE_TOKEN"
+-H "Authorization: Bearer <service.service_token>"
 ```
 
 In the UI, Today only shows real backend data. Empty sections render as empty
@@ -185,12 +189,14 @@ lsof -nP -iTCP:5173 -sTCP:LISTEN
 
 Frontend only:
 
-```bash
-PSKA_SKIP_BACKEND=1 ./start.sh
+```json
+"startup": { "backend": false, "frontend": { "enabled": true } }
 ```
 
 Backend only:
 
-```bash
-PSKA_SKIP_FRONTEND=1 ./start.sh
+```json
+"startup": { "backend": true, "frontend": { "enabled": false } }
 ```
+
+After editing `.pska/config.json`, run `./start.sh`.

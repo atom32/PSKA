@@ -205,6 +205,38 @@ class WorkspaceConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class FrontendConfig:
+    enabled: bool = True
+    host: str = "127.0.0.1"
+    port: int = 5173
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> "FrontendConfig":
+        data = data or {}
+        return cls(
+            enabled=bool(data.get("enabled", True)),
+            host=str(data.get("host") or "127.0.0.1"),
+            port=int(data.get("port") or 5173),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class StartupConfig:
+    bootstrap: bool = True
+    backend: bool = True
+    frontend: FrontendConfig = field(default_factory=FrontendConfig)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> "StartupConfig":
+        data = data or {}
+        return cls(
+            bootstrap=bool(data.get("bootstrap", True)),
+            backend=bool(data.get("backend", True)),
+            frontend=FrontendConfig.from_dict(data.get("frontend")),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class PSKAConfig:
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     service: ServiceConfig = field(default_factory=ServiceConfig)
@@ -215,17 +247,17 @@ class PSKAConfig:
     ingest: IngestConfig = field(default_factory=IngestConfig)
     files: FilesConfig = field(default_factory=FilesConfig)
     workspace: WorkspaceConfig = field(default_factory=WorkspaceConfig)
+    startup: StartupConfig = field(default_factory=StartupConfig)
 
     @classmethod
     def load(cls, config_path: str | Path | None = None) -> "PSKAConfig":
         path = _find_config_path(config_path)
         if path is None:
-            return cls.from_env(cls())
+            return cls()
         data = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             raise ValueError("PSKA config must be a JSON object")
-        config = cls.from_dict(data)
-        return cls.from_env(config)
+        return cls.from_dict(data)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "PSKAConfig":
@@ -241,6 +273,7 @@ class PSKAConfig:
             ingest=IngestConfig.from_dict(data.get("ingest")),
             files=FilesConfig.from_dict(data.get("files")),
             workspace=WorkspaceConfig.from_dict(data.get("workspace")),
+            startup=StartupConfig.from_dict(data.get("startup")),
         )
 
     @classmethod
@@ -307,50 +340,6 @@ class PSKAConfig:
             ),
         )
 
-    def apply_to_env(self) -> None:
-        _setdefault("PSKA_DATABASE_URL", self.database.url)
-        _setdefault("PSKA_SERVICE_HOST", self.service.host)
-        _setdefault("PSKA_SERVICE_PORT", str(self.service.port))
-        if self.service.service_token:
-            _setdefault("PSKA_SERVICE_TOKEN", self.service.service_token)
-        if self.llm.api_key_file:
-            _setdefault("PSKA_LLM_API_KEY_FILE", str(self.llm.api_key_file))
-        if self.llm.model:
-            _setdefault("PSKA_LLM_MODEL", self.llm.model)
-        if self.llm.base_url:
-            _setdefault("PSKA_LLM_BASE_URL", self.llm.base_url.rstrip("/"))
-        if self.llm.timeout_seconds:
-            _setdefault("PSKA_LLM_TIMEOUT_SECONDS", str(self.llm.timeout_seconds))
-        _setdefault("PSKA_FASTREACT_URL", self.fastreact.url.rstrip("/"))
-        if self.fastreact.service_token:
-            _setdefault("PSKA_FASTREACT_SERVICE_TOKEN", self.fastreact.service_token)
-        if self.fastreact.timeout_seconds:
-            _setdefault("PSKA_FASTREACT_TIMEOUT_SECONDS", str(self.fastreact.timeout_seconds))
-        _setdefault("PSKA_AGENTIC_SERVICE_PROVIDER", self.agentic_service.provider)
-        _setdefault("PSKA_AGENTIC_SERVICE_URL", self.agentic_service.url.rstrip("/"))
-        if self.agentic_service.service_token:
-            _setdefault("PSKA_AGENTIC_SERVICE_TOKEN", self.agentic_service.service_token)
-        if self.agentic_service.timeout_seconds:
-            _setdefault("PSKA_AGENTIC_SERVICE_TIMEOUT_SECONDS", str(self.agentic_service.timeout_seconds))
-        _setdefault("PSKA_EMBEDDING_PROVIDER", self.embedding.provider)
-        if self.embedding.model:
-            _setdefault("PSKA_EMBEDDING_MODEL", self.embedding.model)
-        if self.embedding.dimensions:
-            _setdefault("PSKA_EMBEDDING_DIMENSIONS", str(self.embedding.dimensions))
-        if self.embedding.batch_size:
-            _setdefault("PSKA_EMBEDDING_BATCH_SIZE", str(self.embedding.batch_size))
-        _setdefault("PSKA_INGEST_CHUNK_SIZE", str(self.ingest.chunk_size))
-        _setdefault("PSKA_INGEST_CHUNK_OVERLAP", str(self.ingest.chunk_overlap))
-        _setdefault("PSKA_WORKSPACE_ROOT", str(self.workspace.root))
-        if self.files.roots:
-            _setdefault("PSKA_FILES_ROOTS", os.pathsep.join(str(root) for root in self.files.roots))
-        if self.files.ignore:
-            _setdefault("PSKA_FILES_IGNORE", os.pathsep.join(self.files.ignore))
-        _setdefault("PSKA_FILES_MAX_BYTES", str(self.files.max_bytes))
-        _setdefault("PSKA_FILES_OWNER_USER_ID", self.files.owner_user_id)
-        _setdefault("PSKA_FILES_SPACE_ID", self.files.space_id)
-        _setdefault("PSKA_FILES_VISIBILITY", self.files.visibility)
-
     def embedding_runtime_config(self, *, default_provider: str | None = None) -> "EmbeddingConfig":
         from pska_core.embeddings import BGE_M3_DIMENSIONS, BGE_M3_MODEL, EmbeddingConfig
 
@@ -401,11 +390,6 @@ def _find_config_path(config_path: str | Path | None) -> Path | None:
         if path.exists():
             return path
     return None
-
-
-def _setdefault(key: str, value: str) -> None:
-    if value and not os.getenv(key):
-        os.environ[key] = value
 
 
 def _service_token_from_key_file(path: Path | None) -> str | None:

@@ -102,3 +102,31 @@ def test_duplicate_zip_import_is_idempotent(tmp_path) -> None:
     assert len(store.source_items) == 1
     assert len(store.documents) == 1
     assert len(store.chunks) == 1
+
+
+def test_directory_import_counts_existing_archives_as_skipped(tmp_path) -> None:
+    input_dir = tmp_path / "inbox"
+    input_dir.mkdir()
+    zip_path = input_dir / "tweet.zip"
+    metadata = {
+        "schema_version": "pska.archive.v2",
+        "source": "twitter",
+        "record_type": "tweet",
+        "source_id": "dir-dup",
+        "url": "https://x.com/u/status/dir-dup",
+        "content": {"text": "directory import duplicate text"},
+        "pska": {"owner_user_id": "user_primary", "space_id": "private_primary", "visibility": "private"},
+    }
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        archive.writestr("dir-dup/metadata.json", json.dumps(metadata))
+
+    store = InMemoryKnowledgeStore()
+    importer = TwitterZipImporter(store, archive_root=tmp_path / "archive")
+    first = importer.import_directory(input_dir)
+    second = importer.import_directory(input_dir)
+
+    assert first.imported == 1
+    assert first.skipped == 0
+    assert second.imported == 0
+    assert second.skipped == 1
+    assert len(store.source_items) == 1

@@ -2,10 +2,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG="${PSKA_CONFIG:-$ROOT/.pska/config.json}"
+CONFIG="$ROOT/.pska/config.json"
 BACKEND_PID=""
 FRONTEND_PID=""
-FRONTEND_URL="http://127.0.0.1:5173/"
 
 cleanup() {
   local status=$?
@@ -55,6 +54,24 @@ elif expr == "database_host":
     print(parsed.hostname or "")
 elif expr == "workspace_root":
     print(config.workspace.root.expanduser())
+elif expr == "service_url":
+    print(f"http://{config.service.host}:{config.service.port}/")
+elif expr == "service_host":
+    print(config.service.host)
+elif expr == "service_port":
+    print(config.service.port)
+elif expr == "startup_bootstrap":
+    print(str(config.startup.bootstrap).lower())
+elif expr == "startup_backend":
+    print(str(config.startup.backend).lower())
+elif expr == "startup_frontend":
+    print(str(config.startup.frontend.enabled).lower())
+elif expr == "frontend_host":
+    print(config.startup.frontend.host)
+elif expr == "frontend_port":
+    print(config.startup.frontend.port)
+elif expr == "frontend_url":
+    print(f"http://{config.startup.frontend.host}:{config.startup.frontend.port}/")
 else:
     raise SystemExit(f"unknown config expression: {expr}")
 PY
@@ -65,7 +82,7 @@ port_listening() {
   lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1
 }
 
-if [[ "${PSKA_SKIP_BOOTSTRAP:-0}" != "1" ]]; then
+if [[ "$(config_value startup_bootstrap)" == "true" ]]; then
   echo "Preparing PSKA database and Knowledge Sources..."
   DB_NAME="$(config_value database_name)"
   DB_HOST="$(config_value database_host)"
@@ -86,31 +103,33 @@ if [[ "${PSKA_SKIP_BOOTSTRAP:-0}" != "1" ]]; then
     echo "The app will still start; open the 语料库 page to inspect sources and sync status." >&2
   fi
 else
-  echo "Skipping bootstrap because PSKA_SKIP_BOOTSTRAP=1"
+  echo "Skipping bootstrap because startup.bootstrap=false in $CONFIG"
 fi
 
-if [[ "${PSKA_SKIP_BACKEND:-0}" != "1" ]]; then
+if [[ "$(config_value startup_backend)" == "true" ]]; then
   echo "Starting PSKA backend supervisor..."
   "$ROOT/scripts/pska" --config "$CONFIG" local-daemon --restart &
   BACKEND_PID=$!
 else
-  echo "Skipping backend because PSKA_SKIP_BACKEND=1"
+  echo "Skipping backend because startup.backend=false in $CONFIG"
 fi
 
-if [[ "${PSKA_SKIP_FRONTEND:-0}" != "1" ]]; then
-  if port_listening 5173; then
-    echo "Frontend already appears to be running on 127.0.0.1:5173; reusing it."
+if [[ "$(config_value startup_frontend)" == "true" ]]; then
+  FRONTEND_HOST="$(config_value frontend_host)"
+  FRONTEND_PORT="$(config_value frontend_port)"
+  if port_listening "$FRONTEND_PORT"; then
+    echo "Frontend already appears to be running on $FRONTEND_HOST:$FRONTEND_PORT; reusing it."
   else
   if [[ ! -d "$ROOT/frontend/node_modules" ]]; then
     echo "Installing frontend dependencies..."
     (cd "$ROOT/frontend" && npm install)
   fi
   echo "Starting PSKA frontend..."
-  (cd "$ROOT/frontend" && npm run dev) &
+  (cd "$ROOT/frontend" && npm run dev -- --host "$FRONTEND_HOST" --port "$FRONTEND_PORT") &
   FRONTEND_PID=$!
   fi
 else
-  echo "Skipping frontend because PSKA_SKIP_FRONTEND=1"
+  echo "Skipping frontend because startup.frontend.enabled=false in $CONFIG"
 fi
 
 cat <<EOF
@@ -118,10 +137,10 @@ cat <<EOF
 PSKA dev stack is starting.
 
 Frontend:
-  $FRONTEND_URL
+  $(config_value frontend_url)
 
 Backend:
-  http://127.0.0.1:8765/
+  $(config_value service_url)
 
 Useful places:
   Frontend 语料库 page: Knowledge Sources, sync reports, and source/chunk visibility
