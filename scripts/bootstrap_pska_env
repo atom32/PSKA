@@ -51,7 +51,7 @@ fi
 rm -rf "$VENV"
 "$PYTHON_BIN" -m venv "$VENV"
 "$VENV/bin/python" -m pip install --upgrade pip setuptools wheel
-"$VENV/bin/python" -m pip install -e "$ROOT/core[embeddings]"
+"$VENV/bin/python" -m pip install -e "$ROOT/core[documents,embeddings]"
 "$VENV/bin/python" -m pip install --no-deps "FlagEmbedding>=1.3.0"
 "$VENV/bin/python" -m pip install -e "$ROOT/channels/twitter-x"
 
