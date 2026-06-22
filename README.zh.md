@@ -140,6 +140,18 @@ cp core/config.pska.example.json .pska/config.json
 
 `.pska/config.json` 是本机配置，不要提交。
 
+### 最短本地流程
+
+如果你想清空本地库，然后启动，并手动跑一次 digest：
+
+```bash
+./scripts/pska --config .pska/config.json db-reset --name pska
+./start.sh
+./scripts/pska --config .pska/config.json digest-now
+```
+
+`db-reset` 会删除并重建指定的本地数据库，是破坏性操作，只在你明确想要重新冷启动时使用。`digest-now` 会先执行 file sync，包括配置的 folder sources 和 workspace 的 Twitter/X archive inbox，然后调度并处理一次 digest。
+
 ### 一键启动 Workspace
 
 ```bash

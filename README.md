@@ -145,6 +145,21 @@ knowledge sources when `startup.bootstrap` is true, starts the backend when
 `startup.backend` is true, and starts the frontend when
 `startup.frontend.enabled` is true.
 
+### Shortest Local Loop
+
+For a clean local run, then one manual digest pass:
+
+```bash
+./scripts/pska --config .pska/config.json db-reset --name pska
+./start.sh
+./scripts/pska --config .pska/config.json digest-now
+```
+
+`db-reset` is destructive: it drops and recreates the named local database.
+Use it when you intentionally want a fresh PSKA database. `digest-now` runs
+file sync first, including configured folder sources and the workspace
+Twitter/X archive inbox, then schedules and processes one digest pass.
+
 ### Twitter/X Archiving
 
 ```bash
