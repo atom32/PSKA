@@ -13,6 +13,7 @@ from pska_core.cli import (
     _fastreact_digest_worker_command_payload,
     _digest_now_candidate_summary,
     _digest_now_diagnostics,
+    _digest_now_fallback_review,
     _job_run_diagnostics,
     _daily_status_payload,
     _memory_list_payload,
@@ -27,6 +28,7 @@ from pska_core.cli import (
 )
 from pska_core.enums import MemoryLayer, ReviewType, Visibility
 from pska_core.fastreact_client import FastreactError
+from pska_core.ingest import IngestService
 from pska_core.models import AgentMemory, ConnectorState, Job, ReviewItem, SourceItem, SourceRef, UserProfileCard
 from pska_core.store import InMemoryKnowledgeStore
 
@@ -824,6 +826,44 @@ def test_digest_now_diagnostics_warns_when_worker_does_not_write_candidates() ->
         "job_context_call_count": 1,
         "warnings": ["fastreact_digest_completed_without_write_candidates"],
     }
+
+
+def test_digest_now_fallback_review_when_worker_writes_no_candidates() -> None:
+    store = InMemoryKnowledgeStore()
+    item = IngestService(store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "twitter",
+            "record_type": "tweet",
+            "source_id": "tweet-1",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": Visibility.PRIVATE.value,
+            "title": "Tweet note",
+            "content": {"text": "useful but needs digest"},
+        }
+    )
+    diagnostics = {
+        "fastreact_run_count": 1,
+        "write_call_count": 0,
+        "job_context_call_count": 1,
+        "warnings": ["fastreact_digest_completed_without_write_candidates"],
+    }
+
+    result = _digest_now_fallback_review(
+        store,
+        owner_user_id="user_primary",
+        scheduled_source_item_ids=[item.source_item_id],
+        diagnostics=diagnostics,
+        worker_runs=[{"ok": True, "processed": 1}],
+    )
+
+    assert result["created"] is True
+    assert result["review_items"] == 1
+    review = store.list_review_items()[0]
+    assert review.review_type == ReviewType.LOW_CONFIDENCE
+    assert review.proposal["reason"] == "fastreact_digest_completed_without_write_candidates"
+    assert review.proposal["source_refs"][0]["source_item_id"] == item.source_item_id
 
 
 def test_cli_accepts_seed_review_candidates() -> None:
