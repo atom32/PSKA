@@ -1,8 +1,10 @@
 # PSKA Architecture Status
 
-日期：2026-06-18
+日期：2026-06-23
 
-成熟度等级：
+本文是当前 PSKA 系统功能点与成熟度的权威表，用来回答：系统现在有什么、成熟到什么程度、下一步缺什么。历史 MVP/TODO/roadmap 快照已经归档到 [`../../docs/archive/`](../../docs/archive/)，不再作为当前计划来源。
+
+## 成熟度等级
 
 - Prototype：概念或局部实现，真实使用风险高。
 - MVP：主路径能跑通，有测试或 smoke gate，但体验和质量仍粗糙。
@@ -11,65 +13,73 @@
 
 ## 模块成熟度矩阵
 
-| 模块 | 目标职责 | 当前状态 | 成熟度 | 主要缺口 | 开源优先候选 | 下一步 |
-| --- | --- | --- | --- | --- | --- | --- |
-| Service daemon / HTTP API / MCP | 让 PSKA 作为在线服务被 CLI、HTTP client、FastReAct 和 MCP client 使用 | `/health`、`/ready`、search、agentic search、jobs、review、candidates、digest、HTTP MCP 已有第一版；`local-daemon` 是 foreground supervisor | MVP | 系统级 supervisor、日志轮转、status/pid、长期运行 polish | launchd、systemd、supervisord、honcho/foreman | 产品化 daemon 和运维入口 |
-| Postgres schema / migrations | 保存 canonical source、chunks、embeddings、entities、hyperedges、review、jobs、audit | schema 和 migrations 覆盖 MVP 主路径 | MVP+ | schema 文档、数据质量报告、迁移兼容策略 | Alembic 风格迁移实践、pgvector、Postgres FTS | 补 schema map 和质量 gate |
-| Source ingestion | 将 connector 输出规范化为 source/document/chunk | Twitter/X 和 files 主路径可用；connector record/state contract 已有第一版 | MVP+ | 更多 source 类型、失败恢复细节、导入质量报告 | Pydantic、JSON Schema | 保持 scope 收敛，先强化有限数据集 |
-| Files connector | 授权目录扫描、文本抽取、manifest、watch | files-scan/files-sync/files-watch、PDF/DOCX optional extraction、manifest reconciliation 已有第一版 | MVP | OCR、复杂版面、更多格式、watch 长期运行质量 | watchdog、pypdf、python-docx、Unstructured、Docling、Marker | 先把 notes root 接入日常 workflow |
-| Twitter connector | 导入 Twitter/X archive | zip import 和 channel payload 主路径可用 | MVP+ | 数据质量分析、链接展开、增量 archive 策略 | 标准 zip/json 解析；后续可评估 browser export 工具 | 作为 MVP 主要真实数据源继续打磨 |
-| Chunks / embeddings / retrieval | ACL-first hybrid retrieval、citations、diagnostics | lexical/vector、optional rank-bm25、citations、graph context、diagnostics、PPR-style chunk/entity fusion、HippoRAG-style offline index、fact/entity embedding linking、offline index dirty/indexed/tombstone state 已有第一版 | MVP+ | rerank、Postgres FTS、query 分析质量、真实 replay 调参、持久化 adjacency/PPR graph cache | pgvector、Postgres FTS、rank-bm25、sentence-transformers/cross-encoder、Qdrant/LanceDB/Tantivy | 用 RAG-001 replay 持续调 PPR/RRF/rerank |
-| Entities / hyperedges / GraphRAG | 构建可追溯关系图，辅助多跳检索 | Postgres hyperedge、entity alias linking、1-2 hop graph paths、evidence citations、HippoRAG-style offline fact/entity/passage index + online PPR + fact/entity embedding linking + offline index freshness 已有第一版 | MVP+ | 关系质量、冲突处理、图路径评测、长期图重要性、持久化 fact/entity/passage adjacency 和 embeddings cache | NetworkX、igraph、Neo4j/AGE 仅作后续评估、HippoRAG/PPR | 当前不是 GNN；是可退回普通 RAG 的 HippoRAG-inspired GraphRAG v0 |
-| Review system | 让低置信/高影响候选由人类确认 | review taxonomy、enhanced review summary、relationship_candidate grounded apply 已完成第一版 | MVP+ | 批量操作、更多 apply 类型、review UI | Rich/Textual、diff libraries、JSON Patch | 扩展 review apply 和批处理 |
-| Digest jobs | 空闲时做受预算约束的关联再消化 | digest job、scheduler、quota window、budget/explanation policy、FastReAct worker contract 已有第一版 | MVP+ | 真实 E2E 长期稳定性、实际 token 计量、关联触发策略质量评估 | FastReAct worker、LLM tracing、tiktoken/tokenizers | 稳定真实 digest write-back 和触发评估 |
-| FastReAct integration | 把复杂 agentic loop 外包给 FastReAct | HTTP/MCP 边界、service token、jobs/run metadata、digest worker 已有第一版 | MVP | 真实长任务 trace、SSE 对齐、失败诊断、对话回流 | FastReAct 自身能力、OpenTelemetry 后续可评估 | 保存 PSKA 调用 FastReAct 的重要对话产物 |
-| Agent conversation capture | 将 PSKA 调用 FastReAct 的重要问答/trace 存为资料 | reusable capture helper、conversation source material、`agentic-search --capture`、narrative briefing save 已完成第一版 | MVP | 敏感信息策略、去重、更多 agentic run 类型自动捕获 | JSONL tracing、OpenTelemetry、Pydantic models | 扩展 capture policy 和 retention/review |
-| Human workflow / daily briefing | 让用户每天知道该看什么、做什么 | `daily-status`、`daily-briefing` deterministic v0、optional FastReAct narrative、review summary、memory/profile list 已完成第一版 | MVP+ | UI、批量 review、真实长期使用反馈、通知/inbox 体验 | Rich、Textual、Typer；后续可评估轻 Web UI | 下一轮根据真实使用反馈生成 backlog |
-| Admin Console / Local Web Console | 给人类用户提供本地管理入口 | `/console`、review inbox、search/QA、memory/profile、jobs/ops、sources/connector 已有第一版；静态页面公开，数据 API 走 service token 和 PSKA HTTP 边界 | MVP | 用户工作台仍缺：对话主界面、语料/Wiki 浏览、富文本写作、选中文本建议、证据检查器 | 原生静态页面、HTMX/Alpine.js、Jinja2、Pico.css/Tailwind、Tiptap/ProseMirror 后续评估 | 不继续堆管理页，下一步转向 User Workspace |
-| User Workspace / Chat & Writer | 让用户通过对话、资料浏览和写作使用 PSKA | 暂未形成独立产品面；目前 search 页面偏 API viewer，writer/editor 不存在 | Prototype | chat-first workflow、corpus explorer、chunk/entity/hyperedge 可读视图、selected-text 写作建议、evidence inspector、中文输出一致性 | Tiptap/ProseMirror、Monaco/CodeMirror、TanStack Table、HTMX/Alpine.js；参考 gbrain、llm_wiki、HippoRAG/PPR 评估 | 从 `APP-001` User Workspace Skeleton 开始 |
-| Observability / config / operations | 发现服务、DB、FastReAct、jobs、connector 问题 | `/ready`、metrics、service-check、runbook、job ops 已有第一版 | MVP | worker-level health、真实 digest quality signal、日志长期管理 | structlog/loguru、OpenTelemetry、prometheus-client | 增加人类可读 ops briefing |
+| 模块 | 目标职责 | 当前状态 | 成熟度 | 主要缺口 | 下一步 |
+| --- | --- | --- | --- | --- | --- |
+| Service daemon / HTTP API / MCP | 让 PSKA 作为本地在线服务被 CLI、HTTP client、FastReAct 和 MCP client 使用 | `/health`、`/ready`、workspace/console API、search、agentic search、jobs、review、candidates、digest、HTTP MCP 已有第一版；`local-daemon` 是 foreground supervisor；`./start.sh` 可启动后端和前端 | MVP | 系统级 supervisor、日志轮转、长期运行 polish、用户可读恢复入口 | 继续产品化 daemon/status/logs，把恢复命令收敛到日常入口 |
+| Postgres schema / migrations | 保存 canonical source、documents、chunks、embeddings、entities、hyperedges、review、jobs、audit、Knowledge Sources | schema 和 migrations 覆盖当前主路径；Postgres 是 canonical DB；config 只作为启动/default seed | MVP+ | schema map、数据质量报告、迁移兼容策略 | 补 schema map 和数据质量 gate |
+| Knowledge Sources / Source ingestion | 用用户可理解的 Source 模型管理授权来源和同步生命周期 | Knowledge Source 是用户主模型；connector state 降级为 adapter/runtime detail；folder sources、Twitter/X archive inbox、manual/channel payload 都落到 source/document/chunk | MVP+ | Add Folder/Remove Folder UI、source diagnostics、同步失败恢复细节、更多 source 类型 | 优先做 Knowledge Sources/file management UI 和 “why not found?” 诊断 |
+| Files sync / local documents | 授权目录扫描、文本抽取、manifest、watch 和增量同步 | `files-sync`/`files-watch`/`files-scan` 可用；支持 text-like 文件、可选 PDF/DOCX 抽取、manifest reconciliation、new/changed/unchanged/moved/missing report；`digest-now` 前置 sync | MVP+ | OCR、复杂版面、更多格式、watch 长期质量、用户可见 sync report | 把 watched folders、last sync、sync report 和 unmonitored folder 提示做进 UI |
+| Twitter/X archive ingestion | 导入 Twitter/X archive 作为高价值个人知识流 | workspace archive inbox 已接入 `files-sync` 和 `digest-now`；ZIP content hash 幂等；未变化跳过，内容变化会作为更新导入 | MVP+ | 链接展开、数据质量分析、批量导入反馈、archive inbox UI | 保持为 MVP 主要真实数据源，补导入质量报告 |
+| Chunks / embeddings / retrieval | ACL-first hybrid retrieval、citations、diagnostics | lexical/vector/graph 检索主路径可用；支持 citations、graph context、offline index dirty/indexed/tombstone state、fact/entity linking、PPR-style fusion | MVP+ | rerank、Postgres FTS、真实 replay 调参、embedding coverage/quality UI | 用 replay 持续调 RRF/PPR/rerank，并补检索健康卡 |
+| Entities / hyperedges / GraphRAG | 构建可追溯关系图，辅助多跳检索和 evidence review | Postgres hyperedges、entity alias linking、source refs、evidence citations、1-2 hop graph paths、HippoRAG-inspired offline/online retrieval 已有第一版 | MVP+ | 关系质量、冲突处理、图路径评测、长期图重要性 | 先做 replay/rerank/FTS 和图路径质量评估，不直接上 GNN |
+| Discovery system | 把机器发现和长期知识写入隔离在 review 边界前 | `DiscoveryItem`、fingerprint、score/quality signals、Today/Discoveries feed 已有第一版；topic discovery 可见但质量仍依赖 corpus 和 producer | MVP | 高价值 producer、accept/ignore/snooze 生命周期持久化、和 review 的清晰桥接 | 先调 discovery quality，再扩 producer 数量 |
+| Review system | 让低置信/高影响候选由人类确认后再进入 Memory/Profile/Graph | review taxonomy、approve/reject/apply、relationship_candidate grounded apply、fallback digest review 已有第一版；console/workspace 部分接入 | MVP+ | 批量操作、更多 apply 类型、完整 Review workspace、snooze/later 持久化 | 完成 Review workspace 和批量 review |
+| Digest jobs | 空闲时对新资料做受预算约束的关联再消化 | `digest-schedule`、`digest-scheduler`、`digest-now`、quota、dedupe、explanation policy、FastReAct worker contract 已有第一版；scheduler 默认 300 秒增量检查，不是每天固定触发；no-candidate 会 diagnostics + fallback review | MVP+ | 真实长期稳定性、token/成本计量、关联触发策略质量、FastReAct trace 诊断 | 稳定 digest write-back，补质量指标和失败诊断 |
+| FastReAct integration | 把复杂 agentic loop 外包给 FastReAct，PSKA 保持 DB/API/ACL 边界 | HTTP/MCP 边界、service token、job/run metadata、digest worker、agentic search、daily narrative 已有第一版 | MVP | 长任务 trace、SSE 对齐、tool failure 诊断、对话回流策略 | 保存重要 FastReAct 产物并加强失败可解释性 |
+| Agent conversation capture | 将重要问答/trace 存为可追溯资料 | reusable capture helper、dedupe、retention/review policy、`agentic-search --capture`、daily narrative save 已有第一版 | MVP | 敏感信息策略、更多 run 类型自动捕获、长期保留策略 UI | 扩展 capture policy 和 review/retention 可见性 |
+| Human workflow / daily briefing | 让用户每天知道系统状态、待处理事项和下一步动作 | `daily-status`、`daily-briefing` deterministic v0、optional narrative、review summary、memory/profile list、recommended commands 已有第一版 | MVP+ | 通知/inbox、真实长期反馈、与 Workspace 首页深度融合 | 把 daily workflow 合进 User Workspace 首页 |
+| Admin Console / Local Web Console | 给开发/运维提供本地管理入口 | `/console`、review inbox、search/QA、memory/profile、jobs/ops、sources/runtime summary 已有第一版；数据 API 走 service token | MVP | 管理页体验粗糙、和 User Workspace 职责边界需继续收敛 | 不继续堆管理页，主产品入口转向 User Workspace |
+| User Workspace / Chat & Writer | 让用户通过 Today、发现、资料浏览、搜索、图谱和写作工作流使用 PSKA | User Workspace scaffold 已存在；Today、Discoveries、Corpus、Brain/Search、Graph、review-adjacent surfaces 部分真实接入 | MVP | Knowledge Sources/file management、durable editor/canvas、chat-first workflow、证据检查器、中文输出一致性 | 先补 Knowledge Sources 和 corpus/review 主工作流，再做 durable editor/canvas |
+| Observability / config / operations | 发现服务、DB、FastReAct、jobs、sources、sync、digest 问题 | `/ready`、metrics、`service-check`、`local-daemon status`、`mvp-status --summary`、sync report、job ops、fallback review 已有第一版 | MVP+ | worker-level health、digest quality signal、日志长期管理、面向用户的故障解释 | 做人类可读 ops briefing 和 source/search diagnostics |
 
-## 2026-06-18 基础设施体检
+## 当前检查方式
 
-结论：PSKA 的当前技术基础设施仍然可用，可以进入下一轮产品迭代。
+本文不依赖某个本地样例库的瞬时计数，也不写死某次 test run 的 passed 数。刷新或验收本表时优先使用这些检查：
 
-- Core test gate：`cd core && ../.pska/venvs/pska-py312/bin/python -m pytest -q` 通过，`222 passed in 13.74s`。
-- Twitter/X channel gate：`cd channels/twitter-x && ../../.pska/venvs/pska-py312/bin/python -m pytest -q` 通过，`9 passed in 0.02s`。
-- 受影响模块 gate：FastReAct integration、extraction、memory/hypergraph/agentic、retrieval eval 相关测试通过，`64 passed in 12.86s`。
-- CLI contract：`python -m pska_core.cli --help` 可列出 db、serve、local-daemon、search、agentic-search、jobs、review、memory、profile、retrieval-eval 等入口。
-- HTTP smoke：临时启动 `PSKA_SERVICE_TOKEN=smoke PSKA_FASTREACT_URL=http://127.0.0.1:9 python -m pska_core.cli serve --port 8877`，`/health` 返回 200，`/console` 返回 200，`/console/data` 未带 token 返回 401，带 `X-PSKA-Service-Token: smoke` 返回 200 并读取当前 `postgresql:///pska` 样例数据。
+```bash
+git diff --check
 
-已知非阻塞问题：
+cd core
+../.pska/venvs/pska-py312/bin/python -m pytest tests -q
 
-- 当前样例库仍有若干 failed `digest_via_fastreact` jobs，主要来自 FastReAct timeout 或测试 canary；这说明 ops 页面有真实问题可展示，但不阻塞 PSKA 管理台、检索和下一轮 User Workspace 开发。
-- GraphRAG 已从轻量 graph-assisted retrieval 前进到 HippoRAG-inspired GraphRAG v0：离线 fact/entity/passage 图索引对象、offline index dirty/indexed/tombstone state、fact/entity embedding linking、在线 query fact/entity/passage seeds、PPR score fusion 和 graph-connected chunk expansion 已有第一版。但它仍不是 GNN，也不是完整 HippoRAG 2 复现。
+cd ..
+./scripts/pska --config .pska/config.json mvp-status --summary
+./scripts/pska --config .pska/config.json digest-now
+```
+
+Markdown 文档更新还应运行相对链接检查，确认所有本地链接仍存在。`digest-now` 的输出应关注：
+
+- sync totals 是否包含 folder source 和 Twitter archive inbox。
+- scheduled/worker/candidate_write 是否能解释本次 digest。
+- FastReAct 未写 candidates 时，diagnostics 和 fallback review 是否可见。
 
 ## GraphRAG / GNN 真实状态
 
-PSKA 当前没有实现真正的 GNN，也没有达到完整 HippoRAG 2 级别的成熟 GraphRAG。2026-06-19 起，PSKA 已有一个 HippoRAG-inspired GraphRAG v0。
+PSKA 当前不是 GNN，也不是完整 HippoRAG 2 复现。当前路线是 Postgres-first、ACL-first、可退回普通 RAG 的 HippoRAG-inspired GraphRAG v0。
 
-当前已经打下的基础是：
+已经具备的基础：
 
-- Postgres-first entities 和 hyperedges。
-- hyperedge source refs 和 evidence citations。
-- ACL-filtered graph context。
-- query seed entity 到 1-2 hop grounded graph paths。
-- ACL-visible chunk/entity/hyperedge/evidence source ref 局部异构图。
-- `HippoRAGOfflineIndex` 从 canonical chunk/entity/hyperedge/source_refs 构建 fact/entity/passage 图。
-- `offline_index_states` 持久化 source/chunk 的 dirty/indexed/tombstone 状态、content hash、visibility version、embedding model、index version 和 last indexed time；当前在线 retrieval 仍可请求级重建 ACL-visible 子图作为 fallback。
-- fact/entity embedding-style linking：fact embedding 使用实体+关系结构文本，entity linking 支持 query embedding，并带强信号/泛化门控。
-- query-relevant facts、query-mentioned entities 和低权重 lexical/vector passage hits 作为 personalization seeds。
-- lightweight personalized PageRank/random walk score fusion；graph expansion 的分数与 RRF 同量级，避免覆盖直接 lexical/vector 证据。
-- graph-connected evidence chunks 可进入 retrieval results；无图信号时明确退回普通 RAG。
-- 基于 mention、confidence、evidence coverage 和 path length 的轻量排序。
+- Postgres entities、hyperedges、source refs 和 evidence citations。
+- ACL-filtered graph context 和 1-2 hop grounded graph paths。
+- `offline_index_states` 记录 source/chunk dirty/indexed/tombstone、content hash、visibility version、embedding model、index version 和 last indexed time。
+- fact/entity embedding-style linking、query fact/entity/passage seeds、PPR-style score fusion。
+- graph-connected evidence chunks 可进入 retrieval results；无图信号时退回普通 RAG。
 - retrieval diagnostics 可提示 insufficient/ungrounded evidence、graph conflict、sensitivity。
 
 下一步仍不应直接上 GNN。更合理的顺序是：
 
-1. 用 RAG-001 中文 replay 持续评估 expected citations、graph path 和 expanded chunk 命中。
+1. 用真实 replay 持续评估 expected citations、graph path 和 expanded chunk 命中。
 2. 调整 PPR seeds、边权、damping、graph expansion 上限和 score fusion 权重。
 3. 引入更成熟的 rerank 或 Postgres FTS。
-4. 当真实问题稳定需要多文档多跳推理时，再评估更接近 HippoRAG 2 的 query-time 策略或图数据库/图算法库。
+4. 当真实问题稳定需要更强多文档多跳推理时，再评估更接近 HippoRAG 2 的 query-time 策略或图数据库/图算法库。
+
+## 和其他文档的关系
+
+- [`../../docs/README.zh.md`](../../docs/README.zh.md)：当前文档地图。
+- [`../../docs/FEATURE_REALITY_CHECK.md`](../../docs/FEATURE_REALITY_CHECK.md)：前端/产品表面 Real、Partial、Mock、Planned 检查表。
+- [`../../docs/ARCHITECTURE.md`](../../docs/ARCHITECTURE.md)：系统数据流、source model、discovery invariants 和 runtime processes。
+- [`product-design-zh.md`](product-design-zh.md)：产品方向和用户工作流。
+- [`../../docs/archive/`](../../docs/archive/)：历史 MVP/TODO/roadmap 状态，不再是当前计划来源。
 
 ## Open-source-first 决策规则
 
@@ -78,4 +88,4 @@ PSKA 当前没有实现真正的 GNN，也没有达到完整 HippoRAG 2 级别�
 - 是否存在成熟开源库能解决 80% 非核心问题？
 - 该能力是否属于 PSKA 核心边界：ACL、source refs、review/audit、canonical data model、service contract？
 - 如果不是核心边界，优先做薄封装而不是自研。
-- 如果选择自研，必须在 TODO 中记录原因和替代方案。
+- 如果选择自研，必须在当前计划或实现说明中记录原因和替代方案。
