@@ -11,7 +11,7 @@ PSKA has two layers:
 
 ```mermaid
 flowchart TD
-  A["User-authorized sources<br/>files / Twitter archive / connector records"] --> B["Ingestion"]
+  A["Knowledge Sources<br/>folder / Twitter archive / future adapters"] --> B["Sync / Import"]
   B --> C["Source items"]
   C --> D["Documents"]
   D --> E["Chunks"]
@@ -33,6 +33,17 @@ flowchart TD
   N --> O
   O --> P["Workspace Brain / Search / Today"]
 ```
+
+## Source Model
+
+The user-facing concept is `Knowledge Source`: a folder, archive inbox, or
+future adapter that PSKA is allowed to observe. Connectors are implementation
+details behind source adapters.
+
+Config is only a startup/default seed. Runtime source and sync state live in
+the database. `files-sync` reads active folder sources, optional PDF/DOCX
+extractors, and the workspace Twitter/X archive inbox. It uses content hashes
+to avoid repeated work and to detect changed source material.
 
 ## Discovery Invariants
 
@@ -96,10 +107,16 @@ when it identifies a new relationship, conflict, pattern, decision, or risk.
 
 - `pska-service`: HTTP API on `127.0.0.1:8765`
 - `pska-job-worker`: local durable job worker
-- `pska-digest-scheduler`: creates digest backlog jobs from new sources
+- `pska-digest-scheduler`: checks for new or changed sources and creates digest backlog jobs
 
 The frontend runs separately through Vite on `127.0.0.1:5173`. `./start.sh`
 starts both the backend supervisor and frontend dev server.
+
+The digest scheduler is an incremental interval loop, not a fixed daily cron.
+The default local daemon interval is 300 seconds. Manual `digest-now` performs
+sync first and then processes one digest pass. If FastReAct processes a digest
+without writing candidates, PSKA exposes diagnostics and fallback review items
+instead of silently reporting an empty review queue.
 
 ## Main Backend Modules
 
@@ -114,7 +131,8 @@ starts both the backend supervisor and frontend dev server.
 | `review.py` | Approve/reject/apply review items |
 | `memory.py` | Agent memories and profile cards |
 | `offline_index.py` / `hipporag_index.py` | GraphRAG-inspired offline index |
-| `files_connector.py` | Authorized local file sync |
+| `knowledge_sources.py` | User-facing source lifecycle and sync runs |
+| `files_connector.py` | Authorized local file sync and manifest reconciliation |
 | `local_daemon.py` | Foreground supervisor and status/config helpers |
 
 ## Workspace Surfaces

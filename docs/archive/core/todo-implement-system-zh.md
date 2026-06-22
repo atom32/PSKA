@@ -1,5 +1,9 @@
 # PSKA Todo Implement System
 
+归档历史任务系统。本文保留旧 Human Workflow/Admin Console backlog 和验收记录，不再是当前计划来源。当前入口见
+[中文文档索引](../../README.zh.md)、[Product Design](../../../core/docs/product-design-zh.md)
+和 [Architecture Status](../../../core/docs/architecture-status-zh.md)。
+
 日期：2026-06-18
 
 ## 目标
@@ -864,7 +868,7 @@ Human Workflow smoke 应使用当前 `postgresql:///pska` 样例数据跑通 sta
 
 当当前轨道没有 `ready` 任务时，下一轮应先更新本文件，而不是让 agent 猜：
 
-1. 从 [product-design-zh.md](product-design-zh.md) 选一个产品缺口。
-2. 用 [architecture-status-zh.md](architecture-status-zh.md) 确认对应模块成熟度和主要缺口。
+1. 从 [product-design-zh.md](../../../core/docs/product-design-zh.md) 选一个产品缺口。
+2. 用 [architecture-status-zh.md](../../../core/docs/architecture-status-zh.md) 确认对应模块成熟度和主要缺口。
 3. 为新任务写入完整 TODO：id、track、priority、dependencies、open_source_candidates、acceptance_gates、verification_commands。
 4. 至少放入一个 `status: ready` 的任务后，agent 才能继续自动实施。

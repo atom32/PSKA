@@ -67,6 +67,9 @@ PSKA runtime/user data defaults to:
 Imports, Twitter/X zip inboxes, daemon run files, logs, and cold-start fixtures
 belong there, not under the source repo's `workspaces/default/`.
 
+Config roots are startup/default seed only. After initialization, runtime
+knowledge source and sync state are stored in the database.
+
 ## Cold Start E2E
 
 For a clean workspace and full backend/frontend check:
@@ -138,12 +141,23 @@ docs/RELEASE_INIT_FASTREACT_GUIDE.zh.md
 
 ## Sync Local Files
 
-Configured file roots live in `.pska/config.json` under `files.roots`.
+Configured file roots live in `.pska/config.json` under `files.roots` for
+initial seed/defaults. Runtime source state is database-backed.
 
 ```bash
 ./scripts/pska --config .pska/config.json files-sync
 ./scripts/pska --config .pska/config.json digest-schedule --owner-user-id user_primary --limit 10
 ```
+
+`files-sync` covers active folder sources, optional PDF/DOCX extraction,
+manifest reconciliation, and the workspace Twitter/X archive inbox. The manual
+shortcut is:
+
+```bash
+./scripts/pska --config .pska/config.json digest-now
+```
+
+`digest-now` runs sync first and then processes one digest pass.
 
 ## Verify Today Uses Real Backend Data
 

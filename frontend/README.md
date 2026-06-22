@@ -1,8 +1,8 @@
 # PSKA Frontend
 
-This is the first production-oriented PSKA User Workspace.
+This is the PSKA User Workspace scaffold.
 
-The product stance is ambient intelligence: the user writes or arranges ideas freely, and PSKA observes context after low-interruption triggers. The right sidebar surfaces related knowledge, entities, historical context, and suggested connections without inserting or rewriting user content.
+For the full documentation map, see [docs/README.md](../docs/README.md).
 
 ## Run
 
@@ -12,12 +12,26 @@ npm install
 npm run dev
 ```
 
-The Vite dev server proxies `/workspace/*` to the local PSKA HTTP service at `http://127.0.0.1:8765`. If the backend is unavailable, the workspace keeps running with local context analysis and sample knowledge panels.
+The Vite dev server proxies `/workspace/*` to the local PSKA HTTP service at
+`http://127.0.0.1:8765`.
 
-## Surfaces
+From the repository root, the normal path is:
 
-- Left sidebar: navigation only, 250px expanded and collapsible.
-- Main workspace: document mode with Tiptap and canvas mode with React Flow.
-- PSKA Brain: passive ambient suggestions, 350-450px, always visible on desktop.
+```bash
+./start.sh
+```
 
-Context analysis runs on pause, blur, significant content changes, and manual refresh.
+## Current Surfaces
+
+- Today: real backend data with empty/error states.
+- Discoveries: backend discovery feed and score-filtered items.
+- Corpus/Brain: search and corpus-backed context panels.
+- Graph: early visualization over available graph/corpus context.
+- Review-adjacent flows: partial backend wiring; full Review workspace is still
+  evolving.
+
+The frontend is not yet a durable document editor, canvas persistence layer, or
+Knowledge Sources/file management UI. Those are next-step product work.
+
+See [Backend Feature Map](BACKEND_FEATURES.md) for the current frontend/backend
+capability map.

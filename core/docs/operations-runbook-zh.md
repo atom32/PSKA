@@ -78,7 +78,7 @@ MVP 推荐先用有限数据源启动：
 ./scripts/pska --config .pska/config.json digest-schedule --owner-user-id user_primary --reason "files sync"
 ```
 
-`files-sync` 会读取 `.pska/config.json` 的 `files.roots`，把 UTF-8 文本类文件以及可选 PDF/DOCX 文本抽取结果写入 canonical DB，并更新 `conn_user_primary_files` 的授权 root、scan cursor、sync status 和 lightweight file manifest。后续同步会报告 new、changed、unchanged、moved、missing；missing 只记录在 connector state，不会删除 canonical source history。`files-watch` 是基于 `watchdog` 的前台监听模式，适合在 notes/docs root 变化时自动触发同一套 files scan；安装方式是 `pska-core[watch]`。`digest-schedule` 只会为还没有 digest job 覆盖过的新 source 创建 backlog。
+`files-sync` 会从数据库中的 Knowledge Sources 和 `.pska/config.json` 的默认 seed 解析 active folder sources，把 UTF-8 文本类文件以及可选 PDF/DOCX 文本抽取结果写入 canonical DB，同时处理 workspace 的 Twitter/X archive inbox。后续同步按内容 hash 和 manifest 报告 new、changed、unchanged、moved、missing；missing 只记录为同步状态，不会删除 canonical source history。connector state 仍用于实现层运行时 cursor/manifest，但用户视角应看 Knowledge Source 和 sync report。`files-watch` 是基于 `watchdog` 的前台监听模式，适合在 notes/docs root 变化时自动触发同一套 files scan；安装方式是 `pska-core[watch]`。`digest-schedule` 只会为还没有被当前 digest job 覆盖、或已经发生更新的 source 创建 backlog。
 
 当前 Postgres 样例库 gate：
 
@@ -283,7 +283,7 @@ Operational signals:
 - `checks.jobs.digest_backlog.jobs > 0` means there are queued/running digest jobs for Fastreact workers.
 - `checks.metrics.embedding.coverage < 1` means some chunks are missing embeddings for the currently configured provider/model; run `embed-backfill` when semantic retrieval is enabled.
 - `checks.metrics.connectors.source_channels` shows last source-item freshness by channel.
-- `checks.metrics.connectors.state_count` and `state_sync_status` show durable connector state readiness.
+- `checks.metrics.connectors.state_count` and `state_sync_status` show adapter/runtime state readiness; user-facing source health should be read through Knowledge Sources and sync reports.
 - `checks.jobs.recent_failed` shows recent failed jobs and `external_run_id` when Fastreact was involved.
 - `checks.fastreact.ok=false` means Fastreact is offline or not ready; PSKA can still do local retrieval and manage backlog.
 - `checks.fastreact.pska_tools_loaded=false` means Fastreact is reachable but missing required PSKA tools.

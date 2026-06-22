@@ -200,15 +200,18 @@ Candidates require valid `source_refs` and preserve audit/source metadata.
 | `POST /jobs/{id}/cancel` | Cancel job |
 | `POST /jobs/recover-stale` | Recover stale jobs |
 
-## Connectors and Sources
+## Knowledge Sources and Connector Runtime
 
 | Endpoint | Purpose |
 | --- | --- |
 | `POST /ingest/channel-payload` | Ingest normalized channel payload |
 | `POST /connectors/records` | Ingest connector record |
-| `GET /connectors/states` | List connector states |
-| `POST /connectors/states` | Upsert connector state |
-| `GET /console/sources/data` | UI-ready source/connector summary |
+| `GET /connectors/states` | List adapter runtime states |
+| `POST /connectors/states` | Upsert adapter runtime state |
+| `GET /console/sources/data` | UI-ready source/runtime summary |
+
+Knowledge Source is the user-facing model. Connector state endpoints remain as
+runtime/adapter support for sync cursors, manifests, and diagnostics.
 
 ## MCP
 

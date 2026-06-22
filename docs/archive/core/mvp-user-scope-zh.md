@@ -1,11 +1,14 @@
 # PSKA MVP 用户可用范围
 
+归档历史 scope 文档。本文保留 MVP+ 阶段判断，不再是当前产品计划入口。当前入口见
+[中文文档索引](../../README.zh.md) 和 [Product Design](../../../core/docs/product-design-zh.md)。
+
 日期：2026-06-16
 
 相关上层文档：
 
-- [product-design-zh.md](product-design-zh.md)：完整产品设计和核心用户工作流。
-- [architecture-status-zh.md](architecture-status-zh.md)：模块成熟度和当前技术缺口。
+- [product-design-zh.md](../../../core/docs/product-design-zh.md)：完整产品设计和核心用户工作流。
+- [architecture-status-zh.md](../../../core/docs/architecture-status-zh.md)：模块成熟度和当前技术缺口。
 - [todo-implement-system-zh.md](todo-implement-system-zh.md)：当前可执行 TODO、选择规则和验收门禁。
 
 ## 判断

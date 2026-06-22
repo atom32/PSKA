@@ -2,7 +2,7 @@
 
 日期：2026-06-14
 
-状态：P0.5 + P0.4 digest backlog slice + P1.1 connector state slice。本地 online service contract + service auth/request context + durable job worker metadata + readiness observability + foreground service runbook + Fastreact candidate write-back + digest schedule API/CLI + connector record/state API/CLI + config file support。
+状态：本地 online service contract + service auth/request context + durable job worker metadata + readiness observability + foreground service runbook + Fastreact candidate write-back + digest schedule API/CLI + Knowledge Source/files sync + connector runtime API + config file support。
 
 PSKA online service 是前台运行的本地 HTTP 服务。它不是 daemon supervisor；自动启动、重启、worker supervision 和运维手册属于 P0.5。
 
@@ -199,7 +199,7 @@ P0.4 readiness observability notes：
 - `checks.jobs.running_stale_count` counts running jobs whose lease has expired.
 - `checks.jobs.digest_backlog` reports queued/running digest jobs and scoped source count.
 - `checks.metrics.embedding` reports current provider/model coverage plus any-provider coverage.
-- `checks.metrics.connectors` reports first-pass source-channel freshness; this is a proxy until P1 connector state tables exist.
+- `checks.metrics.connectors` reports source-channel freshness plus adapter/runtime state. User-facing source health should be shown as Knowledge Sources and sync reports.
 - `checks.jobs.recent_failed` includes a bounded list of recent failed jobs with error and external run reference.
 - `checks.fastreact.pska_tools_loaded=false` means Fastreact is reachable but does not expose all PSKA required tools.
 - `checks.mcp.missing_required_tools` is a local contract failure and makes `ok=false` if required PSKA MCP tools are missing.
@@ -282,7 +282,7 @@ Rules:
 - `artifacts` becomes `raw_paths`.
 - `body` is the canonical readable text.
 - `visibility`, `visible_team_ids`, `owner_user_id`, and `space_id` remain PSKA-owned ACL fields.
-- `scan_cursor` is preserved on the source item and can also be persisted in connector state.
+- `scan_cursor` is preserved on the source item and can also be persisted in adapter runtime state.
 
 Local CLI:
 
@@ -290,10 +290,13 @@ Local CLI:
 ./scripts/pska connector-ingest-record ./record.json
 ```
 
-## Connector State Contract
+## Connector Runtime State Contract
 
-Connector implementations should persist enablement, authorization scope, and
-incremental scan cursor through `pska.connector_state.v1`:
+Knowledge Source is the user-facing lifecycle object. Connector state is an
+implementation/runtime detail for adapters that need enablement, authorization
+scope, lightweight manifests, and incremental scan cursors.
+
+Adapter implementations can persist runtime state through `pska.connector_state.v1`:
 
 ```http
 POST /connectors/states
@@ -329,9 +332,9 @@ Local CLI:
 ./scripts/pska connector-state show conn_user_primary_files
 ```
 
-## Files Connector
+## Files / Source Sync
 
-P1.2 first slice:
+Current files/source sync:
 
 ```bash
 ./scripts/pska files-sync
@@ -343,19 +346,18 @@ P1.2 first slice:
   --ignore '*.tmp'
 ```
 
-`files-sync` scans configured `files.roots` from PSKA config. `files-watch`
-uses optional `watchdog` support from `pska-core[watch]` to run the same sync
-path whenever authorized roots change. `files-scan` is the explicit one-off
-form. The first slice supports UTF-8 text-like files such as Markdown, text,
-JSON, YAML, CSV/TSV, logs, and Python files. With optional
-`pska-core[documents]`, it also uses mature extractors `pypdf` and
-`python-docx` for PDF/DOCX text extraction. It records file path, file URI, mime
-type, size, mtime-based scan cursor, content hash, and the authorized root in
-`connector_state.permission_scope.roots`. It also records a lightweight file
-manifest in `connector_state.config.files_manifest`, so sync reports can
+`files-sync` reads active folder Knowledge Sources plus config defaults/seeds.
+It also imports the workspace Twitter/X archive inbox. `files-watch` uses
+optional `watchdog` support from `pska-core[watch]` to run the same sync path
+whenever authorized roots change. `files-scan` is the explicit one-off form.
+The current slice supports UTF-8 text-like files such as Markdown, text, JSON,
+YAML, CSV/TSV, logs, and Python files. With optional `pska-core[documents]`, it
+also uses mature extractors `pypdf` and `python-docx` for PDF/DOCX text
+extraction. Sync records file path, file URI, mime type, size, scan cursor,
+content hash, authorized root, and lightweight manifests so reports can
 distinguish new, changed, unchanged, moved, and missing files without deleting
-canonical source history. Complex layout parsing, OCR, and a richer source
-versioning UI are later connector-quality work.
+canonical source history. Complex layout parsing, OCR, richer source versioning
+UI, and Knowledge Sources file/folder management remain later product work.
 
 ## Jobs and Workers
 

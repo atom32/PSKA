@@ -3,6 +3,7 @@
 PSKA 的 Twitter/X 采集通道。
 
 归档使用 `docs/schema.md` 中记录的 PSKA archive v2 元数据 schema。
+完整 PSKA 文档地图见 `../../docs/README.zh.md`。
 
 ## 安装
 
@@ -84,3 +85,25 @@ ZIP 包含：
 批处理模式还会写入 `Downloads/twitter_archive/batch_report.zip`。
 
 扩展在回到页面顶部后捕获可见标签页截图。它不会绕过 Twitter/X 的媒体限制；视频在 Markdown/JSON 中保存为链接。
+
+## 导入到 PSKA
+
+把 ZIP 放入 workspace archive inbox：
+
+```text
+~/PSKA_workspaces/default/twitter_archive/
+```
+
+然后运行：
+
+```bash
+./scripts/pska --config .pska/config.json files-sync
+```
+
+`digest-now` 也会在调度 digest 前先跑这条 sync 路径：
+
+```bash
+./scripts/pska --config .pska/config.json digest-now
+```
+
+Twitter/X archive 导入按 ZIP 内容 hash 幂等处理。未变化 ZIP 会跳过；内容变化的 archive 会作为更新后的 source material 导入。

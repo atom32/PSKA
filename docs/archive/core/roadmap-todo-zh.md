@@ -1,15 +1,19 @@
 # PSKA Roadmap / TODO
 
+归档历史路线图。本文记录旧 milestone 和阶段性判断，不再作为当前任务选择入口。当前入口见
+[中文文档索引](../../README.zh.md)、[Product Design](../../../core/docs/product-design-zh.md)
+和 [Architecture Status](../../../core/docs/architecture-status-zh.md)。
+
 日期：2026-06-12
 
-长期愿景见 [vision-zh.md](vision-zh.md)。
+长期愿景见 [vision-zh.md](../../../core/docs/vision-zh.md)。
 
 ## 系统化推进入口
 
 PSKA 后续不再靠用户不断说“继续，下一个 TODO”来推进。当前 repo 文档中的源头分工如下：
 
-- [product-design-zh.md](product-design-zh.md)：产品定位、人类日常工作流、PSKA/FastReAct 边界和产品原则。
-- [architecture-status-zh.md](architecture-status-zh.md)：模块级设计目标、实现状态、成熟度、缺口和 open-source-first 候选。
+- [product-design-zh.md](../../../core/docs/product-design-zh.md)：产品定位、人类日常工作流、PSKA/FastReAct 边界和产品原则。
+- [architecture-status-zh.md](../../../core/docs/architecture-status-zh.md)：模块级设计目标、实现状态、成熟度、缺口和 open-source-first 候选。
 - [todo-implement-system-zh.md](todo-implement-system-zh.md)：结构化 TODO、任务选择规则、验收门禁和当前 Human Workflow backlog。
 - [mvp-user-scope-zh.md](mvp-user-scope-zh.md)：MVP+ 数据源和功能 scope。
 
@@ -313,8 +317,8 @@ FastReAct 仍然是重要消费者，但不应主导 PSKA 架构。
 
 相关文档：
 
-- [fastreact-protocol-zh.md](fastreact-protocol-zh.md)
-- [fastreact-pska-real-integration-manual-zh.md](fastreact-pska-real-integration-manual-zh.md)
+- [fastreact-protocol-zh.md](../../../core/docs/fastreact-protocol-zh.md)
+- [fastreact-pska-real-integration-manual-zh.md](../../../core/docs/fastreact-pska-real-integration-manual-zh.md)
 
 ## 当前优先级建议
 

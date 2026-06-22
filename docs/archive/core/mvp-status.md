@@ -1,5 +1,9 @@
 # PSKA MVP Status
 
+Archived historical snapshot. This file is kept for project history and is not
+the current plan of record. Start from [Documentation Index](../../README.md)
+or [中文文档索引](../../README.zh.md).
+
 Date: 2026-06-10
 
 ## Executive Summary

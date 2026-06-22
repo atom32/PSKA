@@ -3,6 +3,7 @@
 Twitter/X acquisition channel for PSKA.
 
 Archives use the PSKA archive v2 metadata schema documented in `docs/schema.md`.
+For the full PSKA documentation map, see `../../docs/README.md`.
 
 ## Install
 
@@ -86,3 +87,26 @@ Batch mode also writes `Downloads/twitter_archive/batch_report.zip`.
 The extension captures a visible tab screenshot after returning to the top of the
 page. It does not bypass Twitter/X media restrictions; videos are saved as links
 in Markdown/JSON.
+
+## Import Into PSKA
+
+Place or copy ZIP files into the workspace archive inbox:
+
+```text
+~/PSKA_workspaces/default/twitter_archive/
+```
+
+Then run:
+
+```bash
+./scripts/pska --config .pska/config.json files-sync
+```
+
+`digest-now` also runs this sync path before scheduling a digest:
+
+```bash
+./scripts/pska --config .pska/config.json digest-now
+```
+
+Twitter/X archive imports are idempotent by ZIP content hash. Unchanged ZIPs are
+skipped; changed archives are imported as updated source material.
