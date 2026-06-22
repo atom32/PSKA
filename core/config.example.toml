@@ -19,3 +19,7 @@ provider = "bge-m3"
 model = "BAAI/bge-m3"
 dimensions = 1024
 batch_size = 16
+
+[ingest]
+chunk_size = 1200
+chunk_overlap = 0

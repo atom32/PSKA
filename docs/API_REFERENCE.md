@@ -43,11 +43,36 @@ limit=10
 Response sections:
 
 - `continue_working`
-- `discoveries`
+- `discoveries` from the score-filtered discovery feed
 - `needs_review`
 - `system`
 
-It currently composes existing backend methods and does not require new tables.
+It composes backend methods for activity, discovery, review, corpus, jobs, and
+readiness.
+
+### `GET /workspace/discoveries/data`
+
+Producer-backed discovery feed.
+
+Query:
+
+```text
+owner_user_id=user_primary
+limit=50
+min_score=0.5
+```
+
+Response:
+
+- `discoveries`: recent `new` `DiscoveryItem` records whose
+  `discovery_score >= min_score`
+- `count`: returned discovery count
+- `total_new`: recent `new` discovery count before score filtering
+- `window_days`: freshness window, currently 7
+
+Each discovery includes `fingerprint`, `evidence_snapshot`,
+`discovery_score`, and `quality_signals`. Low-scoring producer output remains
+persisted for audit/debugging, but Today should not show it by default.
 
 ### `GET /workspace/corpus/data`
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 from uuid import uuid5, NAMESPACE_URL
 
@@ -13,9 +14,18 @@ from pska_core.embeddings import EmbeddingProvider
 class IngestService:
     """Converts channel payloads into source items, documents, and chunks."""
 
-    def __init__(self, store: KnowledgeStore, *, chunk_chars: int = 1200, embedding_provider: EmbeddingProvider | None = None) -> None:
+    def __init__(
+        self,
+        store: KnowledgeStore,
+        *,
+        chunk_size: int | None = None,
+        chunk_overlap: int | None = None,
+        chunk_chars: int | None = None,
+        embedding_provider: EmbeddingProvider | None = None,
+    ) -> None:
         self.store = store
-        self.chunk_chars = chunk_chars
+        self.chunk_size = self._resolve_chunk_size(chunk_size=chunk_size, chunk_chars=chunk_chars)
+        self.chunk_overlap = self._resolve_chunk_overlap(chunk_overlap)
         self.embedding_provider = embedding_provider
 
     def ingest_channel_payload(self, payload: ChannelIngestPayload | dict) -> SourceItem:
@@ -82,6 +92,8 @@ class IngestService:
                 metadata={
                     "embedding_provider": self.embedding_provider.provider_name if self.embedding_provider else None,
                     "embedding_model": self.embedding_provider.model_name if self.embedding_provider else None,
+                    "chunk_size": self.chunk_size,
+                    "chunk_overlap": self.chunk_overlap,
                 },
             )
             self.store.add_chunk(chunk)
@@ -110,8 +122,27 @@ class IngestService:
         clean = re.sub(r"\s+", " ", text).strip()
         if not clean:
             return [""]
-        return [clean[index : index + self.chunk_chars] for index in range(0, len(clean), self.chunk_chars)]
+        step = self.chunk_size - self.chunk_overlap
+        return [clean[index : index + self.chunk_size] for index in range(0, len(clean), step)]
 
     def _default_title(self, record_type: str, text: str) -> str:
         first = re.sub(r"\s+", " ", text).strip()[:80]
         return first or record_type
+
+    def _resolve_chunk_size(self, *, chunk_size: int | None, chunk_chars: int | None) -> int:
+        value = chunk_size if chunk_size is not None else chunk_chars
+        if value is None:
+            value = int(os.getenv("PSKA_INGEST_CHUNK_SIZE") or os.getenv("PSKA_INGEST_CHUNK_CHARS") or 1200)
+        if value <= 0:
+            raise ValueError("chunk_size must be greater than 0")
+        return value
+
+    def _resolve_chunk_overlap(self, chunk_overlap: int | None) -> int:
+        value = chunk_overlap
+        if value is None:
+            value = int(os.getenv("PSKA_INGEST_CHUNK_OVERLAP") or 0)
+        if value < 0:
+            raise ValueError("chunk_overlap must be greater than or equal to 0")
+        if value >= self.chunk_size:
+            raise ValueError("chunk_overlap must be smaller than chunk_size")
+        return value

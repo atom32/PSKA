@@ -69,11 +69,87 @@ TOOLS = [
                 "schema_version": {"type": "string", "default": "pska.candidates.v1"},
                 "job_id": {"type": "string"},
                 "request_id": {"type": "string"},
-                "source_refs": {"type": "array", "items": {"type": "object"}},
-                "entities": {"type": "array", "items": {"type": "object"}},
-                "hyperedges": {"type": "array", "items": {"type": "object"}},
-                "review_items": {"type": "array", "items": {"type": "object"}},
-                "memory_candidates": {"type": "array", "items": {"type": "object"}},
+                "source_refs": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "source_item_id": {"type": "string"},
+                            "document_id": {"type": "string"},
+                            "chunk_id": {"type": "string"},
+                            "message_id": {"type": "string"},
+                            "path": {"type": "string"},
+                            "url": {"type": "string"},
+                        },
+                    },
+                },
+                "entities": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "entity_type": {"type": "string"},
+                            "label": {"type": "string"},
+                            "confidence": {"type": "number"},
+                            "source_refs": {"type": "array", "items": {"type": "object"}},
+                            "metadata": {"type": "object"},
+                        },
+                        "required": ["entity_type", "label"],
+                    },
+                },
+                "hyperedges": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "relation_type": {"type": "string"},
+                            "members": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "entity_type": {"type": "string"},
+                                        "label": {"type": "string"},
+                                        "role": {"type": "string"},
+                                    },
+                                    "required": ["entity_type", "label", "role"],
+                                },
+                            },
+                            "evidence_text": {"type": "string"},
+                            "confidence": {"type": "number"},
+                            "source_refs": {"type": "array", "items": {"type": "object"}},
+                        },
+                        "required": ["relation_type", "members", "evidence_text"],
+                    },
+                },
+                "review_items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "review_type": {"type": "string"},
+                            "title": {"type": "string"},
+                            "proposal": {"type": "object"},
+                            "source_refs": {"type": "array", "items": {"type": "object"}},
+                        },
+                        "required": ["review_type", "title", "proposal"],
+                    },
+                },
+                "memory_candidates": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "kind": {"type": "string"},
+                            "layer": {"type": "string"},
+                            "text": {"type": "string"},
+                            "confidence": {"type": "number"},
+                            "sensitivity": {"type": "string"},
+                            "profile_delta": {"type": "object"},
+                            "source_refs": {"type": "array", "items": {"type": "object"}},
+                        },
+                    },
+                },
             },
             "required": ["source_refs"],
         },

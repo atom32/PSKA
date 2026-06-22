@@ -28,7 +28,7 @@ Twitter/X 归档 zip
 | 数据模型 | MVP 完成 | PostgreSQL schema 覆盖用户、团队、空间、来源、文档、分块、记忆、档案卡片、实体、超边、审核条目、审计事件 |
 | 隐私模型 | MVP 完成 | 匿名用户/团队 ID、私有优先可见性、团队可见 ACL 字段、`agent_service` 分离建模 |
 | Twitter/X 通道 | MVP 完成 | 扩展和 Python schema 发出 `pska.archive.v2`；旧版 zip 导入仅作为兼容路径保留 |
-| Zip 导入 | MVP 完成 | 导入当前 `~/Downloads/twitter_archive/*.zip`，保留工件路径，按内容哈希幂等 |
+| Zip 导入 | MVP 完成 | 导入当前 `~/PSKA_workspaces/default/twitter_archive/*.zip`，保留工件路径，按内容哈希幂等 |
 | LLM 提取 | MVP 完成 | 通过 LLM JSON 契约提取实体、超边和审核条目 |
 | 超图 | MVP 完成 | 支持具有多个成员和成员角色的关系实例；方向性显式 |
 | 检索 | MVP 可用 | ACL 优先词汇/语义占位排名、引用和一跳超图上下文 |
@@ -144,7 +144,7 @@ cd "/Users/xudawei/Documents/personal archive/core"
 真实测试目前验证：
 
 - `pska_smoke` 数据库重置和迁移
-- 导入所有当前 `~/Downloads/twitter_archive/*.zip`
+- 导入所有当前 `~/PSKA_workspaces/default/twitter_archive/*.zip`
 - LLM 提取到实体和超边
 - 带引用和超图上下文的 CLI 搜索
 - 直接 stdio MCP `pska_search`

@@ -1373,7 +1373,8 @@ def test_discovery_producers_drive_today_discoveries() -> None:
         )
     )
 
-    discoveries = api.workspace_discoveries(owner_user_id="user_primary", limit=20)
+    discoveries = api.workspace_discoveries(owner_user_id="user_primary", limit=20, min_score=0)
+    ranked_discoveries = api.workspace_discoveries(owner_user_id="user_primary", limit=20)
     today = api.workspace_today(owner_user_id="user_primary", limit=20)
 
     by_type = {item["type"]: item for item in discoveries["discoveries"]}
@@ -1382,7 +1383,14 @@ def test_discovery_producers_drive_today_discoveries() -> None:
     assert by_type["conflict"]["producer"] == "ConflictDiscoveryProducer"
     assert by_type["memory"]["producer"] == "MemoryDiscoveryProducer"
     assert by_type["topic"]["producer"] == "TopicDiscoveryProducer"
+    assert by_type["relationship"]["fingerprint"]
+    assert by_type["relationship"]["evidence_snapshot"] == by_type["relationship"]["evidence"]
+    assert by_type["relationship"]["discovery_score"] >= ranked_discoveries["min_score"]
+    assert by_type["topic"]["discovery_score"] < ranked_discoveries["min_score"]
+    assert all(item["discovery_score"] >= ranked_discoveries["min_score"] for item in ranked_discoveries["discoveries"])
+    assert all(item["type"] != "topic" for item in ranked_discoveries["discoveries"])
     assert all(item["status"] == "new" for item in today["discoveries"])
+    assert all(item["discovery_score"] >= today.get("discovery_min_score", ranked_discoveries["min_score"]) for item in today["discoveries"])
     assert all(item["id"] != "disc_old" for item in today["discoveries"])
     assert today["source"]["uses_dedicated_discovery_feed"] is True
 
@@ -1839,7 +1847,7 @@ def test_local_console_sources_page_reports_connectors_and_files_roots() -> None
     assert payload["files"]["roots"] == ["/Users/example/notes"]
     assert "./scripts/pska files-sync --root /Users/example/notes" in payload["files"]["recommended_commands"]
     assert "./scripts/pska files-watch --root /Users/example/notes --initial-sync" in payload["recommended_commands"]
-    assert "does not add connector scope" in payload["notes"][0]
+    assert "Knowledge Sources" in payload["notes"][0]
 
 
 def test_cli_service_check_smokes_online_contract(monkeypatch, capsys) -> None:

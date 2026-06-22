@@ -79,9 +79,12 @@ def test_config_check_reports_missing_db_port_conflict_and_fastreact_warning() -
 
     assert report["ok"] is False
     assert report["checks"]["database_url"]["ok"] is False
+    assert report["checks"]["workspace"]["ok"] is True
+    assert report["checks"]["workspace"]["root"].endswith("PSKA_workspaces/default")
     assert report["checks"]["service_port"]["ok"] is False
     assert report["checks"]["fastreact"]["ok"] is True
-    assert "No FastReAct service token configured" in report["checks"]["fastreact"]["warning"]
+    assert "No FastReAct service token configured for PSKA->FastReAct API calls" in report["checks"]["fastreact"]["warning"]
+    assert "3000/service" in report["checks"]["fastreact"]["ui_endpoint_note"]
     assert any("db-init" in command for command in report["recovery_commands"])
     assert any("lsof" in command for command in report["recovery_commands"])
 
@@ -96,7 +99,13 @@ def test_supervisor_config_dry_run_outputs_supervisord_and_launchd(tmp_path) -> 
     )
 
     supervisord = supervisor_config(specs, supervisor="supervisord", run_dir=tmp_path / "run", log_dir=tmp_path / "logs")
-    launchd = supervisor_config(specs, supervisor="launchd", run_dir=tmp_path / "run", log_dir=tmp_path / "logs")
+    launchd = supervisor_config(
+        specs,
+        supervisor="launchd",
+        run_dir=tmp_path / "run",
+        log_dir=tmp_path / "logs",
+        working_directory=tmp_path / "repo",
+    )
 
     assert supervisord["dry_run"] is True
     assert "[program:pska-service]" in supervisord["content"]
@@ -105,3 +114,4 @@ def test_supervisor_config_dry_run_outputs_supervisord_and_launchd(tmp_path) -> 
     assert launchd["dry_run"] is True
     assert launchd["plists"][0]["label"] == "local.pska.pska-service"
     assert "<key>ProgramArguments</key>" in launchd["plists"][0]["content"]
+    assert str(tmp_path / "repo") in launchd["plists"][0]["content"]

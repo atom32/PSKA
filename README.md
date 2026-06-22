@@ -94,11 +94,21 @@ Or use the Chrome extension:
 
 ### PSKA Core Ingestion
 
+PSKA runtime data defaults to `~/PSKA_workspaces/default`. Keep user archives,
+imports, run files, and logs out of the source repository; `workspaces/default/`
+is ignored and should not be used as the active runtime workspace.
+
 ```bash
 ./scripts/pska db-reset --name pska_smoke
 ./scripts/pska --database-url postgresql:///pska_smoke \
   import-twitter-zips \
-  --input ~/Downloads/twitter_archive
+  --input ~/PSKA_workspaces/default/twitter_archive
+```
+
+For a clean end-to-end local check:
+
+```bash
+./scripts/pska-cold-start-e2e --workspace-root ~/PSKA_workspaces/default --reset
 ```
 
 ### Search

@@ -42,7 +42,7 @@ because the local corpus currently has no populated chunk embeddings.
 | One-command local startup | Real | Real | Real | `./start.sh` starts the backend supervisor and Vite frontend. |
 | Today aggregation | Real | Real | Partial | `GET /workspace/today/data` returns real sections. Discoveries now come from a dedicated discovery feed, while other sections remain composed from existing workspace data. |
 | Continue Working | Real | Real | Partial | Uses persisted workspace activity events for opened/edited/viewed/pinned surfaces. It still needs stronger ranking and object-specific resume behavior. |
-| Discovery Feed | Real | Real | Partial | `DiscoveryItem` persistence and producer-backed feed exist. Current quality is low because `TopicDiscoveryProducer` mostly promotes recent source titles rather than synthesized discoveries. |
+| Discovery Feed | Real | Real | Partial | `DiscoveryItem` persistence, producer-backed feed, quality scoring, and Today score filtering exist. Current local corpus still has only low-value topic candidates. |
 | Needs Review | Real | Real | Partial | Review APIs work, but current DB has 0 pending items. Frontend must not show fallback review cards when real API returns an empty list. |
 | Review approve/reject | Real | Real | Real | `POST /review-items/{id}/approve` and `/reject` are wired from Today for real review ids. |
 | Review apply | Real | Partial | Partial | Backend supports `/apply`; Today uses `approve` with `apply=true` for recommended apply actions. A full Review page is not built. |
@@ -128,7 +128,7 @@ instead of browsing all existing graph relationships.
 
 Reality: `Partial`.
 
-Current local producer statistics:
+Current local producer statistics before score filtering:
 
 | Producer | Count | Avg Evidence | Avg Confidence | Accepted Rate |
 | --- | ---: | ---: | ---: | ---: |
@@ -139,10 +139,13 @@ metadata such as recent source titles. Topic extraction is not discovery. A
 high-value discovery should identify a new relationship, conflict, pattern,
 decision, or risk.
 
-Next step: implement discovery quality and ranking before adding more
-producers. Add stable fingerprints, frozen evidence snapshots, and a scorer that
-prioritizes novelty, cross-source support, temporal span, evidence strength,
-graph impact, and expected review likelihood.
+Sprint 5 adds stable fingerprints, frozen evidence snapshots, `discovery_score`,
+and `quality_signals`. Today filters recent `new` discoveries by score before
+showing them.
+
+Next step: wire discovery lifecycle actions so accepted discoveries create
+Review Items, and rejected/dismissed/snoozed/expired statuses persist through
+the backend.
 
 ### Continue Working
 
@@ -176,5 +179,5 @@ before adding advanced editing behavior.
    `snoozed`, and `expired`.
 5. Route every accepted discovery through Review before changing Graph, Memory,
    or Profile state.
-6. Add discovery fingerprints, frozen evidence snapshots, and a quality/ranking
-   scorer before expanding producer count.
+6. Tune discovery scoring with real acceptance data before expanding producer
+   count.

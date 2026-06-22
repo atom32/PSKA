@@ -89,3 +89,25 @@ def test_duplicate_ingest_is_idempotent() -> None:
     assert len(store.source_items) == 1
     assert len(store.documents) == 1
     assert len(store.chunks) == 1
+
+
+def test_ingest_chunks_with_configured_overlap() -> None:
+    store = InMemoryKnowledgeStore()
+    ingest = IngestService(store, chunk_size=6, chunk_overlap=2)
+    payload = {
+        "schema_version": "pska.channel_ingest.v1",
+        "source_channel": "manual",
+        "record_type": "note",
+        "source_id": "overlap",
+        "owner_user_id": "user_primary",
+        "space_id": "private_primary",
+        "visibility": "private",
+        "content": {"text": "abcdefghijkl"},
+    }
+
+    item = ingest.ingest_channel_payload(payload)
+    chunks = store.list_chunks_for_sources({item.source_item_id})
+
+    assert [chunk.text for chunk in chunks] == ["abcdef", "efghij", "ijkl"]
+    assert all(chunk.metadata["chunk_size"] == 6 for chunk in chunks)
+    assert all(chunk.metadata["chunk_overlap"] == 2 for chunk in chunks)

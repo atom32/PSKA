@@ -13,11 +13,11 @@ import time
 from typing import Any, Sequence
 from urllib.parse import urlparse
 
-from pska_core.config import PSKAConfig
+from pska_core.config import PSKAConfig, WorkspaceConfig
 
 
-DEFAULT_RUN_DIR = Path(".pska/run")
-DEFAULT_LOG_DIR = Path(".pska/logs")
+DEFAULT_RUN_DIR = WorkspaceConfig().run_dir
+DEFAULT_LOG_DIR = WorkspaceConfig().log_dir
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,6 +142,7 @@ def daemon_status(specs: Sequence[ProcessSpec], *, run_dir: Path = DEFAULT_RUN_D
 def config_check(config: PSKAConfig, *, database_url: str) -> dict[str, Any]:
     checks = {
         "database_url": _database_url_check(database_url),
+        "workspace": _workspace_check(config.workspace.root),
         "service_port": _service_port_check(config.service.host, config.service.port),
         "fastreact": _fastreact_config_check(config),
     }
@@ -158,6 +159,7 @@ def supervisor_config(
     supervisor: str,
     run_dir: Path = DEFAULT_RUN_DIR,
     log_dir: Path = DEFAULT_LOG_DIR,
+    working_directory: Path | None = None,
     label_prefix: str = "local.pska",
 ) -> dict[str, Any]:
     run_dir = run_dir.expanduser()
@@ -188,7 +190,13 @@ def supervisor_config(
                     "name": spec.name,
                     "label": label,
                     "target_path": str(target_path),
-                    "content": _launchd_plist(spec, label=label, run_dir=run_dir, log_dir=log_dir),
+                    "content": _launchd_plist(
+                        spec,
+                        label=label,
+                        run_dir=run_dir,
+                        log_dir=log_dir,
+                        working_directory=working_directory,
+                    ),
                 }
             )
         return {
@@ -337,6 +345,24 @@ def _database_url_check(database_url: str) -> dict[str, Any]:
     }
 
 
+def _workspace_check(workspace_root: Path) -> dict[str, Any]:
+    root = workspace_root.expanduser()
+    resolved = root.resolve(strict=False)
+    legacy_repo_workspace = Path.cwd().resolve(strict=False) / "workspaces" / "default"
+    warning = None
+    if resolved == legacy_repo_workspace or legacy_repo_workspace in resolved.parents:
+        warning = "Workspace root is inside repo workspaces/default; use ~/PSKA_workspaces/default for runtime data."
+    return {
+        "ok": True,
+        "root": str(root),
+        "imports_dir": str(root / "imports"),
+        "twitter_archive_dir": str(root / "twitter_archive"),
+        "run_dir": str(root / "run"),
+        "log_dir": str(root / "logs"),
+        "warning": warning,
+    }
+
+
 def _service_port_check(host: str, port: int) -> dict[str, Any]:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.settimeout(0.2)
@@ -359,8 +385,10 @@ def _fastreact_config_check(config: PSKAConfig) -> dict[str, Any]:
         "ok": url_ok,
         "url": url,
         "service_token_present": token_present,
-        "diagnostic": "FastReAct URL is configured." if url_ok else "FastReAct URL is missing or invalid.",
-        "warning": None if token_present else "No FastReAct service token configured; readiness may return 401.",
+        "api_endpoint": url,
+        "ui_endpoint_note": "FastReAct UI may run on a different port such as http://127.0.0.1:3000/service; PSKA agentic calls use this API endpoint.",
+        "diagnostic": "FastReAct API URL is configured for PSKA agentic calls." if url_ok else "FastReAct API URL is missing or invalid.",
+        "warning": None if token_present else "No FastReAct service token configured for PSKA->FastReAct API calls; /ready and /v1/runs may return 401 even if the FastReAct UI works.",
     }
 
 
@@ -399,7 +427,14 @@ def _supervisord_config(specs: Sequence[ProcessSpec], *, run_dir: Path, log_dir:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def _launchd_plist(spec: ProcessSpec, *, label: str, run_dir: Path, log_dir: Path) -> str:
+def _launchd_plist(
+    spec: ProcessSpec,
+    *,
+    label: str,
+    run_dir: Path,
+    log_dir: Path,
+    working_directory: Path | None = None,
+) -> str:
     payload = {
         "Label": label,
         "ProgramArguments": spec.command,
@@ -407,6 +442,6 @@ def _launchd_plist(spec: ProcessSpec, *, label: str, run_dir: Path, log_dir: Pat
         "KeepAlive": True,
         "StandardOutPath": str(_log_path(log_dir, spec.name)),
         "StandardErrorPath": str(_log_path(log_dir, spec.name)),
-        "WorkingDirectory": str(Path.cwd()),
+        "WorkingDirectory": str((working_directory or Path(__file__).resolve().parents[3]).expanduser().resolve()),
     }
     return plistlib.dumps(payload, sort_keys=True).decode("utf-8")

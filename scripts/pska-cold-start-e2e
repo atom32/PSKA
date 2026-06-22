@@ -1,0 +1,202 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PSKA="$ROOT/scripts/pska"
+WORKSPACE_ROOT="${PSKA_WORKSPACE_ROOT:-$HOME/PSKA_workspaces/default}"
+DATABASE_NAME="pska_cold_start"
+SERVICE_PORT="18765"
+FRONTEND_PORT="15173"
+TWITTER_ARCHIVE=""
+RESET=0
+BACKEND_PID=""
+FRONTEND_PID=""
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/pska-cold-start-e2e [options]
+
+Options:
+  --workspace-root PATH   Workspace root to create/use. Defaults to ~/PSKA_workspaces/default.
+  --twitter-archive PATH  Optional Twitter/X zip inbox. Defaults to <workspace-root>/twitter_archive.
+  --database-name NAME    PostgreSQL database name. Defaults to pska_cold_start.
+  --service-port PORT     Backend service port. Defaults to 18765.
+  --frontend-port PORT    Frontend dev server port. Defaults to 15173.
+  --reset                 Reset only a sentinel-marked PSKA workspace.
+  -h, --help              Show this help.
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --workspace-root)
+      WORKSPACE_ROOT="$2"
+      shift 2
+      ;;
+    --twitter-archive)
+      TWITTER_ARCHIVE="$2"
+      shift 2
+      ;;
+    --database-name)
+      DATABASE_NAME="$2"
+      shift 2
+      ;;
+    --service-port)
+      SERVICE_PORT="$2"
+      shift 2
+      ;;
+    --frontend-port)
+      FRONTEND_PORT="$2"
+      shift 2
+      ;;
+    --reset)
+      RESET=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+WORKSPACE_ROOT="${WORKSPACE_ROOT/#\~/$HOME}"
+TWITTER_ARCHIVE="${TWITTER_ARCHIVE:-$WORKSPACE_ROOT/twitter_archive}"
+DATABASE_URL="postgresql:///$DATABASE_NAME"
+CONFIG="$WORKSPACE_ROOT/cold_start/config.json"
+NOTES_ROOT="$WORKSPACE_ROOT/cold_start/notes"
+SENTINEL="$WORKSPACE_ROOT/.pska_workspace.json"
+
+cleanup() {
+  local status=$?
+  if [[ -n "$FRONTEND_PID" ]] && kill -0 "$FRONTEND_PID" >/dev/null 2>&1; then
+    kill "$FRONTEND_PID" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$BACKEND_PID" ]] && kill -0 "$BACKEND_PID" >/dev/null 2>&1; then
+    kill "$BACKEND_PID" >/dev/null 2>&1 || true
+  fi
+  wait "$FRONTEND_PID" >/dev/null 2>&1 || true
+  wait "$BACKEND_PID" >/dev/null 2>&1 || true
+  exit "$status"
+}
+trap cleanup INT TERM EXIT
+
+if [[ "$RESET" == "1" && -e "$WORKSPACE_ROOT" ]]; then
+  if [[ ! -f "$SENTINEL" ]]; then
+    echo "Refusing to reset $WORKSPACE_ROOT because $SENTINEL is missing." >&2
+    exit 2
+  fi
+  rm -rf "$WORKSPACE_ROOT"
+fi
+
+mkdir -p \
+  "$WORKSPACE_ROOT/twitter_archive" \
+  "$WORKSPACE_ROOT/imports" \
+  "$WORKSPACE_ROOT/run" \
+  "$WORKSPACE_ROOT/logs" \
+  "$NOTES_ROOT"
+
+cat > "$SENTINEL" <<EOF
+{
+  "schema": "pska.workspace.v1",
+  "purpose": "PSKA local runtime workspace",
+  "created_by": "scripts/pska-cold-start-e2e"
+}
+EOF
+
+cat > "$NOTES_ROOT/cold-start-note.md" <<'EOF'
+# PSKA cold start fixture
+
+This note verifies that a clean PSKA workspace can ingest local files, start the
+backend service, and serve the frontend without writing runtime artifacts into
+the source repository.
+EOF
+
+cat > "$CONFIG" <<EOF
+{
+  "workspace": {
+    "root": "$WORKSPACE_ROOT"
+  },
+  "database": {
+    "url": "$DATABASE_URL"
+  },
+  "service": {
+    "host": "127.0.0.1",
+    "port": $SERVICE_PORT,
+    "service_token": null
+  },
+  "fastreact": {
+    "url": "http://127.0.0.1:8000",
+    "timeout_seconds": 30
+  },
+  "embedding": {
+    "provider": "disabled"
+  },
+  "files": {
+    "roots": [
+      "$NOTES_ROOT"
+    ],
+    "ignore": [
+      "*.tmp",
+      "*.bak"
+    ],
+    "max_bytes": 1000000,
+    "owner_user_id": "user_primary",
+    "space_id": "private_primary",
+    "visibility": "private"
+  }
+}
+EOF
+
+echo "[cold-start] workspace: $WORKSPACE_ROOT"
+echo "[cold-start] database: $DATABASE_URL"
+
+"$PSKA" --workspace-root "$WORKSPACE_ROOT" db-reset --name "$DATABASE_NAME"
+"$PSKA" --config "$CONFIG" files-sync
+
+if compgen -G "$TWITTER_ARCHIVE/*.zip" >/dev/null; then
+  "$PSKA" --config "$CONFIG" import-twitter-zips --input "$TWITTER_ARCHIVE"
+else
+  echo "[cold-start] no Twitter/X zips found in $TWITTER_ARCHIVE; using files fixture only"
+fi
+
+"$PSKA" --config "$CONFIG" digest-schedule --owner-user-id user_primary --limit 10 --reason "cold start e2e" >/dev/null
+"$PSKA" --config "$CONFIG" local-daemon --restart &
+BACKEND_PID=$!
+
+for _ in $(seq 1 60); do
+  if curl -fsS "http://127.0.0.1:$SERVICE_PORT/ready" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 1
+done
+curl -fsS "http://127.0.0.1:$SERVICE_PORT/ready" >/dev/null
+"$PSKA" --config "$CONFIG" service-check --url "http://127.0.0.1:$SERVICE_PORT" --expected-database-url "$DATABASE_URL"
+"$PSKA" --config "$CONFIG" mvp-status >/dev/null
+"$PSKA" --config "$CONFIG" daily-status --owner-user-id user_primary >/dev/null
+
+if [[ ! -d "$ROOT/frontend/node_modules" ]]; then
+  (cd "$ROOT/frontend" && npm install)
+fi
+(cd "$ROOT/frontend" && npm run dev -- --host 127.0.0.1 --port "$FRONTEND_PORT") >/tmp/pska-cold-start-frontend.log 2>&1 &
+FRONTEND_PID=$!
+
+for _ in $(seq 1 60); do
+  if curl -fsS "http://127.0.0.1:$FRONTEND_PORT/" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 1
+done
+curl -fsS "http://127.0.0.1:$FRONTEND_PORT/" >/dev/null
+
+if git -C "$ROOT" ls-files --error-unmatch workspaces/default >/dev/null 2>&1; then
+  echo "Tracked files still exist under workspaces/default." >&2
+  exit 1
+fi
+
+echo "[cold-start] ok"

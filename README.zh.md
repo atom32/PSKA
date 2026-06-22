@@ -97,7 +97,7 @@ archive save https://x.com/user/status/123456789
 ./scripts/pska db-reset --name pska_smoke
 ./scripts/pska --database-url postgresql:///pska_smoke \
   import-twitter-zips \
-  --input ~/Downloads/twitter_archive
+  --input ~/PSKA_workspaces/default/twitter_archive
 ```
 
 ### 搜索

@@ -46,7 +46,7 @@ Every discovery workflow must preserve these invariants:
    A discovery may become a `ReviewItem`; only approved review application may
    write to Memory, Profile, or Graph state.
 2. Discovery must be deduplicable and recomputable.
-   Producers should assign a stable fingerprint from the producer name and the
+   Producers assign a stable `fingerprint` from the producer name and the
    semantic claim being made, not from incidental runtime order.
 3. Discovery evidence must be frozen for review.
    Reviewers should see the evidence snapshot that justified the discovery at
@@ -70,11 +70,11 @@ directly violates the review governance model.
 
 ## Discovery Quality and Ranking
 
-Sprint 5 should focus on quality and ranking before adding more producers. A
-candidate generator may create many possible discoveries, but a ranker should
-decide which ones are worth interrupting the user for.
+Sprint 5 focuses on quality and ranking before adding more producers. A
+candidate generator may create many possible discoveries, but a scorer/ranker
+decides which ones are worth interrupting the user for.
 
-`DiscoveryScorer` should evaluate at least:
+`DiscoveryScorer` evaluates:
 
 - novelty
 - cross-source evidence
@@ -82,6 +82,10 @@ decide which ones are worth interrupting the user for.
 - evidence count and evidence strength
 - expected graph or memory impact
 - estimated review likelihood
+
+Today applies a quality threshold before showing discoveries. Low-scoring
+producer output remains persisted for audit and debugging, but it should not
+consume user attention.
 
 Topic extraction by itself is corpus metadata. A topic becomes a discovery only
 when it identifies a new relationship, conflict, pattern, decision, or risk.

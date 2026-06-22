@@ -119,7 +119,7 @@ class CandidateWriteService:
             visibility=_visibility(spec.get("visibility"), first.visibility),
             visible_team_ids=list(spec.get("visible_team_ids") or first.visible_team_ids),
             metadata={
-                **dict(spec.get("metadata") or {}),
+                **_dict_or_empty(spec.get("metadata"), "entity.metadata"),
                 "producer": producer,
                 "job_id": job_id,
                 "request_id": request_id,
@@ -202,7 +202,7 @@ class CandidateWriteService:
 
     def _write_review_item(self, spec: dict[str, Any], defaults: "_ContextDefaults", *, producer: str, job_id: Any, request_id: Any) -> ReviewItem:
         source_refs = _source_refs(spec.get("source_refs")) or defaults.source_refs
-        proposal = dict(spec.get("proposal") or {})
+        proposal = _dict_or_empty(spec.get("proposal"), "review_item.proposal")
         proposal.setdefault("source_refs", [asdict(ref) for ref in source_refs])
         proposal.setdefault("producer", producer)
         proposal.setdefault("job_id", job_id)
@@ -223,7 +223,7 @@ class CandidateWriteService:
         confidence = float(spec.get("confidence", 0.75))
         sensitivity = str(spec.get("sensitivity") or "normal")
         if kind in {"profile", "profile_card", "profile_update"}:
-            profile_delta = spec.get("profile_delta") or spec.get("profile")
+            profile_delta = spec.get("profile_delta") if spec.get("profile_delta") is not None else spec.get("profile")
             if not isinstance(profile_delta, dict) or not profile_delta:
                 raise CandidateWriteError("profile memory candidate requires profile_delta")
             return self.memory.propose_profile_update(
@@ -326,6 +326,14 @@ def _list_of_dicts(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
     return [item for item in value if isinstance(item, dict)]
+
+
+def _dict_or_empty(value: Any, field_name: str) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return dict(value)
+    raise CandidateWriteError(f"{field_name} must be an object")
 
 
 def _visibility(value: Any, default: Visibility) -> Visibility:

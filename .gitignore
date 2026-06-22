@@ -7,4 +7,8 @@ __pycache__/
 
 .DS_Store
 core/reports/
+workspaces/default/
+
+# Runtime/user data belongs under ~/PSKA_workspaces/default.
+# workspaces/references/ is only for external source references used during development.
 workspaces/references/

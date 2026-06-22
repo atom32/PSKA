@@ -54,6 +54,37 @@ The current local config is expected at:
 
 Do not commit `.pska/`; it may contain local paths and credentials.
 
+PSKA runtime/user data defaults to:
+
+```text
+~/PSKA_workspaces/default
+```
+
+Imports, Twitter/X zip inboxes, daemon run files, logs, and cold-start fixtures
+belong there, not under the source repo's `workspaces/default/`.
+
+## Cold Start E2E
+
+For a clean workspace and full backend/frontend check:
+
+```bash
+./scripts/pska-cold-start-e2e --workspace-root ~/PSKA_workspaces/default --reset
+```
+
+The reset path is guarded by a `.pska_workspace.json` sentinel so the script
+will not delete an arbitrary directory.
+
+FastReAct agentic search requires the FastReAct API token explicitly:
+
+```bash
+export PSKA_FASTREACT_URL="http://127.0.0.1:8000"
+export PSKA_FASTREACT_SERVICE_TOKEN="<fastreact-service-token>"
+```
+
+The FastReAct UI at `http://127.0.0.1:3000/service` can work while PSKA
+agentic calls still fail with 401; PSKA talks to the API endpoint above, not the
+UI page.
+
 ## Useful Daily Commands
 
 ```bash
@@ -88,10 +119,9 @@ If `PSKA_SERVICE_TOKEN` is configured, add:
 -H "Authorization: Bearer $PSKA_SERVICE_TOKEN"
 ```
 
-In the UI, Today shows either:
-
-- `真实 PSKA 数据已接入` when backend data is available.
-- `本地原型数据正在显示` when the backend is offline or unauthorized.
+In the UI, Today only shows real backend data. Empty sections render as empty
+states, and backend/proxy/token failures render as errors rather than prototype
+cards.
 
 ## Troubleshooting
 
@@ -105,8 +135,8 @@ Backend status:
 Logs:
 
 ```bash
-ls .pska/logs
-tail -f .pska/logs/pska-service.log
+ls ~/PSKA_workspaces/default/logs
+tail -f ~/PSKA_workspaces/default/logs/pska-service.log
 ```
 
 Port conflicts:

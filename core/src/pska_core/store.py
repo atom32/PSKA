@@ -839,6 +839,8 @@ class InMemoryKnowledgeStore:
     def count_table(self, table: str) -> int:
         tables = {
             "source_items": self.source_items,
+            "knowledge_sources": self.knowledge_sources,
+            "sync_runs": self.sync_runs,
             "connector_states": self.connector_states,
             "documents": self.documents,
             "chunks": self.chunks,

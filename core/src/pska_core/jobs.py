@@ -8,6 +8,7 @@ import sys
 from typing import Any
 
 from pska_core.candidates import CandidateWriteService
+from pska_core.config import WorkspaceConfig, expand_path
 from pska_core.embeddings import EmbeddingConfig, EmbeddingProvider, EmbeddingService, build_embedding_provider
 from pska_core.enums import Visibility
 from pska_core.extraction import ExtractionService
@@ -35,6 +36,10 @@ JOB_TYPES = {
     REVIEW_APPLY,
     FULL_REPORT,
 }
+
+
+def _workspace_root() -> Path:
+    return expand_path(os.getenv("PSKA_WORKSPACE_ROOT")) if os.getenv("PSKA_WORKSPACE_ROOT") else WorkspaceConfig().root
 
 
 @dataclass(slots=True)
@@ -138,16 +143,17 @@ class JobService:
 
     def _import_twitter_zips(self, payload: dict[str, Any]) -> dict[str, Any]:
         embedding_provider = self._embedding_provider(payload)
+        workspace_root = _workspace_root()
         importer = TwitterZipImporter(
             self.store,
-            archive_root=Path(payload.get("archive_root") or "archive/imports"),
+            archive_root=Path(payload.get("archive_root") or workspace_root / "imports"),
             owner_user_id=str(payload.get("owner_user_id") or "user_primary"),
             space_id=str(payload.get("space_id") or "private_primary"),
             visibility=Visibility(payload.get("visibility") or Visibility.PRIVATE.value),
             visible_team_ids=_visible_team_ids(payload.get("visible_team_ids")),
             embedding_provider=embedding_provider,
         )
-        result = importer.import_directory(Path(payload.get("input") or Path.home() / "Downloads" / "twitter_archive"))
+        result = importer.import_directory(Path(payload.get("input") or workspace_root / "twitter_archive"))
         return to_jsonable(result)
 
     def _extract_all(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -173,9 +179,16 @@ class JobService:
         ][:top_k]
         prompt = (
             "Run PSKA extraction for the provided source items. "
-            "Use PSKA MCP tools when available. Return JSON-compatible candidate "
-            "entities, hyperedges, review_items, cited_source_ids, and gaps. "
-            "Do not invent facts beyond the provided source refs.\n\n"
+            "Use only PSKA MCP tools when available. Do not call host tools such as "
+            "exec, shell, read_file, write_file, edit_file, or direct database clients. "
+            "Return JSON-compatible candidate entities, hyperedges, review_items, "
+            "cited_source_ids, and gaps. Do not invent facts beyond the provided source refs. "
+            "If you need full source/chunk text, call pska_job_context with "
+            f"job_id={job.job_id!r}, then write grounded candidates with pska_write_candidates. "
+            "Every entity and every hyperedge member must include both entity_type and label. "
+            "Every review item must include review_type, title, proposal, and source_refs. "
+            "Call pska_write_candidates at most once. Keep the response compact and include "
+            "candidate keys at the top level.\n\n"
             f"Source items:\n{to_jsonable(source_items)}"
         )
         response = self._call_fastreact(
@@ -191,11 +204,25 @@ class JobService:
         payload = job.payload
         owner_user_id = str(payload.get("owner_user_id") or "user_primary")
         scope = dict(payload.get("scope") or {})
+        source_item_ids = [str(item) for item in scope.get("source_item_ids") or [] if item]
         prompt = (
-            "Run a PSKA digest pass. Use PSKA MCP tools to retrieve allowed context, "
-            "then return JSON-compatible summaries, memory_candidates, review_candidates, "
-            "cited_source_ids, and gaps. High-impact or low-confidence suggestions must "
-            "be review candidates, not applied changes."
+            "Run one PSKA digest pass for the explicit job below. "
+            f"job_id: {job.job_id}\n"
+            f"owner_user_id: {owner_user_id}\n"
+            f"source_item_ids: {source_item_ids}\n\n"
+            "Use only PSKA MCP tools. Do not call host tools such as exec, shell, read_file, "
+            "write_file, edit_file, or direct database clients.\n\n"
+            "Required tool flow:\n"
+            "1. Call pska_job_context with this job_id to fetch allowed source/chunk context.\n"
+            "2. Produce only grounded candidates from that context.\n"
+            "3. Call pska_write_candidates with schema_version='pska.candidates.v1', "
+            "owner_user_id, source_refs, and any entities/hyperedges/review_items/memory_candidates.\n"
+            "   Entity schema: {entity_type, label, confidence, source_refs}.\n"
+            "   Hyperedge schema: {relation_type, members:[{entity_type,label,role}], evidence_text, confidence, source_refs}.\n"
+            "   Review schema: {review_type, title, proposal, source_refs}.\n"
+            "4. Call pska_write_candidates at most once.\n"
+            "5. Return compact JSON with top-level candidate keys and source_refs. "
+            "High-impact or low-confidence suggestions must be review candidates, not applied changes."
         )
         response = self._call_fastreact(
             job=job,
@@ -227,7 +254,14 @@ class JobService:
         client = self.fastreact or HttpFastreactClient()
         response = client.chat_completion(
             messages=[
-                {"role": "system", "content": "You are Fastreact executing a PSKA knowledge job. Use PSKA MCP tools and cite evidence."},
+                {
+                    "role": "system",
+                    "content": (
+                        "You are Fastreact executing a PSKA knowledge job. Use only PSKA MCP tools, "
+                        "cite evidence, and never call host tools such as exec, shell, read_file, "
+                        "write_file, edit_file, or direct database clients."
+                    ),
+                },
                 {"role": "user", "content": prompt},
             ],
             user_id=user_id,
@@ -250,10 +284,17 @@ class JobService:
                 lease_seconds=self.lease_seconds,
                 external_run_id=str(run_id),
             )
+        trace_summary = _fastreact_trace_summary(response)
+        if trace_summary["event_count"]:
+            self.store.add_job_event(job.job_id, "fastreact_trace", "Recorded Fastreact event summary", trace_summary)
         return to_jsonable(response)
 
     def _write_fastreact_candidates(self, job: Job, owner_user_id: str, response: dict[str, Any]) -> dict[str, Any]:
         candidate_keys = {"entities", "hyperedges", "review_items", "memory_candidates"}
+        tool_errors = _fastreact_candidate_tool_errors(response)
+        if tool_errors:
+            detail = "; ".join(tool_errors[:3])
+            raise RuntimeError(f"Fastreact candidate write tool failed: {detail}")
         if not candidate_keys.intersection(response.keys()):
             return {"skipped": True, "reason": "no_candidate_keys"}
         payload = {
@@ -294,17 +335,18 @@ class JobService:
             output_path = payload.get("output")
             json_output_path = payload.get("json_output")
         else:
+            workspace_root = _workspace_root()
             output_path = str(payload.get("output") or core_root / "reports" / f"job_{job.job_id}.html")
             json_output_path = str(payload.get("json_output") or core_root / "reports" / f"job_{job.job_id}.json")
             command = [
                 sys.executable,
                 str(script_path),
                 "--input",
-                str(payload.get("input") or Path.home() / "Downloads" / "twitter_archive"),
+                str(payload.get("input") or workspace_root / "twitter_archive"),
                 "--database-url",
                 str(payload.get("database_url") or getattr(self.store, "database_url", "postgresql:///pska_smoke")),
                 "--archive-root",
-                str(payload.get("archive_root") or core_root / "archive" / "imports"),
+                str(payload.get("archive_root") or workspace_root / "imports"),
                 "--output",
                 output_path,
                 "--json-output",
@@ -374,6 +416,46 @@ def _visible_team_ids(value: Any) -> list[str]:
     if isinstance(value, list):
         return [str(item).strip() for item in value if str(item).strip()]
     raise TypeError("visible_team_ids must be a list or comma-separated string")
+
+
+def _fastreact_candidate_tool_errors(response: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    for event in response.get("events") or []:
+        if not isinstance(event, dict):
+            continue
+        tool_name = str(event.get("tool_name") or event.get("name") or "")
+        content = str(event.get("content") or event.get("error") or "")
+        if tool_name not in {"pska_write_candidates", "pska_pska_write_candidates"} and "pska_write_candidates" not in content:
+            continue
+        if "[MCP_ERROR]" in content or "[TOOL_BUDGET_DENIED]" in content:
+            sequence = event.get("sequence")
+            prefix = f"event {sequence}: " if sequence is not None else ""
+            errors.append(f"{prefix}{content}")
+    return errors
+
+
+def _fastreact_trace_summary(response: dict[str, Any]) -> dict[str, Any]:
+    events = [event for event in response.get("events") or [] if isinstance(event, dict)]
+    tool_events = []
+    for event in events:
+        tool_name = str(event.get("tool_name") or event.get("name") or "")
+        content = str(event.get("content") or event.get("error") or "")
+        if not tool_name and "[TOOL_BUDGET_DENIED]" not in content and "[MCP_ERROR]" not in content:
+            continue
+        tool_events.append(
+            {
+                "sequence": event.get("sequence"),
+                "type": event.get("type") or event.get("event"),
+                "tool_name": tool_name or None,
+                "content": content[:1000],
+            }
+        )
+    return {
+        "run_id": response.get("run_id"),
+        "event_count": len(events),
+        "tool_events": tool_events[-30:],
+        "candidate_tool_errors": _fastreact_candidate_tool_errors(response),
+    }
 
 
 def _scrub_path(value: Any) -> str | None:

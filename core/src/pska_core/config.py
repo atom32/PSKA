@@ -10,6 +10,7 @@ from pska_core.keyfile import read_api_key_file
 
 
 DEFAULT_DATABASE_URL = "postgresql:///pska"
+DEFAULT_WORKSPACE_ROOT = Path("~/PSKA_workspaces/default")
 
 
 def expand_path(value: str | Path) -> Path:
@@ -125,6 +126,28 @@ class EmbeddingConfigFile:
 
 
 @dataclass(frozen=True, slots=True)
+class IngestConfig:
+    chunk_size: int = 1200
+    chunk_overlap: int = 0
+
+    def __post_init__(self) -> None:
+        if self.chunk_size <= 0:
+            raise ValueError("ingest.chunk_size must be greater than 0")
+        if self.chunk_overlap < 0:
+            raise ValueError("ingest.chunk_overlap must be greater than or equal to 0")
+        if self.chunk_overlap >= self.chunk_size:
+            raise ValueError("ingest.chunk_overlap must be smaller than ingest.chunk_size")
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> "IngestConfig":
+        data = data or {}
+        return cls(
+            chunk_size=int(data.get("chunk_size") or data.get("chunk_chars") or 1200),
+            chunk_overlap=int(data.get("chunk_overlap") or 0),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class FilesConfig:
     roots: tuple[Path, ...] = ()
     ignore: tuple[str, ...] = ()
@@ -147,6 +170,36 @@ class FilesConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class WorkspaceConfig:
+    root: Path = DEFAULT_WORKSPACE_ROOT
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> "WorkspaceConfig":
+        data = data or {}
+        return cls(root=expand_path(data.get("root") or DEFAULT_WORKSPACE_ROOT))
+
+    @property
+    def imports_dir(self) -> Path:
+        return self.root / "imports"
+
+    @property
+    def twitter_archive_dir(self) -> Path:
+        return self.root / "twitter_archive"
+
+    @property
+    def run_dir(self) -> Path:
+        return self.root / "run"
+
+    @property
+    def log_dir(self) -> Path:
+        return self.root / "logs"
+
+    @property
+    def cold_start_dir(self) -> Path:
+        return self.root / "cold_start"
+
+
+@dataclass(frozen=True, slots=True)
 class PSKAConfig:
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     service: ServiceConfig = field(default_factory=ServiceConfig)
@@ -154,7 +207,9 @@ class PSKAConfig:
     fastreact: FastreactConfig = field(default_factory=FastreactConfig)
     agentic_service: AgenticServiceConfigFile = field(default_factory=AgenticServiceConfigFile)
     embedding: EmbeddingConfigFile = field(default_factory=EmbeddingConfigFile)
+    ingest: IngestConfig = field(default_factory=IngestConfig)
     files: FilesConfig = field(default_factory=FilesConfig)
+    workspace: WorkspaceConfig = field(default_factory=WorkspaceConfig)
 
     @classmethod
     def load(cls, config_path: str | Path | None = None) -> "PSKAConfig":
@@ -178,7 +233,9 @@ class PSKAConfig:
             fastreact=fastreact,
             agentic_service=AgenticServiceConfigFile.from_dict(data.get("agentic_service"), fallback=fastreact, api_key_file=llm.api_key_file),
             embedding=EmbeddingConfigFile.from_dict(data.get("embedding")),
+            ingest=IngestConfig.from_dict(data.get("ingest")),
             files=FilesConfig.from_dict(data.get("files")),
+            workspace=WorkspaceConfig.from_dict(data.get("workspace")),
         )
 
     @classmethod
@@ -226,6 +283,10 @@ class PSKAConfig:
                 dimensions=int(os.getenv("PSKA_EMBEDDING_DIMENSIONS")) if os.getenv("PSKA_EMBEDDING_DIMENSIONS") else base.embedding.dimensions,
                 batch_size=int(os.getenv("PSKA_EMBEDDING_BATCH_SIZE")) if os.getenv("PSKA_EMBEDDING_BATCH_SIZE") else base.embedding.batch_size,
             ),
+            ingest=IngestConfig(
+                chunk_size=int(os.getenv("PSKA_INGEST_CHUNK_SIZE") or os.getenv("PSKA_INGEST_CHUNK_CHARS") or base.ingest.chunk_size),
+                chunk_overlap=int(os.getenv("PSKA_INGEST_CHUNK_OVERLAP")) if os.getenv("PSKA_INGEST_CHUNK_OVERLAP") else base.ingest.chunk_overlap,
+            ),
             files=FilesConfig(
                 roots=tuple(expand_path(root) for root in os.getenv("PSKA_FILES_ROOTS", "").split(os.pathsep) if root)
                 or base.files.roots,
@@ -234,6 +295,9 @@ class PSKAConfig:
                 owner_user_id=os.getenv("PSKA_FILES_OWNER_USER_ID", base.files.owner_user_id),
                 space_id=os.getenv("PSKA_FILES_SPACE_ID", base.files.space_id),
                 visibility=os.getenv("PSKA_FILES_VISIBILITY", base.files.visibility),
+            ),
+            workspace=WorkspaceConfig(
+                root=expand_path(os.getenv("PSKA_WORKSPACE_ROOT")) if os.getenv("PSKA_WORKSPACE_ROOT") else base.workspace.root,
             ),
         )
 
@@ -269,6 +333,9 @@ class PSKAConfig:
             _setdefault("PSKA_EMBEDDING_DIMENSIONS", str(self.embedding.dimensions))
         if self.embedding.batch_size:
             _setdefault("PSKA_EMBEDDING_BATCH_SIZE", str(self.embedding.batch_size))
+        _setdefault("PSKA_INGEST_CHUNK_SIZE", str(self.ingest.chunk_size))
+        _setdefault("PSKA_INGEST_CHUNK_OVERLAP", str(self.ingest.chunk_overlap))
+        _setdefault("PSKA_WORKSPACE_ROOT", str(self.workspace.root))
 
 
 def _find_config_path(config_path: str | Path | None) -> Path | None:

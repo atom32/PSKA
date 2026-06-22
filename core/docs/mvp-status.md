@@ -37,7 +37,7 @@ rather than adding many more connectors.
 | Privacy model | MVP complete | Anonymous user/team IDs, private-first visibility, team-visible ACL fields, `agent_service` modeled separately. |
 | Twitter/X channel | MVP complete | Extension and Python schema emit `pska.archive.v2`; legacy zip import remains compatibility-only. |
 | Files connector | MVP first slice | `files-scan`/`files-sync` ingest authorized local text-like files, optional `pypdf`/`python-docx` extract PDF/DOCX text, optional `watchdog` powers foreground `files-watch`, and manifest reconciliation reports new/changed/unchanged/moved/missing files. |
-| Zip import | MVP complete | Imports current `~/Downloads/twitter_archive/*.zip`, preserves artifact paths, is idempotent by content hash. |
+| Zip import | MVP complete | Imports current `~/PSKA_workspaces/default/twitter_archive/*.zip`, preserves artifact paths, is idempotent by content hash. |
 | Connector state | MVP functional | Connector records and durable connector states support enablement, scan cursor, sync status, permission scope, config, HTTP API, and CLI. |
 | LLM extraction | MVP complete | Extracts entities, hyperedges, and review items through LLM JSON contract. |
 | Hypergraph | MVP complete | Supports relation instances with multiple members and member roles; directionality is explicit. |
@@ -104,7 +104,7 @@ Disallowed recovery:
 CLI:
 
 ```bash
-./scripts/pska mvp-bootstrap --twitter-archive ~/Downloads/twitter_archive --notes-root ~/Documents/notes --extract
+./scripts/pska mvp-bootstrap --twitter-archive ~/PSKA_workspaces/default/twitter_archive --notes-root ~/Documents/notes --extract
 ./scripts/pska mvp-status --summary
 ./scripts/pska local-daemon
 ./scripts/pska db-reset --name pska_smoke
@@ -234,7 +234,7 @@ the online service routes and HTTP MCP transport:
 The real smoke currently verifies:
 
 - `pska_smoke` database reset and migration
-- Import of all current `~/Downloads/twitter_archive/*.zip`
+- Import of all current `~/PSKA_workspaces/default/twitter_archive/*.zip`
 - LLM extraction into entities and hyperedges
 - CLI search with citations and hypergraph context
 - Direct stdio MCP `pska_search`

@@ -94,7 +94,7 @@ MVP 阶段不追求：
 
 ```bash
 ./scripts/pska mvp-bootstrap \
-  --twitter-archive ~/Downloads/twitter_archive \
+  --twitter-archive ~/PSKA_workspaces/default/twitter_archive \
   --notes-root ~/Documents/notes \
   --extract
 

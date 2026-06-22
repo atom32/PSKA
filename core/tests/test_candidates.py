@@ -6,7 +6,7 @@ from pska_core.api import PSKAApi
 from pska_core.candidates import CandidateWriteError, CandidateWriteService
 from pska_core.enums import ReviewType, UserRole, Visibility
 from pska_core.ingest import IngestService
-from pska_core.jobs import EXTRACT_VIA_FASTREACT, JobService
+from pska_core.jobs import DIGEST_VIA_FASTREACT, EXTRACT_VIA_FASTREACT, JobService
 from pska_core.mcp_server import MCPServer
 from pska_core.models import User
 from pska_core.retrieval import RetrievalService
@@ -273,6 +273,59 @@ def test_fastreact_job_writes_returned_candidates_and_event() -> None:
     assert "candidates_written" in [event.event_type for event in store.list_job_events(job.job_id)]
 
 
+def test_fastreact_job_fails_when_candidate_tool_failed() -> None:
+    store = _store_with_source()
+    source_id = next(iter(store.source_items))
+    service = JobService(
+        store,
+        fastreact=FakeFastreact(
+            {
+                "run_id": "run_digest_candidate_error",
+                "content": "Producing grounded candidates.",
+                "source_refs": [{"source_item_id": source_id}],
+                "events": [
+                    {"sequence": 10, "type": "tool_call", "tool_name": "pska_pska_write_candidates", "content": ""},
+                    {
+                        "sequence": 11,
+                        "type": "tool_result",
+                        "tool_name": "pska_pska_write_candidates",
+                        "content": "[MCP_ERROR] KeyError: 'label'",
+                    },
+                ],
+            }
+        ),
+    )
+    job = service.submit(DIGEST_VIA_FASTREACT, {"owner_user_id": "user_primary"}, max_attempts=1)
+
+    completed = service.run_next()
+
+    assert completed.status == "failed"
+    assert "Fastreact candidate write tool failed" in (completed.error or "")
+    assert "KeyError" in (completed.error or "")
+    assert not store.review_items
+    assert not store.entities
+    trace = [event for event in store.list_job_events(job.job_id) if event.event_type == "fastreact_trace"]
+    assert trace
+    assert trace[0].detail["candidate_tool_errors"]
+
+
+def test_fastreact_job_prompt_restricts_host_tools() -> None:
+    store = _store_with_source()
+    fastreact = CapturingFastreact({"run_id": "run_prompt", "content": "ok"})
+    service = JobService(store, fastreact=fastreact)
+    service.submit(DIGEST_VIA_FASTREACT, {"owner_user_id": "user_primary"}, max_attempts=1)
+
+    completed = service.run_next()
+
+    assert completed.status == "succeeded"
+    prompt = "\n".join(message["content"] for message in fastreact.kwargs["messages"])
+    assert "Use only PSKA MCP tools" in prompt
+    assert "exec" in prompt
+    assert "read_file" in prompt
+    assert "entity_type" in prompt
+    assert "label" in prompt
+
+
 class FakeFastreact:
     def __init__(self, response: dict) -> None:
         self.response = response
@@ -281,6 +334,16 @@ class FakeFastreact:
         return {"ok": True}
 
     def chat_completion(self, **_kwargs) -> dict:
+        return self.response
+
+
+class CapturingFastreact(FakeFastreact):
+    def __init__(self, response: dict) -> None:
+        super().__init__(response)
+        self.kwargs = {}
+
+    def chat_completion(self, **kwargs) -> dict:
+        self.kwargs = kwargs
         return self.response
 
 
