@@ -65,6 +65,11 @@ PSKA Core 实现知识模型、存储和服务。
 
 ## 快速开始
 
+### 本地发布和初始化
+
+完整流程见 [发布、初始化与 FastReAct 联动指南](docs/RELEASE_INIT_FASTREACT_GUIDE.zh.md)。
+首次配置、日常启动和 FastReAct 真实联调都以这份文档为准。
+
 ### 运行环境
 
 PSKA 统一使用本地 Python 3.12 虚拟环境，这样 core、Twitter/X channel 和 BGE-M3 embedding 栈保持可迁移：
@@ -72,7 +77,34 @@ PSKA 统一使用本地 Python 3.12 虚拟环境，这样 core、Twitter/X chann
 ```bash
 brew install python@3.12
 ./scripts/bootstrap_pska_env
-./scripts/pska db-check
+./scripts/pska --config .pska/config.json db-check
+```
+
+如需创建默认本地配置：
+
+```bash
+mkdir -p .pska
+cp core/config.pska.example.json .pska/config.json
+```
+
+`.pska/config.json` 是本机配置，不要提交。
+
+### 一键启动 Workspace
+
+```bash
+./start.sh
+```
+
+它会启动 PSKA 后端 supervisor 和 React/TypeScript Workspace。打开：
+
+```text
+http://127.0.0.1:5173/
+```
+
+后端默认运行在：
+
+```text
+http://127.0.0.1:8765/
 ```
 
 ### Twitter/X 归档
@@ -117,8 +149,8 @@ archive save https://x.com/user/status/123456789
 | LLM 提取 | ✅ 已实现 |
 | 代理式搜索 | ✅ 已实现 |
 | MCP 接口 | ✅ 已实现 |
-| 生产 UI | ❌ 未开始 |
-| 异步任务 | ❌ 未开始 |
+| 生产 UI | 🟡 User Workspace scaffold in `frontend/` |
+| 异步任务 | ✅ Durable MVP |
 
 查看 [core/docs/mvp-status.md](core/docs/mvp-status.md) 了解详细状态。
 

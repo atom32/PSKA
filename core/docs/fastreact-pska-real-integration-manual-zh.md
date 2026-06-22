@@ -52,9 +52,52 @@ cd "/Users/xudawei/Documents/personal archive"
 ./scripts/fastreact-pska-service-config --print
 ```
 
-## 启动 FastReAct
+## 推荐联动方式
 
-日常启动只需要：
+日常真实联调推荐使用 HTTP MCP：
+
+```text
+PSKA service  <-- HTTP MCP -->  FastReAct service
+```
+
+先启动 PSKA：
+
+```bash
+cd "/Users/xudawei/Documents/personal archive"
+./start.sh
+```
+
+生成 HTTP MCP 配置：
+
+```bash
+./scripts/fastreact-pska-service-config \
+  --mcp-transport http \
+  --output .pska/fastreact-pska-http.json
+```
+
+启动 FastReAct：
+
+```bash
+cd /Users/xudawei/FastReAct/fastreact-nano
+NO_PROXY=127.0.0.1,localhost PYTHONPATH=src \
+  python3 -m fastreact.adapters.http \
+  --config "/Users/xudawei/Documents/personal archive/.pska/fastreact-pska-http.json"
+```
+
+如果 PSKA service 启用了 token，把同一个 token 写入
+`~/.fastreact/credentials.json`：
+
+```json
+{
+  "mcp_api_keys": {
+    "pska": "<pska-local-service-token>"
+  }
+}
+```
+
+## 兼容 stdio MCP 启动
+
+如果只是验证 FastReAct 能否加载 PSKA MCP 子进程，可以使用默认 stdio 配置：
 
 ```bash
 cd /Users/xudawei/FastReAct/fastreact-nano
@@ -73,7 +116,9 @@ python3 -m fastreact.adapters.http --config ~/.fastreact/config.json
 http://127.0.0.1:8000
 ```
 
-PSKA 不需要另起 HTTP daemon。FastReAct 会按 config 启动 PSKA MCP stdio 子进程。
+stdio 模式下 PSKA 不需要另起 HTTP daemon。FastReAct 会按 config 启动 PSKA
+MCP stdio 子进程。日常联调仍优先使用 HTTP MCP，因为它能复用 PSKA
+service 的 readiness、auth、日志和 database alignment。
 
 ## Readiness 检查
 

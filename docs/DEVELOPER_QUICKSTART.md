@@ -35,15 +35,19 @@ Press `Ctrl-C` in the `start.sh` terminal to stop both frontend and backend.
 ```bash
 brew install python@3.12
 ./scripts/bootstrap_pska_env
+mkdir -p .pska
+cp core/config.pska.example.json .pska/config.json
 ./scripts/pska --config .pska/config.json db-check
+./scripts/pska --config .pska/config.json db-create --name pska
+./scripts/pska --config .pska/config.json db-init
 cd frontend
 npm install
 ```
 
-If the database does not exist yet:
+The default local database is:
 
-```bash
-./scripts/pska --config .pska/config.json db-init
+```text
+postgresql:///pska
 ```
 
 The current local config is expected at:
@@ -84,6 +88,39 @@ export PSKA_FASTREACT_SERVICE_TOKEN="<fastreact-service-token>"
 The FastReAct UI at `http://127.0.0.1:3000/service` can work while PSKA
 agentic calls still fail with 401; PSKA talks to the API endpoint above, not the
 UI page.
+
+## FastReAct Integration
+
+For daily integration, prefer HTTP MCP: start PSKA first with `./start.sh`, then
+generate a FastReAct config that points to PSKA's HTTP MCP endpoint:
+
+```bash
+./scripts/fastreact-pska-service-config \
+  --mcp-transport http \
+  --output .pska/fastreact-pska-http.json
+
+cd /Users/xudawei/FastReAct/fastreact-nano
+NO_PROXY=127.0.0.1,localhost PYTHONPATH=src \
+  python3 -m fastreact.adapters.http \
+  --config "/Users/xudawei/Documents/personal archive/.pska/fastreact-pska-http.json"
+```
+
+If PSKA service auth is enabled, store the PSKA service token in
+`~/.fastreact/credentials.json` under `mcp_api_keys.pska`.
+
+The older stdio MCP mode is still useful for minimal MCP subprocess checks:
+
+```bash
+./scripts/fastreact-pska-service-config
+python3 -m fastreact.adapters.http --config ~/.fastreact/config.json
+```
+
+See the Chinese release/init guide for the full startup and troubleshooting
+flow:
+
+```text
+docs/RELEASE_INIT_FASTREACT_GUIDE.zh.md
+```
 
 ## Useful Daily Commands
 
