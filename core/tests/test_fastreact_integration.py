@@ -708,6 +708,39 @@ def test_digest_schedule_skips_succeeded_sources_until_forced_or_new_trigger() -
     assert forced["scheduled_source_item_ids"] == [source.source_item_id]
 
 
+def test_digest_schedule_reschedules_source_changed_after_succeeded_digest() -> None:
+    api = _api()
+    source = IngestService(api.store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "digest-succeeded-then-changed-note",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "Digest succeeded then changed note",
+            "content": {"text": "The first version was already digested."},
+        }
+    )
+    job = JobService(api.store).submit(
+        DIGEST_VIA_FASTREACT,
+        {
+            "owner_user_id": "user_primary",
+            "source_refs": [{"source_item_id": source.source_item_id}],
+            "scope": {"source_item_ids": [source.source_item_id]},
+        },
+    )
+    finished = api.store.finish_job(job.job_id, {"ok": True})
+    source.updated_at = finished.finished_at + timedelta(seconds=1)
+
+    automatic = api.schedule_digest({"owner_user_id": "user_primary", "limit": 1})
+
+    assert automatic["scheduled_source_item_ids"] == [source.source_item_id]
+    assert automatic["selected_source_items"][0]["reason"] == "source_changed_since_last_digest"
+    assert automatic["selected_source_items"][0]["covering_job"]["job_id"] == job.job_id
+
+
 def test_digest_schedule_respects_job_quota_unless_forced() -> None:
     api = _api()
     sources = [

@@ -710,6 +710,47 @@ def test_cli_accepts_digest_schedule() -> None:
     assert args.reason == "new import"
 
 
+def test_cli_accepts_digest_now() -> None:
+    args = build_parser().parse_args(
+        [
+            "digest-now",
+            "--owner-user-id",
+            "user_primary",
+            "--source-item-id",
+            "src_1",
+            "--limit",
+            "3",
+            "--batch-size",
+            "2",
+            "--priority",
+            "5",
+            "--max-attempts",
+            "4",
+            "--retry-backoff-seconds",
+            "30",
+            "--force",
+            "--reason",
+            "manual check",
+            "--skip-sync",
+            "--max-worker-runs",
+            "2",
+        ]
+    )
+
+    assert args.command == "digest-now"
+    assert args.owner_user_id == "user_primary"
+    assert args.source_item_ids == ["src_1"]
+    assert args.limit == 3
+    assert args.batch_size == 2
+    assert args.priority == 5
+    assert args.max_attempts == 4
+    assert args.retry_backoff_seconds == 30
+    assert args.force is True
+    assert args.reason == "manual check"
+    assert args.skip_sync is True
+    assert args.max_worker_runs == 2
+
+
 def test_cli_accepts_seed_review_candidates() -> None:
     args = build_parser().parse_args(
         [

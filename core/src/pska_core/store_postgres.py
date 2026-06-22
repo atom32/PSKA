@@ -1523,6 +1523,7 @@ class PostgresKnowledgeStore:
             content_hash=row["content_hash"],
             metadata=dict(row["metadata"] or {}),
             created_at=row["created_at"],
+            updated_at=row["updated_at"],
         )
 
     def _offline_index_state_from_row(self, row: dict[str, Any]) -> OfflineIndexState:

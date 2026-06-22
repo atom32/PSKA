@@ -1037,19 +1037,24 @@ class PSKAApi:
         source_items = sorted(source_items, key=lambda item: (item.created_at, item.source_item_id), reverse=True)
 
         coverage = {} if force else _digest_source_coverage(self.store)
-        skipped_items = [
-            _digest_source_explanation(item, selected=False, reason=coverage[item.source_item_id]["reason"], job=coverage[item.source_item_id]["job"])
+        current_coverage = {
+            item.source_item_id: covered
             for item in source_items
-            if item.source_item_id in coverage
+            if (covered := coverage.get(item.source_item_id)) and _digest_coverage_is_current(item, covered)
+        }
+        skipped_items = [
+            _digest_source_explanation(item, selected=False, reason=current_coverage[item.source_item_id]["reason"], job=current_coverage[item.source_item_id]["job"])
+            for item in source_items
+            if item.source_item_id in current_coverage
         ]
-        eligible = [item for item in source_items if force or item.source_item_id not in coverage]
+        eligible = [item for item in source_items if force or item.source_item_id not in current_coverage]
         selected = eligible[:limit]
         selected_items = [
             _digest_source_explanation(
                 item,
                 selected=True,
-                reason="force_selected" if force else "new_or_triggered_source",
-                job=None,
+                reason=_digest_selection_reason(item, coverage, force=force),
+                job=(coverage.get(item.source_item_id) or {}).get("job") if not force else None,
             )
             for item in selected
         ]
@@ -1611,6 +1616,32 @@ def _digest_source_coverage(store: PostgresKnowledgeStore) -> dict[str, dict[str
     return coverage
 
 
+def _digest_coverage_is_current(source_item: Any, covered: dict[str, Any]) -> bool:
+    job = covered["job"]
+    if job.status in {"queued", "running"}:
+        return True
+    source_updated_at = _as_aware(getattr(source_item, "updated_at", None) or source_item.created_at)
+    covered_at = _digest_coverage_time(job)
+    return covered_at >= source_updated_at
+
+
+def _digest_coverage_time(job: Any) -> datetime:
+    for field in ("finished_at", "updated_at", "started_at", "created_at"):
+        value = getattr(job, field, None)
+        if value is not None:
+            return _as_aware(value)
+    return datetime.min.replace(tzinfo=UTC)
+
+
+def _digest_selection_reason(source_item: Any, coverage: dict[str, dict[str, Any]], *, force: bool) -> str:
+    if force:
+        return "force_selected"
+    covered = coverage.get(source_item.source_item_id)
+    if covered and not _digest_coverage_is_current(source_item, covered):
+        return "source_changed_since_last_digest"
+    return "new_or_triggered_source"
+
+
 def _digest_coverage_reason(status: str) -> str:
     if status in {"queued", "running"}:
         return "active_digest_job"
@@ -1631,6 +1662,7 @@ def _digest_source_explanation(source_item: Any, *, selected: bool, reason: str,
         "selected": selected,
         "reason": reason,
         "created_at": source_item.created_at,
+        "updated_at": getattr(source_item, "updated_at", source_item.created_at),
     }
     if job is not None:
         payload["covering_job"] = {
@@ -1638,15 +1670,16 @@ def _digest_source_explanation(source_item: Any, *, selected: bool, reason: str,
             "status": job.status,
             "job_type": job.job_type,
             "updated_at": job.updated_at,
+            "finished_at": job.finished_at,
         }
     return payload
 
 
 def _digest_budget_policy(*, limit: int, batch_size: int, force: bool) -> dict[str, Any]:
     return {
-        "dedupe": "skip any source already covered by digest_via_fastreact unless force=true",
-        "successful_source_repeat": "skip completed digest sources until force=true or a future trigger policy selects them",
-        "failed_source_repeat": "skip failed digest sources unless force=true to avoid infinite retry loops",
+        "dedupe": "skip active digest jobs; skip completed/failed/canceled jobs only when they are current for the source update timestamp unless force=true",
+        "successful_source_repeat": "skip completed digest sources until force=true or the source changes after the completed job",
+        "failed_source_repeat": "skip failed digest sources until force=true or the source changes after the failed attempt to avoid infinite retry loops",
         "frequency": "optional quota_window_seconds/max_jobs_per_window limits new jobs",
         "max_source_items": limit,
         "max_source_items_per_job": batch_size,

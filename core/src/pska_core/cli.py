@@ -30,7 +30,7 @@ from pska_core.files_connector import scan_files
 from pska_core.files_watcher import watch_files
 from pska_core.importers.twitter_zip import TwitterZipImporter
 from pska_core.ingest import IngestService
-from pska_core.jobs import JOB_TYPES, JobService
+from pska_core.jobs import DIGEST_VIA_FASTREACT, JOB_TYPES, JobService
 from pska_core.knowledge_sources import KnowledgeSourceService
 from pska_core.local_daemon import build_process_specs, config_check, daemon_status, run_supervisor, supervisor_config
 from pska_core.memory import MemoryService
@@ -315,6 +315,29 @@ def build_parser() -> argparse.ArgumentParser:
     digest_schedule_parser.add_argument("--force", action="store_true")
     digest_schedule_parser.add_argument("--reason", default="")
 
+    digest_now_parser = subparsers.add_parser("digest-now", help="Sync files, schedule digest work, run the Fastreact digest worker, and print a summary")
+    digest_now_parser.add_argument("--owner-user-id", default="user_primary")
+    digest_now_parser.add_argument("--source-item-id", action="append", dest="source_item_ids", default=[])
+    digest_now_parser.add_argument("--limit", type=int, default=20)
+    digest_now_parser.add_argument("--batch-size", type=int, default=20)
+    digest_now_parser.add_argument("--priority", type=int, default=0)
+    digest_now_parser.add_argument("--max-attempts", type=int, default=3)
+    digest_now_parser.add_argument("--retry-backoff-seconds", type=int, default=60)
+    digest_now_parser.add_argument("--force", action="store_true")
+    digest_now_parser.add_argument("--reason", default="manual digest-now")
+    digest_now_parser.add_argument("--skip-sync", action="store_true")
+    digest_now_parser.add_argument("--root", type=Path, action="append", default=[], help="Additional or override folder source to sync before digest")
+    digest_now_parser.add_argument("--space-id", default=None)
+    digest_now_parser.add_argument("--visibility", choices=[item.value for item in Visibility], default=None)
+    digest_now_parser.add_argument("--ignore", action="append", default=[])
+    digest_now_parser.add_argument("--max-bytes", type=int, default=None)
+    digest_now_parser.add_argument("--fastreact-root", type=Path, default=Path.home() / "Fastreact" / "fastreact-nano")
+    digest_now_parser.add_argument("--python", default="python3")
+    digest_now_parser.add_argument("--pska-url", default=None)
+    digest_now_parser.add_argument("--fastreact-url", default=None)
+    digest_now_parser.add_argument("--max-worker-runs", type=int, default=10)
+    _add_embedding_args(digest_now_parser, default_provider=os.environ.get("PSKA_EMBEDDING_PROVIDER", "disabled"))
+
     digest_scheduler_parser = subparsers.add_parser("digest-scheduler", help="Foreground periodic digest backlog scheduler")
     digest_scheduler_parser.add_argument("--owner-user-id", default="user_primary")
     digest_scheduler_parser.add_argument("--interval-seconds", type=float, default=60.0)
@@ -478,6 +501,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return job_recover(args)
     if args.command == "digest-schedule":
         return digest_schedule(args)
+    if args.command == "digest-now":
+        return digest_now(args, config)
     if args.command == "digest-scheduler":
         return digest_scheduler(args)
     if args.command == "seed-review-candidates":
@@ -780,6 +805,12 @@ def files_scan(args: argparse.Namespace) -> int:
 
 
 def files_sync(args: argparse.Namespace, config: PSKAConfig) -> int:
+    payload = _files_sync_payload(args, config)
+    print(dumps(payload))
+    return 0 if payload["ok"] else 1
+
+
+def _files_sync_payload(args: argparse.Namespace, config: PSKAConfig) -> dict[str, Any]:
     store = PostgresKnowledgeStore(args.database_url)
     source_service = KnowledgeSourceService(store)
     try:
@@ -803,22 +834,20 @@ def files_sync(args: argparse.Namespace, config: PSKAConfig) -> int:
     except Exception as exc:  # noqa: BLE001 - preserve old no-root behavior when the DB is not reachable.
         if args.root or config.files.roots:
             raise
-        print(dumps({
+        return {
             "ok": False,
             "error": "No knowledge sources configured. Add files.roots to .pska/config.json for cold start seed or pass --root <path>.",
             "database_error": f"{type(exc).__name__}: {exc}",
             "reports": [],
             "knowledge_sources": [],
-        }))
-        return 1
+        }
     if not sources:
-        print(dumps({
+        return {
             "ok": False,
             "error": "No knowledge sources configured. Add files.roots to .pska/config.json for cold start seed or pass --root <path>.",
             "reports": [],
             "knowledge_sources": [],
-        }))
-        return 1
+        }
     reports = []
     sync_runs = []
     failed = []
@@ -865,8 +894,7 @@ def files_sync(args: argparse.Namespace, config: PSKAConfig) -> int:
         },
         "failed": failed,
     }
-    print(dumps(payload))
-    return 0 if payload["ok"] else 1
+    return payload
 
 
 def files_watch(args: argparse.Namespace, config: PSKAConfig) -> int:
@@ -1322,6 +1350,121 @@ def digest_schedule(args: argparse.Namespace) -> int:
     payload = _digest_schedule_payload(args)
     print(dumps(PSKAApi(args.database_url).schedule_digest(payload)))
     return 0
+
+
+def digest_now(args: argparse.Namespace, config: PSKAConfig) -> int:
+    api = PSKAApi(args.database_url)
+    sync_payload = None
+    if not args.skip_sync:
+        sync_payload = _files_sync_payload(args, config)
+        if not sync_payload.get("ok"):
+            print(dumps({"ok": False, "stage": "files_sync", "sync": sync_payload}))
+            return 1
+
+    scheduled = api.schedule_digest(_digest_schedule_payload(args))
+    worker_runs = _run_fastreact_digest_worker(args, config)
+    stats = api.job_stats()["stats"]
+    pending_reviews = _review_items_payload(
+        api.store.list_review_items(),
+        status="pending",
+        owner_user_id=args.owner_user_id,
+        limit=50,
+        summary=True,
+    )
+    failed_digest_jobs = [
+        job
+        for job in api.store.list_jobs(status="failed", job_type=DIGEST_VIA_FASTREACT, limit=10)
+    ]
+    payload = {
+        "ok": not any(run.get("ok") is False for run in worker_runs),
+        "sync": sync_payload,
+        "digest": scheduled,
+        "worker_runs": worker_runs,
+        "summary": {
+            "synced": None if sync_payload is None else sync_payload.get("totals"),
+            "scheduled_source_items": len(scheduled.get("scheduled_source_item_ids") or []),
+            "worker_processed": sum(int(run.get("processed") or 0) for run in worker_runs if isinstance(run, dict)),
+            "digest_backlog": stats.get("digest_backlog") or {},
+            "pending_review_count": int(pending_reviews.get("count") or 0),
+            "failed_digest_jobs": len(failed_digest_jobs),
+        },
+        "pending_reviews": pending_reviews,
+        "failed_digest_jobs": failed_digest_jobs,
+    }
+    print(dumps(payload))
+    return 0 if payload["ok"] and not failed_digest_jobs else 1
+
+
+def _run_fastreact_digest_worker(args: argparse.Namespace, config: PSKAConfig) -> list[dict[str, Any]]:
+    max_runs = max(1, int(args.max_worker_runs or 1))
+    command_args = argparse.Namespace(
+        pska_url=args.pska_url,
+        fastreact_url=args.fastreact_url,
+        fastreact_root=args.fastreact_root,
+        python=args.python,
+        batch_limit=args.batch_size,
+        represented_user_id=args.owner_user_id,
+    )
+    command_payload = _fastreact_digest_worker_command_payload(command_args, config)
+    fastreact_root = Path(command_payload["fastreact_root"])
+    command = list(command_payload["command"])
+    if not (fastreact_root / "scripts" / "pska_digest_worker.py").exists():
+        return [
+            {
+                "ok": False,
+                "stage": "fastreact_worker",
+                "error": "fastreact_digest_worker_missing",
+                "command": command_payload,
+            }
+        ]
+
+    runs: list[dict[str, Any]] = []
+    for _ in range(max_runs):
+        try:
+            completed = subprocess.run(  # noqa: S603 - command is assembled from local config/CLI fields.
+                command,
+                cwd=fastreact_root,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=180,
+            )
+        except subprocess.TimeoutExpired as exc:
+            runs.append(
+                {
+                    "ok": False,
+                    "stage": "fastreact_worker",
+                    "error": "fastreact_digest_worker_timeout",
+                    "timeout_seconds": exc.timeout,
+                    "command": command,
+                }
+            )
+            break
+        run_payload = _parse_json_process_output(completed.stdout)
+        if not run_payload:
+            run_payload = {
+                "ok": completed.returncode == 0,
+                "stdout": completed.stdout,
+                "stderr": completed.stderr,
+            }
+        if completed.returncode != 0:
+            run_payload.setdefault("ok", False)
+            run_payload.setdefault("stderr", completed.stderr)
+        runs.append(run_payload)
+        if int(run_payload.get("processed") or 0) <= 0:
+            break
+    return runs
+
+
+def _parse_json_process_output(stdout: str) -> dict[str, Any] | None:
+    text = stdout.strip()
+    if not text:
+        return None
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def digest_scheduler(args: argparse.Namespace) -> int:

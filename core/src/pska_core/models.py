@@ -111,6 +111,7 @@ class SourceItem:
     content_hash: str
     metadata: dict[str, Any] = field(default_factory=dict)
     created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
 
 
 @dataclass(slots=True)

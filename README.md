@@ -65,6 +65,11 @@ PSKA Core implements the knowledge model, storage, and services.
 
 ## Quick Start
 
+### Local Release And Initialization
+
+For the full setup, startup, release-check, and FastReAct integration flow, see
+[Release, Init, and FastReAct Guide](docs/RELEASE_INIT_FASTREACT_GUIDE.zh.md).
+
 ### Runtime Setup
 
 PSKA standardizes on a local Python 3.12 virtual environment so the core,
@@ -73,7 +78,17 @@ Twitter/X channel, and BGE-M3 embedding stack stay portable:
 ```bash
 brew install python@3.12
 ./scripts/bootstrap_pska_env
-./scripts/pska db-check
+mkdir -p .pska
+cp core/config.pska.example.json .pska/config.json
+./scripts/pska --config .pska/config.json db-check
+./scripts/pska --config .pska/config.json db-create --name pska
+./scripts/pska --config .pska/config.json db-init
+```
+
+After `./start.sh`, run a simple local digest pass with:
+
+```bash
+./scripts/pska --config .pska/config.json digest-now
 ```
 
 ### Twitter/X Archiving
@@ -99,8 +114,7 @@ imports, run files, and logs out of the source repository; `workspaces/default/`
 is ignored and should not be used as the active runtime workspace.
 
 ```bash
-./scripts/pska db-reset --name pska_smoke
-./scripts/pska --database-url postgresql:///pska_smoke \
+./scripts/pska --config .pska/config.json \
   import-twitter-zips \
   --input ~/PSKA_workspaces/default/twitter_archive
 ```
@@ -114,7 +128,7 @@ For a clean end-to-end local check:
 ### Search
 
 ```bash
-./scripts/pska --database-url postgresql:///pska_smoke \
+./scripts/pska --config .pska/config.json \
   agentic-search --query "your question"
 ```
 

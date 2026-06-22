@@ -77,14 +77,17 @@ PSKA 统一使用本地 Python 3.12 虚拟环境，这样 core、Twitter/X chann
 ```bash
 brew install python@3.12
 ./scripts/bootstrap_pska_env
-./scripts/pska --config .pska/config.json db-check
-```
-
-如需创建默认本地配置：
-
-```bash
 mkdir -p .pska
 cp core/config.pska.example.json .pska/config.json
+./scripts/pska --config .pska/config.json db-check
+./scripts/pska --config .pska/config.json db-create --name pska
+./scripts/pska --config .pska/config.json db-init
+```
+
+运行 `./start.sh` 后，可以用下面这个命令完成一次最简单的本地 digest：
+
+```bash
+./scripts/pska --config .pska/config.json digest-now
 ```
 
 `.pska/config.json` 是本机配置，不要提交。
@@ -126,8 +129,7 @@ archive save https://x.com/user/status/123456789
 ### PSKA Core 摄入
 
 ```bash
-./scripts/pska db-reset --name pska_smoke
-./scripts/pska --database-url postgresql:///pska_smoke \
+./scripts/pska --config .pska/config.json \
   import-twitter-zips \
   --input ~/PSKA_workspaces/default/twitter_archive
 ```
@@ -135,7 +137,7 @@ archive save https://x.com/user/status/123456789
 ### 搜索
 
 ```bash
-./scripts/pska --database-url postgresql:///pska_smoke \
+./scripts/pska --config .pska/config.json \
   agentic-search --query "你的问题"
 ```
 
