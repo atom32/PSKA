@@ -18,8 +18,10 @@ from pska_core.acl import ACLService
 from pska_core.agent_capture import capture_agent_conversation
 from pska_core.agentic_service import AgenticServiceError, build_agentic_service_client
 from pska_core.api import PSKAApi, serve
-from pska_core.config import DEFAULT_DATABASE_URL, PSKAConfig
+from pska_core.candidates import CandidateWriteService
+from pska_core.config import DEFAULT_DATABASE_URL, PSKAConfig, expand_path
 from pska_core.connectors import connector_state_from_mapping, connector_record_to_payload
+from pska_core.discovery import DiscoveryService
 from pska_core.embeddings import EmbeddingConfig, EmbeddingService, build_embedding_provider
 from pska_core.enums import ReviewType, Visibility
 from pska_core.extraction import ExtractionService
@@ -29,7 +31,8 @@ from pska_core.files_watcher import watch_files
 from pska_core.importers.twitter_zip import TwitterZipImporter
 from pska_core.ingest import IngestService
 from pska_core.jobs import JOB_TYPES, JobService
-from pska_core.local_daemon import DEFAULT_LOG_DIR, DEFAULT_RUN_DIR, build_process_specs, config_check, daemon_status, run_supervisor, supervisor_config
+from pska_core.knowledge_sources import KnowledgeSourceService
+from pska_core.local_daemon import build_process_specs, config_check, daemon_status, run_supervisor, supervisor_config
 from pska_core.memory import MemoryService
 from pska_core.mcp_server import MCPServer
 from pska_core.models import AgentMemory, ChannelIngestPayload, ReviewItem, SourceItem, SourceRef, UserProfileCard, utc_now
@@ -41,11 +44,13 @@ from pska_core.store_postgres import PostgresKnowledgeStore
 
 
 SMOKE_DATABASE_URL = "postgresql:///pska_smoke"
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="pska-core", description="PSKA Core local utilities")
     parser.add_argument("--config", type=Path, default=None, help="Path to PSKA JSON config")
+    parser.add_argument("--workspace-root", type=Path, default=None, help="PSKA local workspace root")
     parser.add_argument(
         "--database-url",
         default=None,
@@ -62,8 +67,8 @@ def build_parser() -> argparse.ArgumentParser:
     db_reset.add_argument("--name", default="pska_smoke")
 
     import_parser = subparsers.add_parser("import-twitter-zips", help="Import Twitter/X archive zip files")
-    import_parser.add_argument("--input", type=Path, default=Path.home() / "Downloads" / "twitter_archive")
-    import_parser.add_argument("--archive-root", type=Path, default=Path("archive/imports"))
+    import_parser.add_argument("--input", type=Path, default=None)
+    import_parser.add_argument("--archive-root", type=Path, default=None)
     import_parser.add_argument("--owner-user-id", default="user_primary")
     import_parser.add_argument("--space-id", default="private_primary")
     import_parser.add_argument("--visibility", choices=[item.value for item in Visibility], default=Visibility.PRIVATE.value)
@@ -106,6 +111,17 @@ def build_parser() -> argparse.ArgumentParser:
     connector_state_parser.add_argument("--sync-status")
     connector_state_parser.add_argument("--permission-scope-json", default="")
     connector_state_parser.add_argument("--config-json", default="")
+
+    knowledge_source_parser = subparsers.add_parser("knowledge-source", help="Manage user-facing Knowledge Sources")
+    knowledge_source_parser.add_argument("action", choices=["list", "add-folder"], nargs="?", default="list")
+    knowledge_source_parser.add_argument("--path", type=Path, default=None)
+    knowledge_source_parser.add_argument("--name", default=None)
+    knowledge_source_parser.add_argument("--owner-user-id", default="user_primary")
+    knowledge_source_parser.add_argument("--space-id", default="private_primary")
+    knowledge_source_parser.add_argument("--visibility", choices=[item.value for item in Visibility], default=Visibility.PRIVATE.value)
+    knowledge_source_parser.add_argument("--mode", choices=["manual", "watching", "paused"], default="manual")
+    knowledge_source_parser.add_argument("--ignore", action="append", default=[])
+    knowledge_source_parser.add_argument("--max-bytes", type=int, default=1_000_000)
 
     files_scan_parser = subparsers.add_parser("files-scan", help="Scan an authorized local directory through the Files connector")
     files_scan_parser.add_argument("--root", type=Path, required=True)
@@ -150,8 +166,8 @@ def build_parser() -> argparse.ArgumentParser:
     local_daemon_parser.add_argument("--no-worker", action="store_true")
     local_daemon_parser.add_argument("--no-digest-scheduler", action="store_true")
     local_daemon_parser.add_argument("--restart", action="store_true", help="Restart child processes if they exit")
-    local_daemon_parser.add_argument("--run-dir", type=Path, default=DEFAULT_RUN_DIR)
-    local_daemon_parser.add_argument("--log-dir", type=Path, default=DEFAULT_LOG_DIR)
+    local_daemon_parser.add_argument("--run-dir", type=Path, default=None)
+    local_daemon_parser.add_argument("--log-dir", type=Path, default=None)
     local_daemon_parser.add_argument("--supervisor", choices=["supervisord", "launchd"], default="supervisord")
     local_daemon_parser.add_argument("--dry-run", action="store_true", help="For supervisor-config, print config without installing it")
     local_daemon_parser.add_argument("--worker-id", default="pska-worker-local")
@@ -164,9 +180,9 @@ def build_parser() -> argparse.ArgumentParser:
     local_daemon_parser.add_argument("--digest-max-backlog-jobs", type=int, default=10)
 
     mvp_bootstrap_parser = subparsers.add_parser("mvp-bootstrap", help="Initialize the MVP scope: DB, Twitter archive, local text roots, and digest backlog")
-    mvp_bootstrap_parser.add_argument("--twitter-archive", type=Path, default=Path.home() / "Downloads" / "twitter_archive")
+    mvp_bootstrap_parser.add_argument("--twitter-archive", type=Path, default=None)
     mvp_bootstrap_parser.add_argument("--notes-root", type=Path, action="append", default=[])
-    mvp_bootstrap_parser.add_argument("--archive-root", type=Path, default=Path("archive/imports"))
+    mvp_bootstrap_parser.add_argument("--archive-root", type=Path, default=None)
     mvp_bootstrap_parser.add_argument("--owner-user-id", default="user_primary")
     mvp_bootstrap_parser.add_argument("--space-id", default="private_primary")
     mvp_bootstrap_parser.add_argument("--skip-twitter", action="store_true")
@@ -222,8 +238,8 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("mcp-server", help="Start PSKA stdio MCP server")
 
     smoke_parser = subparsers.add_parser("smoke-twitter-import", help="Reset pska_smoke, import zips, and run a search smoke")
-    smoke_parser.add_argument("--input", type=Path, default=Path.home() / "Downloads" / "twitter_archive")
-    smoke_parser.add_argument("--archive-root", type=Path, default=Path("archive/imports"))
+    smoke_parser.add_argument("--input", type=Path, default=None)
+    smoke_parser.add_argument("--archive-root", type=Path, default=None)
     smoke_parser.add_argument("--query", default="")
     _add_embedding_args(smoke_parser, default_provider=os.environ.get("PSKA_EMBEDDING_PROVIDER", "disabled"))
 
@@ -238,6 +254,14 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--until-empty", action="store_true")
     run_parser.add_argument("--worker-id", default=None)
     run_parser.add_argument("--lease-seconds", type=int, default=300)
+    run_parser.add_argument(
+        "--exclude-job-type",
+        action="append",
+        dest="excluded_job_types",
+        default=[],
+        choices=sorted(JOB_TYPES),
+        help="Do not claim this job type; repeat to exclude multiple types",
+    )
 
     worker_parser = subparsers.add_parser("job-worker", help="Continuously poll and run durable jobs")
     worker_parser.add_argument("--poll-interval", type=float, default=5.0)
@@ -308,6 +332,14 @@ def build_parser() -> argparse.ArgumentParser:
     digest_scheduler_parser.add_argument("--force", action="store_true")
     digest_scheduler_parser.add_argument("--reason", default="periodic digest scheduler")
 
+    seed_candidates_parser = subparsers.add_parser(
+        "seed-review-candidates",
+        help="Create grounded review/discovery candidates from current corpus for cold-start validation",
+    )
+    seed_candidates_parser.add_argument("--owner-user-id", default="user_primary")
+    seed_candidates_parser.add_argument("--limit", type=int, default=4)
+    seed_candidates_parser.add_argument("--confidence", type=float, default=0.55)
+
     review_list_parser = subparsers.add_parser("review-list", help="List review items awaiting or recording human decisions")
     review_list_parser.add_argument("--status", default=None)
     review_list_parser.add_argument("--owner-user-id", default=None)
@@ -362,8 +394,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     config = PSKAConfig.load(args.config)
+    workspace_root = _resolve_workspace_root(args, config)
     config.apply_to_env()
+    os.environ["PSKA_WORKSPACE_ROOT"] = str(workspace_root)
     args.database_url = args.database_url or config.database.url
+    _apply_workspace_defaults(args, workspace_root)
     if args.command == "service-check":
         args.url = args.url or os.environ.get("PSKA_SERVICE_URL") or f"http://{config.service.host}:{config.service.port}"
         args.service_token = args.service_token or os.environ.get("PSKA_SERVICE_TOKEN")
@@ -390,6 +425,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return connector_ingest_record(args)
     if args.command == "connector-state":
         return connector_state(args)
+    if args.command == "knowledge-source":
+        return knowledge_source(args)
     if args.command == "files-scan":
         return files_scan(args)
     if args.command == "files-sync":
@@ -443,6 +480,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return digest_schedule(args)
     if args.command == "digest-scheduler":
         return digest_scheduler(args)
+    if args.command == "seed-review-candidates":
+        return seed_review_candidates(args)
     if args.command == "review-list":
         return review_list(args)
     if args.command == "memory-list":
@@ -460,6 +499,27 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "profile-propose":
         return profile_propose(args)
     return 2
+
+
+def _resolve_workspace_root(args: argparse.Namespace, config: PSKAConfig) -> Path:
+    if args.workspace_root:
+        return expand_path(args.workspace_root)
+    return expand_path(config.workspace.root)
+
+
+def _apply_workspace_defaults(args: argparse.Namespace, workspace_root: Path) -> None:
+    if args.command in {"import-twitter-zips", "mvp-bootstrap", "smoke-twitter-import"}:
+        if getattr(args, "input", None) is None:
+            args.input = workspace_root / "twitter_archive"
+        if getattr(args, "twitter_archive", None) is None:
+            args.twitter_archive = workspace_root / "twitter_archive"
+        if getattr(args, "archive_root", None) is None:
+            args.archive_root = workspace_root / "imports"
+    if args.command == "local-daemon":
+        if args.run_dir is None:
+            args.run_dir = workspace_root / "run"
+        if args.log_dir is None:
+            args.log_dir = workspace_root / "logs"
 
 
 def db_check(database_url: str) -> int:
@@ -674,6 +734,34 @@ def connector_state(args: argparse.Namespace) -> int:
     return 0
 
 
+def knowledge_source(args: argparse.Namespace) -> int:
+    store = PostgresKnowledgeStore(args.database_url)
+    service = KnowledgeSourceService(store)
+    if args.action == "add-folder":
+        if not args.path:
+            print("knowledge-source add-folder requires --path", file=sys.stderr)
+            return 2
+        source = service.add_folder_source(
+            args.path,
+            owner_user_id=args.owner_user_id,
+            name=args.name,
+            mode=args.mode,
+            space_id=args.space_id,
+            visibility=Visibility(args.visibility),
+            ignore=list(args.ignore or []),
+            max_bytes=args.max_bytes,
+        )
+        print(dumps({"knowledge_source": source}))
+        return 0
+    sources = service.list_sources(owner_user_id=args.owner_user_id)
+    runs = {
+        source.knowledge_source_id: store.list_sync_runs(knowledge_source_id=source.knowledge_source_id, limit=1)
+        for source in sources
+    }
+    print(dumps({"knowledge_sources": sources, "latest_sync_runs": runs}))
+    return 0
+
+
 def files_scan(args: argparse.Namespace) -> int:
     store = PostgresKnowledgeStore(args.database_url)
     report = scan_files(
@@ -692,40 +780,79 @@ def files_scan(args: argparse.Namespace) -> int:
 
 
 def files_sync(args: argparse.Namespace, config: PSKAConfig) -> int:
-    roots = list(args.root or []) or list(config.files.roots)
-    if not roots:
+    store = PostgresKnowledgeStore(args.database_url)
+    source_service = KnowledgeSourceService(store)
+    try:
+        seeded = source_service.seed_from_config(config)
+        for root in args.root or []:
+            seeded.append(
+                source_service.add_folder_source(
+                    root,
+                    owner_user_id=args.owner_user_id or config.files.owner_user_id,
+                    space_id=args.space_id or config.files.space_id,
+                    visibility=Visibility(args.visibility or config.files.visibility),
+                    ignore=[*config.files.ignore, *(args.ignore or [])],
+                    max_bytes=args.max_bytes or config.files.max_bytes,
+                )
+            )
+        sources = [
+            source
+            for source in source_service.list_sources(owner_user_id=args.owner_user_id or config.files.owner_user_id, source_type="folder")
+            if source.mode != "paused" and source.status != "paused"
+        ]
+    except Exception as exc:  # noqa: BLE001 - preserve old no-root behavior when the DB is not reachable.
+        if args.root or config.files.roots:
+            raise
         print(dumps({
             "ok": False,
-            "error": "No files roots configured. Add files.roots to .pska/config.json or pass --root <path>.",
+            "error": "No knowledge sources configured. Add files.roots to .pska/config.json for cold start seed or pass --root <path>.",
+            "database_error": f"{type(exc).__name__}: {exc}",
             "reports": [],
+            "knowledge_sources": [],
         }))
         return 1
-    store = PostgresKnowledgeStore(args.database_url)
+    if not sources:
+        print(dumps({
+            "ok": False,
+            "error": "No knowledge sources configured. Add files.roots to .pska/config.json for cold start seed or pass --root <path>.",
+            "reports": [],
+            "knowledge_sources": [],
+        }))
+        return 1
     reports = []
+    sync_runs = []
     failed = []
-    for root in roots:
+    for source in sources:
+        root = source_service.source_path(source)
         try:
             report = scan_files(
                 store,
                 root=root,
-                owner_user_id=args.owner_user_id or config.files.owner_user_id,
-                space_id=args.space_id or config.files.space_id,
-                visibility=Visibility(args.visibility or config.files.visibility),
-                ignore=[*config.files.ignore, *(args.ignore or [])],
-                max_bytes=args.max_bytes or config.files.max_bytes,
+                owner_user_id=source.owner_user_id,
+                space_id=source.space_id,
+                visibility=source.visibility,
+                visible_team_ids=source.visible_team_ids,
+                ignore=[*list(source.config.get("ignore") or []), *(args.ignore or [])],
+                max_bytes=args.max_bytes or int(source.config.get("max_bytes") or config.files.max_bytes),
                 embedding_provider=_embedding_provider_from_args(args),
             )
             reports.append(report)
             failed.extend(report.failed)
+            sync_runs.append(source_service.record_sync_report(source, report))
         except Exception as exc:  # noqa: BLE001 - report all roots together.
-            failed.append({"root": str(root), "error": f"{type(exc).__name__}: {exc}"})
+            error = f"{type(exc).__name__}: {exc}"
+            failed.append({"root": str(root), "knowledge_source_id": source.knowledge_source_id, "error": error})
+            sync_runs.append(source_service.record_sync_error(source, error))
     payload = {
         "ok": not failed,
         "database_url": args.database_url,
-        "roots": [str(root.expanduser()) for root in roots],
+        "seeded_knowledge_sources": seeded,
+        "knowledge_sources": sources,
+        "roots": [str(source_service.source_path(source).expanduser()) for source in sources],
         "reports": reports,
+        "sync_runs": sync_runs,
         "totals": {
-            "roots": len(roots),
+            "roots": len(sources),
             "scanned": sum(report.scanned for report in reports),
             "ingested": sum(report.ingested for report in reports),
             "new_files": sum(report.new_files for report in reports),
@@ -873,7 +1000,13 @@ def local_daemon(args: argparse.Namespace, config: PSKAConfig) -> int:
         print(dumps(daemon_status(specs, run_dir=args.run_dir, log_dir=args.log_dir)))
         return 0
     if args.action == "supervisor-config":
-        payload = supervisor_config(specs, supervisor=args.supervisor, run_dir=args.run_dir, log_dir=args.log_dir)
+        payload = supervisor_config(
+            specs,
+            supervisor=args.supervisor,
+            run_dir=args.run_dir,
+            log_dir=args.log_dir,
+            working_directory=REPO_ROOT,
+        )
         print(dumps(payload))
         return 0
     return run_supervisor(specs, restart=args.restart, run_dir=args.run_dir, log_dir=args.log_dir)
@@ -883,6 +1016,11 @@ def mvp_bootstrap(args: argparse.Namespace) -> int:
     report: dict[str, Any] = {
         "database_url": args.database_url,
         "dry_run": bool(args.dry_run),
+        "workspace": {
+            "root": str(args.workspace_root) if args.workspace_root else os.environ.get("PSKA_WORKSPACE_ROOT"),
+            "twitter_archive": str(args.twitter_archive),
+            "archive_root": str(args.archive_root),
+        },
         "steps": [],
         "next_actions": [
             "Start PSKA with: ./scripts/pska local-daemon",
@@ -1054,7 +1192,11 @@ def job_run(args: argparse.Namespace) -> int:
         excluded_job_types=set(args.excluded_job_types or []),
     )
     report = service.run_until_empty(limit=args.limit if args.limit > 0 else None) if args.until_empty else service.run_available(limit=args.limit)
-    print(dumps(report))
+    payload = to_jsonable(report)
+    diagnostics = _job_run_diagnostics(store, report=payload, excluded_job_types=set(args.excluded_job_types or []))
+    if diagnostics:
+        payload["diagnostics"] = diagnostics
+    print(dumps(payload))
     return 1 if report.failed else 0
 
 
@@ -1090,6 +1232,38 @@ def job_worker(args: argparse.Namespace) -> int:
             break
     print(dumps({"processed": processed, "failed": failed}))
     return 1 if failed else 0
+
+
+def _job_run_diagnostics(
+    store: PostgresKnowledgeStore,
+    *,
+    report: dict[str, Any],
+    excluded_job_types: set[str],
+) -> dict[str, Any]:
+    if int(report.get("processed") or 0) != 0:
+        return {}
+    queued_jobs = [
+        job
+        for job in store.list_jobs(status="queued", limit=20)
+        if job.job_type not in excluded_job_types
+    ]
+    failed_jobs = store.list_jobs(status="failed", limit=5)
+    pending_reviews = [item for item in store.list_review_items() if item.status == "pending"]
+    diagnostics: dict[str, Any] = {
+        "reason": "no_runnable_queued_jobs",
+        "queued_jobs": len(queued_jobs),
+        "failed_jobs": len(failed_jobs),
+        "pending_reviews": len(pending_reviews),
+        "next_actions": [],
+    }
+    if failed_jobs:
+        diagnostics["next_actions"].append("./scripts/pska jobs list --status failed")
+        diagnostics["next_actions"].append("./scripts/pska job-status --job-id <job_id>")
+    if pending_reviews:
+        diagnostics["next_actions"].append("./scripts/pska review-list --status pending --owner-user-id user_primary --summary")
+    if not queued_jobs:
+        diagnostics["next_actions"].append("./scripts/pska digest-schedule --owner-user-id user_primary --force")
+    return diagnostics
 
 
 def job_status(args: argparse.Namespace) -> int:
@@ -1194,6 +1368,89 @@ def digest_scheduler(args: argparse.Namespace) -> int:
 
     print(dumps({"processed": processed, "idle_cycles": idle_cycles}))
     return 0
+
+
+def seed_review_candidates(args: argparse.Namespace) -> int:
+    store = PostgresKnowledgeStore(args.database_url)
+    owner_user_id = str(args.owner_user_id)
+    limit = max(1, int(args.limit))
+    confidence = max(0.0, min(float(args.confidence), 1.0))
+    sources = [
+        item
+        for item in sorted(store.list_source_items(), key=lambda source: source.created_at, reverse=True)
+        if item.owner_user_id == owner_user_id
+    ][:limit]
+    if not sources:
+        print(dumps({"ok": False, "error": "no_source_items", "owner_user_id": owner_user_id}))
+        return 1
+
+    source_refs = [{"source_item_id": item.source_item_id} for item in sources]
+    primary = sources[0]
+    secondary = sources[1] if len(sources) > 1 else sources[0]
+    payload = {
+        "schema_version": "pska.candidates.v1",
+        "owner_user_id": owner_user_id,
+        "producer": "pska_seed_review_candidates",
+        "request_id": "seed_review_candidates:" + ":".join(item.source_item_id for item in sources),
+        "source_refs": source_refs,
+        "memory_candidates": [
+            {
+                "title": f"Review memory candidate from {item.title or item.source_item_id}",
+                "text": _seed_memory_text(item),
+                "confidence": min(confidence, 0.59),
+                "source_refs": [{"source_item_id": item.source_item_id}],
+            }
+            for item in sources
+            if _seed_memory_text(item)
+        ],
+        "hyperedges": [
+            {
+                "relation_type": "seeded_corpus_relation",
+                "title": f"Review relationship candidate: {primary.title or primary.source_item_id} ↔ {secondary.title or secondary.source_item_id}",
+                "evidence_text": _seed_relationship_evidence(primary, secondary),
+                "confidence": min(confidence, 0.59),
+                "source_refs": source_refs[:2],
+                "members": [
+                    {"entity_type": "source", "label": primary.title or primary.source_item_id, "role": "source_a"},
+                    {"entity_type": "source", "label": secondary.title or secondary.source_item_id, "role": "source_b"},
+                ],
+            }
+        ],
+    }
+    candidate_summary = CandidateWriteService(store).write_candidates(payload)
+    discoveries = DiscoveryService(store, owner_user_id=owner_user_id).produce()
+    pending_reviews = [
+        item
+        for item in store.list_review_items()
+        if item.owner_user_id == owner_user_id and item.status == "pending"
+    ]
+    print(
+        dumps(
+            {
+                "ok": True,
+                "owner_user_id": owner_user_id,
+                "source_items": [item.source_item_id for item in sources],
+                "candidate_write": candidate_summary,
+                "discoveries_produced": discoveries,
+                "pending_reviews": pending_reviews,
+            }
+        )
+    )
+    return 0
+
+
+def _seed_memory_text(source: SourceItem) -> str:
+    title = " ".join((source.title or source.source_item_id).split())
+    content = " ".join((source.content_text or "").split())
+    if content:
+        return f"{title}: {content[:320]}"
+    return title[:360]
+
+
+def _seed_relationship_evidence(primary: SourceItem, secondary: SourceItem) -> str:
+    primary_title = " ".join((primary.title or primary.source_item_id).split())
+    secondary_title = " ".join((secondary.title or secondary.source_item_id).split())
+    return f"Cold-start seeded relationship candidate linking two real PSKA sources: {primary_title} / {secondary_title}."
 
 
 def review_list(args: argparse.Namespace) -> int:
@@ -2464,8 +2721,10 @@ def _daily_status_recommended_commands(
         commands.append("./scripts/pska digest-schedule --owner-user-id user_primary")
     if pending_review_count:
         commands.append("./scripts/pska review-list --status pending --owner-user-id user_primary --summary")
+        commands.append("./scripts/pska review-approve <review_item_id> --apply")
     if failed_job_count:
         commands.append("./scripts/pska jobs list --status failed")
+        commands.append("./scripts/pska job-status --job-id <job_id>")
     return commands
 
 

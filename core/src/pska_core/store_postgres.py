@@ -21,10 +21,12 @@ from pska_core.models import (
     Job,
     JobEvent,
     AuditEvent,
+    KnowledgeSource,
     OfflineIndexState,
     ReviewItem,
     SourceRef,
     SourceItem,
+    SyncRun,
     TeamMembership,
     User,
     UserProfileCard,
@@ -147,6 +149,149 @@ class PostgresKnowledgeStore:
                 ),
             ).fetchone()
         return self._connector_state_from_row(row)
+
+    def upsert_knowledge_source(self, source: KnowledgeSource) -> KnowledgeSource:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                insert into knowledge_sources(
+                    knowledge_source_id, owner_user_id, name, source_type, uri,
+                    mode, status, connector_id, space_id, visibility, visible_team_ids,
+                    permission_scope, config, last_sync_at, last_error
+                )
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                on conflict (owner_user_id, uri) do update
+                set name = excluded.name,
+                    source_type = excluded.source_type,
+                    mode = excluded.mode,
+                    status = excluded.status,
+                    connector_id = excluded.connector_id,
+                    space_id = excluded.space_id,
+                    visibility = excluded.visibility,
+                    visible_team_ids = excluded.visible_team_ids,
+                    permission_scope = excluded.permission_scope,
+                    config = excluded.config,
+                    last_sync_at = coalesce(knowledge_sources.last_sync_at, excluded.last_sync_at),
+                    last_error = excluded.last_error,
+                    updated_at = now()
+                returning *
+                """,
+                (
+                    source.knowledge_source_id,
+                    source.owner_user_id,
+                    source.name,
+                    source.source_type,
+                    source.uri,
+                    source.mode,
+                    source.status,
+                    source.connector_id,
+                    source.space_id,
+                    source.visibility.value,
+                    source.visible_team_ids,
+                    Jsonb(to_jsonable(source.permission_scope)),
+                    Jsonb(to_jsonable(source.config)),
+                    source.last_sync_at,
+                    source.last_error,
+                ),
+            ).fetchone()
+        return self._knowledge_source_from_row(row)
+
+    def get_knowledge_source(self, knowledge_source_id: str) -> KnowledgeSource:
+        with self.connect() as conn:
+            row = conn.execute("select * from knowledge_sources where knowledge_source_id = %s", (knowledge_source_id,)).fetchone()
+        if not row:
+            raise KeyError(knowledge_source_id)
+        return self._knowledge_source_from_row(row)
+
+    def list_knowledge_sources(
+        self,
+        *,
+        owner_user_id: str | None = None,
+        source_type: str | None = None,
+        status: str | None = None,
+    ) -> list[KnowledgeSource]:
+        clauses: list[str] = []
+        params: list[str] = []
+        if owner_user_id:
+            clauses.append("owner_user_id = %s")
+            params.append(owner_user_id)
+        if source_type:
+            clauses.append("source_type = %s")
+            params.append(source_type)
+        if status:
+            clauses.append("status = %s")
+            params.append(status)
+        where = " where " + " and ".join(clauses) if clauses else ""
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"select * from knowledge_sources{where} order by updated_at desc, name",  # noqa: S608 - fixed clauses only.
+                params,
+            ).fetchall()
+        return [self._knowledge_source_from_row(row) for row in rows]
+
+    def add_sync_run(self, run: SyncRun) -> SyncRun:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                insert into sync_runs(
+                    sync_run_id, knowledge_source_id, owner_user_id, connector_id, status,
+                    started_at, finished_at, scanned, ingested, new_files, changed_files,
+                    unchanged_files, moved_files, missing_files, skipped, failed, error, report
+                )
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                returning *
+                """,
+                (
+                    run.sync_run_id,
+                    run.knowledge_source_id,
+                    run.owner_user_id,
+                    run.connector_id,
+                    run.status,
+                    run.started_at,
+                    run.finished_at,
+                    run.scanned,
+                    run.ingested,
+                    run.new_files,
+                    run.changed_files,
+                    run.unchanged_files,
+                    run.moved_files,
+                    run.missing_files,
+                    run.skipped,
+                    run.failed,
+                    run.error,
+                    Jsonb(to_jsonable(run.report)),
+                ),
+            ).fetchone()
+            conn.execute(
+                """
+                update knowledge_sources
+                set status = %s,
+                    last_sync_at = coalesce(%s, now()),
+                    last_error = %s,
+                    updated_at = now()
+                where knowledge_source_id = %s
+                """,
+                ("failed" if run.status == "failed" else "indexed", run.finished_at or run.started_at, run.error, run.knowledge_source_id),
+            )
+        return self._sync_run_from_row(row)
+
+    def list_sync_runs(self, *, knowledge_source_id: str | None = None, owner_user_id: str | None = None, limit: int = 50) -> list[SyncRun]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if knowledge_source_id:
+            clauses.append("knowledge_source_id = %s")
+            params.append(knowledge_source_id)
+        if owner_user_id:
+            clauses.append("owner_user_id = %s")
+            params.append(owner_user_id)
+        where = " where " + " and ".join(clauses) if clauses else ""
+        params.append(limit)
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"select * from sync_runs{where} order by started_at desc limit %s",  # noqa: S608 - fixed clauses only.
+                params,
+            ).fetchall()
+        return [self._sync_run_from_row(row) for row in rows]
 
     def get_connector_state(self, connector_state_id: str) -> ConnectorState:
         with self.connect() as conn:
@@ -869,25 +1014,58 @@ class PostgresKnowledgeStore:
 
     def upsert_discovery_item(self, item: DiscoveryItem) -> DiscoveryItem:
         with self.connect() as conn:
+            existing_id = conn.execute(
+                "select discovery_id from discovery_items where discovery_id = %s",
+                (item.discovery_id,),
+            ).fetchone()
+            if existing_id is None and item.fingerprint:
+                existing_id = conn.execute(
+                    """
+                    select discovery_id
+                    from discovery_items
+                    where owner_user_id = %s
+                      and producer = %s
+                      and fingerprint = %s
+                    order by created_at desc, discovery_id desc
+                    limit 1
+                    """,
+                    (item.owner_user_id, item.producer, item.fingerprint),
+                ).fetchone()
+            discovery_id = existing_id["discovery_id"] if existing_id else item.discovery_id
             row = conn.execute(
                 """
                 insert into discovery_items(
                     discovery_id, owner_user_id, discovery_type, title, evidence,
-                    confidence, producer, status, created_at
+                    confidence, producer, fingerprint, evidence_snapshot,
+                    discovery_score, quality_signals, status, created_at
                 )
-                values (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 on conflict (discovery_id) do update
-                set status = discovery_items.status
+                set discovery_type = excluded.discovery_type,
+                    title = excluded.title,
+                    evidence = excluded.evidence,
+                    confidence = excluded.confidence,
+                    producer = excluded.producer,
+                    fingerprint = excluded.fingerprint,
+                    evidence_snapshot = excluded.evidence_snapshot,
+                    discovery_score = excluded.discovery_score,
+                    quality_signals = excluded.quality_signals,
+                    status = discovery_items.status,
+                    created_at = discovery_items.created_at
                 returning *
                 """,
                 (
-                    item.discovery_id,
+                    discovery_id,
                     item.owner_user_id,
                     item.discovery_type,
                     item.title,
                     Jsonb(to_jsonable(item.evidence)),
                     item.confidence,
                     item.producer,
+                    item.fingerprint,
+                    Jsonb(to_jsonable(item.evidence_snapshot)),
+                    item.discovery_score,
+                    Jsonb(to_jsonable(item.quality_signals)),
                     item.status,
                     item.created_at,
                 ),
@@ -917,12 +1095,27 @@ class PostgresKnowledgeStore:
                 select *
                 from discovery_items
                 where {" and ".join(clauses)}
-                order by created_at desc, discovery_id desc
+                order by discovery_score desc, created_at desc, discovery_id desc
                 limit %s
                 """,  # noqa: S608 - clauses are fixed.
                 params,
             ).fetchall()
         return [self._discovery_item_from_row(row) for row in rows]
+
+    def update_discovery_item_status(self, discovery_id: str, status: str) -> DiscoveryItem:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                update discovery_items
+                set status = %s
+                where discovery_id = %s
+                returning *
+                """,
+                (status, discovery_id),
+            ).fetchone()
+        if row is None:
+            raise KeyError(discovery_id)
+        return self._discovery_item_from_row(row)
 
     def list_hyperedges_for_entities(self, entity_ids: set[str]) -> list[tuple[Hyperedge, list[HyperedgeMember]]]:
         if not entity_ids:
@@ -1302,6 +1495,8 @@ class PostgresKnowledgeStore:
             "user_profile_cards",
             "jobs",
             "job_events",
+            "knowledge_sources",
+            "sync_runs",
             "connector_states",
             "offline_index_states",
             "workspace_activity_events",
@@ -1372,6 +1567,10 @@ class PostgresKnowledgeStore:
             evidence=list(row.get("evidence") or []),
             confidence=float(row["confidence"]),
             producer=row["producer"],
+            fingerprint=str(row.get("fingerprint") or ""),
+            evidence_snapshot=list(row.get("evidence_snapshot") or []),
+            discovery_score=float(row.get("discovery_score") or 0.0),
+            quality_signals=dict(row.get("quality_signals") or {}),
             status=row["status"],
             created_at=row["created_at"],
         )
@@ -1391,6 +1590,49 @@ class PostgresKnowledgeStore:
             config=dict(row.get("config") or {}),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+        )
+
+    def _knowledge_source_from_row(self, row: dict[str, Any]) -> KnowledgeSource:
+        return KnowledgeSource(
+            knowledge_source_id=row["knowledge_source_id"],
+            owner_user_id=row["owner_user_id"],
+            name=row["name"],
+            source_type=row["source_type"],
+            uri=row["uri"],
+            mode=row["mode"],
+            status=row["status"],
+            connector_id=row["connector_id"],
+            space_id=row["space_id"],
+            visibility=Visibility(row["visibility"]),
+            visible_team_ids=list(row.get("visible_team_ids") or []),
+            permission_scope=dict(row.get("permission_scope") or {}),
+            config=dict(row.get("config") or {}),
+            last_sync_at=row.get("last_sync_at"),
+            last_error=row.get("last_error"),
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+    def _sync_run_from_row(self, row: dict[str, Any]) -> SyncRun:
+        return SyncRun(
+            sync_run_id=row["sync_run_id"],
+            knowledge_source_id=row["knowledge_source_id"],
+            owner_user_id=row["owner_user_id"],
+            connector_id=row["connector_id"],
+            status=row["status"],
+            started_at=row["started_at"],
+            finished_at=row.get("finished_at"),
+            scanned=int(row.get("scanned") or 0),
+            ingested=int(row.get("ingested") or 0),
+            new_files=int(row.get("new_files") or 0),
+            changed_files=int(row.get("changed_files") or 0),
+            unchanged_files=int(row.get("unchanged_files") or 0),
+            moved_files=int(row.get("moved_files") or 0),
+            missing_files=int(row.get("missing_files") or 0),
+            skipped=int(row.get("skipped") or 0),
+            failed=int(row.get("failed") or 0),
+            error=row.get("error"),
+            report=dict(row.get("report") or {}),
         )
 
     def _chunk_from_row(self, row: dict[str, Any]) -> Chunk:

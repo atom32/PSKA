@@ -3,6 +3,9 @@
   "database": {
     "url": "postgresql:///pska"
   },
+  "workspace": {
+    "root": "~/PSKA_workspaces/default"
+  },
   "service": {
     "host": "127.0.0.1",
     "port": 8765,
@@ -25,9 +28,13 @@
     "dimensions": 1024,
     "batch_size": 16
   },
+  "ingest": {
+    "chunk_size": 1200,
+    "chunk_overlap": 0
+  },
   "files": {
     "roots": [
-      "~/Documents/notes"
+      "~/PSKA_workspaces/default/notes"
     ],
     "ignore": [
       "*.tmp",

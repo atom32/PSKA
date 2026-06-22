@@ -1,5 +1,6 @@
 import type {
   BrainState,
+  ConsoleSourcesResponse,
   ReviewCenterResponse,
   TodayResponse,
   WorkspaceActivityResponse,
@@ -23,46 +24,35 @@ export async function analyzeWorkspaceContext(
   trigger: BrainState["lastTrigger"]
 ): Promise<Partial<BrainState>> {
   if (!query.trim()) {
-    return { status: "idle", lastTrigger: trigger, updatedAt: Date.now() };
+    return { status: "idle", lastTrigger: trigger, updatedAt: Date.now(), error: null };
   }
 
-  try {
-    const searchResponse = await fetch("/workspace/search/query", {
-      method: "POST",
-      headers: headers(serviceToken),
-      body: JSON.stringify({
-        query,
-        mode: "direct",
-        capture: false,
-        user_id: "user_primary",
-        represented_user_id: "user_primary",
-        top_k: 5
-      })
-    });
+  const searchResponse = await fetch("/workspace/search/query", {
+    method: "POST",
+    headers: headers(serviceToken),
+    body: JSON.stringify({
+      query,
+      mode: "direct",
+      capture: false,
+      user_id: "user_primary",
+      represented_user_id: "user_primary",
+      top_k: 5
+    })
+  });
 
-    if (!searchResponse.ok) {
-      throw new Error(`search ${searchResponse.status}`);
-    }
-
-    const searchData = (await searchResponse.json()) as WorkspaceSearchResponse;
-    return mapSearchToBrain(searchData, trigger);
-  } catch {
-    return localAnalyze(query, trigger);
+  if (!searchResponse.ok) {
+    throw new Error(`PSKA search request failed with HTTP ${searchResponse.status}`);
   }
+
+  const searchData = (await searchResponse.json()) as WorkspaceSearchResponse;
+  return mapSearchToBrain(searchData, trigger);
 }
 
 export async function loadCorpusContext(serviceToken: string): Promise<Partial<BrainState>> {
   try {
-    const response = await fetch("/workspace/corpus/data?limit=12", { headers: headers(serviceToken) });
-    if (!response.ok) {
-      throw new Error(`corpus ${response.status}`);
-    }
-    const data = (await response.json()) as WorkspaceCorpusResponse;
+    const data = await loadCorpusData(serviceToken, 12);
     return {
-      entities: unique([
-        ...(data.entities || []).map((entity) => entity.label || entity.canonical_name || entity.name || entity.entity_id || ""),
-        "记忆层"
-      ]).slice(0, 8),
+      entities: unique((data.entities || []).map((entity) => entity.label || entity.canonical_name || entity.name || entity.entity_id || "")).slice(0, 8),
       timeline: (data.sources || []).slice(0, 5).map((source, index) => ({
         id: source.source_item_id || `source-${index}`,
         age: formatAge(source.created_at),
@@ -78,6 +68,45 @@ export async function loadCorpusContext(serviceToken: string): Promise<Partial<B
   } catch {
     return {};
   }
+}
+
+export async function loadCorpusData(serviceToken: string, limit = 16): Promise<WorkspaceCorpusResponse> {
+  const response = await fetch(`/workspace/corpus/data?owner_user_id=user_primary&limit=${limit}`, { headers: headers(serviceToken) });
+  if (!response.ok) {
+    throw new Error(`corpus ${response.status}`);
+  }
+  return (await response.json()) as WorkspaceCorpusResponse;
+}
+
+export async function loadSourcesConsole(serviceToken: string, limit = 20): Promise<ConsoleSourcesResponse> {
+  const response = await fetch(`/console/sources/data?owner_user_id=user_primary&limit=${limit}`, { headers: headers(serviceToken) });
+  if (!response.ok) {
+    throw new Error(`sources ${response.status}`);
+  }
+  return (await response.json()) as ConsoleSourcesResponse;
+}
+
+export async function searchWorkspace(
+  query: string,
+  serviceToken: string,
+  mode: "agentic" | "direct" = "agentic"
+): Promise<WorkspaceSearchResponse> {
+  const response = await fetch("/workspace/search/query", {
+    method: "POST",
+    headers: headers(serviceToken),
+    body: JSON.stringify({
+      query,
+      mode,
+      capture: false,
+      user_id: "user_primary",
+      represented_user_id: "user_primary",
+      top_k: 8
+    })
+  });
+  if (!response.ok) {
+    throw new Error(`search ${response.status}`);
+  }
+  return (await response.json()) as WorkspaceSearchResponse;
 }
 
 export async function loadToday(serviceToken: string): Promise<TodayResponse> {
@@ -126,6 +155,48 @@ export async function recordWorkspaceActivity(
     throw new Error(`activity ${response.status}`);
   }
   return (await response.json()) as WorkspaceActivityResponse;
+}
+
+export async function acceptDiscovery(serviceToken: string, discoveryId: string): Promise<void> {
+  const response = await fetch(`/workspace/discoveries/${encodeURIComponent(discoveryId)}/accept`, {
+    method: "POST",
+    headers: headers(serviceToken),
+    body: JSON.stringify({
+      actor_user_id: "user_primary",
+      reason: "Accepted from PSKA Today"
+    })
+  });
+  if (!response.ok) {
+    throw new Error(`accept discovery ${response.status}`);
+  }
+}
+
+export async function ignoreDiscovery(serviceToken: string, discoveryId: string): Promise<void> {
+  const response = await fetch(`/workspace/discoveries/${encodeURIComponent(discoveryId)}/ignore`, {
+    method: "POST",
+    headers: headers(serviceToken),
+    body: JSON.stringify({
+      actor_user_id: "user_primary",
+      reason: "Ignored from PSKA Today"
+    })
+  });
+  if (!response.ok) {
+    throw new Error(`ignore discovery ${response.status}`);
+  }
+}
+
+export async function snoozeDiscovery(serviceToken: string, discoveryId: string): Promise<void> {
+  const response = await fetch(`/workspace/discoveries/${encodeURIComponent(discoveryId)}/snooze`, {
+    method: "POST",
+    headers: headers(serviceToken),
+    body: JSON.stringify({
+      actor_user_id: "user_primary",
+      reason: "Snoozed from PSKA Today"
+    })
+  });
+  if (!response.ok) {
+    throw new Error(`snooze discovery ${response.status}`);
+  }
 }
 
 export async function approveReviewItem(serviceToken: string, reviewItemId: string, apply = false): Promise<void> {
@@ -192,12 +263,13 @@ function mapSearchToBrain(data: WorkspaceSearchResponse, trigger: BrainState["la
     status: "synced",
     lastTrigger: trigger,
     updatedAt: Date.now(),
+    error: null,
     relatedKnowledge: items
       .slice(0, 6)
       .map((item, index) => ({
         id: `result-${index}`,
         title: item.title || item.text?.slice(0, 52) || "相关记忆",
-        score: Math.round(((item.score || item.confidence || 0.78) as number) * 100),
+        score: knowledgeScore(item.score || item.confidence),
         snippet: item.snippet || item.text || "PSKA 中有可用证据。",
         source: "PSKA Retrieval API"
       })),
@@ -210,38 +282,12 @@ function mapSearchToBrain(data: WorkspaceSearchResponse, trigger: BrainState["la
   };
 }
 
-function localAnalyze(query: string, trigger: BrainState["lastTrigger"]): Partial<BrainState> {
-  const terms = unique(
-    query
-      .replace(/[#*_`>-]/g, " ")
-      .split(/\s+/)
-      .filter((word) => word.length > 4)
-      .filter((word) => /^[A-Z0-9]/.test(word) || word.includes("API") || word.includes("RAG"))
-  ).slice(0, 8);
-
-  const entities = terms.length ? terms : ["Agent 运行时", "记忆层", "检索 API", "GraphRAG"];
-  return {
-    status: "offline",
-    lastTrigger: trigger,
-    updatedAt: Date.now(),
-    entities,
-    relatedKnowledge: entities.slice(0, 4).map((entity, index) => ({
-      id: `local-${entity}-${index}`,
-      title: `${entity} 笔记`,
-      score: 91 - index * 4,
-      snippet: "本地上下文分析已启用。连接 PSKA 服务后，这里会替换为真实检索证据。",
-      source: "本地分析器"
-    })),
-    connections: entities.slice(0, 4).map((entity, index) => ({
-      id: `local-conn-${index}`,
-      label: entity,
-      relation: index === 0 ? "当前主题" : "建议连接"
-    }))
-  };
-}
-
 function unique(values: string[]) {
   return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
+}
+
+function knowledgeScore(value: unknown) {
+  return typeof value === "number" ? Math.round(value * 100) : undefined;
 }
 
 function formatAge(value?: string) {

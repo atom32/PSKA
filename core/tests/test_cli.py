@@ -8,8 +8,10 @@ from pska_core.config import PSKAConfig
 from pska_core.cli import (
     build_parser,
     digest_scheduler,
+    _apply_workspace_defaults,
     _daily_briefing_payload,
     _fastreact_digest_worker_command_payload,
+    _job_run_diagnostics,
     _daily_status_payload,
     _memory_list_payload,
     _mvp_next_actions,
@@ -61,6 +63,7 @@ def test_cli_accepts_import_twitter_zips() -> None:
 
     assert args.command == "import-twitter-zips"
     assert str(args.input) == "zips"
+    assert args.archive_root is None
     assert args.visible_team_ids == "team_a,team_b"
 
 
@@ -96,6 +99,7 @@ def test_cli_accepts_search_and_smoke() -> None:
     embed = build_parser().parse_args(["embed-backfill", "--embedding-provider", "bge-m3", "--limit", "10"])
     mcp = build_parser().parse_args(["mcp-server"])
     connector = build_parser().parse_args(["connector-ingest-record", "record.json"])
+    knowledge_source = build_parser().parse_args(["knowledge-source", "add-folder", "--path", "notes", "--mode", "manual"])
     files_scan = build_parser().parse_args(["files-scan", "--root", "notes", "--ignore", "*.tmp"])
     files_sync = build_parser().parse_args(["files-sync", "--root", "notes", "--ignore", "*.tmp"])
     files_watch = build_parser().parse_args(["files-watch", "--root", "notes", "--initial-sync", "--max-events", "1"])
@@ -160,6 +164,9 @@ def test_cli_accepts_search_and_smoke() -> None:
     assert mcp.command == "mcp-server"
     assert connector.command == "connector-ingest-record"
     assert str(connector.record) == "record.json"
+    assert knowledge_source.command == "knowledge-source"
+    assert knowledge_source.action == "add-folder"
+    assert str(knowledge_source.path) == "notes"
     assert files_scan.command == "files-scan"
     assert str(files_scan.root) == "notes"
     assert files_scan.ignore == ["*.tmp"]
@@ -170,6 +177,26 @@ def test_cli_accepts_search_and_smoke() -> None:
     assert str(files_watch.root[0]) == "notes"
     assert files_watch.initial_sync is True
     assert files_watch.max_events == 1
+
+
+def test_workspace_defaults_are_applied_after_config_load(tmp_path) -> None:
+    workspace = tmp_path / "pska-workspace"
+    import_args = build_parser().parse_args(["import-twitter-zips"])
+    mvp_args = build_parser().parse_args(["mvp-bootstrap"])
+    smoke_args = build_parser().parse_args(["smoke-twitter-import"])
+    daemon_args = build_parser().parse_args(["local-daemon", "status"])
+
+    for args in [import_args, mvp_args, smoke_args, daemon_args]:
+        _apply_workspace_defaults(args, workspace)
+
+    assert import_args.input == workspace / "twitter_archive"
+    assert import_args.archive_root == workspace / "imports"
+    assert mvp_args.twitter_archive == workspace / "twitter_archive"
+    assert mvp_args.archive_root == workspace / "imports"
+    assert smoke_args.input == workspace / "twitter_archive"
+    assert smoke_args.archive_root == workspace / "imports"
+    assert daemon_args.run_dir == workspace / "run"
+    assert daemon_args.log_dir == workspace / "logs"
 
 
 def test_cli_accepts_connector_state_commands() -> None:
@@ -556,7 +583,18 @@ def test_memory_and_profile_list_payloads_are_read_only() -> None:
 
 
 def test_cli_accepts_job_worker_commands() -> None:
-    run = build_parser().parse_args(["job-run", "--until-empty", "--limit", "0", "--worker-id", "worker_a", "--lease-seconds", "45"])
+    run = build_parser().parse_args([
+        "job-run",
+        "--until-empty",
+        "--limit",
+        "0",
+        "--worker-id",
+        "worker_a",
+        "--lease-seconds",
+        "45",
+        "--exclude-job-type",
+        "digest_via_fastreact",
+    ])
     worker = build_parser().parse_args(
         [
             "job-worker",
@@ -581,6 +619,7 @@ def test_cli_accepts_job_worker_commands() -> None:
     assert run.limit == 0
     assert run.worker_id == "worker_a"
     assert run.lease_seconds == 45
+    assert run.excluded_job_types == ["digest_via_fastreact"]
     assert worker.command == "job-worker"
     assert worker.poll_interval == 0.1
     assert worker.max_jobs == 2
@@ -590,6 +629,43 @@ def test_cli_accepts_job_worker_commands() -> None:
     assert worker.lease_seconds == 90
     assert recover.command == "job-recover"
     assert recover.max_age_seconds == 120
+
+
+def test_job_run_diagnostics_explains_empty_queue() -> None:
+    class FakeJob:
+        def __init__(self, job_type: str) -> None:
+            self.job_type = job_type
+
+    class FakeStore:
+        def list_jobs(self, *, status: str | None = None, limit: int = 20, **_kwargs):
+            if status == "queued":
+                return []
+            if status == "failed":
+                return [FakeJob("digest_via_fastreact")]
+            return []
+
+        def list_review_items(self):
+            return [
+                ReviewItem(
+                    review_item_id="rev_1",
+                    owner_user_id="user_primary",
+                    review_type=ReviewType.LOW_CONFIDENCE,
+                    title="Review memory",
+                    proposal={"source_refs": [{"source_item_id": "src_1"}]},
+                )
+            ]
+
+    diagnostics = _job_run_diagnostics(
+        FakeStore(),
+        report={"processed": 0, "succeeded": 0, "failed": 0, "jobs": []},
+        excluded_job_types=set(),
+    )
+
+    assert diagnostics["reason"] == "no_runnable_queued_jobs"
+    assert diagnostics["queued_jobs"] == 0
+    assert diagnostics["failed_jobs"] == 1
+    assert diagnostics["pending_reviews"] == 1
+    assert "./scripts/pska digest-schedule --owner-user-id user_primary --force" in diagnostics["next_actions"]
 
 
 def test_cli_accepts_digest_schedule() -> None:
@@ -632,6 +708,25 @@ def test_cli_accepts_digest_schedule() -> None:
     assert args.max_jobs_per_window == 2
     assert args.force is True
     assert args.reason == "new import"
+
+
+def test_cli_accepts_seed_review_candidates() -> None:
+    args = build_parser().parse_args(
+        [
+            "seed-review-candidates",
+            "--owner-user-id",
+            "user_primary",
+            "--limit",
+            "3",
+            "--confidence",
+            "0.52",
+        ]
+    )
+
+    assert args.command == "seed-review-candidates"
+    assert args.owner_user_id == "user_primary"
+    assert args.limit == 3
+    assert args.confidence == 0.52
 
 
 def test_cli_accepts_digest_scheduler() -> None:
@@ -899,7 +994,9 @@ def test_daily_status_payload_is_deterministic_and_fastreact_optional(monkeypatc
     assert payload["pending_reviews"]["total_matching"] == 1
     assert payload["failed_jobs"]["count"] == 1
     assert "./scripts/pska review-list --status pending --owner-user-id user_primary --summary" in payload["recommended_commands"]
+    assert "./scripts/pska review-approve <review_item_id> --apply" in payload["recommended_commands"]
     assert "./scripts/pska jobs list --status failed" in payload["recommended_commands"]
+    assert "./scripts/pska job-status --job-id <job_id>" in payload["recommended_commands"]
 
 
 def test_daily_briefing_payload_includes_deterministic_next_actions(monkeypatch) -> None:

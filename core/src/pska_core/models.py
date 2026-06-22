@@ -131,6 +131,49 @@ class ConnectorState:
 
 
 @dataclass(slots=True)
+class KnowledgeSource:
+    knowledge_source_id: str
+    owner_user_id: str
+    name: str
+    source_type: str
+    uri: str
+    mode: str = "manual"
+    status: str = "authorized"
+    connector_id: str = "files"
+    space_id: str = "private_primary"
+    visibility: Visibility = Visibility.PRIVATE
+    visible_team_ids: list[str] = field(default_factory=list)
+    permission_scope: dict[str, Any] = field(default_factory=dict)
+    config: dict[str, Any] = field(default_factory=dict)
+    last_sync_at: datetime | None = None
+    last_error: str | None = None
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
+
+
+@dataclass(slots=True)
+class SyncRun:
+    sync_run_id: str
+    knowledge_source_id: str
+    owner_user_id: str
+    connector_id: str
+    status: str
+    started_at: datetime
+    finished_at: datetime | None = None
+    scanned: int = 0
+    ingested: int = 0
+    new_files: int = 0
+    changed_files: int = 0
+    unchanged_files: int = 0
+    moved_files: int = 0
+    missing_files: int = 0
+    skipped: int = 0
+    failed: int = 0
+    error: str | None = None
+    report: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
 class Document:
     document_id: str
     source_item_id: str
@@ -200,6 +243,10 @@ class DiscoveryItem:
     evidence: list[dict[str, Any]]
     confidence: float
     producer: str
+    fingerprint: str = ""
+    evidence_snapshot: list[dict[str, Any]] = field(default_factory=list)
+    discovery_score: float = 0.0
+    quality_signals: dict[str, Any] = field(default_factory=dict)
     status: str = "new"
     created_at: datetime = field(default_factory=utc_now)
 

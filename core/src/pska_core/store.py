@@ -16,10 +16,12 @@ from pska_core.models import (
     Job,
     JobEvent,
     AuditEvent,
+    KnowledgeSource,
     OfflineIndexState,
     ReviewItem,
     SourceRef,
     SourceItem,
+    SyncRun,
     TeamMembership,
     User,
     UserProfileCard,
@@ -34,6 +36,17 @@ class KnowledgeStore(Protocol):
     def get_user(self, user_id: str) -> User: ...
     def team_memberships_for_user(self, user_id: str) -> list[TeamMembership]: ...
     def upsert_source_item(self, item: SourceItem) -> SourceItem: ...
+    def upsert_knowledge_source(self, source: KnowledgeSource) -> KnowledgeSource: ...
+    def get_knowledge_source(self, knowledge_source_id: str) -> KnowledgeSource: ...
+    def list_knowledge_sources(
+        self,
+        *,
+        owner_user_id: str | None = None,
+        source_type: str | None = None,
+        status: str | None = None,
+    ) -> list[KnowledgeSource]: ...
+    def add_sync_run(self, run: SyncRun) -> SyncRun: ...
+    def list_sync_runs(self, *, knowledge_source_id: str | None = None, owner_user_id: str | None = None, limit: int = 50) -> list[SyncRun]: ...
     def upsert_connector_state(self, state: ConnectorState) -> ConnectorState: ...
     def get_connector_state(self, connector_state_id: str) -> ConnectorState: ...
     def list_connector_states(self, *, owner_user_id: str | None = None, connector_id: str | None = None) -> list[ConnectorState]: ...
@@ -122,6 +135,7 @@ class KnowledgeStore(Protocol):
         limit: int = 50,
     ) -> list[WorkspaceActivityEvent]: ...
     def upsert_discovery_item(self, item: DiscoveryItem) -> DiscoveryItem: ...
+    def update_discovery_item_status(self, discovery_id: str, status: str) -> DiscoveryItem: ...
     def list_discovery_items(
         self,
         *,
@@ -158,6 +172,8 @@ class InMemoryKnowledgeStore:
         self.team_memberships: list[TeamMembership] = []
         self.source_items: dict[str, SourceItem] = {}
         self.source_items_by_hash: dict[str, str] = {}
+        self.knowledge_sources: dict[str, KnowledgeSource] = {}
+        self.sync_runs: dict[str, SyncRun] = {}
         self.connector_states: dict[str, ConnectorState] = {}
         self.documents: dict[str, Document] = {}
         self.chunks: dict[str, Chunk] = {}
@@ -193,6 +209,51 @@ class InMemoryKnowledgeStore:
         self.source_items[item.source_item_id] = item
         self.source_items_by_hash[item.content_hash] = item.source_item_id
         return item
+
+    def upsert_knowledge_source(self, source: KnowledgeSource) -> KnowledgeSource:
+        source.updated_at = utc_now()
+        if source.knowledge_source_id in self.knowledge_sources:
+            existing = self.knowledge_sources[source.knowledge_source_id]
+            source.created_at = existing.created_at
+        self.knowledge_sources[source.knowledge_source_id] = source
+        return source
+
+    def get_knowledge_source(self, knowledge_source_id: str) -> KnowledgeSource:
+        return self.knowledge_sources[knowledge_source_id]
+
+    def list_knowledge_sources(
+        self,
+        *,
+        owner_user_id: str | None = None,
+        source_type: str | None = None,
+        status: str | None = None,
+    ) -> list[KnowledgeSource]:
+        sources = list(self.knowledge_sources.values())
+        if owner_user_id:
+            sources = [source for source in sources if source.owner_user_id == owner_user_id]
+        if source_type:
+            sources = [source for source in sources if source.source_type == source_type]
+        if status:
+            sources = [source for source in sources if source.status == status]
+        return sorted(sources, key=lambda source: (source.updated_at, source.name), reverse=True)
+
+    def add_sync_run(self, run: SyncRun) -> SyncRun:
+        self.sync_runs[run.sync_run_id] = run
+        source = self.knowledge_sources.get(run.knowledge_source_id)
+        if source:
+            source.last_sync_at = run.finished_at or run.started_at
+            source.last_error = run.error
+            source.status = "failed" if run.status == "failed" else "indexed"
+            source.updated_at = utc_now()
+        return run
+
+    def list_sync_runs(self, *, knowledge_source_id: str | None = None, owner_user_id: str | None = None, limit: int = 50) -> list[SyncRun]:
+        runs = list(self.sync_runs.values())
+        if knowledge_source_id:
+            runs = [run for run in runs if run.knowledge_source_id == knowledge_source_id]
+        if owner_user_id:
+            runs = [run for run in runs if run.owner_user_id == owner_user_id]
+        return sorted(runs, key=lambda run: run.started_at, reverse=True)[:limit]
 
     def upsert_connector_state(self, state: ConnectorState) -> ConnectorState:
         state.updated_at = utc_now()
@@ -470,9 +531,34 @@ class InMemoryKnowledgeStore:
 
     def upsert_discovery_item(self, item: DiscoveryItem) -> DiscoveryItem:
         existing = self.discovery_items.get(item.discovery_id)
+        if existing is None and item.fingerprint:
+            existing = next(
+                (
+                    candidate
+                    for candidate in self.discovery_items.values()
+                    if candidate.owner_user_id == item.owner_user_id
+                    and candidate.producer == item.producer
+                    and candidate.fingerprint == item.fingerprint
+                ),
+                None,
+            )
         if existing:
+            existing.discovery_type = item.discovery_type
+            existing.title = item.title
+            existing.evidence = item.evidence
+            existing.confidence = item.confidence
+            existing.producer = item.producer
+            existing.fingerprint = item.fingerprint
+            existing.evidence_snapshot = item.evidence_snapshot
+            existing.discovery_score = item.discovery_score
+            existing.quality_signals = item.quality_signals
             return existing
         self.discovery_items[item.discovery_id] = item
+        return item
+
+    def update_discovery_item_status(self, discovery_id: str, status: str) -> DiscoveryItem:
+        item = self.discovery_items[discovery_id]
+        item.status = status
         return item
 
     def list_discovery_items(
@@ -488,7 +574,7 @@ class InMemoryKnowledgeStore:
             items = [item for item in items if item.status == status]
         if since is not None:
             items = [item for item in items if item.created_at >= since]
-        items = sorted(items, key=lambda item: (item.created_at, item.discovery_id), reverse=True)
+        items = sorted(items, key=lambda item: (item.discovery_score, item.created_at, item.discovery_id), reverse=True)
         return items[: max(0, limit)]
 
     def list_chunks_for_sources(self, source_item_ids: set[str]) -> list[Chunk]:

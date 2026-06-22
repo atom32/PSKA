@@ -16,7 +16,7 @@ from pska_core.agentic_service import AgenticServiceError, build_agentic_service
 from pska_core.auth import AuthError, RequestContext, authenticate_headers, context_from_headers, service_token_required
 from pska_core.candidates import CandidateWriteService
 from pska_core.connectors import connector_state_from_mapping, connector_record_to_payload
-from pska_core.discovery import DiscoveryService
+from pska_core.discovery import DISCOVERY_TODAY_SCORE_THRESHOLD, DiscoveryService
 from pska_core.embeddings import EmbeddingConfig, build_embedding_provider
 from pska_core.extraction import ExtractionService
 from pska_core.fastreact_protocol import compact_trace_for_context
@@ -97,6 +97,8 @@ class PSKAApi:
             "review_items",
             "jobs",
             "connector_states",
+            "knowledge_sources",
+            "sync_runs",
             "offline_index_states",
         ]
         counts: dict[str, int] = {}
@@ -299,6 +301,30 @@ class PSKAApi:
         reason = str(payload.get("reason") or "")
         review_item = self.reviews.apply(review_item_id, actor_user_id=actor_user_id, reason=reason)
         return {"review_item": to_jsonable(review_item)}
+
+    def accept_discovery_item(self, discovery_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        actor_user_id = str(payload.get("actor_user_id") or "user_primary")
+        reason = str(payload.get("reason") or "accepted from workspace discovery")
+        discovery = self.store.update_discovery_item_status(discovery_id, "accepted")
+        review_item = _linked_review_item(self.store, discovery)
+        review_result = None
+        if review_item and review_item.status == "pending":
+            review_result = self.reviews.approve(review_item.review_item_id, actor_user_id=actor_user_id, reason=reason)
+        return {"discovery": to_jsonable(discovery), "review_item": to_jsonable(review_result) if review_result else None}
+
+    def ignore_discovery_item(self, discovery_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        actor_user_id = str(payload.get("actor_user_id") or "user_primary")
+        reason = str(payload.get("reason") or "ignored from workspace discovery")
+        discovery = self.store.update_discovery_item_status(discovery_id, "ignored")
+        review_item = _linked_review_item(self.store, discovery)
+        review_result = None
+        if review_item and review_item.status == "pending":
+            review_result = self.reviews.reject(review_item.review_item_id, actor_user_id=actor_user_id, reason=reason)
+        return {"discovery": to_jsonable(discovery), "review_item": to_jsonable(review_result) if review_result else None}
+
+    def snooze_discovery_item(self, discovery_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        discovery = self.store.update_discovery_item_status(discovery_id, "snoozed")
+        return {"discovery": to_jsonable(discovery), "review_item": None}
 
     def submit_job(self, payload: dict[str, Any]) -> dict[str, Any]:
         job = self.jobs.submit(
@@ -643,6 +669,7 @@ class PSKAApi:
         *,
         owner_user_id: str | None = None,
         limit: int = 50,
+        min_score: float = DISCOVERY_TODAY_SCORE_THRESHOLD,
         context: RequestContext | None = None,
     ) -> dict[str, Any]:
         owner_user_id = _workspace_owner_user_id(context, owner_user_id)
@@ -652,14 +679,19 @@ class PSKAApi:
             owner_user_id=owner_user_id,
             status="new",
             since=since,
-            limit=max(1, min(limit, 100)),
+            limit=100,
         )
+        threshold = max(0.0, min(float(min_score), 1.0))
+        filtered = [item for item in items if float(getattr(item, "discovery_score", 0.0) or 0.0) >= threshold]
+        filtered = filtered[: max(1, min(limit, 100))]
         return {
             "ok": True,
             "owner_user_id": owner_user_id,
             "window_days": 7,
-            "discoveries": [_discovery_item_payload(item) for item in items],
-            "count": len(items),
+            "min_score": threshold,
+            "discoveries": [_discovery_item_payload(item) for item in filtered],
+            "count": len(filtered),
+            "total_new": len(items),
         }
 
     def record_workspace_activity(self, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
@@ -927,10 +959,12 @@ class PSKAApi:
         limit = max(1, limit)
         source_items = self.store.list_source_items()
         connector_states = self.store.list_connector_states(owner_user_id=owner_user_id)
+        knowledge_sources = self.store.list_knowledge_sources(owner_user_id=owner_user_id)
         metrics = _connector_metrics(source_items, connector_states)
         recent_sources = _console_recent_sources(source_items, owner_user_id=owner_user_id, limit=limit)
         states = [_console_connector_state(state) for state in connector_states[:limit]]
-        files_roots = _console_files_roots(states)
+        source_cards = [_console_knowledge_source(source, self.store.list_sync_runs(knowledge_source_id=source.knowledge_source_id, limit=1)) for source in knowledge_sources[:limit]]
+        files_roots = _console_knowledge_source_roots(source_cards) or _console_files_roots(states)
         return {
             "ok": True,
             "owner_user_id": owner_user_id,
@@ -941,6 +975,10 @@ class PSKAApi:
                 "chunks": self.store.count_table("chunks"),
             },
             "source_channels": metrics.get("source_channels") or {},
+            "knowledge_sources": {
+                "source_count": len(knowledge_sources),
+                "sources": source_cards,
+            },
             "recent_sources": recent_sources,
             "connector_state": {
                 "state_count": len(connector_states),
@@ -954,12 +992,12 @@ class PSKAApi:
                 "recommended_commands": _console_files_commands(files_roots),
             },
             "recommended_commands": [
-                "./scripts/pska connector-state list --owner-user-id user_primary",
+                "./scripts/pska knowledge-source list --owner-user-id user_primary",
                 *_console_files_commands(files_roots),
             ],
             "notes": [
-                "This page is read-only and does not add connector scope.",
-                "Authorize new files roots explicitly with files-sync or files-scan before expecting them here.",
+                "Knowledge Sources are the user-facing source of truth.",
+                "Connector state is adapter runtime/debug metadata.",
             ],
         }
 
@@ -1243,6 +1281,7 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
                 self.api.workspace_discoveries(
                     owner_user_id=_first(query.get("owner_user_id")),
                     limit=_int_first(query.get("limit")) or 50,
+                    min_score=_float_first(query.get("min_score"), DISCOVERY_TODAY_SCORE_THRESHOLD),
                     context=context,
                 ),
             )
@@ -1324,6 +1363,15 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
                 return self._json(200, self.api.workspace_writer_suggest(payload, context=context))
             if path == "/workspace/activity":
                 return self._json(200, self.api.record_workspace_activity(payload, context=context))
+            if path.startswith("/workspace/discoveries/") and path.endswith("/accept"):
+                discovery_id = path.removeprefix("/workspace/discoveries/").removesuffix("/accept")
+                return self._json(200, self.api.accept_discovery_item(discovery_id, payload))
+            if path.startswith("/workspace/discoveries/") and path.endswith("/ignore"):
+                discovery_id = path.removeprefix("/workspace/discoveries/").removesuffix("/ignore")
+                return self._json(200, self.api.ignore_discovery_item(discovery_id, payload))
+            if path.startswith("/workspace/discoveries/") and path.endswith("/snooze"):
+                discovery_id = path.removeprefix("/workspace/discoveries/").removesuffix("/snooze")
+                return self._json(200, self.api.snooze_discovery_item(discovery_id, payload))
             if path == "/extract/all":
                 return self._json(200, self.api.extract_all(payload))
             if path == "/profile/update-proposals":
@@ -2128,13 +2176,35 @@ def _discovery_item_payload(item) -> dict[str, Any]:
         "title": item.title,
         "evidence": evidence,
         "confidence": item.confidence,
+        "discovery_score": getattr(item, "discovery_score", 0.0),
+        "quality_signals": to_jsonable(getattr(item, "quality_signals", {})),
+        "fingerprint": getattr(item, "fingerprint", ""),
+        "evidence_snapshot": to_jsonable(getattr(item, "evidence_snapshot", evidence)),
         "producer": item.producer,
         "created_at": item.created_at.isoformat(),
         "status": item.status,
         "label": _discovery_type_label(discovery_type),
         "summary": _discovery_summary(discovery_type, evidence),
         "evidence_count": len(evidence),
+        "review_item_id": _discovery_review_item_id(evidence),
     }
+
+
+def _linked_review_item(store, discovery_item):
+    review_item_id = _discovery_review_item_id(to_jsonable(discovery_item.evidence))
+    if not review_item_id:
+        return None
+    try:
+        return store.get_review_item(review_item_id)
+    except KeyError:
+        return None
+
+
+def _discovery_review_item_id(evidence: list[dict[str, Any]]) -> str | None:
+    for item in evidence:
+        if isinstance(item, dict) and item.get("review_item_id"):
+            return str(item["review_item_id"])
+    return None
 
 
 def _discovery_type_label(discovery_type: str) -> str:
@@ -2236,6 +2306,7 @@ def _today_review_item(item: dict[str, Any]) -> dict[str, Any]:
         "recommended_actions": item.get("recommended_actions") or [],
         "source_ref_status": item.get("source_ref_status"),
         "evidence_count": len(source_refs),
+        "source_refs": source_refs,
         "created_at": item.get("created_at"),
         "can_apply_now": bool(item.get("can_apply_now")),
         "apply_ready": bool(item.get("apply_ready")),
@@ -2499,6 +2570,29 @@ def _console_connector_state(state: Any) -> dict[str, Any]:
     }
 
 
+def _console_knowledge_source(source: Any, sync_runs: list[Any]) -> dict[str, Any]:
+    latest = sync_runs[0] if sync_runs else None
+    config = getattr(source, "config", {}) or {}
+    permission_scope = getattr(source, "permission_scope", {}) or {}
+    return {
+        "knowledge_source_id": getattr(source, "knowledge_source_id", None),
+        "name": getattr(source, "name", None),
+        "source_type": getattr(source, "source_type", None),
+        "uri": getattr(source, "uri", None),
+        "mode": getattr(source, "mode", None),
+        "status": getattr(source, "status", None),
+        "connector_id": getattr(source, "connector_id", None),
+        "path": config.get("path") or permission_scope.get("path"),
+        "last_sync_at": getattr(source, "last_sync_at", None),
+        "last_error": getattr(source, "last_error", None),
+        "last_sync_run": to_jsonable(latest) if latest else None,
+    }
+
+
+def _console_knowledge_source_roots(sources: list[dict[str, Any]]) -> list[str]:
+    return list(dict.fromkeys([str(source.get("path")) for source in sources if source.get("source_type") == "folder" and source.get("path")]))
+
+
 def _console_files_roots(states: list[dict[str, Any]]) -> list[str]:
     roots: list[str] = []
     for state in states:
@@ -2588,6 +2682,16 @@ def _int_first(values: list[str] | None) -> int | None:
         return int(value)
     except ValueError:
         return None
+
+
+def _float_first(values: list[str] | None, default: float) -> float:
+    value = _first(values)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        return default
 
 
 def _cursor_offset(value: str | int | None) -> int:
