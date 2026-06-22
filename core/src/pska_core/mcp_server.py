@@ -8,7 +8,8 @@ from typing import Any
 from pska_core.acl import ACLService
 from pska_core.auth import RequestContext
 from pska_core.candidates import CandidateWriteService
-from pska_core.embeddings import EmbeddingConfig, build_embedding_provider
+from pska_core.config import DatabaseConfig, PSKAConfig
+from pska_core.embeddings import build_embedding_provider
 from pska_core.extraction import ExtractionService
 from pska_core.ingest import IngestService
 from pska_core.models import ChannelIngestPayload
@@ -171,17 +172,22 @@ TOOLS = [
 
 
 def main() -> int:
-    server = MCPServer(os.environ.get("PSKA_DATABASE_URL", "postgresql:///pska"))
+    config = PSKAConfig.load(os.getenv("PSKA_CONFIG") or None)
+    config.apply_to_env()
+    server = MCPServer(config.database.url, config=config)
     return server.run()
 
 
 class MCPServer:
-    def __init__(self, database_url: str, store: Any | None = None, llm: Any | None = None) -> None:
+    def __init__(self, database_url: str, store: Any | None = None, llm: Any | None = None, config: PSKAConfig | None = None) -> None:
+        if config is None:
+            config = PSKAConfig.from_env(PSKAConfig(database=DatabaseConfig(url=database_url)))
+        self.config = config
         self.store = store or PostgresKnowledgeStore(database_url)
-        embedding_provider = build_embedding_provider(EmbeddingConfig.from_env())
+        embedding_provider = build_embedding_provider(config.embedding_runtime_config())
         self.retrieval = RetrievalService(self.store, ACLService(self.store), embedding_provider=embedding_provider)
-        self.ingest = IngestService(self.store, embedding_provider=embedding_provider)
-        self.extraction = ExtractionService(self.store, llm=llm)
+        self.ingest = IngestService(self.store, embedding_provider=embedding_provider, **config.ingest_kwargs())
+        self.extraction = ExtractionService(self.store, llm=llm, llm_config=config.llm)
         self.candidates = CandidateWriteService(self.store)
 
     def run(self) -> int:

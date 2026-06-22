@@ -125,3 +125,62 @@ def test_pska_config_loads_generic_agentic_service(tmp_path: Path, monkeypatch) 
     assert config.agentic_service.url == "http://127.0.0.1:9010"
     assert config.agentic_service.service_token == "agent-token"
     assert config.agentic_service.timeout_seconds == 12
+
+
+def test_pska_config_builds_runtime_configs(tmp_path: Path) -> None:
+    config = PSKAConfig.from_dict(
+        {
+            "fastreact": {"url": "http://127.0.0.1:9000", "service_token": "fast-token", "timeout_seconds": 9},
+            "agentic_service": {"url": "http://127.0.0.1:9010", "service_token": "agent-token", "timeout_seconds": 12},
+            "embedding": {"provider": "bge-m3", "model": "custom-bge", "dimensions": 768, "batch_size": 8},
+            "ingest": {"chunk_size": 512, "chunk_overlap": 32},
+        }
+    )
+
+    fastreact = config.fastreact_runtime_config()
+    agentic = config.agentic_service_runtime_config()
+    embedding = config.embedding_runtime_config()
+
+    assert fastreact.url == "http://127.0.0.1:9000"
+    assert fastreact.service_token == "fast-token"
+    assert fastreact.timeout_seconds == 9
+    assert agentic.url == "http://127.0.0.1:9010"
+    assert agentic.service_token == "agent-token"
+    assert agentic.timeout_seconds == 12
+    assert embedding.provider == "bge-m3"
+    assert embedding.model == "custom-bge"
+    assert embedding.dimensions == 768
+    assert embedding.batch_size == 8
+    assert config.ingest_kwargs() == {"chunk_size": 512, "chunk_overlap": 32}
+
+
+def test_pska_config_files_env_round_trip(tmp_path: Path, monkeypatch) -> None:
+    notes = tmp_path / "notes"
+    docs = tmp_path / "docs"
+    config = PSKAConfig.from_dict(
+        {
+            "files": {
+                "roots": [str(notes), str(docs)],
+                "ignore": ["*.tmp", "*.bak"],
+                "max_bytes": 777,
+                "owner_user_id": "user_primary",
+                "space_id": "private_primary",
+                "visibility": "private",
+            }
+        }
+    )
+    monkeypatch.delenv("PSKA_FILES_ROOTS", raising=False)
+    monkeypatch.delenv("PSKA_FILES_IGNORE", raising=False)
+    monkeypatch.delenv("PSKA_FILES_MAX_BYTES", raising=False)
+
+    config.apply_to_env()
+    reloaded = PSKAConfig.from_env(PSKAConfig.from_dict({}))
+
+    assert os.environ["PSKA_FILES_ROOTS"] == os.pathsep.join([str(notes), str(docs)])
+    assert os.environ["PSKA_FILES_IGNORE"] == os.pathsep.join(["*.tmp", "*.bak"])
+    assert reloaded.files.roots == (notes, docs)
+    assert reloaded.files.ignore == ("*.tmp", "*.bak")
+    assert reloaded.files.max_bytes == 777
+    monkeypatch.delenv("PSKA_FILES_ROOTS", raising=False)
+    monkeypatch.delenv("PSKA_FILES_IGNORE", raising=False)
+    monkeypatch.delenv("PSKA_FILES_MAX_BYTES", raising=False)

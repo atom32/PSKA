@@ -420,6 +420,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     workspace_root = _resolve_workspace_root(args, config)
     config.apply_to_env()
     os.environ["PSKA_WORKSPACE_ROOT"] = str(workspace_root)
+    args.pska_config = config
     args.database_url = args.database_url or config.database.url
     _apply_workspace_defaults(args, workspace_root)
     if args.command == "service-check":
@@ -459,7 +460,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "extract-all":
         return extract_all(args)
     if args.command == "serve":
-        serve(args.host or config.service.host, args.port or config.service.port, args.database_url)
+        serve(args.host or config.service.host, args.port or config.service.port, args.database_url, config=config)
         return 0
     if args.command == "local-daemon":
         return local_daemon(args, config)
@@ -655,8 +656,11 @@ def search(args: argparse.Namespace) -> int:
 def agentic_search(args: argparse.Namespace) -> int:
     store = PostgresKnowledgeStore(args.database_url)
     user = store.get_user(args.user_id)
+    pska_config = getattr(args, "pska_config", None)
     try:
-        response = build_agentic_service_client().search(
+        response = build_agentic_service_client(
+            pska_config.agentic_service_runtime_config() if pska_config else None
+        ).search(
             args.query,
             user,
             represented_user_id=args.represented_user_id,
@@ -1154,12 +1158,14 @@ def daily_status(args: argparse.Namespace) -> int:
 
 
 def daily_briefing(args: argparse.Namespace) -> int:
+    pska_config = getattr(args, "pska_config", None)
     payload = _daily_briefing_payload(
         args.database_url,
         owner_user_id=args.owner_user_id,
         limit=args.limit,
         narrative=args.narrative,
         narrative_timeout_seconds=args.narrative_timeout_seconds,
+        pska_config=pska_config,
     )
     print(dumps(payload))
     return 0
@@ -2279,6 +2285,7 @@ def _daily_briefing_payload(
     narrative: bool = False,
     narrative_timeout_seconds: float | None = None,
     fastreact_client=None,
+    pska_config: PSKAConfig | None = None,
 ) -> dict[str, Any]:
     limit = max(0, limit)
     status = _mvp_status_payload(database_url)
@@ -2334,6 +2341,7 @@ def _daily_briefing_payload(
             owner_user_id=owner_user_id,
             timeout_seconds=narrative_timeout_seconds,
             fastreact_client=fastreact_client,
+            pska_config=pska_config,
         )
     return payload
 
@@ -2670,11 +2678,12 @@ def _daily_briefing_narrative(
     owner_user_id: str,
     timeout_seconds: float | None = None,
     fastreact_client=None,
+    pska_config: PSKAConfig | None = None,
 ) -> dict[str, Any]:
     source_refs = _briefing_source_refs(briefing)
     trace_summary: dict[str, Any] = {}
     try:
-        client = fastreact_client or _fastreact_client(timeout_seconds=timeout_seconds)
+        client = fastreact_client or _fastreact_client(timeout_seconds=timeout_seconds, pska_config=pska_config)
         response = client.chat_completion(
             messages=[
                 {
@@ -2722,8 +2731,8 @@ def _daily_briefing_narrative(
         }
 
 
-def _fastreact_client(*, timeout_seconds: float | None = None) -> HttpFastreactClient:
-    config = FastreactConfig.from_env()
+def _fastreact_client(*, timeout_seconds: float | None = None, pska_config: PSKAConfig | None = None) -> HttpFastreactClient:
+    config = pska_config.fastreact_runtime_config() if pska_config else FastreactConfig.from_env()
     if timeout_seconds is not None:
         config = FastreactConfig(
             url=config.url,

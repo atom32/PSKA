@@ -4,9 +4,14 @@ from dataclasses import dataclass, field
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from pska_core.keyfile import read_api_key_file
+
+if TYPE_CHECKING:
+    from pska_core.agentic_service import AgenticServiceConfig
+    from pska_core.embeddings import EmbeddingConfig
+    from pska_core.fastreact_client import FastreactConfig as RuntimeFastreactConfig
 
 
 DEFAULT_DATABASE_URL = "postgresql:///pska"
@@ -290,7 +295,8 @@ class PSKAConfig:
             files=FilesConfig(
                 roots=tuple(expand_path(root) for root in os.getenv("PSKA_FILES_ROOTS", "").split(os.pathsep) if root)
                 or base.files.roots,
-                ignore=base.files.ignore,
+                ignore=tuple(item for item in os.getenv("PSKA_FILES_IGNORE", "").split(os.pathsep) if item)
+                or base.files.ignore,
                 max_bytes=int(os.getenv("PSKA_FILES_MAX_BYTES", str(base.files.max_bytes))),
                 owner_user_id=os.getenv("PSKA_FILES_OWNER_USER_ID", base.files.owner_user_id),
                 space_id=os.getenv("PSKA_FILES_SPACE_ID", base.files.space_id),
@@ -336,6 +342,49 @@ class PSKAConfig:
         _setdefault("PSKA_INGEST_CHUNK_SIZE", str(self.ingest.chunk_size))
         _setdefault("PSKA_INGEST_CHUNK_OVERLAP", str(self.ingest.chunk_overlap))
         _setdefault("PSKA_WORKSPACE_ROOT", str(self.workspace.root))
+        if self.files.roots:
+            _setdefault("PSKA_FILES_ROOTS", os.pathsep.join(str(root) for root in self.files.roots))
+        if self.files.ignore:
+            _setdefault("PSKA_FILES_IGNORE", os.pathsep.join(self.files.ignore))
+        _setdefault("PSKA_FILES_MAX_BYTES", str(self.files.max_bytes))
+        _setdefault("PSKA_FILES_OWNER_USER_ID", self.files.owner_user_id)
+        _setdefault("PSKA_FILES_SPACE_ID", self.files.space_id)
+        _setdefault("PSKA_FILES_VISIBILITY", self.files.visibility)
+
+    def embedding_runtime_config(self, *, default_provider: str | None = None) -> "EmbeddingConfig":
+        from pska_core.embeddings import BGE_M3_DIMENSIONS, BGE_M3_MODEL, EmbeddingConfig
+
+        return EmbeddingConfig(
+            provider=(default_provider if self.embedding.provider in {"", "disabled"} and default_provider is not None else self.embedding.provider),
+            model=self.embedding.model or BGE_M3_MODEL,
+            dimensions=self.embedding.dimensions or BGE_M3_DIMENSIONS,
+            batch_size=self.embedding.batch_size or 16,
+        )
+
+    def fastreact_runtime_config(self) -> "RuntimeFastreactConfig":
+        from pska_core.fastreact_client import FastreactConfig as RuntimeFastreactConfig
+
+        return RuntimeFastreactConfig(
+            url=self.fastreact.url.rstrip("/"),
+            service_token=self.fastreact.service_token,
+            timeout_seconds=float(self.fastreact.timeout_seconds or 30.0),
+        )
+
+    def agentic_service_runtime_config(self) -> "AgenticServiceConfig":
+        from pska_core.agentic_service import AgenticServiceConfig
+
+        return AgenticServiceConfig(
+            provider=self.agentic_service.provider,
+            url=self.agentic_service.url.rstrip("/"),
+            service_token=self.agentic_service.service_token,
+            timeout_seconds=float(self.agentic_service.timeout_seconds or 30.0),
+        )
+
+    def ingest_kwargs(self) -> dict[str, int]:
+        return {
+            "chunk_size": self.ingest.chunk_size,
+            "chunk_overlap": self.ingest.chunk_overlap,
+        }
 
 
 def _find_config_path(config_path: str | Path | None) -> Path | None:

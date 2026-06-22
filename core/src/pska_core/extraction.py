@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from uuid import uuid5, NAMESPACE_URL
 
+from pska_core.config import LLMConfig
 from pska_core.enums import Directionality, ReviewType, Visibility
 from pska_core.hypergraph import HypergraphService
 from pska_core.llm import LLMClient, LLMResponseError, OpenAILLMClient, record_recovery_event
@@ -22,10 +23,11 @@ class ExtractionReport:
 class ExtractionService:
     """LLM-required extractor for entities, hyperedges, and review items."""
 
-    def __init__(self, store: KnowledgeStore, llm: LLMClient | None = None) -> None:
+    def __init__(self, store: KnowledgeStore, llm: LLMClient | None = None, llm_config: LLMConfig | None = None) -> None:
         self.store = store
         self.graph = HypergraphService(store)
         self.llm = llm
+        self.llm_config = llm_config
 
     def extract_source_item(self, item: SourceItem) -> ExtractionReport:
         report = ExtractionReport(source_item_id=item.source_item_id)
@@ -121,7 +123,7 @@ for any review item grounded in specific messages.
 Document text:
 {item.content_text[:12000]}
 """
-        llm = self.llm or OpenAILLMClient.from_env()
+        llm = self.llm or (OpenAILLMClient.from_config(self.llm_config) if self.llm_config else OpenAILLMClient.from_env())
         raw = llm.complete_json(system=system, prompt=prompt, temperature=0.0)
         try:
             return self._validate_extraction(raw)

@@ -9,6 +9,7 @@ from typing import Any, Protocol
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
+from pska_core.config import LLMConfig
 from pska_core.keyfile import read_api_key_file
 
 
@@ -54,12 +55,24 @@ class OpenAILLMClient:
 
     @classmethod
     def from_env(cls) -> "OpenAILLMClient":
+        return cls.from_config(
+            LLMConfig(
+                api_key_file=Path(os.getenv("PSKA_LLM_API_KEY_FILE")).expanduser()
+                if os.getenv("PSKA_LLM_API_KEY_FILE")
+                else None,
+                model=os.getenv("PSKA_LLM_MODEL") or None,
+                base_url=os.getenv("PSKA_LLM_BASE_URL") or None,
+                timeout_seconds=int(os.getenv("PSKA_LLM_TIMEOUT_SECONDS", "60")),
+            )
+        )
+
+    @classmethod
+    def from_config(cls, config: LLMConfig) -> "OpenAILLMClient":
         api_key = os.getenv("PSKA_LLM_API_KEY")
         file_model = ""
         file_base_url = ""
-        key_file = os.getenv("PSKA_LLM_API_KEY_FILE")
-        if not api_key and key_file:
-            key_config = read_api_key_file(Path(key_file).expanduser())
+        if not api_key and config.api_key_file:
+            key_config = read_api_key_file(config.api_key_file)
             api_key = key_config.api_key
             file_model = key_config.model
             file_base_url = key_config.base_url
@@ -72,9 +85,9 @@ class OpenAILLMClient:
             )
         return cls(
             api_key=api_key,
-            model=os.getenv("PSKA_LLM_MODEL") or file_model or "gpt-4.1-mini",
-            base_url=(os.getenv("PSKA_LLM_BASE_URL") or file_base_url or "https://api.openai.com/v1").rstrip("/"),
-            timeout_seconds=int(os.getenv("PSKA_LLM_TIMEOUT_SECONDS", "60")),
+            model=config.model or file_model or "gpt-4.1-mini",
+            base_url=(config.base_url or file_base_url or "https://api.openai.com/v1").rstrip("/"),
+            timeout_seconds=int(config.timeout_seconds or 60),
         )
 
     def complete_json(self, *, system: str, prompt: str, temperature: float = 0.0) -> dict[str, Any]:

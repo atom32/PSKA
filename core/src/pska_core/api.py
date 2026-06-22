@@ -15,9 +15,10 @@ from pska_core.agent_capture import capture_agent_conversation
 from pska_core.agentic_service import AgenticServiceError, build_agentic_service_client
 from pska_core.auth import AuthError, RequestContext, authenticate_headers, context_from_headers, service_token_required
 from pska_core.candidates import CandidateWriteService
+from pska_core.config import DEFAULT_DATABASE_URL, DatabaseConfig, PSKAConfig
 from pska_core.connectors import connector_state_from_mapping, connector_record_to_payload
 from pska_core.discovery import DISCOVERY_TODAY_SCORE_THRESHOLD, DiscoveryService
-from pska_core.embeddings import EmbeddingConfig, build_embedding_provider
+from pska_core.embeddings import build_embedding_provider
 from pska_core.extraction import ExtractionService
 from pska_core.fastreact_protocol import compact_trace_for_context
 from pska_core.ingest import IngestService
@@ -33,33 +34,42 @@ from pska_core.store_postgres import PostgresKnowledgeStore
 
 
 class PSKAApi:
-    def __init__(self, database_url: str) -> None:
-        self.store = PostgresKnowledgeStore(database_url)
-        embedding_provider = build_embedding_provider(EmbeddingConfig.from_env())
+    def __init__(self, database_url: str | None = None, *, config: PSKAConfig | None = None) -> None:
+        if config is None:
+            base = PSKAConfig(database=DatabaseConfig(url=database_url or os.environ.get("PSKA_DATABASE_URL", "postgresql:///pska")))
+            config = PSKAConfig.from_env(base)
+        config.apply_to_env()
+        self.config = config
+        self.store = PostgresKnowledgeStore(database_url or config.database.url)
+        embedding_provider = build_embedding_provider(config.embedding_runtime_config())
         self.retrieval = RetrievalService(self.store, ACLService(self.store), embedding_provider=embedding_provider)
-        self.agentic_service = build_agentic_service_client()
-        self.ingest = IngestService(self.store, embedding_provider=embedding_provider)
-        self.extraction = ExtractionService(self.store)
+        self.agentic_service = build_agentic_service_client(config.agentic_service_runtime_config())
+        self.ingest = IngestService(self.store, embedding_provider=embedding_provider, **config.ingest_kwargs())
+        self.extraction = ExtractionService(self.store, llm_config=config.llm)
         self.jobs = JobService(self.store)
         self.reviews = ReviewService(self.store)
         self.memory = MemoryService(self.store)
         self.candidates = CandidateWriteService(self.store)
-        self.mcp = MCPServer(database_url, store=self.store)
+        self.mcp = MCPServer(database_url or config.database.url, store=self.store, config=config)
 
     def health(self) -> dict[str, Any]:
         return {"ok": True, "database": getattr(self.store, "database_url", "in_memory")}
 
     def ready(self) -> dict[str, Any]:
+        config = _api_config(self)
         checks: dict[str, Any] = {
             "database": self._database_ready(),
             "schema": self._schema_ready(),
             "index": self._index_ready(),
             "embedding": {
-                "provider": os.environ.get("PSKA_EMBEDDING_PROVIDER", "disabled"),
-                "configured": bool(os.environ.get("PSKA_EMBEDDING_PROVIDER")),
+                "provider": config.embedding.provider,
+                "model": config.embedding.model,
+                "configured": config.embedding.provider not in {"", "disabled", "none", "off"},
             },
             "llm": {
-                "api_key_file_configured": bool(os.environ.get("PSKA_LLM_API_KEY_FILE")),
+                "api_key_file_configured": bool(config.llm.api_key_file),
+                "model": config.llm.model,
+                "base_url": config.llm.base_url,
             },
             "jobs": self._jobs_ready(),
             "metrics": self._metrics_ready(),
@@ -136,7 +146,7 @@ class PSKAApi:
         try:
             return self.agentic_service.ready()
         except AgenticServiceError as exc:
-            return {"ok": False, "provider": os.environ.get("PSKA_AGENTIC_SERVICE_PROVIDER", "fastreact"), "error": str(exc)}
+            return {"ok": False, "provider": _api_config(self).agentic_service.provider, "error": str(exc)}
 
     def _mcp_ready(self) -> dict[str, Any]:
         response = self.mcp.handle({"jsonrpc": "2.0", "id": "ready", "method": "tools/list", "params": {}})
@@ -353,7 +363,7 @@ class PSKAApi:
         return {
             "index": self.index_status(),
             "offline_index": OfflineIndexService(self.store).freshness(),
-            "embedding": _embedding_metrics(chunks),
+            "embedding": _embedding_metrics(chunks, _api_config(self)),
             "connectors": _connector_metrics(source_items, self.store.list_connector_states()),
             "jobs": self.job_stats()["stats"],
         }
@@ -1522,8 +1532,8 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
         self._request_meta["logged"] = True
 
 
-def serve(host: str = "127.0.0.1", port: int = 8765, database_url: str | None = None) -> None:
-    api = PSKAApi(database_url or os.environ.get("PSKA_DATABASE_URL", "postgresql:///pska"))
+def serve(host: str = "127.0.0.1", port: int = 8765, database_url: str | None = None, *, config: PSKAConfig | None = None) -> None:
+    api = PSKAApi(database_url or (config.database.url if config else None), config=config)
 
     class Handler(PSKARequestHandler):
         pass
@@ -1581,6 +1591,16 @@ def _response_metrics(payload: dict[str, Any]) -> dict[str, Any]:
         "response_tool_call_count": len(tool_calls) if tool_calls else None,
         "response_display_mode": payload.get("display_mode"),
     }
+
+
+def _api_config(api: Any) -> PSKAConfig:
+    config = getattr(api, "config", None)
+    if config is not None:
+        return config
+    base = PSKAConfig(database=DatabaseConfig(url=os.environ.get("PSKA_DATABASE_URL", DEFAULT_DATABASE_URL)))
+    config = PSKAConfig.from_env(base)
+    setattr(api, "config", config)
+    return config
 
 
 def _as_aware(value: datetime) -> datetime:
@@ -1729,9 +1749,9 @@ def _optional_positive_int(value: Any) -> int | None:
     return parsed if parsed > 0 else None
 
 
-def _embedding_metrics(chunks: list[Any]) -> dict[str, Any]:
-    configured_provider = os.environ.get("PSKA_EMBEDDING_PROVIDER", "disabled")
-    configured_model = os.environ.get("PSKA_EMBEDDING_MODEL", "BAAI/bge-m3")
+def _embedding_metrics(chunks: list[Any], config: PSKAConfig | None = None) -> dict[str, Any]:
+    configured_provider = config.embedding.provider if config else os.environ.get("PSKA_EMBEDDING_PROVIDER", "disabled")
+    configured_model = (config.embedding.model or "BAAI/bge-m3") if config else os.environ.get("PSKA_EMBEDDING_MODEL", "BAAI/bge-m3")
     total = len(chunks)
     any_embedding = 0
     current = 0
@@ -2633,9 +2653,6 @@ def _console_files_roots(states: list[dict[str, Any]]) -> list[str]:
         if connector_id and connector_id != "files":
             continue
         roots.extend(_string_list(state.get("roots")))
-    env_roots = os.getenv("PSKA_FILES_ROOTS")
-    if env_roots:
-        roots.extend([root for root in env_roots.split(os.pathsep) if root])
     return list(dict.fromkeys(roots))
 
 
