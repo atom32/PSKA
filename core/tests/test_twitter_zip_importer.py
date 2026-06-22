@@ -130,3 +130,34 @@ def test_directory_import_counts_existing_archives_as_skipped(tmp_path) -> None:
     assert second.imported == 0
     assert second.skipped == 1
     assert len(store.source_items) == 1
+
+
+def test_directory_import_reimports_changed_archive_content(tmp_path) -> None:
+    input_dir = tmp_path / "inbox"
+    input_dir.mkdir()
+    zip_path = input_dir / "tweet.zip"
+
+    def write_zip(text: str) -> None:
+        metadata = {
+            "schema_version": "pska.archive.v2",
+            "source": "twitter",
+            "record_type": "tweet",
+            "source_id": "changed-source",
+            "url": "https://x.com/u/status/changed-source",
+            "content": {"text": text},
+            "pska": {"owner_user_id": "user_primary", "space_id": "private_primary", "visibility": "private"},
+        }
+        with zipfile.ZipFile(zip_path, "w") as archive:
+            archive.writestr("changed-source/metadata.json", json.dumps(metadata))
+
+    store = InMemoryKnowledgeStore()
+    importer = TwitterZipImporter(store, archive_root=tmp_path / "archive")
+    write_zip("first archive text")
+    first = importer.import_directory(input_dir)
+    write_zip("updated archive text")
+    second = importer.import_directory(input_dir)
+
+    assert first.imported == 1
+    assert second.imported == 1
+    assert second.skipped == 0
+    assert len(store.source_items) == 2

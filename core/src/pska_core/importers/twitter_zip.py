@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import hashlib
 import json
 from pathlib import Path
 import shutil
@@ -44,21 +45,22 @@ class TwitterZipImporter:
 
     def import_directory(self, input_dir: Path) -> TwitterZipImportResult:
         result = TwitterZipImportResult()
-        existing_source_item_ids = {item.source_item_id for item in self.store.list_source_items()}
+        existing_content_hashes = {item.content_hash for item in self.store.list_source_items()}
         for zip_path in sorted(input_dir.glob("*.zip")):
             try:
-                item = self.import_zip(zip_path)
-                if item.source_item_id in existing_source_item_ids or item.source_item_id in result.source_item_ids:
+                content_hash = self._zip_content_hash(zip_path)
+                if content_hash in existing_content_hashes:
                     result.skipped += 1
                 else:
+                    item = self.import_zip(zip_path, content_hash=content_hash)
                     result.imported += 1
                     result.source_item_ids.append(item.source_item_id)
-                    existing_source_item_ids.add(item.source_item_id)
+                    existing_content_hashes.add(content_hash)
             except Exception as exc:  # noqa: BLE001 - import should report all failures.
                 result.failed.append({"path": str(zip_path), "error": f"{type(exc).__name__}: {exc}"})
         return result
 
-    def import_zip(self, zip_path: Path) -> SourceItem:
+    def import_zip(self, zip_path: Path, *, content_hash: str | None = None) -> SourceItem:
         metadata, metadata_name = self._read_metadata(zip_path)
         source_id = str(metadata.get("source_id") or metadata.get("id") or Path(metadata_name).parts[0])
         target_dir = self.archive_root / "twitter-x"
@@ -73,7 +75,15 @@ class TwitterZipImporter:
             visible_team_ids=self.visible_team_ids,
             archive_dir=archive_dir,
         )
+        payload.content["content_hash"] = content_hash or self._zip_content_hash(zip_path)
         return self.ingest.ingest_channel_payload(payload)
+
+    def _zip_content_hash(self, zip_path: Path) -> str:
+        digest = hashlib.sha256()
+        with zip_path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return "sha256:" + digest.hexdigest()
 
     def _read_metadata(self, zip_path: Path) -> tuple[dict, str]:
         with zipfile.ZipFile(zip_path) as archive:
