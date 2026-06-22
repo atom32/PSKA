@@ -111,3 +111,33 @@ def test_ingest_chunks_with_configured_overlap() -> None:
     assert [chunk.text for chunk in chunks] == ["abcdef", "efghij", "ijkl"]
     assert all(chunk.metadata["chunk_size"] == 6 for chunk in chunks)
     assert all(chunk.metadata["chunk_overlap"] == 2 for chunk in chunks)
+
+
+def test_ingest_replaces_nul_bytes_before_storing_text_and_metadata() -> None:
+    store = InMemoryKnowledgeStore()
+
+    item = IngestService(store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "files",
+            "record_type": "file",
+            "source_id": "nul-note",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "title": "nul\x00title",
+            "content": {
+                "text": "before\x00after",
+                "nested": {"raw": "inner\x00value"},
+                "items": ["list\x00value"],
+            },
+        }
+    )
+    chunks = store.list_chunks_for_sources({item.source_item_id})
+
+    assert "\x00" not in item.title
+    assert "\x00" not in item.content_text
+    assert item.content_text == "before\uFFFDafter"
+    assert item.metadata["content"]["text"] == "before\uFFFDafter"
+    assert item.metadata["content"]["nested"]["raw"] == "inner\uFFFDvalue"
+    assert item.metadata["content"]["items"] == ["list\uFFFDvalue"]
+    assert all("\x00" not in chunk.text for chunk in chunks)

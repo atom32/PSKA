@@ -3,12 +3,16 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+from typing import Any
 from uuid import uuid5, NAMESPACE_URL
 
 from pska_core.models import ChannelIngestPayload, Chunk, Document, SourceItem
 from pska_core.offline_index import OfflineIndexService
 from pska_core.store import KnowledgeStore
 from pska_core.embeddings import EmbeddingProvider
+
+
+POSTGRES_NUL_REPLACEMENT = "\uFFFD"
 
 
 class IngestService:
@@ -31,6 +35,7 @@ class IngestService:
     def ingest_channel_payload(self, payload: ChannelIngestPayload | dict) -> SourceItem:
         if isinstance(payload, dict):
             payload = ChannelIngestPayload.from_mapping(payload)
+        payload = self._sanitize_payload(payload)
         text = str(payload.content.get("text") or payload.content.get("raw_text") or "")
         title = payload.title or self._default_title(payload.record_type, text)
         content_hash = self._hash_payload(payload, text)
@@ -128,6 +133,44 @@ class IngestService:
     def _default_title(self, record_type: str, text: str) -> str:
         first = re.sub(r"\s+", " ", text).strip()[:80]
         return first or record_type
+
+    def _sanitize_payload(self, payload: ChannelIngestPayload) -> ChannelIngestPayload:
+        return ChannelIngestPayload(
+            schema_version=self._postgres_safe_text(payload.schema_version),
+            source_channel=self._postgres_safe_text(payload.source_channel),
+            record_type=self._postgres_safe_text(payload.record_type),
+            source_id=self._postgres_safe_text(payload.source_id),
+            owner_user_id=self._postgres_safe_text(payload.owner_user_id),
+            space_id=self._postgres_safe_text(payload.space_id),
+            visibility=payload.visibility,
+            visible_team_ids=[self._postgres_safe_text(team_id) for team_id in payload.visible_team_ids],
+            url=self._postgres_safe_text(payload.url) if payload.url is not None else None,
+            title=self._postgres_safe_text(payload.title) if payload.title is not None else None,
+            author=self._postgres_safe_json(payload.author),
+            content=self._postgres_safe_json(payload.content),
+            created_at=self._postgres_safe_text(payload.created_at) if payload.created_at is not None else None,
+            captured_at=self._postgres_safe_text(payload.captured_at) if payload.captured_at is not None else None,
+            media=self._postgres_safe_json(payload.media),
+            raw_paths=self._postgres_safe_json(payload.raw_paths),
+            extra=self._postgres_safe_json(payload.extra),
+        )
+
+    def _postgres_safe_json(self, value: Any) -> Any:
+        if isinstance(value, str):
+            return self._postgres_safe_text(value)
+        if isinstance(value, dict):
+            return {
+                self._postgres_safe_text(str(key)): self._postgres_safe_json(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [self._postgres_safe_json(item) for item in value]
+        if isinstance(value, tuple):
+            return [self._postgres_safe_json(item) for item in value]
+        return value
+
+    def _postgres_safe_text(self, value: str) -> str:
+        return value.replace("\x00", POSTGRES_NUL_REPLACEMENT)
 
     def _resolve_chunk_size(self, *, chunk_size: int | None, chunk_chars: int | None) -> int:
         value = chunk_size if chunk_size is not None else chunk_chars
