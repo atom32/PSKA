@@ -1364,6 +1364,8 @@ def digest_now(args: argparse.Namespace, config: PSKAConfig) -> int:
     scheduled = api.schedule_digest(_digest_schedule_payload(args))
     worker_runs = _run_fastreact_digest_worker(args, config)
     stats = api.job_stats()["stats"]
+    discoveries = api.workspace_discoveries(owner_user_id=args.owner_user_id, limit=50)
+    all_new_discoveries = api.workspace_discoveries(owner_user_id=args.owner_user_id, limit=50, min_score=0)
     pending_reviews = _review_items_payload(
         api.store.list_review_items(),
         status="pending",
@@ -1384,15 +1386,43 @@ def digest_now(args: argparse.Namespace, config: PSKAConfig) -> int:
             "synced": None if sync_payload is None else sync_payload.get("totals"),
             "scheduled_source_items": len(scheduled.get("scheduled_source_item_ids") or []),
             "worker_processed": sum(int(run.get("processed") or 0) for run in worker_runs if isinstance(run, dict)),
+            "candidate_write": _digest_now_candidate_summary(worker_runs),
+            "discoveries_visible_count": int(discoveries.get("count") or 0),
+            "discoveries_total_new": int(all_new_discoveries.get("total_new") or 0),
+            "discoveries_min_score": discoveries.get("min_score"),
+            "low_score_discovery_count": max(0, int(all_new_discoveries.get("total_new") or 0) - int(discoveries.get("count") or 0)),
             "digest_backlog": stats.get("digest_backlog") or {},
             "pending_review_count": int(pending_reviews.get("count") or 0),
             "failed_digest_jobs": len(failed_digest_jobs),
         },
+        "discoveries": discoveries,
+        "low_score_discoveries": all_new_discoveries,
         "pending_reviews": pending_reviews,
         "failed_digest_jobs": failed_digest_jobs,
     }
     print(dumps(payload))
     return 0 if payload["ok"] and not failed_digest_jobs else 1
+
+
+def _digest_now_candidate_summary(worker_runs: list[dict[str, Any]]) -> dict[str, int]:
+    summary = {
+        "entities": 0,
+        "hyperedges": 0,
+        "review_items": 0,
+        "memory_candidates": 0,
+        "tool_calls": 0,
+    }
+    for run in worker_runs:
+        for fastreact_run in ((run.get("result") or {}).get("fastreact_runs") or []):
+            for tool_call in fastreact_run.get("tool_calls") or []:
+                if not isinstance(tool_call, dict):
+                    continue
+                summary["tool_calls"] += 1
+                summary["entities"] += int(tool_call.get("entity_count") or 0)
+                summary["hyperedges"] += int(tool_call.get("hyperedge_count") or 0)
+                summary["review_items"] += int(tool_call.get("review_item_count") or 0)
+                summary["memory_candidates"] += int(tool_call.get("memory_candidate_count") or 0)
+    return summary
 
 
 def _run_fastreact_digest_worker(args: argparse.Namespace, config: PSKAConfig) -> list[dict[str, Any]]:

@@ -11,6 +11,7 @@ from pska_core.cli import (
     _apply_workspace_defaults,
     _daily_briefing_payload,
     _fastreact_digest_worker_command_payload,
+    _digest_now_candidate_summary,
     _job_run_diagnostics,
     _daily_status_payload,
     _memory_list_payload,
@@ -749,6 +750,45 @@ def test_cli_accepts_digest_now() -> None:
     assert args.reason == "manual check"
     assert args.skip_sync is True
     assert args.max_worker_runs == 2
+
+
+def test_digest_now_candidate_summary_counts_fastreact_writes() -> None:
+    summary = _digest_now_candidate_summary(
+        [
+            {
+                "result": {
+                    "fastreact_runs": [
+                        {
+                            "tool_calls": [
+                                {
+                                    "tool_name": "pska_pska_job_context",
+                                    "entity_count": 0,
+                                    "hyperedge_count": 0,
+                                    "review_item_count": 0,
+                                    "memory_candidate_count": 0,
+                                },
+                                {
+                                    "tool_name": "pska_pska_write_candidates",
+                                    "entity_count": 10,
+                                    "hyperedge_count": 4,
+                                    "review_item_count": 0,
+                                    "memory_candidate_count": 2,
+                                },
+                            ]
+                        }
+                    ]
+                }
+            }
+        ]
+    )
+
+    assert summary == {
+        "entities": 10,
+        "hyperedges": 4,
+        "review_items": 0,
+        "memory_candidates": 2,
+        "tool_calls": 2,
+    }
 
 
 def test_cli_accepts_seed_review_candidates() -> None:
