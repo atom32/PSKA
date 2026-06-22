@@ -234,6 +234,8 @@ class DiscoveryScorer:
             + governance_signal * 0.12
             - producer_penalty
         )
+        if discovery_type == "topic" and any(item.get("kind") == "source_item" for item in evidence):
+            weighted = max(weighted, 0.52)
         score = round(max(0.0, min(weighted, 1.0)), 3)
         signals = {
             "novelty": round(novelty, 3),
@@ -244,6 +246,7 @@ class DiscoveryScorer:
             "review_likelihood": round(review_likelihood, 3),
             "governance_signal": round(governance_signal, 3),
             "producer_penalty": round(producer_penalty, 3),
+            "source_topic_floor": 0.52 if discovery_type == "topic" and any(item.get("kind") == "source_item" for item in evidence) else 0.0,
             "evidence_count": evidence_count,
             "unique_sources": unique_sources,
             "score_threshold": DISCOVERY_TODAY_SCORE_THRESHOLD,

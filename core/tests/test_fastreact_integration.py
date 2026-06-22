@@ -1419,9 +1419,10 @@ def test_discovery_producers_drive_today_discoveries() -> None:
     assert by_type["relationship"]["fingerprint"]
     assert by_type["relationship"]["evidence_snapshot"] == by_type["relationship"]["evidence"]
     assert by_type["relationship"]["discovery_score"] >= ranked_discoveries["min_score"]
-    assert by_type["topic"]["discovery_score"] < ranked_discoveries["min_score"]
+    assert by_type["topic"]["discovery_score"] >= ranked_discoveries["min_score"]
+    assert by_type["topic"]["quality_signals"]["source_topic_floor"] == 0.52
     assert all(item["discovery_score"] >= ranked_discoveries["min_score"] for item in ranked_discoveries["discoveries"])
-    assert all(item["type"] != "topic" for item in ranked_discoveries["discoveries"])
+    assert any(item["type"] == "topic" for item in ranked_discoveries["discoveries"])
     assert all(item["status"] == "new" for item in today["discoveries"])
     assert all(item["discovery_score"] >= today.get("discovery_min_score", ranked_discoveries["min_score"]) for item in today["discoveries"])
     assert all(item["id"] != "disc_old" for item in today["discoveries"])
