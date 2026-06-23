@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import CytoscapeComponent from "react-cytoscapejs";
 import {
   BookOpen,
   Brain,
@@ -36,14 +37,19 @@ import {
   acceptDiscovery,
   applyReviewItem,
   approveReviewItem,
+  cleanupKnowledgeSource,
   ignoreDiscovery,
   loadCorpusContext,
   loadCorpusData,
+  loadDigestLogs,
+  loadGraphData,
   loadReviewCenter,
   loadSourcesConsole,
   loadToday,
   recordWorkspaceActivity,
   rejectReviewItem,
+  runDigestNow,
+  runFileSync,
   searchWorkspace,
   snoozeDiscovery
 } from "./api";
@@ -52,12 +58,17 @@ import type {
   BrainState,
   ConsoleSourceChannelStats,
   ConsoleSourcesResponse,
+  DigestNowResponse,
+  DigestLogsResponse,
+  FileSyncResponse,
+  KnowledgeSourceCleanupResponse,
   ReviewCenterItem,
   TodayContinueItem,
   TodayDiscoveryItem,
   TodayResponse,
   TodayReviewItem,
   WorkspaceCorpusResponse,
+  WorkspaceGraphResponse,
   WorkspaceSearchResponse,
   WorkspaceMode
 } from "./types";
@@ -445,7 +456,7 @@ function TodayWorkspace({
       setSearchResult(result);
       setBrain(searchToBrain(result, query));
       if (result.error) {
-        setSearchError(result.error);
+        setSearchError(displayText(result.error, "PSKA 查询失败。"));
       }
     } catch (error) {
       setSearchResult(null);
@@ -591,8 +602,8 @@ function TodayWorkspace({
                         <span className="pill muted">{source.source_channel || "source"}</span>
                         <small>{formatSourceAge(source.created_at)}</small>
                       </div>
-                      <h4>{source.title || source.source_item_id || "未命名来源"}</h4>
-                      {source.url ? <p>{source.url}</p> : null}
+                      <h4>{displayText(source.title || source.source_item_id, "未命名来源")}</h4>
+                      {source.url ? <p>{displayText(source.url)}</p> : null}
                     </article>
                   ))}
                 </div>
@@ -604,7 +615,7 @@ function TodayWorkspace({
                     <article className="corpus-item" key={chunk.chunk_id || `chunk-${index}`}>
                       <div className="card-row">
                         <span className="pill muted">{chunk.source_channel || "chunk"}</span>
-                        <small>{chunk.title || chunk.source_item_id || "片段"}</small>
+                        <small>{displayText(chunk.title || chunk.source_item_id, "片段")}</small>
                       </div>
                       <p>{trimText(chunk.snippet || chunk.text || "", 220) || "该 chunk 暂无可显示文本。"}</p>
                     </article>
@@ -787,7 +798,7 @@ function ReviewCenter({
               <div className="review-item-main">
                 <div className="review-item-title">
                   <GitPullRequest size={17} />
-                  <h2>{item.title || item.review_item_id}</h2>
+                  <h2>{displayText(item.title, item.review_item_id)}</h2>
                 </div>
                 <div className="review-item-tags">
                   <span className="pill">{item.review_type || "review"}</span>
@@ -818,7 +829,9 @@ function ReviewCenter({
                 {item.source_refs?.length ? (
                   <div className="source-ref-row">
                     {item.source_refs.slice(0, 3).map((ref, index) => (
-                      <span key={`${item.review_item_id}-${index}`}>{ref.title || ref.source_item_id || ref.chunk_id || "source ref"}</span>
+                      <span key={`${item.review_item_id}-${index}`}>
+                        {displayText(ref.title || ref.source_item_id || ref.chunk_id, "source ref")}
+                      </span>
                     ))}
                   </div>
                 ) : null}
@@ -859,8 +872,9 @@ function normalizeContinueItems(data?: TodayResponse): TodayContinueItem[] {
     .filter((item) => item.pinned || item.activity_type !== "viewed" || item.target_type !== "workspace_surface")
     .map((item) => ({
       ...item,
-      subtitle: item.subtitle || item.type || "source",
-      summary: item.summary || "最近进入 PSKA 的资料。"
+      title: displayText(item.title, "未命名活动"),
+      subtitle: displayText(item.subtitle || item.type, "source"),
+      summary: displayText(item.summary, "最近进入 PSKA 的资料。")
     }));
 }
 
@@ -876,8 +890,8 @@ function TodaySearchResult({ result }: { result: WorkspaceSearchResponse }) {
     ...(result.retrieval?.results || [])
   ]
     .map((ref) => ({
-      title: ref.title,
-      snippet: ref.snippet,
+      title: displayText(ref.title, ""),
+      snippet: displayText(ref.snippet, ""),
       source_item_id: "source_item_id" in ref ? ref.source_item_id : undefined
     }))
     .filter((ref) => ref.title || ref.snippet || ref.source_item_id);
@@ -888,14 +902,14 @@ function TodaySearchResult({ result }: { result: WorkspaceSearchResponse }) {
 
   return (
     <article className="today-search-result">
-      {answer ? <p className="answer-text">{answer}</p> : null}
-      {result.fallback_reason ? <small className="search-note">Fallback: {result.fallback_reason}</small> : null}
+      {answer ? <p className="answer-text">{displayText(answer)}</p> : null}
+      {result.fallback_reason ? <small className="search-note">Fallback: {displayText(result.fallback_reason)}</small> : null}
       {refs.length > 0 ? (
         <div className="source-ref-list">
           {refs.slice(0, 5).map((ref, index) => (
             <div className="source-ref" key={`${ref.source_item_id || ref.title || "ref"}-${index}`}>
-              <strong>{ref.title || ref.source_item_id || "来源"}</strong>
-              {ref.snippet ? <p>{trimText(ref.snippet, 180)}</p> : null}
+              <strong>{displayText(ref.title || ref.source_item_id, "来源")}</strong>
+              {ref.snippet ? <p>{trimText(displayText(ref.snippet), 180)}</p> : null}
             </div>
           ))}
         </div>
@@ -917,9 +931,9 @@ function searchToBrain(result: WorkspaceSearchResponse, query: string): Partial<
   ]
     .map((ref, index) => ({
       id: `today-search-${index}`,
-      title: ref.title || ("source_item_id" in ref ? ref.source_item_id : undefined) || query,
+      title: displayText(ref.title || ("source_item_id" in ref ? ref.source_item_id : undefined), query),
       score: "score" in ref && typeof ref.score === "number" ? Math.round(ref.score * 100) : undefined,
-      snippet: ref.snippet || answer || "PSKA 返回了相关证据。",
+      snippet: displayText(ref.snippet || answer, "PSKA 返回了相关证据。"),
       source: "PSKA Agentic"
     }))
     .filter((item) => item.title || item.snippet);
@@ -927,9 +941,9 @@ function searchToBrain(result: WorkspaceSearchResponse, query: string): Partial<
     status: result.error ? "error" : "synced",
     lastTrigger: "manual",
     updatedAt: Date.now(),
-    error: result.error || null,
+    error: result.error ? displayText(result.error, "PSKA 查询失败。") : null,
     relatedKnowledge: [
-      ...(answer ? [{ id: "today-answer", title: query, snippet: answer, source: "PSKA Agentic answer" }] : []),
+      ...(answer ? [{ id: "today-answer", title: query, snippet: displayText(answer), source: "PSKA Agentic answer" }] : []),
       ...refs
     ].slice(0, 6),
     entities: extractEntities(`${query} ${answer}`).slice(0, 8),
@@ -952,21 +966,21 @@ function corpusToBrain(corpus: WorkspaceCorpusResponse): Partial<BrainState> {
     error: null,
     relatedKnowledge: chunks.slice(0, 6).map((chunk, index) => ({
       id: chunk.chunk_id || `corpus-chunk-${index}`,
-      title: chunk.title || chunk.source_item_id || "Corpus chunk",
-      snippet: trimText(chunk.snippet || chunk.text || "", 180) || "真实 corpus 片段。",
-      source: chunk.source_channel || "PSKA Corpus"
+      title: displayText(chunk.title || chunk.source_item_id, "资料片段"),
+      snippet: trimText(chunk.snippet || chunk.text || "", 180) || "PSKA 中的可检索片段。",
+      source: displayText(chunk.source_channel, "PSKA 资料库")
     })),
-    entities: [...new Set([...entityLabels, ...sources.map((source) => source.title || "").flatMap(extractEntities)])].filter(Boolean).slice(0, 8),
+    entities: [...new Set([...entityLabels, ...sources.map((source) => displayText(source.title)).flatMap(extractEntities)])].filter(Boolean).slice(0, 8),
     timeline: sources.slice(0, 5).map((source, index) => ({
       id: source.source_item_id || `corpus-source-${index}`,
       age: formatSourceAge(source.created_at),
-      title: source.title || source.source_item_id || "未命名来源",
-      detail: source.source_channel || "PSKA 来源材料"
+      title: displayText(source.title || source.source_item_id, "未命名来源"),
+      detail: displayText(source.source_channel, "PSKA 来源材料")
     })),
     connections: sources.slice(0, 5).map((source, index) => ({
       id: `corpus-source-connection-${index}`,
-      label: source.title || source.source_item_id || "来源",
-      relation: source.source_channel || "source"
+      label: displayText(source.title || source.source_item_id, "来源"),
+      relation: displayText(source.source_channel, "source")
     }))
   };
 }
@@ -1040,7 +1054,9 @@ function normalizeDiscoveries(data?: TodayResponse): TodayDiscoveryItem[] {
   const items = data?.discoveries || [];
   return items.map((item) => ({
     ...item,
-    summary: item.summary || "PSKA 发现了一个可检查的知识线索。"
+    title: displayText(item.title, "未命名发现"),
+    label: displayText(item.label || discoveryTypeLabel(item.type), "发现"),
+    summary: displayText(item.summary, "PSKA 发现了一个可检查的知识线索。")
   }));
 }
 
@@ -1048,7 +1064,8 @@ function normalizeReviewItems(data?: TodayResponse): TodayReviewItem[] {
   const items = data?.needs_review || [];
   return items.map((item) => ({
     ...item,
-    summary: item.summary || "等待人工审核。"
+    title: displayText(item.title, "待审核候选"),
+    summary: displayText(item.summary, "等待人工审核。")
   }));
 }
 
@@ -1057,6 +1074,31 @@ function evidenceLabel(count?: number) {
     return "待检查";
   }
   return `${count} 条证据`;
+}
+
+function discoveryTypeLabel(type?: string) {
+  if (type === "topic") {
+    return "主题发现";
+  }
+  if (type === "hyperedge") {
+    return "已有关系";
+  }
+  if (type === "memory_candidate") {
+    return "记忆候选";
+  }
+  if (type === "profile_update") {
+    return "画像候选";
+  }
+  if (type === "action_candidate") {
+    return "行动候选";
+  }
+  if (type === "low_confidence") {
+    return "低置信候选";
+  }
+  if (type === "conflict") {
+    return "发现冲突";
+  }
+  return "发现";
 }
 
 function discoveryQualityLabel(item: TodayDiscoveryItem) {
@@ -1078,8 +1120,39 @@ function recommendedActionLabel(action?: string) {
   return "待处理";
 }
 
-function trimText(value: string, maxLength: number) {
-  const normalized = value.replace(/\s+/g, " ").trim();
+function displayText(value: unknown, fallback = ""): string {
+  if (value === null || value === undefined) {
+    return fallback;
+  }
+  if (typeof value === "string") {
+    return value || fallback;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  if (Array.isArray(value)) {
+    const text = value.map((item) => displayText(item)).filter(Boolean).join(" · ");
+    return text || fallback;
+  }
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    for (const key of ["message", "detail", "summary", "statement", "title", "text", "type"]) {
+      const text = displayText(record[key]);
+      if (text) {
+        return text;
+      }
+    }
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return fallback;
+    }
+  }
+  return fallback;
+}
+
+function trimText(value: unknown, maxLength: number) {
+  const normalized = displayText(value).replace(/\s+/g, " ").trim();
   if (normalized.length <= maxLength) {
     return normalized;
   }
@@ -1159,6 +1232,27 @@ function CorpusWorkspace({
   setBrain: (brain: Partial<BrainState>) => void;
 }) {
   const [query, setQuery] = useState("");
+  const [operationStatus, setOperationStatus] = useState<"idle" | "syncing" | "digesting" | "cleaning" | "success" | "error">("idle");
+  const [operationMessage, setOperationMessage] = useState("");
+  const [cleanupPreview, setCleanupPreview] = useState<KnowledgeSourceCleanupResponse | null>(null);
+  const [cleanupTargetId, setCleanupTargetId] = useState<string | null>(null);
+  const [cleanupConfirmText, setCleanupConfirmText] = useState("");
+  const [operationSummary, setOperationSummary] = useState<{
+    scanned?: number;
+    ingested?: number;
+    changed?: number;
+    failed?: number;
+    scheduled?: number;
+    reviews?: number;
+    claims?: number;
+    digestNotes?: number;
+    saved?: number;
+    inputSources?: number;
+    unchanged?: number;
+    twitterZips?: number;
+    twitterImported?: number;
+    twitterSkipped?: number;
+  }>();
   const corpusQuery = useQuery({
     queryKey: ["corpus-workspace", serviceToken],
     queryFn: () => loadCorpusData(serviceToken, 60),
@@ -1169,8 +1263,14 @@ function CorpusWorkspace({
     queryFn: () => loadSourcesConsole(serviceToken, 40),
     retry: 1
   });
+  const digestLogsQuery = useQuery({
+    queryKey: ["corpus-digest-logs", serviceToken],
+    queryFn: () => loadDigestLogs(serviceToken, 8),
+    retry: 1
+  });
   const corpus = corpusQuery.data;
   const sourceSummary = sourcesQuery.data;
+  const digestLogs = digestLogsQuery.data;
   const normalizedQuery = query.trim().toLowerCase();
   const filteredSources = (corpus?.sources || []).filter((source) =>
     corpusText([source.title, source.source_channel, source.url, source.source_item_id]).includes(normalizedQuery)
@@ -1182,8 +1282,10 @@ function CorpusWorkspace({
     sources: sourceSummary?.source_counts?.source_items ?? corpus?.counts?.sources_total ?? corpus?.sources?.length ?? 0,
     documents: sourceSummary?.source_counts?.documents ?? corpus?.counts?.documents ?? 0,
     chunks: sourceSummary?.source_counts?.chunks ?? corpus?.counts?.chunks_matching ?? corpus?.chunks?.length ?? 0,
-    connectors: sourceSummary?.knowledge_sources?.source_count ?? sourceSummary?.connector_state?.state_count ?? 0
+    inputSources: sourceSummary?.input_sources?.length ?? sourceSummary?.knowledge_sources?.source_count ?? sourceSummary?.connector_state?.state_count ?? 0
   };
+  const actionRunning = operationStatus === "syncing" || operationStatus === "digesting" || operationStatus === "cleaning";
+  const statusMessage = operationMessage || latestSyncMessage(sourceSummary);
 
   useEffect(() => {
     if (corpus) {
@@ -1191,41 +1293,131 @@ function CorpusWorkspace({
     }
   }, [corpus, setBrain]);
 
-  function refetchAll() {
-    void corpusQuery.refetch();
-    void sourcesQuery.refetch();
+  async function refetchAll() {
+    await Promise.all([corpusQuery.refetch(), sourcesQuery.refetch(), digestLogsQuery.refetch()]);
+  }
+
+  async function handleFileSync() {
+    setOperationStatus("syncing");
+    setOperationMessage("正在同步本地文件和 Twitter/X 输入源...");
+    setOperationSummary(undefined);
+    try {
+      const payload = await runFileSync(serviceToken);
+      const summary = fileSyncSummary(payload);
+      setOperationStatus(payload.ok === false ? "error" : "success");
+      setOperationSummary(summary);
+      setOperationMessage(payload.ok === false ? operationFailureMessage(payload.error, summary.failed) : summaryMessage(summary));
+      await refetchAll();
+    } catch (error) {
+      setOperationStatus("error");
+      setOperationMessage(error instanceof Error ? error.message : "同步资料失败。");
+    }
+  }
+
+  async function handleDigestNow() {
+    setOperationStatus("digesting");
+    setOperationMessage("正在同步并整理新发现...");
+    setOperationSummary(undefined);
+    try {
+      const payload = await runDigestNow(serviceToken);
+      const summary = digestNowSummary(payload);
+      setOperationStatus(payload.ok === false ? "error" : "success");
+      setOperationSummary(summary);
+      setOperationMessage(payload.ok === false ? operationFailureMessage(payload.error, summary.failed) : summaryMessage(summary));
+      await refetchAll();
+    } catch (error) {
+      setOperationStatus("error");
+      setOperationMessage(error instanceof Error ? error.message : "同步并理解失败。");
+    }
+  }
+
+  async function handleCleanupKnowledgeSource(knowledgeSourceId: string, execute: boolean) {
+    setOperationStatus("cleaning");
+    setCleanupTargetId(knowledgeSourceId);
+    setOperationMessage(execute ? "正在清理资料来源和派生知识..." : "正在预览清理影响...");
+    try {
+      const payload = await cleanupKnowledgeSource(serviceToken, knowledgeSourceId, execute);
+      setCleanupPreview(payload);
+      if (!execute) {
+        setCleanupConfirmText("");
+      }
+      setOperationStatus("success");
+      const counts = payload.deleted || payload.counts || {};
+      setOperationMessage(execute ? cleanupDoneMessage(counts) : cleanupPreviewMessage(counts));
+      if (execute) {
+        await refetchAll();
+      }
+    } catch (error) {
+      setOperationStatus("error");
+      setOperationMessage(error instanceof Error ? error.message : "清理资料来源失败。");
+    } finally {
+      setCleanupTargetId(null);
+    }
   }
 
   return (
     <section className="main-workspace corpus-surface" aria-label="语料库">
       <div className="corpus-header">
         <div>
-          <span className="eyebrow">Corpus</span>
-          <h1>资料、片段和同步状态。</h1>
-          <p>这里展示已经进入 PSKA 的真实语料，以及 connector 记录的授权范围和同步进度。</p>
+          <span className="eyebrow">资料更新台</span>
+          <h1>资料库</h1>
+          <p>把本地资料同步进 PSKA，并让它整理出可回顾的发现。</p>
         </div>
         <div className="corpus-summary" aria-label="语料库摘要">
-          <span><strong>{counts.sources}</strong> Sources</span>
-          <span><strong>{counts.documents}</strong> Docs</span>
-          <span><strong>{counts.chunks}</strong> Chunks</span>
-          <span><strong>{counts.connectors}</strong> Connectors</span>
+          <span><strong>{counts.sources}</strong> 资料</span>
+          <span><strong>{counts.documents}</strong> 文档</span>
+          <span><strong>{counts.chunks}</strong> 片段</span>
+          <span><strong>{counts.inputSources}</strong> 输入源</span>
         </div>
         <div className="corpus-actions">
           <button type="button" onClick={onPinCurrent}>
             <Pin size={15} />
             {pinStatus === "saved" ? "已置顶" : pinStatus === "failed" ? "置顶失败" : "置顶语料库"}
           </button>
-          <button type="button" onClick={refetchAll}>
+          <button type="button" onClick={() => void refetchAll()} disabled={actionRunning}>
             <RefreshCw size={15} />
-            刷新
+            刷新视图
+          </button>
+          <button type="button" onClick={() => void handleFileSync()} disabled={actionRunning}>
+            <Folder size={15} />
+            {operationStatus === "syncing" ? "同步中" : "同步输入源"}
+          </button>
+          <button type="button" onClick={() => void handleDigestNow()} disabled={actionRunning}>
+            <Sparkles size={15} />
+            {operationStatus === "digesting" ? "理解中" : "同步并理解"}
           </button>
         </div>
+      </div>
+
+      <div className={`corpus-operation ${operationStatus}`} role="status">
+        <div>
+          <strong>{operationTitle(operationStatus)}</strong>
+          <p>{statusMessage}</p>
+        </div>
+        {operationSummary ? (
+          <div className="operation-stats" aria-label="运行摘要">
+            <span>扫描 {operationSummary.scanned ?? 0}</span>
+            <span>入库 {operationSummary.ingested ?? 0}</span>
+            <span>变更 {operationSummary.changed ?? 0}</span>
+            <span>失败 {operationSummary.failed ?? 0}</span>
+            {operationSummary.scheduled !== undefined ? <span>调度 {operationSummary.scheduled}</span> : null}
+            {operationSummary.digestNotes !== undefined ? <span>Digest {operationSummary.digestNotes}</span> : null}
+            {operationSummary.claims !== undefined ? <span>Claims {operationSummary.claims}</span> : null}
+            {operationSummary.saved !== undefined ? <span>已保存 {operationSummary.saved}</span> : null}
+            {operationSummary.reviews !== undefined ? <span>待回顾 {operationSummary.reviews}</span> : null}
+            {operationSummary.inputSources !== undefined ? <span>输入源 {operationSummary.inputSources}</span> : null}
+            {operationSummary.unchanged !== undefined ? <span>未变 {operationSummary.unchanged}</span> : null}
+            {operationSummary.twitterZips !== undefined ? <span>Twitter Zip {operationSummary.twitterZips}</span> : null}
+            {operationSummary.twitterImported !== undefined ? <span>Twitter 导入 {operationSummary.twitterImported}</span> : null}
+            {operationSummary.twitterSkipped !== undefined ? <span>Twitter 已有 {operationSummary.twitterSkipped}</span> : null}
+          </div>
+        ) : null}
       </div>
 
       <div className="corpus-tools">
         <label>
           <Search size={16} />
-          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="筛选 source、chunk、URL 或 channel" />
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索资料标题、片段内容或来源路径" />
         </label>
       </div>
 
@@ -1236,9 +1428,9 @@ function CorpusWorkspace({
       ) : (
         <div className="corpus-workspace-grid">
           <section className="corpus-panel corpus-source-panel">
-            <SectionTitle icon={<FileText size={18} />} title="Sources" subtitle={`${filteredSources.length} 条可见来源`} />
+            <SectionTitle icon={<FileText size={18} />} title="已收进来的资料" subtitle={`${filteredSources.length} 条可见资料`} />
             {filteredSources.length === 0 ? (
-              <div className="review-empty compact">当前没有匹配的 source。</div>
+              <div className="review-empty compact">{normalizedQuery ? "当前没有匹配的资料。" : "还没有同步进来的资料。点击“同步资料”开始扫描。"}</div>
             ) : (
               <div className="corpus-source-list">
                 {filteredSources.slice(0, 30).map((source, index) => (
@@ -1247,12 +1439,12 @@ function CorpusWorkspace({
                       <span className="pill muted">{source.source_channel || "source"}</span>
                       <small>{formatSourceAge(source.created_at)}</small>
                     </div>
-                    <h2>{source.title || source.source_item_id || "未命名来源"}</h2>
+                    <h2>{displayText(source.title || source.source_item_id, "未命名来源")}</h2>
                     <dl>
-                      <div><dt>Chunks</dt><dd>{source.chunk_count ?? "-"}</dd></div>
+                      <div><dt>片段</dt><dd>{source.chunk_count ?? "-"}</dd></div>
                       <div><dt>ID</dt><dd>{source.source_item_id || "-"}</dd></div>
                     </dl>
-                    {source.url ? <p>{source.url}</p> : null}
+                    {source.url ? <p>{displayText(source.url)}</p> : null}
                   </article>
                 ))}
               </div>
@@ -1260,16 +1452,16 @@ function CorpusWorkspace({
           </section>
 
           <section className="corpus-panel corpus-chunk-panel">
-            <SectionTitle icon={<TextCursorInput size={18} />} title="Chunks" subtitle={`${filteredChunks.length} 个片段`} />
+            <SectionTitle icon={<TextCursorInput size={18} />} title="可检索片段" subtitle={`${filteredChunks.length} 个片段`} />
             {filteredChunks.length === 0 ? (
-              <div className="review-empty compact">当前没有匹配的 chunk。</div>
+              <div className="review-empty compact">{normalizedQuery ? "当前没有匹配的片段。" : "资料还没有可检索片段。同步后会出现在这里。"}</div>
             ) : (
               <div className="corpus-chunk-list">
                 {filteredChunks.slice(0, 36).map((chunk, index) => (
                   <article className="corpus-chunk-card" key={chunk.chunk_id || `corpus-chunk-${index}`}>
                     <div className="card-row">
                       <span className="pill">{chunk.source_channel || "chunk"}</span>
-                      <small>{chunk.title || chunk.source_item_id || "片段"}</small>
+                      <small>{displayText(chunk.title || chunk.source_item_id, "片段")}</small>
                     </div>
                     <p>{trimText(chunk.snippet || chunk.text || "", 260) || "该 chunk 暂无可显示文本。"}</p>
                   </article>
@@ -1279,69 +1471,221 @@ function CorpusWorkspace({
           </section>
 
           <aside className="corpus-panel connector-panel">
-            <SectionTitle icon={<Folder size={18} />} title="Knowledge Sources" subtitle="系统正在看的地方" />
-            <ConnectorSummary payload={sourceSummary} />
+            <SectionTitle icon={<Folder size={18} />} title="PSKA 输入源" subtitle="本地文件 roots 与连接器 inbox" />
+            <ConnectorSummary
+              payload={sourceSummary}
+              cleanupPreview={cleanupPreview}
+              cleanupConfirmText={cleanupConfirmText}
+              cleanupTargetId={cleanupTargetId}
+              actionRunning={actionRunning}
+              onCleanupConfirmTextChange={setCleanupConfirmText}
+              onPreviewCleanup={(knowledgeSourceId) => void handleCleanupKnowledgeSource(knowledgeSourceId, false)}
+              onConfirmCleanup={(knowledgeSourceId) => void handleCleanupKnowledgeSource(knowledgeSourceId, true)}
+            />
           </aside>
+
+          <section className="corpus-panel digest-log-panel">
+            <SectionTitle icon={<Sparkles size={18} />} title="Digest 任务日志" subtitle={`${digestLogs?.count ?? 0} 次最近理解任务`} />
+            <DigestLogPanel payload={digestLogs} isLoading={digestLogsQuery.isLoading} isError={digestLogsQuery.isError} />
+          </section>
         </div>
       )}
     </section>
   );
 }
 
-function ConnectorSummary({ payload }: { payload?: ConsoleSourcesResponse }) {
+function DigestLogPanel({ payload, isLoading, isError }: { payload?: DigestLogsResponse; isLoading: boolean; isError: boolean }) {
+  const logs = payload?.logs || [];
+  if (isError) {
+    return <div className="review-empty error-state compact">Digest 日志无法加载。</div>;
+  }
+  if (isLoading) {
+    return <div className="review-empty compact">正在加载 Digest 日志...</div>;
+  }
+  if (logs.length === 0) {
+    return <div className="review-empty compact">还没有 digest 任务日志。运行“同步并理解”后会显示过程。</div>;
+  }
+  return (
+    <div className="digest-log-list">
+      {logs.map((log) => {
+        const summary = log.candidate_summary || {};
+        const note = (log.digest_notes || [])[0];
+        const claim = (log.knowledge_claims || [])[0];
+        return (
+          <article className="digest-log-card" key={log.job_id}>
+            <div className="card-row">
+              <span className={`pill ${log.status === "failed" ? "warning" : log.status === "succeeded" ? "" : "muted"}`}>{log.status || "unknown"}</span>
+              <small>{formatReviewDate(log.updated_at)}</small>
+            </div>
+            <h3>{displayText(note?.title || log.latest_event?.message || log.job_id, "Digest 任务")}</h3>
+            <p>{displayText(note?.synopsis || claim?.statement || log.error, "任务已记录，等待候选写回。")}</p>
+            <div className="digest-log-metrics">
+              <span>Digest {summary.digest_notes ?? 0}</span>
+              <span>Claims {summary.knowledge_claims ?? 0}</span>
+              <span>关系 {summary.hyperedges ?? 0}</span>
+              <span>记忆 {summary.agent_memories ?? 0}</span>
+              <span>回顾 {summary.review_items ?? 0}</span>
+            </div>
+            <ol className="digest-timeline">
+              {(log.timeline || []).slice(-4).map((event, index) => (
+                <li key={`${log.job_id}-${event.event_type || "event"}-${index}`}>
+                  <span>{event.event_type || "event"}</span>
+                  <p>{displayText(event.message, "已记录事件")}</p>
+                </li>
+              ))}
+            </ol>
+          </article>
+        );
+      })}
+    </div>
+  );
+}
+
+function ConnectorSummary({
+  payload,
+  cleanupPreview,
+  cleanupConfirmText,
+  cleanupTargetId,
+  actionRunning,
+  onCleanupConfirmTextChange,
+  onPreviewCleanup,
+  onConfirmCleanup
+}: {
+  payload?: ConsoleSourcesResponse;
+  cleanupPreview: KnowledgeSourceCleanupResponse | null;
+  cleanupConfirmText: string;
+  cleanupTargetId: string | null;
+  actionRunning: boolean;
+  onCleanupConfirmTextChange: (value: string) => void;
+  onPreviewCleanup: (knowledgeSourceId: string) => void;
+  onConfirmCleanup: (knowledgeSourceId: string) => void;
+}) {
   const knowledgeSources = payload?.knowledge_sources?.sources || [];
+  const inputSources = payload?.input_sources || [];
   const states = payload?.connector_state?.states || [];
   const channels = Object.entries(payload?.source_channels || {}).sort((a, b) => channelCount(b[1]) - channelCount(a[1]));
-  const commands = payload?.recommended_commands || payload?.files?.recommended_commands || [];
   return (
     <div className="connector-summary">
       <div className="connector-roots">
-        <h3>知识来源</h3>
+        <h3>输入源总览</h3>
+        {inputSources.length === 0 ? (
+          <p>还没有输入源。可以添加本地文件夹，或放入 Twitter/X zip archive。</p>
+        ) : inputSources.map((source, index) => (
+          <article className="connector-state-card" key={`${source.kind || "input"}-${source.path || index}`}>
+            <div className="card-row">
+              <span className={`pill ${source.status === "missing" || source.status === "paused" ? "warning" : ""}`}>{inputKindLabel(source.kind)}</span>
+              <small>{displayText(source.status || source.mode, "unknown")}</small>
+            </div>
+            <h3>{displayText(source.name, "输入源")}</h3>
+            <p>{displayText(source.path, "未配置路径")}</p>
+            {source.kind === "twitter_archive" ? (
+              <dl>
+                <div><dt>Zip</dt><dd>{source.zip_count ?? 0}</dd></div>
+                <div><dt>模式</dt><dd>导入后归档</dd></div>
+              </dl>
+            ) : null}
+          </article>
+        ))}
+        {payload?.workspace?.excluded_paths?.length ? (
+          <div className="connector-exclusions">
+            <h3>系统排除路径</h3>
+            {payload.workspace.excluded_paths.map((path) => <code key={path}>{path}</code>)}
+          </div>
+        ) : null}
+      </div>
+      <div className="connector-roots">
+        <h3>可清理的文件资料源</h3>
         {knowledgeSources.length === 0 ? (
-          <p>还没有 Knowledge Source。</p>
-        ) : knowledgeSources.map((source) => (
+          <p>还没有资料位置。请先在配置中添加一个资料文件夹。</p>
+        ) : knowledgeSources.map((source) => {
+          const knowledgeSourceId = source.knowledge_source_id || "";
+          const previewMatches = cleanupPreview?.knowledge_source?.knowledge_source_id === knowledgeSourceId;
+          const counts = cleanupPreview?.counts || {};
+          const confirmToken = cleanupConfirmToken(source);
+          const confirmReady = previewMatches && cleanupConfirmText.trim() === confirmToken;
+          return (
           <article className="connector-state-card" key={source.knowledge_source_id || source.uri}>
             <div className="card-row">
               <span className={`pill ${source.status === "failed" ? "warning" : ""}`}>{source.status || "unknown"}</span>
               <small>{source.mode || "manual"}</small>
             </div>
-            <h3>{source.name || source.path || source.uri || "Knowledge Source"}</h3>
-            <p>{source.path || source.uri}</p>
+            <h3>{displayText(source.name || source.path || source.uri, "资料位置")}</h3>
+            <p>{displayText(source.path || source.uri, "未配置路径")}</p>
             {source.last_sync_run ? (
               <dl>
-                <div><dt>Scanned</dt><dd>{source.last_sync_run.scanned ?? 0}</dd></div>
-                <div><dt>New</dt><dd>{source.last_sync_run.new_files ?? 0}</dd></div>
-                <div><dt>Changed</dt><dd>{source.last_sync_run.changed_files ?? 0}</dd></div>
-                <div><dt>Failed</dt><dd>{source.last_sync_run.failed ?? 0}</dd></div>
+                <div><dt>扫描</dt><dd>{source.last_sync_run.scanned ?? 0}</dd></div>
+                <div><dt>新增</dt><dd>{source.last_sync_run.new_files ?? 0}</dd></div>
+                <div><dt>变更</dt><dd>{source.last_sync_run.changed_files ?? 0}</dd></div>
+                <div><dt>失败</dt><dd>{source.last_sync_run.failed ?? 0}</dd></div>
               </dl>
             ) : null}
-            {source.last_error ? <p className="connector-error">{source.last_error}</p> : null}
+            {source.last_error ? <p className="connector-error">{displayText(source.last_error)}</p> : null}
+            {knowledgeSourceId ? (
+              <div className="source-cleanup-actions">
+                <button type="button" onClick={() => onPreviewCleanup(knowledgeSourceId)} disabled={actionRunning}>
+                  {cleanupTargetId === knowledgeSourceId ? "预览中" : "预览清理"}
+                </button>
+                <button
+                  className="danger"
+                  type="button"
+                  onClick={() => onConfirmCleanup(knowledgeSourceId)}
+                  disabled={actionRunning || !confirmReady}
+                >
+                  确认清理
+                </button>
+              </div>
+            ) : null}
+            {previewMatches ? (
+              <div className="source-cleanup-preview">
+                <strong>{cleanupPreview?.dry_run ? "清理预览" : "清理结果"}</strong>
+                <label>
+                  输入 <code>{confirmToken}</code> 后允许确认清理
+                  <input
+                    value={cleanupConfirmText}
+                    onChange={(event) => onCleanupConfirmTextChange(event.target.value)}
+                    placeholder={confirmToken}
+                  />
+                </label>
+                <div className="operation-stats compact">
+                  <span>资料 {counts.source_items ?? 0}</span>
+                  <span>文档 {counts.documents ?? 0}</span>
+                  <span>片段 {counts.chunks ?? 0}</span>
+                  <span>Claims {counts.knowledge_claims ?? 0}</span>
+                  <span>Digest {counts.digest_notes ?? 0}</span>
+                  <span>关系 {counts.hyperedges ?? 0}</span>
+                  <span>任务 {counts.jobs ?? 0}</span>
+                  <span>孤立实体 {counts.orphan_entities ?? 0}</span>
+                </div>
+                <p>{cleanupPreview?.root || source.path || source.uri}</p>
+              </div>
+            ) : null}
           </article>
-        ))}
+        );
+        })}
       </div>
       {knowledgeSources.length === 0 ? <div className="connector-state-list">
         {states.length === 0 ? (
-          <div className="review-empty compact">当前没有 connector state。</div>
+          <div className="review-empty compact">还没有可显示的同步状态。</div>
         ) : states.map((state) => (
           <article className="connector-state-card" key={state.connector_state_id || state.connector_id}>
             <div className="card-row">
               <span className={`pill ${state.sync_status === "failed" ? "warning" : ""}`}>{state.sync_status || "unknown"}</span>
               <small>{state.enabled ? "enabled" : "disabled"}</small>
             </div>
-            <h3>{state.connector_state_id || state.connector_id || "connector"}</h3>
+            <h3>{displayText(state.connector_state_id || state.connector_id, "资料来源")}</h3>
             <dl>
               <div><dt>Cursor</dt><dd>{state.scan_cursor || "-"}</dd></div>
-              <div><dt>Last success</dt><dd>{formatReviewDate(state.last_success_at || undefined)}</dd></div>
-              <div><dt>Roots</dt><dd>{state.roots?.length || 0}</dd></div>
+              <div><dt>最近成功</dt><dd>{formatReviewDate(state.last_success_at || undefined)}</dd></div>
+              <div><dt>位置</dt><dd>{state.roots?.length || 0}</dd></div>
             </dl>
-            {state.last_error ? <p className="connector-error">{state.last_error}</p> : null}
+            {state.last_error ? <p className="connector-error">{displayText(state.last_error)}</p> : null}
           </article>
         ))}
       </div> : null}
       <div className="connector-channels">
-        <h3>Source channels</h3>
+        <h3>资料类型</h3>
         {channels.length === 0 ? (
-          <p>暂无 channel 统计。</p>
+          <p>暂无资料类型统计。</p>
         ) : channels.map(([channel, value]) => (
           <div key={channel}>
             <span>
@@ -1352,16 +1696,141 @@ function ConnectorSummary({ payload }: { payload?: ConsoleSourcesResponse }) {
           </div>
         ))}
       </div>
-      {commands.length > 0 ? (
-        <div className="connector-commands">
-          <h3>命令</h3>
-          {commands.slice(0, 4).map((command) => (
-            <code key={command}>{command}</code>
-          ))}
-        </div>
-      ) : null}
     </div>
   );
+}
+
+function fileSyncSummary(payload: FileSyncResponse) {
+  const totals = payload.totals || {};
+  const twitterEnabled = payload.twitter_archives?.enabled === true;
+  return {
+    inputSources: (totals.roots || 0) + (twitterEnabled ? 1 : 0),
+    scanned: totals.scanned || 0,
+    ingested: totals.ingested || 0,
+    changed: (totals.new_files || 0) + (totals.changed_files || 0),
+    unchanged: totals.unchanged_files || 0,
+    twitterZips: totals.twitter_zip_count ?? payload.twitter_archives?.zip_count ?? 0,
+    twitterImported: totals.twitter_imported ?? payload.twitter_archives?.imported ?? 0,
+    twitterSkipped: totals.twitter_skipped ?? payload.twitter_archives?.skipped ?? 0,
+    failed: totals.failed ?? payload.failed?.length ?? 0
+  };
+}
+
+function digestNowSummary(payload: DigestNowResponse) {
+  const synced = payload.summary?.synced || payload.sync?.totals || {};
+  const candidateWrite = payload.summary?.candidate_write || {};
+  const twitterEnabled = payload.sync?.twitter_archives?.enabled === true;
+  return {
+    inputSources: (synced.roots || 0) + (twitterEnabled ? 1 : 0),
+    scanned: synced.scanned || 0,
+    ingested: synced.ingested || 0,
+    changed: (synced.new_files || 0) + (synced.changed_files || 0),
+    unchanged: synced.unchanged_files || 0,
+    twitterZips: synced.twitter_zip_count ?? payload.sync?.twitter_archives?.zip_count ?? 0,
+    twitterImported: synced.twitter_imported ?? payload.sync?.twitter_archives?.imported ?? 0,
+    twitterSkipped: synced.twitter_skipped ?? payload.sync?.twitter_archives?.skipped ?? 0,
+    failed: payload.summary?.failed_digest_jobs ?? payload.failed_digest_jobs?.length ?? payload.sync?.totals?.failed ?? 0,
+    scheduled: payload.summary?.scheduled_source_items ?? payload.digest?.scheduled_source_item_ids?.length ?? 0,
+    digestNotes: candidateWrite.digest_notes ?? 0,
+    claims: candidateWrite.knowledge_claims ?? 0,
+    saved: candidateWrite.saved_candidates ?? 0,
+    reviews: payload.summary?.pending_review_count ?? 0
+  };
+}
+
+function summaryMessage(summary: ReturnType<typeof fileSyncSummary> & { scheduled?: number; reviews?: number; claims?: number; digestNotes?: number; saved?: number }) {
+  const parts = [
+    `输入源 ${summary.inputSources ?? 0} 个`,
+    `本地扫描 ${summary.scanned ?? 0} 个`,
+    `本地入库 ${summary.ingested ?? 0} 个`,
+    `变更 ${summary.changed ?? 0} 个`,
+    `未变 ${summary.unchanged ?? 0} 个`,
+    `Twitter Zip ${summary.twitterZips ?? 0} 个`,
+    `Twitter 导入 ${summary.twitterImported ?? 0} 个`,
+    `Twitter 已有 ${summary.twitterSkipped ?? 0} 个`,
+    `失败 ${summary.failed ?? 0} 个`
+  ];
+  if (summary.scheduled !== undefined) {
+    parts.push(`调度 ${summary.scheduled} 个`);
+  }
+  if (summary.digestNotes !== undefined) {
+    parts.push(`Digest ${summary.digestNotes} 条`);
+  }
+  if (summary.claims !== undefined) {
+    parts.push(`Claims ${summary.claims} 条`);
+  }
+  if (summary.saved !== undefined) {
+    parts.push(`已保存 ${summary.saved} 项`);
+  }
+  if (summary.reviews !== undefined) {
+    parts.push(`待回顾 ${summary.reviews} 条`);
+  }
+  return parts.join("，");
+}
+
+function cleanupPreviewMessage(counts: Record<string, number>) {
+  return `预览完成：将影响资料 ${counts.source_items ?? 0} 个、片段 ${counts.chunks ?? 0} 个、关系 ${counts.hyperedges ?? 0} 条、Digest ${counts.digest_notes ?? 0} 条。`;
+}
+
+function cleanupDoneMessage(counts: Record<string, number>) {
+  return `清理完成：已处理资料 ${counts.source_items ?? 0} 个、片段 ${counts.chunks ?? 0} 个、关系 ${counts.hyperedges ?? 0} 条。`;
+}
+
+function cleanupConfirmToken(source: { name?: string; path?: string; uri?: string }) {
+  const name = displayText(source.name, "").trim();
+  if (name) {
+    return name;
+  }
+  const rawPath = displayText(source.path || source.uri, "").trim();
+  const normalized = rawPath.replace(/\/+$/, "");
+  const last = normalized.split("/").filter(Boolean).pop();
+  return last || "cleanup";
+}
+
+function inputKindLabel(kind?: string) {
+  if (kind === "twitter_archive") {
+    return "Twitter/X";
+  }
+  if (kind === "files_root") {
+    return "本地文件";
+  }
+  return displayText(kind, "输入源");
+}
+
+function operationFailureMessage(error: string | undefined, failed: number | undefined) {
+  if (error) {
+    return error;
+  }
+  return failed ? `有 ${failed} 项没有完成。` : "操作没有完成，请稍后再试。";
+}
+
+function operationTitle(status: "idle" | "syncing" | "digesting" | "cleaning" | "success" | "error") {
+  if (status === "syncing") {
+    return "同步资料";
+  }
+  if (status === "digesting") {
+    return "同步并理解";
+  }
+  if (status === "cleaning") {
+    return "清理资料来源";
+  }
+  if (status === "success") {
+    return "已完成";
+  }
+  if (status === "error") {
+    return "需要处理";
+  }
+  return "同步状态";
+}
+
+function latestSyncMessage(payload?: ConsoleSourcesResponse) {
+  const sources = payload?.knowledge_sources?.sources || [];
+  const latest = sources.find((source) => source.last_sync_run);
+  if (!latest?.last_sync_run) {
+    return "还没有同步记录。";
+  }
+  const run = latest.last_sync_run;
+  return `最近同步：扫描 ${run.scanned ?? 0} 个，新增 ${run.new_files ?? 0} 个，变更 ${run.changed_files ?? 0} 个，失败 ${run.failed ?? 0} 个。`;
 }
 
 function corpusText(values: Array<string | undefined>) {
@@ -1436,19 +1905,31 @@ function GraphWorkspace({
   onPinCurrent: () => void;
   pinStatus: "idle" | "saved" | "failed";
 }) {
-  const corpusQuery = useQuery({
-    queryKey: ["graph-corpus", serviceToken],
-    queryFn: () => loadCorpusData(serviceToken, 30),
+  const graphQuery = useQuery({
+    queryKey: ["workspace-graph-v2", serviceToken],
+    queryFn: () => loadGraphData(serviceToken, 80),
     retry: 1
   });
-  const todayQuery = useQuery({
-    queryKey: ["graph-today", serviceToken],
-    queryFn: () => loadToday(serviceToken),
-    retry: 1
-  });
-  const graph = useMemo(() => buildWorkspaceGraph(corpusQuery.data, todayQuery.data), [corpusQuery.data, todayQuery.data]);
-  const loading = corpusQuery.isLoading || todayQuery.isLoading;
-  const error = corpusQuery.isError || todayQuery.isError;
+  const [activeTypes, setActiveTypes] = useState(() => new Set(["source", "document", "passage", "claim", "digest", "entity", "hyperedge"]));
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const graph = graphQuery.data;
+  const graphElements = useMemo(() => graphToCytoscapeElements(graph, activeTypes), [graph, activeTypes]);
+  const selectedNode = (graph?.nodes || []).find((node) => node.id === selectedNodeId);
+  const loading = graphQuery.isLoading;
+  const error = graphQuery.isError;
+  const typeOptions = ["source", "document", "passage", "claim", "digest", "entity", "hyperedge"];
+
+  function toggleType(type: string) {
+    setActiveTypes((current) => {
+      const next = new Set(current);
+      if (next.has(type)) {
+        next.delete(type);
+      } else {
+        next.add(type);
+      }
+      return next;
+    });
+  }
 
   return (
     <section className="main-workspace canvas-surface graph-surface" aria-label="Graph 工作区">
@@ -1458,45 +1939,185 @@ function GraphWorkspace({
           {pinStatus === "saved" ? "已置顶" : pinStatus === "failed" ? "置顶失败" : "置顶 Graph"}
         </button>
         <button type="button" onClick={() => {
-          void corpusQuery.refetch();
-          void todayQuery.refetch();
+          void graphQuery.refetch();
         }}>
           <RefreshCw size={15} />
           刷新
         </button>
       </div>
       <div className="graph-summary" aria-label="Graph 摘要">
-        <span><strong>{graph.counts.sources}</strong> Sources</span>
-        <span><strong>{graph.counts.chunks}</strong> Chunks</span>
-        <span><strong>{graph.counts.discoveries}</strong> Discoveries</span>
-        <span><strong>{graph.counts.reviews}</strong> Reviews</span>
-        <span><strong>{graph.counts.hyperedges}</strong> Hyperedges</span>
+        <span><strong>{graph?.counts?.sources ?? 0}</strong> Sources</span>
+        <span><strong>{graph?.counts?.documents ?? 0}</strong> Documents</span>
+        <span><strong>{graph?.counts?.passages ?? 0}</strong> Passages</span>
+        <span><strong>{graph?.counts?.claims ?? 0}</strong> Claims</span>
+        <span><strong>{graph?.counts?.digest_notes ?? 0}</strong> Digest</span>
+        <span><strong>{graph?.counts?.hyperedges ?? 0}</strong> Hyperedges</span>
+      </div>
+      <div className="graph-filterbar" aria-label="Graph 节点类型过滤">
+        {typeOptions.map((type) => (
+          <button key={type} type="button" className={activeTypes.has(type) ? "active" : ""} onClick={() => toggleType(type)}>
+            {graphTypeLabel(type)}
+          </button>
+        ))}
       </div>
       {error ? (
         <div className="review-empty error-state">Graph 无法加载。请检查 8765 后端或服务令牌。</div>
       ) : loading ? (
         <div className="review-empty">正在加载真实 Graph 数据...</div>
-      ) : graph.nodes.length === 0 ? (
+      ) : graphElements.length === 0 ? (
         <div className="review-empty">当前没有可视化节点。</div>
       ) : (
-        <ReactFlow
-          nodes={graph.nodes}
-          edges={graph.edges}
-          nodeTypes={nodeTypes}
-          fitView
-          nodesDraggable
-          nodesConnectable={false}
-          elementsSelectable
-          panOnDrag
-          zoomOnScroll
-        >
-          <Background gap={24} color="#d8d6cc" />
-          <MiniMap pannable zoomable />
-          <Controls />
-        </ReactFlow>
+        <div className="graph-v2-layout">
+          <CytoscapeComponent
+            elements={graphElements}
+            stylesheet={graphStylesheet}
+            layout={{ name: "cose", animate: false, fit: true, padding: 48, nodeRepulsion: 8000, idealEdgeLength: 160 }}
+            className="cytoscape-graph"
+            cy={(cy: any) => {
+              cy.removeAllListeners("tap");
+              cy.on("tap", "node", (event: any) => setSelectedNodeId(event.target.id()));
+              cy.on("tap", (event: any) => {
+                if (event.target === cy) {
+                  setSelectedNodeId(null);
+                }
+              });
+            }}
+          />
+          <aside className="graph-inspector" aria-label="Graph 节点详情">
+            {selectedNode ? (
+              <>
+                <span className="eyebrow">{graphTypeLabel(selectedNode.type)}</span>
+                <h2>{displayText(selectedNode.label || selectedNode.id, "未命名节点")}</h2>
+                <p>{displayText(selectedNode.summary, "暂无摘要。")}</p>
+                <dl>
+                  <div><dt>ID</dt><dd>{selectedNode.object_id || selectedNode.id}</dd></div>
+                  <div><dt>类型</dt><dd>{selectedNode.object_type || selectedNode.type}</dd></div>
+                  {selectedNode.confidence !== undefined ? <div><dt>置信度</dt><dd>{selectedNode.confidence}</dd></div> : null}
+                  {selectedNode.token_estimate !== undefined ? <div><dt>Tokens</dt><dd>{selectedNode.token_estimate}</dd></div> : null}
+                </dl>
+                {selectedNode.source_refs?.length ? (
+                  <div className="graph-source-refs">
+                    <strong>Evidence refs</strong>
+                    {selectedNode.source_refs.slice(0, 6).map((ref, index) => (
+                      <code key={`${selectedNode.id}-${index}`}>{ref.passage_window_id || ref.chunk_id || ref.document_id || ref.source_item_id}</code>
+                    ))}
+                  </div>
+                ) : null}
+              </>
+            ) : (
+              <>
+                <span className="eyebrow">GraphRAG v2</span>
+                <h2>选择一个节点</h2>
+                <p>点击 digest、claim、hyperedge 或 passage，查看它如何追溯到原文证据。</p>
+              </>
+            )}
+          </aside>
+        </div>
       )}
     </section>
   );
+}
+
+const graphStylesheet = [
+  {
+    selector: "node",
+    style: {
+      "background-color": "data(color)",
+      label: "data(label)",
+      color: "#1c2520",
+      "font-size": 10,
+      "text-wrap": "wrap",
+      "text-max-width": 110,
+      "border-width": 1,
+      "border-color": "#f8f3e8",
+      width: "data(size)",
+      height: "data(size)"
+    }
+  },
+  {
+    selector: "edge",
+    style: {
+      width: 1.5,
+      "line-color": "#9d988d",
+      "target-arrow-color": "#9d988d",
+      "target-arrow-shape": "triangle",
+      "curve-style": "bezier",
+      label: "data(label)",
+      "font-size": 8,
+      color: "#58625b",
+      "text-background-color": "#f8f3e8",
+      "text-background-opacity": 0.8,
+      "text-background-padding": 2
+    }
+  },
+  {
+    selector: "node:selected",
+    style: {
+      "border-width": 4,
+      "border-color": "#1f8f6a"
+    }
+  }
+];
+
+function graphToCytoscapeElements(graph: WorkspaceGraphResponse | undefined, activeTypes: Set<string>) {
+  const nodes = (graph?.nodes || []).filter((node) => activeTypes.has(node.type));
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  const elements: Array<{ data: Record<string, unknown>; classes?: string }> = nodes.map((node) => ({
+    data: {
+      id: node.id,
+      label: trimText(displayText(node.label || node.id, "node"), 36),
+      color: graphNodeColor(node.type),
+      size: graphNodeSize(node.type)
+    },
+    classes: node.type
+  }));
+  for (const edge of graph?.edges || []) {
+    if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target)) {
+      continue;
+    }
+    elements.push({
+      data: {
+        id: edge.id,
+        source: edge.source,
+        target: edge.target,
+        label: trimText(edge.label || edge.type || "", 24),
+        color: "#9d988d",
+        size: 1
+      },
+      classes: edge.type || "edge"
+    });
+  }
+  return elements;
+}
+
+function graphNodeColor(type: string) {
+  const colors: Record<string, string> = {
+    source: "#5a7d9a",
+    document: "#7b8c53",
+    passage: "#d5a03a",
+    claim: "#ba6b57",
+    digest: "#8f6fc8",
+    entity: "#4f9d7a",
+    hyperedge: "#c15472"
+  };
+  return colors[type] || "#6c756f";
+}
+
+function graphNodeSize(type: string) {
+  return type === "hyperedge" || type === "digest" ? 42 : type === "source" || type === "document" ? 38 : 32;
+}
+
+function graphTypeLabel(type: string) {
+  const labels: Record<string, string> = {
+    source: "Source",
+    document: "Document",
+    passage: "Passage",
+    claim: "Claim",
+    digest: "Digest",
+    entity: "Entity",
+    hyperedge: "Hyperedge"
+  };
+  return labels[type] || type;
 }
 
 function buildWorkspaceGraph(corpus?: WorkspaceCorpusResponse, today?: TodayResponse) {
@@ -1546,7 +2167,7 @@ function buildWorkspaceGraph(corpus?: WorkspaceCorpusResponse, today?: TodayResp
       type: "pskaCard",
       position,
       draggable: true,
-      data: { title: trimText(title, 72), body: trimText(body, 160), icon, kind: lane }
+      data: { title: trimText(displayText(title, "未命名节点"), 72), body: trimText(displayText(body, "暂无摘要"), 160), icon, kind: lane }
     });
   }
 
@@ -1625,11 +2246,11 @@ function buildWorkspaceGraph(corpus?: WorkspaceCorpusResponse, today?: TodayResp
     nodes,
     edges,
     counts: {
-      sources: sources.length,
-      chunks: chunks.length,
-      discoveries: discoveries.length,
-      reviews: reviews.length,
-      hyperedges: hyperedges.length
+      sources: corpus?.counts?.sources_total ?? sources.length,
+      chunks: today?.system?.source_counts?.chunks ?? corpus?.counts?.chunks_matching ?? chunks.length,
+      discoveries: today?.discoveries?.length ?? discoveries.length,
+      reviews: today?.system?.pending_reviews?.total_matching ?? today?.needs_review?.length ?? reviews.length,
+      hyperedges: corpus?.counts?.hyperedges ?? hyperedges.length
     }
   };
 }
@@ -1759,7 +2380,7 @@ function BrainSidebar({ brain, onRefresh }: { brain: BrainState; onRefresh: () =
         <span>{brain.status === "analyzing" ? "正在分析上下文" : brain.status === "synced" ? "已与 PSKA 同步" : brain.status === "error" ? "PSKA 请求失败" : "等待真实上下文"}</span>
         <small>触发：{triggerLabel(brain.lastTrigger)}</small>
       </div>
-      {brain.error && <div className="review-empty error-state">{brain.error}</div>}
+      {brain.error && <div className="review-empty error-state">{displayText(brain.error)}</div>}
       <BrainPanel title="相关知识">
         <div className="knowledge-list">
           {brain.relatedKnowledge.length === 0 ? (
@@ -1767,10 +2388,10 @@ function BrainSidebar({ brain, onRefresh }: { brain: BrainState; onRefresh: () =
           ) : brain.relatedKnowledge.map((item) => (
             <button className="knowledge-item" type="button" key={item.id}>
               <span>
-                <strong>{item.title}</strong>
-                <small>{typeof item.score === "number" ? `匹配度：${item.score}%` : item.source || "未评分"}</small>
+                <strong>{displayText(item.title, "相关知识")}</strong>
+                <small>{typeof item.score === "number" ? `匹配度：${item.score}%` : displayText(item.source, "未评分")}</small>
               </span>
-              <p>{item.snippet}</p>
+              <p>{displayText(item.snippet, "暂无摘要")}</p>
             </button>
           ))}
         </div>
@@ -1780,9 +2401,9 @@ function BrainSidebar({ brain, onRefresh }: { brain: BrainState; onRefresh: () =
           {brain.entities.length === 0 ? (
             <span>暂无实体</span>
           ) : brain.entities.map((entity) => (
-            <span key={entity}>
+            <span key={displayText(entity)}>
               <Tag size={13} />
-              {entity}
+              {displayText(entity)}
             </span>
           ))}
         </div>
@@ -1793,9 +2414,9 @@ function BrainSidebar({ brain, onRefresh }: { brain: BrainState; onRefresh: () =
             <div className="review-empty">暂无真实来源时间线。</div>
           ) : brain.timeline.map((item) => (
             <div className="timeline-item" key={item.id}>
-              <small>{item.age}</small>
-              <strong>{item.title}</strong>
-              <p>{item.detail}</p>
+              <small>{displayText(item.age)}</small>
+              <strong>{displayText(item.title, "时间线事件")}</strong>
+              <p>{displayText(item.detail, "暂无详情")}</p>
             </div>
           ))}
         </div>
@@ -1806,8 +2427,8 @@ function BrainSidebar({ brain, onRefresh }: { brain: BrainState; onRefresh: () =
             <div className="review-empty">暂无真实关系建议。</div>
           ) : brain.connections.map((item) => (
             <div key={item.id}>
-              <span>{item.relation}</span>
-              <strong>{item.label}</strong>
+              <span>{displayText(item.relation, "相关")}</span>
+              <strong>{displayText(item.label, "建议连接")}</strong>
             </div>
           ))}
         </div>
@@ -1840,7 +2461,7 @@ function workspaceActivityTarget(surface: WorkspaceMode) {
     return { title: "Graph 工作区", summary: "查看真实 PSKA 图谱与候选关系。" };
   }
   if (surface === "corpus") {
-    return { title: "语料库", summary: "查看真实 source、chunk 和 connector 状态。" };
+    return { title: "语料库", summary: "查看已同步资料、可检索片段和资料位置。" };
   }
   if (surface === "document") {
     return { title: "文档工作区", summary: "查看文档工作区。" };

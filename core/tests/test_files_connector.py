@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import sys
 
@@ -137,6 +138,68 @@ def test_files_scan_reconciles_unchanged_changed_moved_and_missing_files(tmp_pat
     assert moved.changes[0]["previous_path"] == str(note.resolve())
     assert missing.missing_files == 1
     assert missing.connector_state.config["files_missing"][0]["source_item_id"] == changed_source_id
+
+
+def test_files_scan_reingests_when_manifest_source_item_was_deleted(tmp_path: Path) -> None:
+    root = tmp_path / "notes"
+    root.mkdir()
+    (root / "note.txt").write_text("stable content", encoding="utf-8")
+    store = InMemoryKnowledgeStore()
+
+    first = scan_files(store, root=root)
+    deleted_source_item_id = first.source_item_ids[0]
+    del store.source_items[deleted_source_item_id]
+    store.source_items_by_hash.clear()
+
+    restored = scan_files(store, root=root)
+
+    assert restored.ingested == 1
+    assert restored.new_files == 1
+    assert restored.unchanged_files == 0
+    assert restored.source_item_ids
+    assert restored.connector_state.config["files_manifest"]["note.txt"]["source_item_id"] in store.source_items
+
+
+def test_files_scan_ingests_marked_directory_as_one_source_with_many_documents(tmp_path: Path) -> None:
+    root = tmp_path / "notes"
+    novel = root / "novel"
+    novel.mkdir(parents=True)
+    (novel / ".pska-source.json").write_text(
+        json.dumps(
+            {
+                "type": "source_collection",
+                "title": "Novel Project",
+                "source_id": "novel-project",
+                "documents": ["*.md"],
+                "exclude": ["README*.md"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (novel / "故事背景.md").write_text("# 背景\n\n世界观。", encoding="utf-8")
+    (novel / "正文.md").write_text("# 正文\n\n第一章。", encoding="utf-8")
+    (novel / "README_生成器.md").write_text("tooling notes", encoding="utf-8")
+    store = InMemoryKnowledgeStore()
+
+    report = scan_files(store, root=root, owner_user_id="user_primary")
+
+    assert report.ingested == 1
+    assert len(report.source_item_ids) == 1
+    assert report.source_item_ids[0].startswith("src_")
+    source = store.source_items[report.source_item_ids[0]]
+    assert source.record_type == "file_collection"
+    assert source.title == "Novel Project"
+    assert source.metadata["collection"] is True
+    documents = [document for document in store.documents.values() if document.source_item_id == source.source_item_id]
+    assert sorted(document.title for document in documents) == ["故事背景.md", "正文.md"]
+    assert len({chunk.source_item_id for chunk in store.chunks.values()}) == 1
+    manifest = report.connector_state.config["files_manifest"]
+    assert manifest["novel"]["collection"] is True
+    assert manifest["novel"]["document_count"] == 2
+    unchanged = scan_files(store, root=root, owner_user_id="user_primary")
+    assert unchanged.ingested == 0
+    assert unchanged.unchanged_files == 1
+    assert len(store.source_items) == 1
 
 
 def test_files_scan_keeps_manifests_isolated_by_root(tmp_path: Path) -> None:

@@ -14,7 +14,7 @@ from pska_core.agentic_service import AgenticServiceError
 from pska_core.api import PSKAApi, PSKARequestHandler
 from pska_core.candidates import CandidateWriteService
 from pska_core.cli import service_check
-from pska_core.config import PSKAConfig, ServiceConfig
+from pska_core.config import FilesConfig, PSKAConfig, ServiceConfig, WorkspaceConfig
 from pska_core.enums import Directionality, MemoryLayer, ReviewType, UserRole, Visibility
 from pska_core.fastreact_client import FastreactError, HttpFastreactClient, FastreactConfig
 import pska_core.fastreact_client as fastreact_module
@@ -23,7 +23,7 @@ from pska_core.hypergraph import HypergraphService
 from pska_core.ingest import IngestService
 from pska_core.jobs import DIGEST_VIA_FASTREACT, EXTRACT_VIA_FASTREACT, JobService
 from pska_core.mcp_server import MCPServer
-from pska_core.models import AgentMemory, ConnectorState, DiscoveryItem, Entity, ReviewItem, SourceRef, User, UserProfileCard, utc_now
+from pska_core.models import AgentMemory, ConnectorState, DigestNote, DiscoveryItem, Entity, KnowledgeClaim, ReviewItem, SourceRef, User, UserProfileCard, utc_now
 from pska_core.retrieval import RetrievalService
 from pska_core.review import ReviewService
 from pska_core.serde import to_jsonable
@@ -803,6 +803,78 @@ def test_http_route_covers_digest_schedule() -> None:
     assert status == 200
     assert payload["scheduled_source_item_ids"] == [source.source_item_id]
     assert payload["job"]["job_type"] == DIGEST_VIA_FASTREACT
+
+
+def test_http_route_covers_files_sync(tmp_path: Path) -> None:
+    api = _api()
+    (tmp_path / "note.md").write_text("PSKA should sync this file.", encoding="utf-8")
+
+    with _http_server(api) as base_url:
+        status, payload = _http_json(
+            base_url,
+            "POST",
+            "/files/sync",
+            {"owner_user_id": "user_primary", "roots": [str(tmp_path)], "skip_twitter_archives": True},
+        )
+
+    assert status == 200
+    assert payload["ok"] is True
+    assert payload["totals"]["scanned"] == 1
+    assert payload["totals"]["ingested"] == 1
+    assert payload["totals"]["failed"] == 0
+
+
+def test_http_route_covers_files_sync_with_empty_twitter_archive(tmp_path: Path) -> None:
+    notes_root = tmp_path / "notes"
+    workspace_root = tmp_path / "workspace"
+    notes_root.mkdir()
+    (workspace_root / "twitter_archive").mkdir(parents=True)
+    (notes_root / "note.md").write_text("PSKA should sync this file and check twitter archive.", encoding="utf-8")
+    api = _api()
+    api.config = PSKAConfig(files=FilesConfig(roots=(notes_root,)), workspace=WorkspaceConfig(root=workspace_root))
+
+    with _http_server(api) as base_url:
+        status, payload = _http_json(
+            base_url,
+            "POST",
+            "/files/sync",
+            {"owner_user_id": "user_primary"},
+        )
+
+    assert status == 200
+    assert payload["ok"] is True
+    assert payload["twitter_archives"]["imported"] == 0
+    assert payload["twitter_archives"]["skipped"] == 0
+    assert payload["totals"]["scanned"] == 1
+
+
+def test_http_route_covers_digest_now_skip_sync() -> None:
+    api = _api()
+    source = IngestService(api.store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "digest-now-http-note",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "Digest now HTTP note",
+            "content": {"text": "Schedule this through digest-now."},
+        }
+    )
+
+    with _http_server(api) as base_url:
+        status, payload = _http_json(
+            base_url,
+            "POST",
+            "/digest/now",
+                {"owner_user_id": "user_primary", "limit": 1, "skip_sync": True, "max_worker_runs": 0},
+        )
+
+    assert status == 200
+    assert payload["digest"]["scheduled_source_item_ids"] == [source.source_item_id]
+    assert payload["summary"]["scheduled_source_items"] == 1
 
 
 def test_digest_schedule_agent_service_requires_represented_user_for_private_owner() -> None:
@@ -1624,6 +1696,153 @@ def test_user_workspace_corpus_explorer_filters_and_summarizes_knowledge() -> No
     assert payload["hyperedges"][0]["relation_type"] == "documents"
     assert payload["hyperedges"][0]["members"][0]["label"] == "PSKA"
     assert payload["hyperedges"][0]["source_refs"][0]["source_item_id"] == files_source.source_item_id
+
+
+def test_api_job_context_returns_documents_and_passage_windows() -> None:
+    api = _api()
+    source = IngestService(api.store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "graph-context-note",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "content": {"text": "Graph context document-first evidence. " * 8},
+        }
+    )
+    job = api.jobs.submit(
+        DIGEST_VIA_FASTREACT,
+        {"owner_user_id": "user_primary", "source_refs": [{"source_item_id": source.source_item_id}]},
+    )
+
+    payload = api.job_context(job.job_id)
+
+    assert payload["documents"][0]["source_item_id"] == source.source_item_id
+    assert payload["passage_windows"][0]["document_id"] == payload["documents"][0]["document_id"]
+    assert payload["passage_windows"][0]["token_estimate"] > 0
+    assert payload["context_policy"]["input_strategy"] == "document_first"
+    assert payload["context_policy"]["chunks_role"] == "retrieval_slices_compatibility"
+
+
+def test_workspace_graph_data_links_digest_claim_hyperedge_to_passage_evidence() -> None:
+    api = _api()
+    source = IngestService(api.store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "graph-v2-note",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "content": {"text": "PSKA GraphRAG v2 formalizes digest notes into claim-backed hyperedges."},
+        }
+    )
+    chunk = api.store.list_chunks_for_sources({source.source_item_id})[0]
+    ref = SourceRef(source_item_id=source.source_item_id, document_id=chunk.document_id, chunk_id=chunk.chunk_id)
+    api.store.add_knowledge_claim(
+        KnowledgeClaim(
+            knowledge_claim_id="kc_graph_v2",
+            owner_user_id="user_primary",
+            claim_type="fact",
+            statement="PSKA GraphRAG v2 把 digest note 形式化为 claim-backed hyperedge。",
+            source_refs=[ref],
+            evidence_text="formalizes digest notes into claim-backed hyperedges",
+            subject="PSKA GraphRAG v2",
+            predicate="formalizes",
+            object="digest notes",
+            confidence=0.9,
+        )
+    )
+    api.store.add_digest_note(
+        DigestNote(
+            digest_note_id="dig_graph_v2",
+            owner_user_id="user_primary",
+            title="GraphRAG v2 digest",
+            synopsis="Digest notes are first-class graph nodes grounded in source passages.",
+            source_refs=[ref],
+            confidence=0.9,
+        )
+    )
+    api.store.add_entity(Entity("ent_pska_graphrag_v2", "system", "PSKA GraphRAG v2", "user_primary", "private_primary", Visibility.PRIVATE))
+    api.store.add_entity(Entity("ent_digest_note", "artifact", "digest notes", "user_primary", "private_primary", Visibility.PRIVATE))
+    graph = HypergraphService(api.store)
+    graph.create_hyperedge(
+        relation_type="formalizes",
+        owner_user_id="user_primary",
+        space_id="private_primary",
+        visibility=Visibility.PRIVATE,
+        directionality=Directionality.DIRECTED,
+        members=[("ent_pska_graphrag_v2", "system"), ("ent_digest_note", "artifact")],
+        evidence_text="formalizes digest notes into claim-backed hyperedges",
+        source_refs=[ref],
+        confidence=0.9,
+    )
+
+    payload = api.workspace_graph_data(owner_user_id="user_primary", limit=20)
+
+    node_types = {node["type"] for node in payload["nodes"]}
+    edge_types = {edge["type"] for edge in payload["edges"]}
+    assert {"source", "document", "passage", "claim", "digest", "entity", "hyperedge"} <= node_types
+    assert {"contains", "grounds", "summarizes", "formalizes", "suggests_relationship", "member"} <= edge_types
+    assert payload["counts"]["claims"] == 1
+    assert payload["counts"]["digest_notes"] == 1
+
+
+def test_workspace_graph_path_defaults_to_agentic_graphrag_with_deterministic_seeds() -> None:
+    api = _api()
+    IngestService(api.store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "graph-path-note",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "Graph Path Note",
+            "content": {"text": "GraphRAG online queries should inspect passage neighbors and graph facts."},
+        }
+    )
+
+    class CapturingAgenticService(FakeAgenticService):
+        def __init__(self, retrieval):
+            super().__init__(retrieval)
+            self.query = ""
+
+        def search(self, query, user, *, represented_user_id=None, max_iterations=3):
+            self.query = query
+            return {
+                "answer": "Agentic GraphRAG answer.",
+                "retrieval": {"citations": [{"source_item_id": "src_graph_path"}]},
+                "trace": {
+                    "retrieval_plan": ["deterministic_seeds", "graph_expansion", "synthesis"],
+                    "expansion_decisions": [
+                        {"target": "previous_next_passage", "decision": "inspect_if_evidence_gap"},
+                        {"target": "connected_fact_neighbors", "decision": "inspect_if_query_entities_match"},
+                    ],
+                    "evidence_check": "has_citations",
+                },
+                "source_refs": [{"source_item_id": "src_graph_path"}],
+                "agentic_service": {"provider": "test", "adapter": "fake"},
+            }
+
+    agentic = CapturingAgenticService(api.retrieval)
+    api.agentic_service = agentic
+
+    payload = api.workspace_graph_path(query="GraphRAG online queries", owner_user_id="user_primary")
+
+    assert payload["ok"] is True
+    assert payload["mode"] == "agentic"
+    assert payload["requires_agentic_service_online"] is True
+    assert payload["answer"] == "Agentic GraphRAG answer."
+    assert payload["deterministic"]["mode"] == "deterministic"
+    assert payload["agentic_contract"]["pattern"] == "hipporag_style_agentic_graphrag"
+    assert "deterministic_seeds" in agentic.query
+    assert "previous/next passage windows" in agentic.query
+    assert payload["agentic_trace"]["expansion_decisions"][0]["target"] == "previous_next_passage"
 
 
 def test_user_workspace_writer_suggests_with_selected_text_and_evidence() -> None:

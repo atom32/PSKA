@@ -76,6 +76,7 @@ TOOLS = [
                         "properties": {
                             "source_item_id": {"type": "string"},
                             "document_id": {"type": "string"},
+                            "passage_window_id": {"type": "string"},
                             "chunk_id": {"type": "string"},
                             "message_id": {"type": "string"},
                             "path": {"type": "string"},
@@ -122,6 +123,43 @@ TOOLS = [
                         "required": ["relation_type", "members", "evidence_text"],
                     },
                 },
+                "knowledge_claims": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "claim_type": {"type": "string"},
+                            "statement": {"type": "string"},
+                            "subject": {"type": "string"},
+                            "predicate": {"type": "string"},
+                            "object": {"type": "string"},
+                            "qualifiers": {"type": "object"},
+                            "evidence_text": {"type": "string"},
+                            "confidence": {"type": "number"},
+                            "source_refs": {"type": "array", "items": {"type": "object"}},
+                        },
+                        "required": ["claim_type", "statement", "evidence_text", "source_refs"],
+                    },
+                },
+                "digest_notes": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string"},
+                            "synopsis": {"type": "string"},
+                            "key_points": {"type": "array", "items": {"type": "object"}},
+                            "actions": {"type": "array", "items": {"type": "object"}},
+                            "open_questions": {"type": "array", "items": {"type": "object"}},
+                            "risks": {"type": "array", "items": {"type": "object"}},
+                            "memory_suggestions": {"type": "array", "items": {"type": "object"}},
+                            "relationship_suggestions": {"type": "array", "items": {"type": "object"}},
+                            "confidence": {"type": "number"},
+                            "source_refs": {"type": "array", "items": {"type": "object"}},
+                        },
+                        "required": ["title", "synopsis", "source_refs"],
+                    },
+                },
                 "review_items": {
                     "type": "array",
                     "items": {
@@ -163,6 +201,13 @@ TOOLS = [
                 "job_id": {"type": "string"},
                 "user_id": {"type": "string", "default": "user_primary"},
                 "represented_user_id": {"type": "string"},
+                "cursor": {"type": "integer", "default": 0},
+                "limit": {"type": "integer", "default": 1},
+                "max_source_chars": {"type": "integer", "default": 300},
+                "max_document_chars": {"type": "integer", "default": 500},
+                "max_passage_chars": {"type": "integer", "default": 500},
+                "max_chunk_chars": {"type": "integer", "default": 240},
+                "max_chunks": {"type": "integer", "default": 1},
             },
             "required": ["job_id"],
         },
@@ -263,6 +308,8 @@ class MCPServer:
             "chunks": self.store.count_table("chunks"),
             "entities": self.store.count_table("entities"),
             "hyperedges": self.store.count_table("hyperedges"),
+            "knowledge_claims": self.store.count_table("knowledge_claims"),
+            "digest_notes": self.store.count_table("digest_notes"),
             "review_items": self.store.count_table("review_items"),
         }
 
@@ -282,17 +329,77 @@ class MCPServer:
         job = self.store.get_job(str(arguments["job_id"]))
         request_user_id = str(arguments.get("represented_user_id") or arguments.get("user_id") or "user_primary")
         source_item_ids = _job_source_item_ids(job)
-        source_items = [
+        candidate_items = [
             item
             for item in self.store.list_source_items()
             if item.source_item_id in source_item_ids and item.owner_user_id == request_user_id
         ]
-        chunks = self.store.list_chunks_for_sources({item.source_item_id for item in source_items})
+        candidate_items = sorted(candidate_items, key=lambda item: (item.created_at, item.source_item_id))
+        offset = _cursor_offset(arguments.get("cursor"))
+        limit = _bounded_int(arguments.get("limit"), default=1, minimum=1, maximum=10)
+        source_items = candidate_items[offset : offset + limit]
+        next_offset = offset + len(source_items)
+        has_more = next_offset < len(candidate_items)
+        source_ids = {item.source_item_id for item in source_items}
+        max_chunks = _bounded_int(arguments.get("max_chunks"), default=1, minimum=0, maximum=50)
+        max_source_chars = _bounded_int(arguments.get("max_source_chars"), default=300, minimum=120, maximum=8000)
+        max_document_chars = _bounded_int(arguments.get("max_document_chars"), default=500, minimum=500, maximum=6000)
+        max_passage_chars = _bounded_int(arguments.get("max_passage_chars"), default=500, minimum=500, maximum=6000)
+        max_passage_windows = _bounded_int(arguments.get("max_passage_windows"), default=3, minimum=0, maximum=20)
+        max_chunk_chars = _bounded_int(arguments.get("max_chunk_chars"), default=240, minimum=120, maximum=4000)
+        max_existing_claims = _bounded_int(arguments.get("max_existing_claims"), default=5, minimum=0, maximum=20)
+        max_existing_digest_notes = _bounded_int(arguments.get("max_existing_digest_notes"), default=2, minimum=0, maximum=10)
+        documents = self.store.list_documents_for_sources(source_ids)
+        chunks = self.store.list_chunks_for_sources(source_ids)
+        passage_windows = _passage_windows_for_documents(documents, chunks, target_chars=max_passage_chars)
         return {
-            "job": job,
+            "job": _compact_job(job),
             "request_user_id": request_user_id,
-            "source_items": source_items,
-            "chunks": chunks,
+            "source_items": [_compact_source_item(item, max_chars=max_source_chars) for item in source_items],
+            "documents": [_compact_document(document, max_chars=max_document_chars) for document in documents],
+            "passage_windows": [_compact_passage_window(window, max_chars=max_passage_chars) for window in passage_windows[:max_passage_windows]],
+            "chunks": [_compact_chunk(chunk, max_chars=max_chunk_chars) for chunk in chunks[:max_chunks]],
+            "knowledge_claims": [
+                _compact_knowledge_claim(claim)
+                for claim in self.store.list_knowledge_claims(owner_user_id=request_user_id, source_item_ids=source_ids, limit=max_existing_claims)
+            ],
+            "digest_notes": [
+                _compact_digest_note(note)
+                for note in self.store.list_digest_notes(owner_user_id=request_user_id, source_item_ids=source_ids, limit=max_existing_digest_notes)
+            ],
+            "agent_memories": [
+                _compact_memory(memory)
+                for memory in self.store.list_agent_memories(owner_user_id=request_user_id)[:1]
+            ],
+            "entities": [
+                _compact_entity(entity)
+                for entity in self.store.list_entities()
+                if entity.owner_user_id == request_user_id
+            ][:3],
+            "cursor": str(offset),
+            "next_cursor": str(next_offset) if has_more else None,
+            "has_more": has_more,
+            "total_source_items": len(candidate_items),
+            "limits": {
+                "source_items": limit,
+                "documents": len(documents),
+                "passage_windows": min(len(passage_windows), max_passage_windows),
+                "total_passage_windows": len(passage_windows),
+                "chunks": max_chunks,
+                "existing_claims": max_existing_claims,
+                "existing_digest_notes": max_existing_digest_notes,
+                "source_chars": max_source_chars,
+                "document_chars": max_document_chars,
+                "passage_chars": max_passage_chars,
+                "chunk_chars": max_chunk_chars,
+            },
+            "context_policy": {
+                "input_strategy": "document_first",
+                "passage_window_policy": "full_document_until_budget_then_paragraph_window",
+                "chunks_role": "retrieval_slices_compatibility",
+                "target_window_chars": max_passage_chars,
+                "token_estimate": sum(window["token_estimate"] for window in passage_windows),
+            },
         }
 
     def result(self, request_id: Any, result: Any) -> dict[str, Any]:
@@ -321,6 +428,233 @@ def _job_source_item_ids(job) -> set[str]:
             if isinstance(ref, dict) and ref.get("source_item_id"):
                 ids.add(str(ref["source_item_id"]))
     return ids
+
+
+def _cursor_offset(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _bounded_int(value: Any, *, default: int, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value if value is not None else default)
+    except (TypeError, ValueError):
+        parsed = default
+    return min(max(parsed, minimum), maximum)
+
+
+def _compact_source_item(item: Any, *, max_chars: int) -> dict[str, Any]:
+    payload = to_jsonable(item)
+    text = str(payload.get("content_text") or "")
+    raw_paths = payload.get("metadata", {}).get("raw_paths", {}) if isinstance(payload.get("metadata"), dict) else {}
+    return {
+        "source_item_id": payload.get("source_item_id"),
+        "source_channel": payload.get("source_channel"),
+        "record_type": payload.get("record_type"),
+        "source_id": payload.get("source_id"),
+        "owner_user_id": payload.get("owner_user_id"),
+        "space_id": payload.get("space_id"),
+        "visibility": payload.get("visibility"),
+        "title": payload.get("title"),
+        "url": payload.get("url"),
+        "path": raw_paths.get("markdown") or raw_paths.get("original"),
+        "created_at": payload.get("created_at"),
+        "updated_at": payload.get("updated_at"),
+        "content_text": _truncate(text, max_chars),
+        "content_chars": len(text),
+    }
+
+
+def _compact_chunk(chunk: Any, *, max_chars: int) -> dict[str, Any]:
+    payload = to_jsonable(chunk)
+    text = str(payload.get("text") or "")
+    return {
+        "chunk_id": payload.get("chunk_id"),
+        "document_id": payload.get("document_id"),
+        "source_item_id": payload.get("source_item_id"),
+        "owner_user_id": payload.get("owner_user_id"),
+        "space_id": payload.get("space_id"),
+        "visibility": payload.get("visibility"),
+        "ordinal": payload.get("ordinal"),
+        "text": _truncate(text, max_chars),
+        "text_chars": len(text),
+    }
+
+
+def _compact_document(document: Any, *, max_chars: int) -> dict[str, Any]:
+    payload = to_jsonable(document)
+    body = str(payload.get("body") or "")
+    return {
+        "document_id": payload.get("document_id"),
+        "source_item_id": payload.get("source_item_id"),
+        "owner_user_id": payload.get("owner_user_id"),
+        "space_id": payload.get("space_id"),
+        "visibility": payload.get("visibility"),
+        "title": payload.get("title"),
+        "body": _truncate(body, max_chars),
+        "body_chars": len(body),
+        "token_estimate": _estimate_tokens(body),
+        "metadata": payload.get("metadata") or {},
+    }
+
+
+def _passage_windows_for_documents(documents: list[Any], chunks: list[Any], *, target_chars: int = 6000) -> list[dict[str, Any]]:
+    chunks_by_document: dict[str, list[Any]] = {}
+    for chunk in chunks:
+        chunks_by_document.setdefault(str(getattr(chunk, "document_id", "") or ""), []).append(chunk)
+    windows: list[dict[str, Any]] = []
+    max_chars = max(500, target_chars)
+    for document in documents:
+        document_id = str(getattr(document, "document_id", "") or "")
+        body = str(getattr(document, "body", "") or "")
+        if not body:
+            body = "\n\n".join(str(getattr(chunk, "text", "") or "") for chunk in chunks_by_document.get(document_id, []))
+        for ordinal, (start, end) in enumerate(_passage_spans(body, max_chars=max_chars)):
+            text = body[start:end]
+            windows.append(
+                {
+                    "passage_window_id": f"pw_{document_id}_{ordinal}",
+                    "source_item_id": str(getattr(document, "source_item_id", "") or ""),
+                    "document_id": document_id,
+                    "owner_user_id": str(getattr(document, "owner_user_id", "") or ""),
+                    "ordinal": ordinal,
+                    "title": str(getattr(document, "title", "") or document_id),
+                    "text": text,
+                    "start_char": start,
+                    "end_char": end,
+                    "token_estimate": _estimate_tokens(text),
+                    "metadata": {
+                        "windowing_policy": "document_full" if len(body) <= max_chars else "paragraph_window",
+                        "document_title": getattr(document, "title", "") or document_id,
+                    },
+                }
+            )
+    return windows
+
+
+def _compact_passage_window(window: dict[str, Any], *, max_chars: int) -> dict[str, Any]:
+    text = str(window.get("text") or "")
+    return {**window, "text": _truncate(text, max_chars), "text_chars": len(text)}
+
+
+def _passage_spans(text: str, *, max_chars: int) -> list[tuple[int, int]]:
+    if not text:
+        return []
+    if len(text) <= max_chars:
+        return [(0, len(text))]
+    spans: list[tuple[int, int]] = []
+    start = 0
+    while start < len(text):
+        end = min(start + max_chars, len(text))
+        split_at = text.rfind("\n\n", start, end)
+        if split_at <= start + max_chars // 2:
+            split_at = end
+        spans.append((start, split_at))
+        start = split_at
+        while start < len(text) and text[start].isspace():
+            start += 1
+    return spans
+
+
+def _estimate_tokens(text: str) -> int:
+    return max(1, len(text) // 4) if text else 0
+
+
+def _compact_job(job: Any) -> dict[str, Any]:
+    payload = to_jsonable(job)
+    return {
+        "job_id": payload.get("job_id"),
+        "job_type": payload.get("job_type"),
+        "status": payload.get("status"),
+        "attempts": payload.get("attempts"),
+        "max_attempts": payload.get("max_attempts"),
+        "priority": payload.get("priority"),
+        "run_after": payload.get("run_after"),
+        "owner_user_id": (payload.get("payload") or {}).get("owner_user_id"),
+        "reason": (payload.get("payload") or {}).get("reason"),
+        "source_item_ids": sorted(_job_source_item_ids(job)),
+    }
+
+
+def _compact_entity(entity: Any) -> dict[str, Any]:
+    payload = to_jsonable(entity)
+    return {
+        "entity_id": payload.get("entity_id"),
+        "entity_type": payload.get("entity_type"),
+        "label": payload.get("label"),
+        "visibility": payload.get("visibility"),
+    }
+
+
+def _compact_memory(memory: Any) -> dict[str, Any]:
+    payload = to_jsonable(memory)
+    text = str(payload.get("text") or "")
+    return {
+        "agent_memory_id": payload.get("agent_memory_id"),
+        "layer": payload.get("layer"),
+        "text": _truncate(text, 240),
+        "confidence": payload.get("confidence"),
+    }
+
+
+def _compact_knowledge_claim(claim: Any) -> dict[str, Any]:
+    payload = to_jsonable(claim)
+    return {
+        "knowledge_claim_id": payload.get("knowledge_claim_id"),
+        "claim_type": payload.get("claim_type"),
+        "statement": _truncate(str(payload.get("statement") or ""), 360),
+        "subject": payload.get("subject"),
+        "predicate": payload.get("predicate"),
+        "object": payload.get("object"),
+        "evidence_text": _truncate(str(payload.get("evidence_text") or ""), 300),
+        "source_refs": payload.get("source_refs") or [],
+        "confidence": payload.get("confidence"),
+        "producer": payload.get("producer"),
+        "job_id": payload.get("job_id"),
+    }
+
+
+def _compact_digest_note(note: Any) -> dict[str, Any]:
+    payload = to_jsonable(note)
+    return {
+        "digest_note_id": payload.get("digest_note_id"),
+        "title": _truncate(str(payload.get("title") or ""), 160),
+        "synopsis": _truncate(str(payload.get("synopsis") or ""), 700),
+        "key_points": _compact_digest_list(payload.get("key_points"), max_items=5),
+        "actions": _compact_digest_list(payload.get("actions"), max_items=4),
+        "open_questions": _compact_digest_list(payload.get("open_questions"), max_items=3),
+        "risks": _compact_digest_list(payload.get("risks"), max_items=3),
+        "source_refs": payload.get("source_refs") or [],
+        "confidence": payload.get("confidence"),
+        "producer": payload.get("producer"),
+        "job_id": payload.get("job_id"),
+    }
+
+
+def _compact_digest_list(value: Any, *, max_items: int) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    compacted: list[dict[str, Any]] = []
+    for item in value[:max_items]:
+        if not isinstance(item, dict):
+            compacted.append({"summary": _truncate(str(item), 220)})
+            continue
+        summary = item.get("summary") or item.get("point") or item.get("action") or item.get("question") or item.get("risk") or item.get("text")
+        compacted.append(
+            {
+                "summary": _truncate(str(summary or ""), 220),
+                "source_refs": item.get("source_refs") or [],
+            }
+        )
+    return compacted
+
+
+def _truncate(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    return text[: max(0, max_chars - 24)].rstrip() + "\n...[truncated]"
 
 
 if __name__ == "__main__":

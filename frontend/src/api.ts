@@ -1,11 +1,16 @@
 import type {
   BrainState,
   ConsoleSourcesResponse,
+  DigestLogsResponse,
+  DigestNowResponse,
+  FileSyncResponse,
+  KnowledgeSourceCleanupResponse,
   ReviewCenterResponse,
   TodayResponse,
   WorkspaceActivityResponse,
   WorkspaceActivityType,
   WorkspaceCorpusResponse,
+  WorkspaceGraphResponse,
   WorkspaceMode,
   WorkspaceSearchResponse
 } from "./types";
@@ -78,12 +83,84 @@ export async function loadCorpusData(serviceToken: string, limit = 16): Promise<
   return (await response.json()) as WorkspaceCorpusResponse;
 }
 
+export async function loadGraphData(serviceToken: string, limit = 60): Promise<WorkspaceGraphResponse> {
+  const response = await fetch(`/workspace/graph/data?owner_user_id=user_primary&limit=${limit}`, { headers: headers(serviceToken) });
+  if (!response.ok) {
+    throw new Error(`graph ${response.status}`);
+  }
+  return (await response.json()) as WorkspaceGraphResponse;
+}
+
 export async function loadSourcesConsole(serviceToken: string, limit = 20): Promise<ConsoleSourcesResponse> {
   const response = await fetch(`/console/sources/data?owner_user_id=user_primary&limit=${limit}`, { headers: headers(serviceToken) });
   if (!response.ok) {
     throw new Error(`sources ${response.status}`);
   }
   return (await response.json()) as ConsoleSourcesResponse;
+}
+
+export async function runFileSync(serviceToken: string): Promise<FileSyncResponse> {
+  const response = await fetch("/files/sync", {
+    method: "POST",
+    headers: headers(serviceToken),
+    body: JSON.stringify({
+      owner_user_id: "user_primary",
+      skip_twitter_archives: false
+    })
+  });
+  if (!response.ok) {
+    throw new Error(await responseError(response, "同步资料失败"));
+  }
+  return (await response.json()) as FileSyncResponse;
+}
+
+export async function runDigestNow(serviceToken: string): Promise<DigestNowResponse> {
+  const response = await fetch("/digest/now", {
+    method: "POST",
+    headers: headers(serviceToken),
+    body: JSON.stringify({
+      owner_user_id: "user_primary",
+      limit: 20,
+      batch_size: 20,
+      force: false,
+      skip_sync: false,
+      max_worker_runs: 1,
+      reason: "manual frontend digest-now"
+    })
+  });
+  if (!response.ok) {
+    throw new Error(await responseError(response, "同步并理解失败"));
+  }
+  return (await response.json()) as DigestNowResponse;
+}
+
+export async function loadDigestLogs(serviceToken: string, limit = 8): Promise<DigestLogsResponse> {
+  const response = await fetch(`/digest/logs?owner_user_id=user_primary&limit=${limit}`, { headers: headers(serviceToken) });
+  if (!response.ok) {
+    throw new Error(`digest logs ${response.status}`);
+  }
+  return (await response.json()) as DigestLogsResponse;
+}
+
+export async function cleanupKnowledgeSource(
+  serviceToken: string,
+  knowledgeSourceId: string,
+  execute = false
+): Promise<KnowledgeSourceCleanupResponse> {
+  const response = await fetch(`/knowledge-sources/${encodeURIComponent(knowledgeSourceId)}/cleanup`, {
+    method: "POST",
+    headers: headers(serviceToken),
+    body: JSON.stringify({
+      owner_user_id: "user_primary",
+      execute,
+      pause_knowledge_source: true,
+      delete_knowledge_source: false
+    })
+  });
+  if (!response.ok) {
+    throw new Error(await responseError(response, execute ? "清理资料来源失败" : "预览清理失败"));
+  }
+  return (await response.json()) as KnowledgeSourceCleanupResponse;
 }
 
 export async function searchWorkspace(
@@ -107,6 +184,15 @@ export async function searchWorkspace(
     throw new Error(`search ${response.status}`);
   }
   return (await response.json()) as WorkspaceSearchResponse;
+}
+
+async function responseError(response: Response, fallback: string) {
+  try {
+    const payload = (await response.json()) as { error?: string; message?: string };
+    return payload.error || payload.message || `${fallback} (${response.status})`;
+  } catch {
+    return `${fallback} (${response.status})`;
+  }
 }
 
 export async function loadToday(serviceToken: string): Promise<TodayResponse> {

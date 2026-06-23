@@ -7,7 +7,7 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 from pska_core.enums import Directionality, MemoryLayer, ReviewType, Visibility
 from pska_core.hypergraph import HypergraphService
 from pska_core.memory import MemoryService
-from pska_core.models import AuditEvent, Entity, ReviewItem, SourceRef, SourceItem
+from pska_core.models import AuditEvent, DigestNote, Entity, KnowledgeClaim, ReviewItem, SourceRef, SourceItem
 from pska_core.store import KnowledgeStore
 
 
@@ -50,9 +50,14 @@ class CandidateWriteService:
         summary = {
             "entities": [],
             "hyperedges": [],
+            "knowledge_claims": [],
+            "digest_notes": [],
             "review_items": [],
             "agent_memories": [],
             "profile_cards": [],
+            "saved_candidates": 0,
+            "review_candidates": 0,
+            "ignored_low_value_items": [],
             "schema_version": schema_version,
             "warnings": warnings,
         }
@@ -75,6 +80,25 @@ class CandidateWriteService:
             if edge is not None:
                 summary["hyperedges"].append(edge.hyperedge_id)
 
+        for spec in _list_of_dicts(payload.get("knowledge_claims")):
+            result = self._write_knowledge_claim(
+                spec,
+                defaults,
+                entity_lookup=entity_lookup,
+                summary=summary,
+                producer=producer,
+                job_id=job_id,
+                request_id=request_id,
+            )
+            if isinstance(result, ReviewItem):
+                summary["review_items"].append(result.review_item_id)
+            else:
+                summary["knowledge_claims"].append(result.knowledge_claim_id)
+
+        for spec in _list_of_dicts(payload.get("digest_notes")):
+            note = self._write_digest_note(spec, defaults, producer=producer, job_id=job_id, request_id=request_id)
+            summary["digest_notes"].append(note.digest_note_id)
+
         for spec in _list_of_dicts(payload.get("review_items")):
             review_item = self._write_review_item(spec, defaults, producer=producer, job_id=job_id, request_id=request_id)
             summary["review_items"].append(review_item.review_item_id)
@@ -88,6 +112,15 @@ class CandidateWriteService:
             else:
                 summary["agent_memories"].append(result.agent_memory_id)
 
+        summary["review_candidates"] = len(summary["review_items"])
+        summary["saved_candidates"] = (
+            len(summary["entities"])
+            + len(summary["hyperedges"])
+            + len(summary["knowledge_claims"])
+            + len(summary["digest_notes"])
+            + len(summary["agent_memories"])
+            + len(summary["profile_cards"])
+        )
         self._audit(
             actor_user_id=str(payload.get("created_by_user_id") or "agent_service"),
             action="candidates.write",
@@ -146,6 +179,7 @@ class CandidateWriteService:
         source_refs = _source_refs(spec.get("source_refs")) or defaults.source_refs
         confidence = float(spec.get("confidence", 0.75))
         if confidence < LOW_CONFIDENCE_REVIEW_THRESHOLD:
+            plain = str(spec.get("plain_text_summary") or spec.get("why_it_matters") or evidence_text or f"候选关系 {relation_type} 置信度较低，需要人工确认。")
             review_item = self._write_review_item(
                 {
                     "review_type": ReviewType.RELATIONSHIP_CANDIDATE.value,
@@ -155,6 +189,7 @@ class CandidateWriteService:
                         "source_refs": [asdict(ref) for ref in source_refs],
                         "confidence": confidence,
                         "reason": "low_confidence_relationship_candidate",
+                        "plain_text_summary": plain,
                     },
                 },
                 defaults,
@@ -164,6 +199,8 @@ class CandidateWriteService:
             )
             summary["review_items"].append(review_item.review_item_id)
             return None
+        if not evidence_text and not str(spec.get("why_it_matters") or "").strip():
+            raise CandidateWriteError("hyperedge candidate requires evidence_text or why_it_matters")
         members = []
         for member in _list_of_dicts(spec.get("members")):
             role = str(member.get("role") or "related")
@@ -207,6 +244,7 @@ class CandidateWriteService:
         proposal.setdefault("producer", producer)
         proposal.setdefault("job_id", job_id)
         proposal.setdefault("request_id", request_id)
+        proposal.setdefault("plain_text_summary", _plain_text_summary(spec, proposal))
         review_item = ReviewItem(
             review_item_id=str(spec.get("review_item_id") or _stable_id("rev", defaults.owner_user_id, str(spec["review_type"]), str(spec["title"]), str(job_id or request_id or ""))),
             owner_user_id=defaults.owner_user_id,
@@ -216,6 +254,137 @@ class CandidateWriteService:
         )
         self.store.add_review_item(review_item)
         return review_item
+
+    def _write_knowledge_claim(
+        self,
+        spec: dict[str, Any],
+        defaults: "_ContextDefaults",
+        *,
+        entity_lookup: dict[str, Entity],
+        summary: dict[str, list],
+        producer: str,
+        job_id: Any,
+        request_id: Any,
+    ) -> KnowledgeClaim | ReviewItem:
+        statement = str(spec.get("statement") or "").strip()
+        evidence_text = str(spec.get("evidence_text") or "").strip()
+        if not statement:
+            raise CandidateWriteError("knowledge_claim requires statement")
+        if not evidence_text:
+            raise CandidateWriteError("knowledge_claim requires evidence_text")
+        source_refs = _source_refs(spec.get("source_refs")) or defaults.source_refs
+        if not source_refs:
+            raise CandidateWriteError("knowledge_claim requires source_refs")
+        confidence = float(spec.get("confidence", 0.75))
+        if confidence < LOW_CONFIDENCE_REVIEW_THRESHOLD:
+            return self._write_review_item(
+                {
+                    "review_type": ReviewType.LOW_CONFIDENCE.value,
+                    "title": str(spec.get("title") or "Review low-confidence knowledge claim"),
+                    "proposal": {
+                        "candidate": spec,
+                        "statement": statement,
+                        "evidence_text": evidence_text,
+                        "source_refs": [asdict(ref) for ref in source_refs],
+                        "confidence": confidence,
+                        "reason": "low_confidence_knowledge_claim",
+                        "plain_text_summary": statement,
+                    },
+                },
+                defaults,
+                producer=producer,
+                job_id=job_id,
+                request_id=request_id,
+            )
+        claim = KnowledgeClaim(
+            knowledge_claim_id=str(spec.get("knowledge_claim_id") or _stable_id("claim", defaults.owner_user_id, statement, str(job_id or request_id or ""))),
+            owner_user_id=defaults.owner_user_id,
+            claim_type=str(spec.get("claim_type") or "fact"),
+            statement=statement,
+            subject=str(spec.get("subject")) if spec.get("subject") is not None else None,
+            predicate=str(spec.get("predicate")) if spec.get("predicate") is not None else None,
+            object=str(spec.get("object")) if spec.get("object") is not None else None,
+            qualifiers=_dict_or_empty(spec.get("qualifiers"), "knowledge_claim.qualifiers"),
+            evidence_text=evidence_text,
+            source_refs=source_refs,
+            confidence=confidence,
+            producer=producer,
+            job_id=str(job_id) if job_id else None,
+            request_id=str(request_id) if request_id else None,
+            metadata={
+                **_dict_or_empty(spec.get("metadata"), "knowledge_claim.metadata"),
+                "plain_text_summary": str(spec.get("plain_text_summary") or statement),
+            },
+        )
+        stored = self.store.add_knowledge_claim(claim)
+        self._derive_hyperedge_from_claim(stored, defaults, entity_lookup=entity_lookup, summary=summary, producer=producer, job_id=job_id, request_id=request_id)
+        return stored
+
+    def _derive_hyperedge_from_claim(
+        self,
+        claim: KnowledgeClaim,
+        defaults: "_ContextDefaults",
+        *,
+        entity_lookup: dict[str, Entity],
+        summary: dict[str, list],
+        producer: str,
+        job_id: Any,
+        request_id: Any,
+    ) -> None:
+        if not (claim.subject and claim.predicate and claim.object):
+            return
+        edge = self._write_hyperedge(
+            {
+                "relation_type": claim.predicate,
+                "members": [
+                    {"entity_type": "claim_subject", "label": claim.subject, "role": "subject"},
+                    {"entity_type": "claim_object", "label": claim.object, "role": "object"},
+                ],
+                "evidence_text": claim.evidence_text,
+                "confidence": claim.confidence,
+                "source_refs": [asdict(ref) for ref in claim.source_refs],
+                "metadata": {"derived_from_knowledge_claim_id": claim.knowledge_claim_id},
+            },
+            defaults,
+            entity_lookup=entity_lookup,
+            summary=summary,
+            producer=producer,
+            job_id=job_id,
+            request_id=request_id,
+        )
+        if edge is not None:
+            summary["hyperedges"].append(edge.hyperedge_id)
+
+    def _write_digest_note(self, spec: dict[str, Any], defaults: "_ContextDefaults", *, producer: str, job_id: Any, request_id: Any) -> DigestNote:
+        title = str(spec.get("title") or "").strip()
+        synopsis = str(spec.get("synopsis") or spec.get("summary") or "").strip()
+        if not title:
+            raise CandidateWriteError("digest_note requires title")
+        if not synopsis:
+            raise CandidateWriteError("digest_note requires synopsis")
+        source_refs = _source_refs(spec.get("source_refs")) or defaults.source_refs
+        if not source_refs:
+            raise CandidateWriteError("digest_note requires source_refs")
+        note = DigestNote(
+            digest_note_id=str(spec.get("digest_note_id") or _stable_id("dig", defaults.owner_user_id, title, synopsis, str(job_id or request_id or ""))),
+            owner_user_id=defaults.owner_user_id,
+            title=title,
+            synopsis=synopsis,
+            key_points=_list_of_dicts(spec.get("key_points")),
+            actions=_list_of_dicts(spec.get("actions")),
+            open_questions=_list_of_dicts(spec.get("open_questions") or spec.get("questions")),
+            risks=_list_of_dicts(spec.get("risks")),
+            memory_suggestions=_list_of_dicts(spec.get("memory_suggestions")),
+            relationship_suggestions=_list_of_dicts(spec.get("relationship_suggestions")),
+            source_refs=source_refs,
+            confidence=float(spec.get("confidence", 0.75)),
+            producer=producer,
+            job_id=str(job_id) if job_id else None,
+            request_id=str(request_id) if request_id else None,
+            metadata=_dict_or_empty(spec.get("metadata"), "digest_note.metadata"),
+        )
+        _assert_digest_note_items_are_grounded(note)
+        return self.store.add_digest_note(note)
 
     def _write_memory_candidate(self, spec: dict[str, Any], defaults: "_ContextDefaults", *, producer: str, job_id: Any, request_id: Any):
         source_refs = _source_refs(spec.get("source_refs")) or defaults.source_refs
@@ -334,6 +503,64 @@ def _dict_or_empty(value: Any, field_name: str) -> dict[str, Any]:
     if isinstance(value, dict):
         return dict(value)
     raise CandidateWriteError(f"{field_name} must be an object")
+
+
+def _plain_text_summary(spec: dict[str, Any], proposal: dict[str, Any]) -> str:
+    for value in (
+        proposal.get("plain_text_summary"),
+        spec.get("plain_text_summary"),
+        proposal.get("statement"),
+        proposal.get("summary"),
+        proposal.get("memory_candidate"),
+        proposal.get("text"),
+        proposal.get("evidence_text"),
+        spec.get("title"),
+    ):
+        text = str(value or "").strip()
+        if text:
+            return text
+    return "候选结果需要人工确认。"
+
+
+def _assert_digest_note_items_are_grounded(note: DigestNote) -> None:
+    groups = {
+        "key_points": note.key_points,
+        "actions": note.actions,
+        "open_questions": note.open_questions,
+        "risks": note.risks,
+        "memory_suggestions": note.memory_suggestions,
+        "relationship_suggestions": note.relationship_suggestions,
+    }
+    for group_name, items in groups.items():
+        for item in items:
+            refs = _source_refs(item.get("source_refs")) or note.source_refs
+            if not refs:
+                raise CandidateWriteError(f"digest_note.{group_name} items require source_refs")
+            item.setdefault("source_refs", [asdict(ref) for ref in refs])
+            readable = _digest_item_readable_text(item)
+            if not readable:
+                raise CandidateWriteError(f"digest_note.{group_name} items require readable text")
+            item.setdefault("summary", readable)
+
+
+def _digest_item_readable_text(item: dict[str, Any]) -> str:
+    for key in (
+        "summary",
+        "statement",
+        "title",
+        "text",
+        "point",
+        "question",
+        "action",
+        "risk",
+        "issue",
+        "description",
+        "why_it_matters",
+    ):
+        text = str(item.get(key) or "").strip()
+        if text:
+            return text
+    return ""
 
 
 def _visibility(value: Any, default: Visibility) -> Visibility:

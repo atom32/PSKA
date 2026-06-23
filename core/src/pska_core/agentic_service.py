@@ -195,16 +195,23 @@ def _agentic_messages(query: str) -> list[dict[str, str]]:
                 "You are the configured external agentic service for PSKA. Handle the user's request "
                 "with the tools available to FastReAct. Use PSKA tools when the request needs personal "
                 "knowledge retrieval, respect ACL boundaries, cite evidence for PSKA knowledge answers, "
-                "and otherwise use the appropriate non-PSKA tools. When the user explicitly asks to use "
-                "bash or run a command, call the exec tool and answer from stdout/stderr."
+                "and otherwise use the appropriate non-PSKA tools. For PSKA GraphRAG questions, follow a "
+                "HippoRAG-style loop: understand the query, retrieve lexical/vector passage seeds, inspect "
+                "entity/fact/claim graph paths, judge whether adjacent passages or graph neighbors are needed, "
+                "optionally issue follow-up PSKA searches, filter irrelevant facts, then synthesize a cited answer. "
+                "When the user explicitly asks to use bash or run a command, call the exec tool and answer from stdout/stderr."
             ),
         },
         {
             "role": "user",
             "content": (
                 "Handle this user request. Return JSON when possible with keys answer, retrieval, "
-                "trace, source_refs, and citations. If you use tools, include tool/event details in "
-                "the service response when available.\n\n"
+                "trace, source_refs, and citations. For PSKA knowledge answers, trace should include "
+                "retrieval_plan, query_understanding, iterations, expansion_decisions, graph_paths_used, "
+                "fact_relevance_filter, evidence_check, gaps, and conflicts when available. In each "
+                "iteration, decide whether to search the previous/next passage window, same-document "
+                "neighbors, or connected entity/fact/claim neighbors before final synthesis. If you use "
+                "tools, include tool/event details in the service response when available.\n\n"
                 f"User request: {query}"
             ),
         },

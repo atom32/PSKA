@@ -72,6 +72,140 @@ export type WorkspaceCorpusResponse = {
   }>;
 };
 
+export type WorkspaceGraphNode = {
+  id: string;
+  type: "source" | "document" | "passage" | "claim" | "digest" | "entity" | "hyperedge" | string;
+  label?: string;
+  summary?: string;
+  object_type?: string;
+  object_id?: string;
+  confidence?: number;
+  token_estimate?: number;
+  source_refs?: Array<{ source_item_id?: string; document_id?: string; chunk_id?: string; passage_window_id?: string; title?: string; url?: string }>;
+};
+
+export type WorkspaceGraphEdge = {
+  id: string;
+  source: string;
+  target: string;
+  type?: string;
+  label?: string;
+  confidence?: number;
+  source_refs?: Array<{ source_item_id?: string; document_id?: string; chunk_id?: string; passage_window_id?: string }>;
+};
+
+export type WorkspaceGraphResponse = {
+  ok?: boolean;
+  ontology_version?: string;
+  owner_user_id?: string;
+  nodes?: WorkspaceGraphNode[];
+  edges?: WorkspaceGraphEdge[];
+  counts?: {
+    sources?: number;
+    documents?: number;
+    passages?: number;
+    claims?: number;
+    digest_notes?: number;
+    entities?: number;
+    hyperedges?: number;
+  };
+  notes?: string[];
+};
+
+export type FileSyncResponse = {
+  ok?: boolean;
+  error?: string;
+  totals?: {
+    roots?: number;
+    scanned?: number;
+    ingested?: number;
+    new_files?: number;
+    changed_files?: number;
+    unchanged_files?: number;
+    twitter_zip_count?: number;
+    twitter_imported?: number;
+    twitter_skipped?: number;
+    failed?: number;
+  };
+  twitter_archives?: {
+    enabled?: boolean;
+    input?: string;
+    archive_root?: string;
+    zip_count?: number;
+    imported?: number;
+    skipped?: number;
+    failed?: Array<{ error?: string } | string>;
+    reason?: string;
+  };
+  failed?: Array<{ error?: string } | string>;
+};
+
+export type DigestNowResponse = {
+  ok?: boolean;
+  error?: string;
+  sync?: FileSyncResponse | null;
+  digest?: {
+    scheduled_source_item_ids?: string[];
+  };
+  summary?: {
+    synced?: FileSyncResponse["totals"] | null;
+    scheduled_source_items?: number;
+    worker_processed?: number;
+    candidate_write?: {
+      entities?: number;
+      hyperedges?: number;
+      knowledge_claims?: number;
+      digest_notes?: number;
+      review_items?: number;
+      memory_candidates?: number;
+      saved_candidates?: number;
+      review_candidates?: number;
+    };
+    pending_review_count?: number;
+    failed_digest_jobs?: number;
+  };
+  failed_digest_jobs?: unknown[];
+};
+
+export type DigestLogEntry = {
+  job_id: string;
+  status?: string;
+  attempts?: number;
+  max_attempts?: number;
+  worker_id?: string | null;
+  external_run_id?: string | null;
+  created_at?: string;
+  updated_at?: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  error?: string | null;
+  source_item_ids?: string[];
+  source_item_count?: number;
+  candidate_summary?: {
+    entities?: number;
+    hyperedges?: number;
+    knowledge_claims?: number;
+    digest_notes?: number;
+    review_items?: number;
+    agent_memories?: number;
+    profile_cards?: number;
+    saved_candidates?: number;
+    review_candidates?: number;
+    warnings?: string[];
+  };
+  knowledge_claims?: Array<{ statement?: string; claim_type?: string; confidence?: number; evidence_text?: string }>;
+  digest_notes?: Array<{ title?: string; synopsis?: string; actions?: unknown[]; open_questions?: unknown[]; risks?: unknown[] }>;
+  latest_event?: { event_type?: string; message?: string; created_at?: string; detail?: Record<string, unknown> } | null;
+  timeline?: Array<{ event_type?: string; message?: string; created_at?: string; detail?: Record<string, unknown> }>;
+};
+
+export type DigestLogsResponse = {
+  ok?: boolean;
+  owner_user_id?: string;
+  logs?: DigestLogEntry[];
+  count?: number;
+};
+
 export type ConsoleConnectorState = {
   connector_state_id?: string;
   connector_id?: string;
@@ -140,6 +274,20 @@ export type ConsoleSourcesResponse = {
     configured?: boolean;
     recommended_commands?: string[];
   };
+  input_sources?: Array<{
+    kind?: string;
+    name?: string;
+    path?: string;
+    status?: string;
+    mode?: string;
+    configured?: boolean;
+    knowledge_source_id?: string;
+    zip_count?: number;
+  }>;
+  workspace?: {
+    root?: string;
+    excluded_paths?: string[];
+  };
   recommended_commands?: string[];
   notes?: string[];
 };
@@ -162,6 +310,26 @@ export type WorkspaceSearchResponse = {
   retrieval?: {
     results?: Array<{ title?: string; snippet?: string; score?: number }>;
   };
+};
+
+export type KnowledgeSourceCleanupResponse = {
+  ok?: boolean;
+  dry_run?: boolean;
+  root?: string;
+  execute?: boolean;
+  knowledge_source?: {
+    knowledge_source_id?: string;
+    name?: string;
+    uri?: string;
+    path?: string;
+    mode?: string;
+    status?: string;
+  };
+  source_item_ids?: string[];
+  source_items?: Array<{ source_item_id?: string; title?: string; url?: string; created_at?: string }>;
+  counts?: Record<string, number>;
+  deleted?: Record<string, number>;
+  error?: string;
 };
 
 export type TodayContinueItem = {

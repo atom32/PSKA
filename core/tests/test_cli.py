@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import json
+from pathlib import Path
 
 import pska_core.cli as cli_module
 from pska_core.config import PSKAConfig
@@ -52,6 +53,39 @@ def test_cli_accepts_config_path() -> None:
 
     assert args.command == "db-check"
     assert str(args.config) == "config.pska.json"
+
+
+def test_mcp_server_uses_loaded_config(tmp_path: Path, monkeypatch) -> None:
+    config_file = tmp_path / "config.json"
+    config_file.write_text(
+        json.dumps(
+            {
+                "database": {"url": "postgresql:///from_file"},
+                "embedding": {"provider": "disabled"},
+                "workspace": {"root": str(tmp_path / "workspace")},
+            }
+        ),
+        encoding="utf-8",
+    )
+    captured: dict[str, object] = {}
+
+    class FakeMCPServer:
+        def __init__(self, database_url: str, *, config: PSKAConfig, **_: object) -> None:
+            captured["database_url"] = database_url
+            captured["config"] = config
+
+        def run(self) -> int:
+            return 0
+
+    monkeypatch.setattr(cli_module, "MCPServer", FakeMCPServer)
+
+    assert cli_module.main(["--config", str(config_file), "mcp-server"]) == 0
+
+    assert captured["database_url"] == "postgresql:///from_file"
+    config = captured["config"]
+    assert isinstance(config, PSKAConfig)
+    assert config.database.url == "postgresql:///from_file"
+    assert config.embedding.provider == "disabled"
 
 
 def test_cli_accepts_import_twitter_zips() -> None:
@@ -795,8 +829,12 @@ def test_digest_now_candidate_summary_counts_fastreact_writes() -> None:
     assert summary == {
         "entities": 10,
         "hyperedges": 4,
+        "knowledge_claims": 0,
+        "digest_notes": 0,
         "review_items": 0,
         "memory_candidates": 2,
+        "saved_candidates": 0,
+        "review_candidates": 0,
         "tool_calls": 2,
     }
 
@@ -826,6 +864,58 @@ def test_digest_now_diagnostics_warns_when_worker_does_not_write_candidates() ->
         "job_context_call_count": 1,
         "warnings": ["fastreact_digest_completed_without_write_candidates"],
     }
+
+
+def test_digest_now_diagnostics_warns_when_digest_skips_claim_layer() -> None:
+    diagnostics = _digest_now_diagnostics(
+        [
+            {
+                "ok": True,
+                "processed": 1,
+                "result": {
+                    "fastreact_runs": [
+                        {
+                            "tool_calls": [
+                                {"tool_name": "pska_pska_job_context"},
+                                {
+                                    "tool_name": "pska_pska_write_candidates",
+                                    "digest_note_count": 1,
+                                    "hyperedge_count": 1,
+                                    "knowledge_claim_count": 0,
+                                },
+                            ],
+                            "write_call_count": 1,
+                            "job_context_call_count": 1,
+                        }
+                    ]
+                },
+            }
+        ]
+    )
+
+    assert diagnostics["warnings"] == ["fastreact_digest_wrote_digest_or_relationship_without_knowledge_claims"]
+
+
+def test_digest_now_diagnostics_warns_when_write_candidates_is_empty() -> None:
+    diagnostics = _digest_now_diagnostics(
+        [
+            {
+                "ok": True,
+                "processed": 1,
+                "result": {
+                    "fastreact_runs": [
+                        {
+                            "tool_calls": [{"tool_name": "pska_pska_write_candidates"}],
+                            "write_call_count": 1,
+                            "job_context_call_count": 1,
+                        }
+                    ]
+                },
+            }
+        ]
+    )
+
+    assert diagnostics["warnings"] == ["fastreact_write_candidates_called_without_candidates"]
 
 
 def test_digest_now_fallback_review_when_worker_writes_no_candidates() -> None:

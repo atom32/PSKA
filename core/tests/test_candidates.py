@@ -326,6 +326,160 @@ def test_fastreact_job_prompt_restricts_host_tools() -> None:
     assert "label" in prompt
 
 
+def test_write_candidates_persists_claims_digest_notes_and_derives_triple_hyperedge() -> None:
+    store = _store_with_source()
+    source_id = next(iter(store.source_items))
+
+    summary = CandidateWriteService(store).write_candidates(
+        {
+            "schema_version": "pska.candidates.v1",
+            "owner_user_id": "user_primary",
+            "job_id": "job_digest",
+            "source_refs": [{"source_item_id": source_id}],
+            "knowledge_claims": [
+                {
+                    "claim_type": "relationship",
+                    "statement": "PSKA 依赖 Fastreact 执行 agentic digest。",
+                    "subject": "PSKA",
+                    "predicate": "depends_on",
+                    "object": "Fastreact",
+                    "evidence_text": "PSKA depends on Fastreact for agentic service loops.",
+                    "confidence": 0.84,
+                    "source_refs": [{"source_item_id": source_id}],
+                }
+            ],
+            "digest_notes": [
+                {
+                    "title": "PSKA digest 依赖",
+                    "synopsis": "这份资料说明 PSKA 使用 Fastreact 来执行 agentic digest。",
+                    "key_points": [{"summary": "PSKA digest 依赖 Fastreact。", "source_refs": [{"source_item_id": source_id}]}],
+                    "actions": [{"summary": "检查 Fastreact worker 是否在线。", "source_refs": [{"source_item_id": source_id}]}],
+                    "open_questions": [{"summary": "是否需要 fallback worker？", "source_refs": [{"source_item_id": source_id}]}],
+                    "risks": [{"summary": "Fastreact 离线会影响 digest 写回。", "source_refs": [{"source_item_id": source_id}]}],
+                    "source_refs": [{"source_item_id": source_id}],
+                }
+            ],
+        }
+    )
+
+    assert summary["knowledge_claims"]
+    assert summary["digest_notes"]
+    assert summary["hyperedges"]
+    assert summary["saved_candidates"] >= 3
+    claim = store.list_knowledge_claims(owner_user_id="user_primary")[0]
+    note = store.list_digest_notes(owner_user_id="user_primary")[0]
+    assert claim.statement == "PSKA 依赖 Fastreact 执行 agentic digest。"
+    assert note.actions[0]["source_refs"][0]["source_item_id"] == source_id
+
+
+def test_digest_note_accepts_common_llm_readable_item_fields() -> None:
+    store = _store_with_source()
+    source_id = next(iter(store.source_items))
+
+    summary = CandidateWriteService(store).write_candidates(
+        {
+            "schema_version": "pska.candidates.v1",
+            "owner_user_id": "user_primary",
+            "source_refs": [{"source_item_id": source_id}],
+            "digest_notes": [
+                {
+                    "title": "PSKA/FastReAct Integration Manual",
+                    "synopsis": "Document describing how FastReAct and PSKA integrate.",
+                    "key_points": [{"point": "FastReAct is a headless agentic service layer."}],
+                    "actions": [{"action": "Check the service token configuration."}],
+                    "open_questions": [{"question": "Which PSKA MCP tools are exposed?"}],
+                    "risks": [{"risk": "Service token mismatch can block the integration."}],
+                    "relationship_suggestions": [{"why_it_matters": "This links PSKA to FastReAct operationally."}],
+                    "source_refs": [{"source_item_id": source_id}],
+                }
+            ],
+        }
+    )
+
+    note = store.list_digest_notes(owner_user_id="user_primary")[0]
+    assert summary["digest_notes"]
+    assert note.key_points[0]["summary"] == "FastReAct is a headless agentic service layer."
+    assert note.open_questions[0]["summary"] == "Which PSKA MCP tools are exposed?"
+    assert note.risks[0]["source_refs"][0]["source_item_id"] == source_id
+    assert note.relationship_suggestions[0]["summary"] == "This links PSKA to FastReAct operationally."
+
+
+def test_knowledge_claim_requires_evidence_and_low_confidence_claim_requires_review() -> None:
+    store = _store_with_source()
+    source_id = next(iter(store.source_items))
+
+    try:
+        CandidateWriteService(store).write_candidates(
+            {
+                "schema_version": "pska.candidates.v1",
+                "owner_user_id": "user_primary",
+                "source_refs": [{"source_item_id": source_id}],
+                "knowledge_claims": [{"claim_type": "fact", "statement": "PSKA has a fact."}],
+            }
+        )
+    except CandidateWriteError as exc:
+        assert "evidence_text" in str(exc)
+    else:
+        raise AssertionError("expected CandidateWriteError")
+
+    summary = CandidateWriteService(store).write_candidates(
+        {
+            "schema_version": "pska.candidates.v1",
+            "owner_user_id": "user_primary",
+            "source_refs": [{"source_item_id": source_id}],
+            "knowledge_claims": [
+                {
+                    "claim_type": "fact",
+                    "statement": "PSKA 可能偏好长答案。",
+                    "evidence_text": "Maybe PSKA prefers very long answers.",
+                    "confidence": 0.4,
+                }
+            ],
+        }
+    )
+
+    review = store.get_review_item(summary["review_items"][0])
+    assert summary["knowledge_claims"] == []
+    assert review.review_type == ReviewType.LOW_CONFIDENCE
+    assert review.proposal["plain_text_summary"] == "PSKA 可能偏好长答案。"
+
+
+def test_digest_logs_surface_events_claims_and_notes() -> None:
+    api = _api()
+    source_id = _ingest_source(api.store)
+    job = JobService(api.store).submit(DIGEST_VIA_FASTREACT, {"owner_user_id": "user_primary", "source_refs": [{"source_item_id": source_id}]})
+    summary = CandidateWriteService(api.store).write_candidates(
+        {
+            "schema_version": "pska.candidates.v1",
+            "owner_user_id": "user_primary",
+            "job_id": job.job_id,
+            "source_refs": [{"source_item_id": source_id}],
+            "knowledge_claims": [
+                {
+                    "claim_type": "fact",
+                    "statement": "Digest 日志需要可视化。",
+                    "evidence_text": "digest task log visualization",
+                    "confidence": 0.8,
+                }
+            ],
+            "digest_notes": [
+                {
+                    "title": "Digest log",
+                    "synopsis": "Digest 任务产生了可视化日志。",
+                    "source_refs": [{"source_item_id": source_id}],
+                }
+            ],
+        }
+    )
+    api.store.add_job_event(job.job_id, "candidates_written", "Wrote candidates", summary)
+
+    payload = api.digest_logs(owner_user_id="user_primary")
+
+    assert payload["logs"][0]["job_id"] == job.job_id
+    assert payload["logs"][0]["candidate_summary"]["knowledge_claims"] == 1
+    assert payload["logs"][0]["candidate_summary"]["digest_notes"] == 1
+
+
 class FakeFastreact:
     def __init__(self, response: dict) -> None:
         self.response = response

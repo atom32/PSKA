@@ -179,7 +179,7 @@ def build_parser() -> argparse.ArgumentParser:
     local_daemon_parser.add_argument("--recover-stale-seconds", type=int, default=900)
     local_daemon_parser.add_argument("--digest-interval-seconds", type=float, default=300.0)
     local_daemon_parser.add_argument("--digest-limit", type=int, default=20)
-    local_daemon_parser.add_argument("--digest-batch-size", type=int, default=20)
+    local_daemon_parser.add_argument("--digest-batch-size", type=int, default=1)
     local_daemon_parser.add_argument("--digest-max-backlog-jobs", type=int, default=10)
 
     mvp_bootstrap_parser = subparsers.add_parser("mvp-bootstrap", help="Initialize the MVP scope: DB, Twitter archive, local text roots, and digest backlog")
@@ -193,7 +193,7 @@ def build_parser() -> argparse.ArgumentParser:
     mvp_bootstrap_parser.add_argument("--skip-digest", action="store_true")
     mvp_bootstrap_parser.add_argument("--extract", action="store_true", help="Run initial LLM extraction after ingesting MVP sources")
     mvp_bootstrap_parser.add_argument("--digest-limit", type=int, default=20)
-    mvp_bootstrap_parser.add_argument("--digest-batch-size", type=int, default=20)
+    mvp_bootstrap_parser.add_argument("--digest-batch-size", type=int, default=1)
     mvp_bootstrap_parser.add_argument("--dry-run", action="store_true")
     _add_embedding_args(mvp_bootstrap_parser, default_provider="disabled")
 
@@ -309,7 +309,7 @@ def build_parser() -> argparse.ArgumentParser:
     digest_schedule_parser.add_argument("--owner-user-id", default="user_primary")
     digest_schedule_parser.add_argument("--source-item-id", action="append", dest="source_item_ids", default=[])
     digest_schedule_parser.add_argument("--limit", type=int, default=20)
-    digest_schedule_parser.add_argument("--batch-size", type=int, default=20)
+    digest_schedule_parser.add_argument("--batch-size", type=int, default=1)
     digest_schedule_parser.add_argument("--priority", type=int, default=0)
     digest_schedule_parser.add_argument("--max-attempts", type=int, default=3)
     digest_schedule_parser.add_argument("--retry-backoff-seconds", type=int, default=60)
@@ -322,7 +322,7 @@ def build_parser() -> argparse.ArgumentParser:
     digest_now_parser.add_argument("--owner-user-id", default="user_primary")
     digest_now_parser.add_argument("--source-item-id", action="append", dest="source_item_ids", default=[])
     digest_now_parser.add_argument("--limit", type=int, default=20)
-    digest_now_parser.add_argument("--batch-size", type=int, default=20)
+    digest_now_parser.add_argument("--batch-size", type=int, default=1)
     digest_now_parser.add_argument("--priority", type=int, default=0)
     digest_now_parser.add_argument("--max-attempts", type=int, default=3)
     digest_now_parser.add_argument("--retry-backoff-seconds", type=int, default=60)
@@ -350,7 +350,7 @@ def build_parser() -> argparse.ArgumentParser:
     digest_scheduler_parser.add_argument("--max-cycles", type=int, default=0, help="Stop after this many scheduler cycles; 0 means no limit")
     digest_scheduler_parser.add_argument("--idle-limit", type=int, default=0, help="Stop after this many idle cycles; 0 means no limit")
     digest_scheduler_parser.add_argument("--limit", type=int, default=20)
-    digest_scheduler_parser.add_argument("--batch-size", type=int, default=20)
+    digest_scheduler_parser.add_argument("--batch-size", type=int, default=1)
     digest_scheduler_parser.add_argument("--priority", type=int, default=0)
     digest_scheduler_parser.add_argument("--max-attempts", type=int, default=3)
     digest_scheduler_parser.add_argument("--retry-backoff-seconds", type=int, default=60)
@@ -485,7 +485,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "service-check":
         return service_check(args)
     if args.command == "mcp-server":
-        return MCPServer(args.database_url).run()
+        return MCPServer(args.database_url, config=config).run()
     if args.command == "smoke-twitter-import":
         return smoke_twitter_import(args)
     if args.command == "job-submit":
@@ -1545,8 +1545,12 @@ def _digest_now_candidate_summary(worker_runs: list[dict[str, Any]]) -> dict[str
     summary = {
         "entities": 0,
         "hyperedges": 0,
+        "knowledge_claims": 0,
+        "digest_notes": 0,
         "review_items": 0,
         "memory_candidates": 0,
+        "saved_candidates": 0,
+        "review_candidates": 0,
         "tool_calls": 0,
     }
     for run in worker_runs:
@@ -1557,8 +1561,12 @@ def _digest_now_candidate_summary(worker_runs: list[dict[str, Any]]) -> dict[str
                 summary["tool_calls"] += 1
                 summary["entities"] += int(tool_call.get("entity_count") or 0)
                 summary["hyperedges"] += int(tool_call.get("hyperedge_count") or 0)
+                summary["knowledge_claims"] += int(tool_call.get("knowledge_claim_count") or tool_call.get("knowledge_claims") or 0)
+                summary["digest_notes"] += int(tool_call.get("digest_note_count") or tool_call.get("digest_notes") or 0)
                 summary["review_items"] += int(tool_call.get("review_item_count") or 0)
                 summary["memory_candidates"] += int(tool_call.get("memory_candidate_count") or 0)
+                summary["saved_candidates"] += int(tool_call.get("saved_candidate_count") or tool_call.get("saved_candidates") or 0)
+                summary["review_candidates"] += int(tool_call.get("review_candidate_count") or tool_call.get("review_candidates") or 0)
     return summary
 
 
@@ -1574,17 +1582,38 @@ def _digest_now_diagnostics(worker_runs: list[dict[str, Any]]) -> dict[str, Any]
             fastreact_run_count += 1
             write_call_count += int(fastreact_run.get("write_call_count") or 0)
             job_context_call_count += int(fastreact_run.get("job_context_call_count") or 0)
+            run_claim_count = 0
+            run_digest_note_count = 0
+            run_hyperedge_count = 0
+            run_write_candidate_count = 0
             for tool_call in fastreact_run.get("tool_calls") or []:
                 if not isinstance(tool_call, dict):
                     continue
                 tool_name = tool_call.get("tool_name")
                 if tool_name == "pska_pska_write_candidates":
                     write_call_count += 1 if "write_call_count" not in fastreact_run else 0
+                    run_claim_count += int(tool_call.get("knowledge_claim_count") or tool_call.get("knowledge_claims") or 0)
+                    run_digest_note_count += int(tool_call.get("digest_note_count") or tool_call.get("digest_notes") or 0)
+                    run_hyperedge_count += int(tool_call.get("hyperedge_count") or 0)
+                    for key in [
+                        "knowledge_claim_count",
+                        "digest_note_count",
+                        "entity_count",
+                        "hyperedge_count",
+                        "review_item_count",
+                        "memory_candidate_count",
+                    ]:
+                        run_write_candidate_count += int(tool_call.get(key) or 0)
                 if tool_name == "pska_pska_job_context":
                     job_context_call_count += 1 if "job_context_call_count" not in fastreact_run else 0
+            if int(fastreact_run.get("write_call_count") or 0) > 0 and run_write_candidate_count == 0:
+                warnings.append("fastreact_write_candidates_called_without_candidates")
+            if run_claim_count == 0 and (run_digest_note_count > 0 or run_hyperedge_count > 0):
+                warnings.append("fastreact_digest_wrote_digest_or_relationship_without_knowledge_claims")
     processed = sum(int(run.get("processed") or 0) for run in worker_runs if isinstance(run, dict))
     if processed and fastreact_run_count and write_call_count == 0:
         warnings.append("fastreact_digest_completed_without_write_candidates")
+    warnings = list(dict.fromkeys(warnings))
     return {
         "fastreact_run_count": fastreact_run_count,
         "write_call_count": write_call_count,

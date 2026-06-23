@@ -3,14 +3,17 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
 import hashlib
+import json
 import mimetypes
 from pathlib import Path
 from typing import Any
+from uuid import NAMESPACE_URL, uuid5
 
 from pska_core.connectors import connector_state_from_mapping, connector_record_to_payload
 from pska_core.enums import Visibility
 from pska_core.ingest import IngestService
-from pska_core.models import ConnectorState, SourceItem
+from pska_core.models import Chunk, ConnectorState, Document, SourceItem
+from pska_core.offline_index import OfflineIndexService
 from pska_core.store import KnowledgeStore
 
 
@@ -38,6 +41,7 @@ DOCUMENT_SUFFIXES = {
 }
 SUPPORTED_SUFFIXES = TEXT_SUFFIXES | DOCUMENT_SUFFIXES
 DEFAULT_IGNORE = [".git/**", "**/.git/**", "__pycache__/**", "**/__pycache__/**", ".DS_Store", "**/.DS_Store"]
+COLLECTION_MARKERS = (".pska-source.json", "pska-source.json")
 
 
 @dataclass(slots=True)
@@ -92,8 +96,68 @@ def scan_files(
             previous_manifest = legacy_manifest
     next_manifest: dict[str, dict[str, Any]] = {}
     previous_by_hash = _manifest_by_hash(previous_manifest)
+    existing_source_item_ids = {item.source_item_id for item in store.list_source_items()}
+    collection_roots = _find_collection_roots(root, ignore=patterns)
+
+    for collection_root in collection_roots:
+        relative = collection_root.relative_to(root).as_posix()
+        try:
+            classification = _classify_collection(collection_root, root, previous_manifest, previous_by_hash)
+            previous_entry = previous_manifest.get(relative)
+            if classification["status"] == "unchanged" and not _manifest_source_item_exists(previous_entry, existing_source_item_ids):
+                classification = {"status": "new", "reason": "manifest_source_item_missing"}
+            if classification["status"] == "unchanged":
+                report.unchanged_files += 1
+                next_manifest[relative] = {
+                    **dict(previous_entry or {}),
+                    "path": str(collection_root),
+                    "relative_path": relative,
+                    "content_hash": classification["content_hash"],
+                    "collection": True,
+                }
+                report.changes.append({"path": str(collection_root), "status": "unchanged", "collection": True})
+                continue
+            item, documents = _ingest_collection(
+                store,
+                ingest,
+                collection_root=collection_root,
+                root=root,
+                owner_user_id=owner_user_id,
+                space_id=space_id,
+                visibility=visibility,
+                visible_team_ids=visible_team_ids or [],
+                content_hash=classification["content_hash"],
+                files=classification["files"],
+            )
+            report.scanned += len(documents)
+            report.ingested += 1
+            report.source_item_ids.append(item.source_item_id)
+            _record_classification(report, classification)
+            next_manifest[relative] = {
+                "path": str(collection_root),
+                "relative_path": relative,
+                "content_hash": classification["content_hash"],
+                "source_item_id": item.source_item_id,
+                "collection": True,
+                "document_count": len(documents),
+                "files": [document.metadata.get("relative_path") for document in documents],
+            }
+            report.changes.append(
+                {
+                    "path": str(collection_root),
+                    "status": classification["status"],
+                    "source_item_id": item.source_item_id,
+                    "content_hash": classification["content_hash"],
+                    "collection": True,
+                    "document_count": len(documents),
+                }
+            )
+        except Exception as exc:  # noqa: BLE001 - per-collection failures should not abort a scan.
+            report.failed.append({"path": str(collection_root), "error": f"{type(exc).__name__}: {exc}"})
 
     for path in _iter_candidate_files(root, ignore=patterns):
+        if _is_within_collection(path, collection_roots):
+            continue
         report.scanned += 1
         relative = path.relative_to(root).as_posix()
         try:
@@ -108,6 +172,11 @@ def scan_files(
             raw = path.read_bytes()
             file_content_hash = "sha256:" + hashlib.sha256(raw).hexdigest()
             classification = _classify_file(relative, file_content_hash, previous_manifest, previous_by_hash)
+            if classification["status"] == "unchanged" and not _manifest_source_item_exists(
+                previous_manifest.get(relative),
+                existing_source_item_ids,
+            ):
+                classification = {"status": "new", "reason": "manifest_source_item_missing"}
             if classification["status"] == "unchanged":
                 report.unchanged_files += 1
                 next_manifest[relative] = {
@@ -251,6 +320,189 @@ def _iter_candidate_files(root: Path, *, ignore: list[str]) -> list[Path]:
     return files
 
 
+def _find_collection_roots(root: Path, *, ignore: list[str]) -> list[Path]:
+    roots: list[Path] = []
+    for marker_name in COLLECTION_MARKERS:
+        for marker in sorted(root.rglob(marker_name)):
+            if not marker.is_file():
+                continue
+            relative = marker.relative_to(root).as_posix()
+            if any(fnmatch(relative, pattern) or fnmatch(marker.name, pattern) for pattern in ignore):
+                continue
+            roots.append(marker.parent)
+    deduped = sorted(set(roots), key=lambda path: len(path.relative_to(root).parts))
+    selected: list[Path] = []
+    for candidate in deduped:
+        if any(_path_is_relative_to(candidate, existing) for existing in selected):
+            continue
+        selected.append(candidate)
+    return selected
+
+
+def _is_within_collection(path: Path, collection_roots: list[Path]) -> bool:
+    return any(_path_is_relative_to(path, root) for root in collection_roots)
+
+
+def _path_is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def _collection_marker(collection_root: Path) -> tuple[Path, dict[str, Any]]:
+    for marker_name in COLLECTION_MARKERS:
+        marker = collection_root / marker_name
+        if marker.exists():
+            return marker, json.loads(marker.read_text(encoding="utf-8"))
+    return collection_root / COLLECTION_MARKERS[0], {}
+
+
+def _collection_files(collection_root: Path, marker: dict[str, Any]) -> list[Path]:
+    include = [str(pattern) for pattern in marker.get("documents") or marker.get("include") or ["*.md"]]
+    exclude = [str(pattern) for pattern in marker.get("exclude") or []]
+    files: list[Path] = []
+    for path in sorted(collection_root.rglob("*")):
+        if not path.is_file() or path.name in COLLECTION_MARKERS:
+            continue
+        relative = path.relative_to(collection_root).as_posix()
+        if any(fnmatch(relative, pattern) or fnmatch(path.name, pattern) for pattern in exclude):
+            continue
+        if not any(fnmatch(relative, pattern) or fnmatch(path.name, pattern) for pattern in include):
+            continue
+        files.append(path)
+    return files
+
+
+def _classify_collection(
+    collection_root: Path,
+    scan_root: Path,
+    previous_manifest: dict[str, Any],
+    previous_by_hash: dict[str, list[tuple[str, dict[str, Any]]]],
+) -> dict[str, Any]:
+    marker_path, marker = _collection_marker(collection_root)
+    files = _collection_files(collection_root, marker)
+    basis = [marker_path.read_text(encoding="utf-8") if marker_path.exists() else "{}"]
+    for path in files:
+        raw = path.read_bytes()
+        basis.append(path.relative_to(collection_root).as_posix())
+        basis.append(hashlib.sha256(raw).hexdigest())
+    content_hash = "sha256:" + hashlib.sha256("\n".join(basis).encode("utf-8")).hexdigest()
+    relative = collection_root.relative_to(scan_root).as_posix()
+    classification = _classify_file(relative, content_hash, previous_manifest, previous_by_hash)
+    return {**classification, "content_hash": content_hash, "files": files, "marker": marker}
+
+
+def _ingest_collection(
+    store: KnowledgeStore,
+    ingest: IngestService,
+    *,
+    collection_root: Path,
+    root: Path,
+    owner_user_id: str,
+    space_id: str,
+    visibility: Visibility,
+    visible_team_ids: list[str],
+    content_hash: str,
+    files: list[Path],
+) -> tuple[SourceItem, list[Document]]:
+    marker_path, marker = _collection_marker(collection_root)
+    title = str(marker.get("title") or collection_root.name)
+    source_id = str(marker.get("source_id") or collection_root.relative_to(root).as_posix())
+    source_item_id = f"src_{uuid5(NAMESPACE_URL, 'files-collection:' + source_id).hex}"
+    document_texts: list[tuple[Path, str]] = []
+    for path in files:
+        raw = path.read_bytes()
+        extracted = _extract_text(path, raw)
+        if extracted["ok"] and str(extracted["text"]).strip():
+            document_texts.append((path, str(extracted["text"])))
+    combined_text = "\n\n".join(
+        f"# {path.relative_to(collection_root).as_posix()}\n\n{text}"
+        for path, text in document_texts
+    )
+    item = SourceItem(
+        source_item_id=source_item_id,
+        source_channel="files",
+        record_type="file_collection",
+        source_id=source_id,
+        owner_user_id=owner_user_id,
+        space_id=space_id,
+        visibility=visibility,
+        visible_team_ids=visible_team_ids,
+        title=title,
+        url=collection_root.as_uri(),
+        content_text=combined_text,
+        content_hash=content_hash,
+        metadata={
+            "schema_version": "pska.files.collection.v1",
+            "collection": True,
+            "marker_path": str(marker_path),
+            "source_root": str(root),
+            "relative_path": collection_root.relative_to(root).as_posix(),
+            "document_count": len(document_texts),
+            "extra": dict(marker.get("extra") or {}),
+        },
+    )
+    stored = store.upsert_source_item(item)
+    documents: list[Document] = []
+    chunks: list[Chunk] = []
+    for path, text in document_texts:
+        relative = path.relative_to(collection_root).as_posix()
+        document_id = f"doc_{source_item_id[4:]}_{uuid5(NAMESPACE_URL, source_id + ':' + relative).hex[:12]}"
+        document = Document(
+            document_id=document_id,
+            source_item_id=stored.source_item_id,
+            owner_user_id=stored.owner_user_id,
+            space_id=stored.space_id,
+            visibility=stored.visibility,
+            visible_team_ids=stored.visible_team_ids,
+            title=relative,
+            body=text,
+            metadata={
+                "url": path.as_uri(),
+                "path": str(path),
+                "relative_path": relative,
+                "collection_root": str(collection_root),
+                "collection_source_id": source_id,
+            },
+        )
+        documents.append(document)
+        chunk_texts = ingest._chunk_text(text)  # noqa: SLF001 - collection ingest shares the existing chunking policy.
+        chunk_embeddings = ingest.embedding_provider.embed_texts(chunk_texts) if ingest.embedding_provider else [None] * len(chunk_texts)
+        chunk_prefix = f"chk_{source_item_id[4:]}_{uuid5(NAMESPACE_URL, source_id + ':' + relative).hex[:12]}"
+        for ordinal, (chunk_text, embedding) in enumerate(zip(chunk_texts, chunk_embeddings)):
+            chunks.append(
+                Chunk(
+                    chunk_id=f"{chunk_prefix}_{ordinal}",
+                    document_id=document.document_id,
+                    source_item_id=stored.source_item_id,
+                    owner_user_id=stored.owner_user_id,
+                    space_id=stored.space_id,
+                    visibility=stored.visibility,
+                    visible_team_ids=stored.visible_team_ids,
+                    text=chunk_text,
+                    ordinal=ordinal,
+                    embedding=embedding,
+                    metadata={
+                        "embedding_provider": ingest.embedding_provider.provider_name if ingest.embedding_provider else None,
+                        "embedding_model": ingest.embedding_provider.model_name if ingest.embedding_provider else None,
+                        "chunk_size": ingest.chunk_size,
+                        "chunk_overlap": ingest.chunk_overlap,
+                        "collection": True,
+                        "relative_path": relative,
+                    },
+                )
+            )
+    store.replace_source_documents(stored.source_item_id, documents, chunks)
+    OfflineIndexService(store, embedding_provider=ingest.embedding_provider).mark_source_dirty(
+        stored,
+        chunks,
+        reason="source_collection_ingested",
+    )
+    return stored, documents
+
+
 def _ingest_file(
     ingest: IngestService,
     *,
@@ -327,6 +579,13 @@ def _record_classification(report: FilesScanReport, classification: dict[str, An
         report.changed_files += 1
     elif status == "moved":
         report.moved_files += 1
+
+
+def _manifest_source_item_exists(entry: Any, existing_source_item_ids: set[str]) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    source_item_id = entry.get("source_item_id")
+    return bool(source_item_id and str(source_item_id) in existing_source_item_ids)
 
 
 def _manifest_entry(*, path: Path, relative: str, content_hash: str, stat, source_item_id: str) -> dict[str, Any]:

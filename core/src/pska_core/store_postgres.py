@@ -15,12 +15,14 @@ from pska_core.models import (
     ConnectorState,
     DiscoveryItem,
     Document,
+    DigestNote,
     Entity,
     Hyperedge,
     HyperedgeMember,
     Job,
     JobEvent,
     AuditEvent,
+    KnowledgeClaim,
     KnowledgeSource,
     OfflineIndexState,
     ReviewItem,
@@ -84,6 +86,47 @@ class PostgresKnowledgeStore:
             ).fetchone()
             if existing:
                 return self._source_item_from_row(existing)
+            existing_by_id = conn.execute(
+                "select * from source_items where source_item_id = %s",
+                (item.source_item_id,),
+            ).fetchone()
+            if existing_by_id:
+                row = conn.execute(
+                    """
+                    update source_items
+                    set source_channel = %s,
+                        record_type = %s,
+                        source_id = %s,
+                        owner_user_id = %s,
+                        space_id = %s,
+                        visibility = %s,
+                        visible_team_ids = %s,
+                        title = %s,
+                        url = %s,
+                        content_text = %s,
+                        content_hash = %s,
+                        metadata = %s,
+                        updated_at = now()
+                    where source_item_id = %s
+                    returning *
+                    """,
+                    (
+                        item.source_channel,
+                        item.record_type,
+                        item.source_id,
+                        item.owner_user_id,
+                        item.space_id,
+                        item.visibility.value,
+                        item.visible_team_ids,
+                        item.title,
+                        item.url,
+                        item.content_text,
+                        item.content_hash,
+                        Jsonb(to_jsonable(item.metadata)),
+                        item.source_item_id,
+                    ),
+                ).fetchone()
+                return self._source_item_from_row(row)
             conn.execute(
                 """
                 insert into source_items(
@@ -369,6 +412,57 @@ class PostgresKnowledgeStore:
                 ),
             )
 
+    def replace_source_documents(self, source_item_id: str, documents: list[Document], chunks: list[Chunk]) -> None:
+        with self.connect() as conn:
+            conn.execute("delete from chunks where source_item_id = %s", (source_item_id,))
+            conn.execute("delete from documents where source_item_id = %s", (source_item_id,))
+            for document in documents:
+                conn.execute(
+                    """
+                    insert into documents(
+                        document_id, source_item_id, owner_user_id, space_id,
+                        visibility, visible_team_ids, title, body, metadata
+                    )
+                    values (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        document.document_id,
+                        document.source_item_id,
+                        document.owner_user_id,
+                        document.space_id,
+                        document.visibility.value,
+                        document.visible_team_ids,
+                        document.title,
+                        document.body,
+                        Jsonb(to_jsonable(document.metadata)),
+                    ),
+                )
+            for chunk in chunks:
+                conn.execute(
+                    """
+                    insert into chunks(
+                        chunk_id, document_id, source_item_id, owner_user_id, space_id,
+                        visibility, visible_team_ids, ordinal, text, embedding,
+                        embedding_provider, embedding_model
+                    )
+                    values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector, %s, %s)
+                    """,
+                    (
+                        chunk.chunk_id,
+                        chunk.document_id,
+                        chunk.source_item_id,
+                        chunk.owner_user_id,
+                        chunk.space_id,
+                        chunk.visibility.value,
+                        chunk.visible_team_ids,
+                        chunk.ordinal,
+                        chunk.text,
+                        _vector_literal(chunk.embedding) if chunk.embedding else None,
+                        chunk.metadata.get("embedding_provider") if chunk.metadata else None,
+                        chunk.metadata.get("embedding_model") if chunk.metadata else None,
+                    ),
+                )
+
     def add_agent_memory(self, memory: AgentMemory) -> None:
         with self.connect() as conn:
             conn.execute(
@@ -552,6 +646,164 @@ class PostgresKnowledgeStore:
                     """,
                     (member.hyperedge_id, member.entity_id, member.role, member.ordinal),
                 )
+
+    def add_knowledge_claim(self, claim: KnowledgeClaim) -> KnowledgeClaim:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                insert into knowledge_claims(
+                    knowledge_claim_id, owner_user_id, claim_type, statement,
+                    subject, predicate, object, qualifiers, evidence_text,
+                    source_refs, confidence, producer, job_id, request_id,
+                    metadata, created_at
+                )
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                on conflict (knowledge_claim_id) do update
+                set claim_type = excluded.claim_type,
+                    statement = excluded.statement,
+                    subject = excluded.subject,
+                    predicate = excluded.predicate,
+                    object = excluded.object,
+                    qualifiers = excluded.qualifiers,
+                    evidence_text = excluded.evidence_text,
+                    source_refs = excluded.source_refs,
+                    confidence = excluded.confidence,
+                    producer = excluded.producer,
+                    job_id = excluded.job_id,
+                    request_id = excluded.request_id,
+                    metadata = excluded.metadata
+                returning *
+                """,
+                (
+                    claim.knowledge_claim_id,
+                    claim.owner_user_id,
+                    claim.claim_type,
+                    claim.statement,
+                    claim.subject,
+                    claim.predicate,
+                    claim.object,
+                    Jsonb(to_jsonable(claim.qualifiers)),
+                    claim.evidence_text,
+                    Jsonb(to_jsonable(claim.source_refs)),
+                    claim.confidence,
+                    claim.producer,
+                    claim.job_id,
+                    claim.request_id,
+                    Jsonb(to_jsonable(claim.metadata)),
+                    claim.created_at,
+                ),
+            ).fetchone()
+        return self._knowledge_claim_from_row(row)
+
+    def list_knowledge_claims(
+        self,
+        *,
+        owner_user_id: str,
+        source_item_ids: set[str] | None = None,
+        job_id: str | None = None,
+        limit: int = 50,
+    ) -> list[KnowledgeClaim]:
+        clauses = ["owner_user_id = %s"]
+        params: list[Any] = [owner_user_id]
+        if job_id:
+            clauses.append("job_id = %s")
+            params.append(job_id)
+        if source_item_ids:
+            clauses.append("(" + " or ".join(["source_refs @> %s"] * len(source_item_ids)) + ")")
+            params.extend(Jsonb([{"source_item_id": source_item_id}]) for source_item_id in sorted(source_item_ids))
+        params.append(max(0, limit))
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                select *
+                from knowledge_claims
+                where {" and ".join(clauses)}
+                order by created_at desc, knowledge_claim_id desc
+                limit %s
+                """,  # noqa: S608 - clauses are fixed.
+                params,
+            ).fetchall()
+        return [self._knowledge_claim_from_row(row) for row in rows]
+
+    def add_digest_note(self, note: DigestNote) -> DigestNote:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                insert into digest_notes(
+                    digest_note_id, owner_user_id, title, synopsis, key_points,
+                    actions, open_questions, risks, memory_suggestions,
+                    relationship_suggestions, source_refs, confidence, producer,
+                    job_id, request_id, metadata, created_at
+                )
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                on conflict (digest_note_id) do update
+                set title = excluded.title,
+                    synopsis = excluded.synopsis,
+                    key_points = excluded.key_points,
+                    actions = excluded.actions,
+                    open_questions = excluded.open_questions,
+                    risks = excluded.risks,
+                    memory_suggestions = excluded.memory_suggestions,
+                    relationship_suggestions = excluded.relationship_suggestions,
+                    source_refs = excluded.source_refs,
+                    confidence = excluded.confidence,
+                    producer = excluded.producer,
+                    job_id = excluded.job_id,
+                    request_id = excluded.request_id,
+                    metadata = excluded.metadata
+                returning *
+                """,
+                (
+                    note.digest_note_id,
+                    note.owner_user_id,
+                    note.title,
+                    note.synopsis,
+                    Jsonb(to_jsonable(note.key_points)),
+                    Jsonb(to_jsonable(note.actions)),
+                    Jsonb(to_jsonable(note.open_questions)),
+                    Jsonb(to_jsonable(note.risks)),
+                    Jsonb(to_jsonable(note.memory_suggestions)),
+                    Jsonb(to_jsonable(note.relationship_suggestions)),
+                    Jsonb(to_jsonable(note.source_refs)),
+                    note.confidence,
+                    note.producer,
+                    note.job_id,
+                    note.request_id,
+                    Jsonb(to_jsonable(note.metadata)),
+                    note.created_at,
+                ),
+            ).fetchone()
+        return self._digest_note_from_row(row)
+
+    def list_digest_notes(
+        self,
+        *,
+        owner_user_id: str,
+        source_item_ids: set[str] | None = None,
+        job_id: str | None = None,
+        limit: int = 50,
+    ) -> list[DigestNote]:
+        clauses = ["owner_user_id = %s"]
+        params: list[Any] = [owner_user_id]
+        if job_id:
+            clauses.append("job_id = %s")
+            params.append(job_id)
+        if source_item_ids:
+            clauses.append("(" + " or ".join(["source_refs @> %s"] * len(source_item_ids)) + ")")
+            params.extend(Jsonb([{"source_item_id": source_item_id}]) for source_item_id in sorted(source_item_ids))
+        params.append(max(0, limit))
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                select *
+                from digest_notes
+                where {" and ".join(clauses)}
+                order by created_at desc, digest_note_id desc
+                limit %s
+                """,  # noqa: S608 - clauses are fixed.
+                params,
+            ).fetchall()
+        return [self._digest_note_from_row(row) for row in rows]
 
     def add_review_item(self, review_item: ReviewItem) -> None:
         with self.connect() as conn:
@@ -912,6 +1164,20 @@ class PostgresKnowledgeStore:
                 (list(source_item_ids),),
             ).fetchall()
         return [self._chunk_from_row(row) for row in rows]
+
+    def list_documents_for_sources(self, source_item_ids: set[str]) -> list[Document]:
+        if not source_item_ids:
+            return []
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                select * from documents
+                where source_item_id = any(%s)
+                order by source_item_id, created_at, document_id
+                """,
+                (list(source_item_ids),),
+            ).fetchall()
+        return [self._document_from_row(row) for row in rows]
 
     def list_chunks_missing_embedding(self, *, provider: str, model: str, limit: int | None = None) -> list[Chunk]:
         with self.connect() as conn:
@@ -1486,10 +1752,17 @@ class PostgresKnowledgeStore:
             "source_items",
             "documents",
             "chunks",
+            "passage_windows",
+            "graph_nodes",
+            "graph_edges",
             "users",
             "spaces",
             "entities",
             "hyperedges",
+            "knowledge_claims",
+            "digest_notes",
+            "knowledge_claim_links",
+            "digest_note_links",
             "review_items",
             "agent_memories",
             "user_profile_cards",
@@ -1655,6 +1928,19 @@ class PostgresKnowledgeStore:
             },
         )
 
+    def _document_from_row(self, row: dict[str, Any]) -> Document:
+        return Document(
+            document_id=row["document_id"],
+            source_item_id=row["source_item_id"],
+            owner_user_id=row["owner_user_id"],
+            space_id=row["space_id"],
+            visibility=Visibility(row["visibility"]),
+            visible_team_ids=list(row["visible_team_ids"] or []),
+            title=row["title"],
+            body=row["body"],
+            metadata=dict(row.get("metadata") or {}),
+        )
+
     def _hyperedge_from_row(self, row: dict[str, Any]) -> Hyperedge:
         return Hyperedge(
             hyperedge_id=row["hyperedge_id"],
@@ -1667,6 +1953,47 @@ class PostgresKnowledgeStore:
             evidence_text=row["evidence_text"],
             source_refs=[SourceRef(**item) for item in (row.get("source_refs") or [])],
             confidence=row["confidence"],
+        )
+
+    def _knowledge_claim_from_row(self, row: dict[str, Any]) -> KnowledgeClaim:
+        return KnowledgeClaim(
+            knowledge_claim_id=row["knowledge_claim_id"],
+            owner_user_id=row["owner_user_id"],
+            claim_type=row["claim_type"],
+            statement=row["statement"],
+            subject=row.get("subject"),
+            predicate=row.get("predicate"),
+            object=row.get("object"),
+            qualifiers=dict(row.get("qualifiers") or {}),
+            evidence_text=row["evidence_text"],
+            source_refs=[SourceRef(**item) for item in (row.get("source_refs") or [])],
+            confidence=float(row["confidence"]),
+            producer=row["producer"],
+            job_id=row.get("job_id"),
+            request_id=row.get("request_id"),
+            metadata=dict(row.get("metadata") or {}),
+            created_at=row["created_at"],
+        )
+
+    def _digest_note_from_row(self, row: dict[str, Any]) -> DigestNote:
+        return DigestNote(
+            digest_note_id=row["digest_note_id"],
+            owner_user_id=row["owner_user_id"],
+            title=row["title"],
+            synopsis=row["synopsis"],
+            key_points=list(row.get("key_points") or []),
+            actions=list(row.get("actions") or []),
+            open_questions=list(row.get("open_questions") or []),
+            risks=list(row.get("risks") or []),
+            memory_suggestions=list(row.get("memory_suggestions") or []),
+            relationship_suggestions=list(row.get("relationship_suggestions") or []),
+            source_refs=[SourceRef(**item) for item in (row.get("source_refs") or [])],
+            confidence=float(row["confidence"]),
+            producer=row["producer"],
+            job_id=row.get("job_id"),
+            request_id=row.get("request_id"),
+            metadata=dict(row.get("metadata") or {}),
+            created_at=row["created_at"],
         )
 
     def _agent_memory_from_row(self, row: dict[str, Any]) -> AgentMemory:

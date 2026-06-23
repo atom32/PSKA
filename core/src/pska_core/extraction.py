@@ -7,7 +7,7 @@ from pska_core.config import LLMConfig
 from pska_core.enums import Directionality, ReviewType, Visibility
 from pska_core.hypergraph import HypergraphService
 from pska_core.llm import LLMClient, LLMResponseError, OpenAILLMClient, record_recovery_event
-from pska_core.models import Entity, ReviewItem, SourceItem, SourceRef
+from pska_core.models import Entity, KnowledgeClaim, ReviewItem, SourceItem, SourceRef
 from pska_core.store import KnowledgeStore
 
 
@@ -16,6 +16,7 @@ class ExtractionReport:
     source_item_id: str
     entities_created: list[str] = field(default_factory=list)
     hyperedges_created: list[str] = field(default_factory=list)
+    knowledge_claims_created: list[str] = field(default_factory=list)
     review_items_created: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
@@ -39,6 +40,49 @@ class ExtractionService:
         )
 
         extraction = self._extract_with_llm(item)
+
+        for claim_spec in extraction.get("knowledge_claims", []):
+            confidence = float(claim_spec.get("confidence", 0.75))
+            if confidence < 0.6:
+                review = ReviewItem(
+                    review_item_id=self._id("review", item.source_item_id, "low_confidence_claim", str(claim_spec.get("statement") or "")),
+                    owner_user_id=item.owner_user_id,
+                    review_type=ReviewType.LOW_CONFIDENCE,
+                    title=str(claim_spec.get("title") or "Review low-confidence knowledge claim"),
+                    proposal=self._proposal_with_source_refs(
+                        item,
+                        {
+                            "proposal": {
+                                "statement": str(claim_spec.get("statement") or ""),
+                                "evidence_text": str(claim_spec.get("evidence_text") or ""),
+                                "confidence": confidence,
+                                "reason": "low_confidence_knowledge_claim",
+                                "plain_text_summary": str(claim_spec.get("statement") or ""),
+                            }
+                        },
+                        source_ref,
+                    ),
+                )
+                self.store.add_review_item(review)
+                report.review_items_created.append(review.review_item_id)
+                continue
+            claim = KnowledgeClaim(
+                knowledge_claim_id=self._id("claim", item.source_item_id, str(claim_spec.get("statement") or "")),
+                owner_user_id=item.owner_user_id,
+                claim_type=str(claim_spec.get("claim_type") or "fact"),
+                statement=str(claim_spec["statement"]),
+                subject=str(claim_spec.get("subject")) if claim_spec.get("subject") is not None else None,
+                predicate=str(claim_spec.get("predicate")) if claim_spec.get("predicate") is not None else None,
+                object=str(claim_spec.get("object")) if claim_spec.get("object") is not None else None,
+                qualifiers=dict(claim_spec.get("qualifiers") or {}),
+                evidence_text=str(claim_spec["evidence_text"]),
+                source_refs=[source_ref],
+                confidence=confidence,
+                producer="llm_extraction",
+                metadata={"plain_text_summary": str(claim_spec.get("plain_text_summary") or claim_spec.get("statement") or "")},
+            )
+            self.store.add_knowledge_claim(claim)
+            report.knowledge_claims_created.append(claim.knowledge_claim_id)
 
         for entity_spec in extraction["entities"]:
             entity_type = str(entity_spec["entity_type"])
@@ -92,18 +136,21 @@ class ExtractionService:
 
     def _extract_with_llm(self, item: SourceItem) -> dict:
         system = (
-            "You are PSKA's knowledge extraction agent. Extract only facts grounded in the document. "
+            "You are PSKA's knowledge extraction agent for Knowledge Extraction. Extract only facts grounded in the document. "
             "Return strict JSON. Do not invent entities, relations, evidence, or directionality. "
+            "First extract readable knowledge_claims that say what the document states, then derive entities and hyperedges when useful. "
             "Use anonymous labels exactly as found when a real person is represented by an alias. "
             "Keep JSON keys and enum values exactly as specified, but write user-facing natural-language values "
             "such as title, evidence_text, and proposal text in Chinese by default unless the source text requires another language."
         )
         prompt = f"""
 Return a JSON object with exactly these keys:
+- knowledge_claims: array of objects with claim_type, statement, subject, predicate, object, qualifiers, evidence_text, confidence
 - entities: array of objects with entity_type, label
 - hyperedges: array of objects with relation_type, directionality, evidence_text, confidence, members
 - review_items: array of objects with review_type, title, proposal
 
+knowledge_claims must be human-readable and grounded. Use statement for the natural-language fact/decision/preference/action/risk/conflict/relationship. If the claim is naturally a triple, also include subject, predicate, and object. Include a short exact evidence_text.
 Hyperedge member objects must contain entity_type, label, role.
 directionality must be one of: directed, undirected, ambiguous.
 review_type must be one of: share_proposal, sensitive_content, profile_update, entity_merge, conflict, memory_candidate, relationship_candidate, action_candidate, low_confidence.
@@ -144,6 +191,18 @@ The previous extraction failed PSKA schema validation:
 
 Convert this object to exactly:
 {{
+  "knowledge_claims": [
+    {{
+      "claim_type": "fact|definition|preference|decision|constraint|action|risk|conflict|relationship",
+      "statement": "string",
+      "subject": "string",
+      "predicate": "string",
+      "object": "string",
+      "qualifiers": {{}},
+      "evidence_text": "string",
+      "confidence": 0.0
+    }}
+  ],
   "entities": [{{"entity_type": "string", "label": "string"}}],
   "hyperedges": [
     {{
@@ -170,6 +229,7 @@ Previous extraction:
 
     def _validate_extraction(self, raw: dict) -> dict:
         try:
+            knowledge_claims = list(raw.get("knowledge_claims") or [])
             entities = list(raw["entities"])
             hyperedges = list(raw["hyperedges"])
             review_items = list(raw["review_items"])
@@ -207,10 +267,30 @@ Previous extraction:
             except Exception as exc:  # noqa: BLE001
                 raise LLMResponseError(f"Invalid review item schema: {review}") from exc
         return {
+            "knowledge_claims": [self._validate_claim(claim) for claim in knowledge_claims],
             "entities": [{"entity_type": str(entity["entity_type"]), "label": str(entity["label"])} for entity in entities],
             "hyperedges": normalized_edges,
             "review_items": normalized_reviews,
         }
+
+    def _validate_claim(self, claim: dict) -> dict:
+        try:
+            statement = str(claim["statement"]).strip()
+            evidence_text = str(claim["evidence_text"]).strip()
+            if not statement or not evidence_text:
+                raise ValueError("knowledge_claim requires statement and evidence_text")
+            return {
+                "claim_type": str(claim.get("claim_type") or "fact"),
+                "statement": statement,
+                "subject": claim.get("subject"),
+                "predicate": claim.get("predicate"),
+                "object": claim.get("object"),
+                "qualifiers": dict(claim.get("qualifiers") or {}),
+                "evidence_text": evidence_text,
+                "confidence": float(claim.get("confidence", 0.75)),
+            }
+        except Exception as exc:  # noqa: BLE001
+            raise LLMResponseError(f"Invalid knowledge_claim schema: {claim}") from exc
 
     def _proposal_with_source_refs(
         self,

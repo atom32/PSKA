@@ -47,6 +47,7 @@ class SourceRef:
     source_item_id: str | None = None
     document_id: str | None = None
     chunk_id: str | None = None
+    passage_window_id: str | None = None
     message_id: str | None = None
     path: str | None = None
     url: str | None = None
@@ -203,6 +204,21 @@ class Chunk:
 
 
 @dataclass(slots=True)
+class PassageWindow:
+    passage_window_id: str
+    source_item_id: str
+    document_id: str
+    owner_user_id: str
+    ordinal: int
+    title: str
+    text: str
+    start_char: int = 0
+    end_char: int = 0
+    token_estimate: int = 0
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
 class OfflineIndexState:
     object_type: str
     object_id: str
@@ -318,6 +334,47 @@ class Hyperedge:
     evidence_text: str = ""
     source_refs: list[SourceRef] = field(default_factory=list)
     confidence: float = 0.0
+
+
+@dataclass(slots=True)
+class KnowledgeClaim:
+    knowledge_claim_id: str
+    owner_user_id: str
+    claim_type: str
+    statement: str
+    source_refs: list[SourceRef]
+    evidence_text: str
+    subject: str | None = None
+    predicate: str | None = None
+    object: str | None = None
+    qualifiers: dict[str, Any] = field(default_factory=dict)
+    confidence: float = 0.0
+    producer: str = "fastreact"
+    job_id: str | None = None
+    request_id: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: datetime = field(default_factory=utc_now)
+
+
+@dataclass(slots=True)
+class DigestNote:
+    digest_note_id: str
+    owner_user_id: str
+    title: str
+    synopsis: str
+    source_refs: list[SourceRef]
+    key_points: list[dict[str, Any]] = field(default_factory=list)
+    actions: list[dict[str, Any]] = field(default_factory=list)
+    open_questions: list[dict[str, Any]] = field(default_factory=list)
+    risks: list[dict[str, Any]] = field(default_factory=list)
+    memory_suggestions: list[dict[str, Any]] = field(default_factory=list)
+    relationship_suggestions: list[dict[str, Any]] = field(default_factory=list)
+    confidence: float = 0.0
+    producer: str = "fastreact"
+    job_id: str | None = None
+    request_id: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: datetime = field(default_factory=utc_now)
 
 
 @dataclass(slots=True)

@@ -80,6 +80,30 @@ MVP 推荐先用有限数据源启动：
 
 `files-sync` 会从数据库中的 Knowledge Sources 和 `.pska/config.json` 的默认 seed 解析 active folder sources，把 UTF-8 文本类文件以及可选 PDF/DOCX 文本抽取结果写入 canonical DB，同时处理 workspace 的 Twitter/X archive inbox。后续同步按内容 hash 和 manifest 报告 new、changed、unchanged、moved、missing；missing 只记录为同步状态，不会删除 canonical source history。connector state 仍用于实现层运行时 cursor/manifest，但用户视角应看 Knowledge Source 和 sync report。`files-watch` 是基于 `watchdog` 的前台监听模式，适合在 notes/docs root 变化时自动触发同一套 files scan；安装方式是 `pska-core[watch]`。`digest-schedule` 只会为还没有被当前 digest job 覆盖、或已经发生更新的 source 创建 backlog。
 
+### Source collection marker
+
+普通文件扫描默认是“一份文件 -> 一个 source item -> 一个 document”。当一个目录在语义上是一个完整项目、资料包或作品集，而目录里的多个 Markdown 文件只是这个项目的不同章节/素材/说明时，可以在该目录放置 `.pska-source.json` 或 `pska-source.json`，显式把它声明为一个 source collection。
+
+示例：
+
+```json
+{
+  "type": "source_collection",
+  "title": "My Research Project",
+  "source_id": "my-research-project",
+  "documents": [
+    "*.md"
+  ],
+  "exclude": [
+    "README*.md"
+  ]
+}
+```
+
+同步后，PSKA 会把 marker 所在目录写成一个 `source_item`，把匹配到的文件分别写成多个 `documents`，再按原有规则切分为 chunks。collection 的 `source_item_id` 由 `source_id` 稳定生成；后续内容变化会更新同一个 source，并整体替换它下面的 documents/chunks，避免旧片段残留。
+
+这个能力是 opt-in 的：没有 marker 的目录仍按普通文件逐个入库。不要给高度私密、暂不想进入 PSKA 的项目添加 marker，也不要把这类项目复制到已授权的 files root。
+
 当前 Postgres 样例库 gate：
 
 ```bash

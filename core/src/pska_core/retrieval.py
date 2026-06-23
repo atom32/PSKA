@@ -10,7 +10,7 @@ from typing import Any
 from pska_core.acl import ACLService
 from pska_core.embeddings import EmbeddingProvider
 from pska_core.hipporag_index import HippoRAGOfflineIndex
-from pska_core.models import Chunk, Entity, Hyperedge, HyperedgeMember, SourceItem, SourceRef, User
+from pska_core.models import Chunk, Entity, Hyperedge, HyperedgeMember, KnowledgeClaim, SourceItem, SourceRef, User
 from pska_core.offline_index import OfflineIndexService
 from pska_core.serde import to_jsonable
 from pska_core.store import KnowledgeStore
@@ -526,10 +526,16 @@ class RetrievalService:
                 if not self._can_read_graph_object(user, edge.owner_user_id, edge.visibility, edge.visible_team_ids, represented_user_id):
                     continue
                 visible_hyperedges.append((edge, members))
+        visible_claims = self.store.list_knowledge_claims(
+            owner_user_id=represented_user_id or user.user_id,
+            source_item_ids=set(item_by_id),
+            limit=200,
+        )
 
         offline_index = HippoRAGOfflineIndex.build(
             entities=visible_entities,
             hyperedges=visible_hyperedges,
+            knowledge_claims=visible_claims,
             chunks=chunks,
             item_by_id=item_by_id,
         )

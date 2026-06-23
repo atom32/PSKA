@@ -17,6 +17,8 @@
 
 当前 digest scheduler 是增量轮询：local daemon 默认每 300 秒检查一次有没有新 source 或改动 source；它不是每天固定一次的 cron。
 
+目录级资料包可通过 `.pska-source.json` 显式声明为一个 source collection；用法见 [Operations Runbook](../core/docs/operations-runbook-zh.md#source-collection-marker)。
+
 ## 架构与 API
 
 - [Architecture](ARCHITECTURE.md)：当前系统形态、source-centric 数据流、discovery 规则和 scheduler 行为。

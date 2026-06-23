@@ -180,15 +180,22 @@ class JobService:
             if item.owner_user_id == owner_user_id
         ][:top_k]
         prompt = (
-            "Run PSKA extraction for the provided source items. "
+            "Run PSKA Knowledge Extraction for the provided source items. "
             "Use only PSKA MCP tools when available. Do not call host tools such as "
             "exec, shell, read_file, write_file, edit_file, or direct database clients. "
-            "Return JSON-compatible candidate entities, hyperedges, review_items, "
-            "cited_source_ids, and gaps. Do not invent facts beyond the provided source refs. "
-            "If you need full source/chunk text, call pska_job_context with "
-            f"job_id={job.job_id!r}, then write grounded candidates with pska_write_candidates. "
+            "First extract readable knowledge_claims that explain what the documents say, "
+            "then derive candidate entities, hyperedges, and review_items only when useful. "
+            "Each knowledge_claim must include claim_type, statement, evidence_text, "
+            "source_refs, confidence, and subject/predicate/object when it is naturally a triple. "
+            "Use Chinese for user-facing statement, evidence summaries, titles, and proposals by default. "
+            "Do not invent facts beyond the provided source refs. "
+            "If you need source document text or passage windows, call pska_job_context with "
+            f"job_id={job.job_id!r}, max_document_chars=48000, max_passage_chars=24000, max_chunk_chars=1200, max_chunks=6, "
+            "then write grounded candidates with pska_write_candidates. "
             "Every entity and every hyperedge member must include both entity_type and label. "
-            "Every review item must include review_type, title, proposal, and source_refs. "
+            "Every relationship candidate must include evidence_text or why_it_matters. "
+            "Every review item must include review_type, title, proposal, source_refs, and "
+            "proposal.plain_text_summary. "
             "Call pska_write_candidates at most once. Keep the response compact and include "
             "candidate keys at the top level.\n\n"
             f"Source items:\n{to_jsonable(source_items)}"
@@ -208,22 +215,29 @@ class JobService:
         scope = dict(payload.get("scope") or {})
         source_item_ids = [str(item) for item in scope.get("source_item_ids") or [] if item]
         prompt = (
-            "Run one PSKA digest pass for the explicit job below. "
+            "Run one PSKA Digest pass for the explicit job below. "
             f"job_id: {job.job_id}\n"
             f"owner_user_id: {owner_user_id}\n"
             f"source_item_ids: {source_item_ids}\n\n"
             "Use only PSKA MCP tools. Do not call host tools such as exec, shell, read_file, "
             "write_file, edit_file, or direct database clients.\n\n"
             "Required tool flow:\n"
-            "1. Call pska_job_context with this job_id to fetch allowed source/chunk context.\n"
-            "2. Produce only grounded candidates from that context.\n"
+            "1. Call pska_job_context with this job_id, max_document_chars=48000, max_passage_chars=24000, max_chunk_chars=1200, and max_chunks=6 "
+            "to fetch allowed source documents, passage windows, and retrieval-slice chunks.\n"
+            "2. Produce a human-readable digest_note first, then only grounded candidates from that context.\n"
             "3. Call pska_write_candidates with schema_version='pska.candidates.v1', "
-            "owner_user_id, source_refs, and any entities/hyperedges/review_items/memory_candidates.\n"
+            "owner_user_id, source_refs, digest_notes, and any knowledge_claims/entities/hyperedges/review_items/memory_candidates.\n"
+            "   Digest note schema: {title, synopsis, key_points:[{summary,source_refs}], "
+            "actions:[{summary,source_refs}], open_questions:[{summary,source_refs}], "
+            "risks:[{summary,source_refs}], memory_suggestions:[{summary,source_refs}], "
+            "relationship_suggestions:[{summary,source_refs}], confidence, source_refs}.\n"
+            "   Knowledge claim schema: {claim_type, statement, subject, predicate, object, qualifiers, evidence_text, confidence, source_refs}.\n"
             "   Entity schema: {entity_type, label, confidence, source_refs}.\n"
             "   Hyperedge schema: {relation_type, members:[{entity_type,label,role}], evidence_text, confidence, source_refs}.\n"
-            "   Review schema: {review_type, title, proposal, source_refs}.\n"
+            "   Review schema: {review_type, title, proposal:{plain_text_summary,...}, source_refs}.\n"
             "4. Call pska_write_candidates at most once.\n"
             "5. Return compact JSON with top-level candidate keys and source_refs. "
+            "Digest must distinguish saved_candidates, review_candidates, and ignored_low_value_items when possible. "
             "High-impact or low-confidence suggestions must be review candidates, not applied changes."
         )
         response = self._call_fastreact(
@@ -292,7 +306,7 @@ class JobService:
         return to_jsonable(response)
 
     def _write_fastreact_candidates(self, job: Job, owner_user_id: str, response: dict[str, Any]) -> dict[str, Any]:
-        candidate_keys = {"entities", "hyperedges", "review_items", "memory_candidates"}
+        candidate_keys = {"entities", "hyperedges", "knowledge_claims", "digest_notes", "review_items", "memory_candidates"}
         tool_errors = _fastreact_candidate_tool_errors(response)
         if tool_errors:
             detail = "; ".join(tool_errors[:3])
@@ -308,11 +322,23 @@ class JobService:
             "source_refs": response.get("source_refs") or [to_jsonable(ref) for ref in job.source_refs],
             "entities": response.get("entities") or [],
             "hyperedges": response.get("hyperedges") or [],
+            "knowledge_claims": response.get("knowledge_claims") or [],
+            "digest_notes": response.get("digest_notes") or [],
             "review_items": response.get("review_items") or [],
             "memory_candidates": response.get("memory_candidates") or response.get("memory") or [],
         }
         summary = CandidateWriteService(self.store).write_candidates(payload)
         self.store.add_job_event(job.job_id, "candidates_written", "Wrote Fastreact candidates to PSKA", summary)
+        if not summary.get("knowledge_claims") and (summary.get("digest_notes") or summary.get("hyperedges")):
+            self.store.add_job_event(
+                job.job_id,
+                "candidate_quality_warning",
+                "Fastreact wrote digest or relationship candidates without knowledge claims",
+                {
+                    "warning": "fastreact_digest_wrote_digest_or_relationship_without_knowledge_claims",
+                    "summary": summary,
+                },
+            )
         return summary
 
     def _embed_backfill(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -322,7 +348,7 @@ class JobService:
         report = EmbeddingService(
             self.store,
             provider,
-            batch_size=int(payload.get("batch_size") or 16),
+            batch_size=int(payload.get("batch_size") or 1),
         ).backfill_missing(limit=int(payload["limit"]) if payload.get("limit") is not None else None)
         return to_jsonable(report)
 
@@ -405,7 +431,7 @@ class JobService:
             provider=str(payload.get("embedding_provider") or "disabled"),
             model=str(payload.get("embedding_model") or "BAAI/bge-m3"),
             dimensions=int(payload.get("embedding_dimensions") or 1024),
-            batch_size=int(payload.get("batch_size") or 16),
+            batch_size=int(payload.get("batch_size") or 1),
         )
         return build_embedding_provider(config)
 

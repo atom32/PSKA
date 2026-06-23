@@ -10,12 +10,14 @@ from pska_core.models import (
     ConnectorState,
     DiscoveryItem,
     Document,
+    DigestNote,
     Entity,
     Hyperedge,
     HyperedgeMember,
     Job,
     JobEvent,
     AuditEvent,
+    KnowledgeClaim,
     KnowledgeSource,
     OfflineIndexState,
     ReviewItem,
@@ -52,6 +54,8 @@ class KnowledgeStore(Protocol):
     def list_connector_states(self, *, owner_user_id: str | None = None, connector_id: str | None = None) -> list[ConnectorState]: ...
     def add_document(self, document: Document) -> None: ...
     def add_chunk(self, chunk: Chunk) -> None: ...
+    def replace_source_documents(self, source_item_id: str, documents: list[Document], chunks: list[Chunk]) -> None: ...
+    def list_documents_for_sources(self, source_item_ids: set[str]) -> list[Document]: ...
     def add_agent_memory(self, memory: AgentMemory) -> None: ...
     def get_agent_memory(self, agent_memory_id: str) -> AgentMemory: ...
     def list_agent_memories(self, *, owner_user_id: str) -> list[AgentMemory]: ...
@@ -76,6 +80,24 @@ class KnowledgeStore(Protocol):
     def list_profile_cards(self, *, owner_user_id: str) -> list[UserProfileCard]: ...
     def add_entity(self, entity: Entity) -> None: ...
     def add_hyperedge(self, hyperedge: Hyperedge, members: list[HyperedgeMember]) -> None: ...
+    def add_knowledge_claim(self, claim: KnowledgeClaim) -> KnowledgeClaim: ...
+    def list_knowledge_claims(
+        self,
+        *,
+        owner_user_id: str,
+        source_item_ids: set[str] | None = None,
+        job_id: str | None = None,
+        limit: int = 50,
+    ) -> list[KnowledgeClaim]: ...
+    def add_digest_note(self, note: DigestNote) -> DigestNote: ...
+    def list_digest_notes(
+        self,
+        *,
+        owner_user_id: str,
+        source_item_ids: set[str] | None = None,
+        job_id: str | None = None,
+        limit: int = 50,
+    ) -> list[DigestNote]: ...
     def add_review_item(self, review_item: ReviewItem) -> None: ...
     def get_review_item(self, review_item_id: str) -> ReviewItem: ...
     def list_review_items(self) -> list[ReviewItem]: ...
@@ -182,6 +204,8 @@ class InMemoryKnowledgeStore:
         self.entities: dict[str, Entity] = {}
         self.hyperedges: dict[str, Hyperedge] = {}
         self.hyperedge_members: list[HyperedgeMember] = []
+        self.knowledge_claims: dict[str, KnowledgeClaim] = {}
+        self.digest_notes: dict[str, DigestNote] = {}
         self.review_items: dict[str, ReviewItem] = {}
         self.audit_events: list[AuditEvent] = []
         self.jobs: dict[str, Job] = {}
@@ -206,6 +230,10 @@ class InMemoryKnowledgeStore:
         existing_id = self.source_items_by_hash.get(item.content_hash)
         if existing_id:
             return self.source_items[existing_id]
+        existing = self.source_items.get(item.source_item_id)
+        if existing:
+            self.source_items_by_hash.pop(existing.content_hash, None)
+            item.created_at = existing.created_at
         self.source_items[item.source_item_id] = item
         self.source_items_by_hash[item.content_hash] = item.source_item_id
         return item
@@ -280,6 +308,23 @@ class InMemoryKnowledgeStore:
     def add_chunk(self, chunk: Chunk) -> None:
         self.chunks[chunk.chunk_id] = chunk
 
+    def replace_source_documents(self, source_item_id: str, documents: list[Document], chunks: list[Chunk]) -> None:
+        document_ids = {document.document_id for document in self.documents.values() if document.source_item_id == source_item_id}
+        self.documents = {
+            document_id: document
+            for document_id, document in self.documents.items()
+            if document.source_item_id != source_item_id
+        }
+        self.chunks = {
+            chunk_id: chunk
+            for chunk_id, chunk in self.chunks.items()
+            if chunk.source_item_id != source_item_id and chunk.document_id not in document_ids
+        }
+        for document in documents:
+            self.add_document(document)
+        for chunk in chunks:
+            self.add_chunk(chunk)
+
     def add_agent_memory(self, memory: AgentMemory) -> None:
         self.agent_memories[memory.agent_memory_id] = memory
 
@@ -341,6 +386,54 @@ class InMemoryKnowledgeStore:
         self.hyperedges[hyperedge.hyperedge_id] = hyperedge
         self.hyperedge_members.extend(members)
 
+    def add_knowledge_claim(self, claim: KnowledgeClaim) -> KnowledgeClaim:
+        self.knowledge_claims[claim.knowledge_claim_id] = claim
+        return claim
+
+    def list_knowledge_claims(
+        self,
+        *,
+        owner_user_id: str,
+        source_item_ids: set[str] | None = None,
+        job_id: str | None = None,
+        limit: int = 50,
+    ) -> list[KnowledgeClaim]:
+        claims = [claim for claim in self.knowledge_claims.values() if claim.owner_user_id == owner_user_id]
+        if source_item_ids:
+            claims = [
+                claim
+                for claim in claims
+                if any(ref.source_item_id in source_item_ids for ref in claim.source_refs if ref.source_item_id)
+            ]
+        if job_id:
+            claims = [claim for claim in claims if claim.job_id == job_id]
+        claims = sorted(claims, key=lambda claim: (claim.created_at, claim.knowledge_claim_id), reverse=True)
+        return claims[: max(0, limit)]
+
+    def add_digest_note(self, note: DigestNote) -> DigestNote:
+        self.digest_notes[note.digest_note_id] = note
+        return note
+
+    def list_digest_notes(
+        self,
+        *,
+        owner_user_id: str,
+        source_item_ids: set[str] | None = None,
+        job_id: str | None = None,
+        limit: int = 50,
+    ) -> list[DigestNote]:
+        notes = [note for note in self.digest_notes.values() if note.owner_user_id == owner_user_id]
+        if source_item_ids:
+            notes = [
+                note
+                for note in notes
+                if any(ref.source_item_id in source_item_ids for ref in note.source_refs if ref.source_item_id)
+            ]
+        if job_id:
+            notes = [note for note in notes if note.job_id == job_id]
+        notes = sorted(notes, key=lambda note: (note.created_at, note.digest_note_id), reverse=True)
+        return notes[: max(0, limit)]
+
     def add_review_item(self, review_item: ReviewItem) -> None:
         self.review_items[review_item.review_item_id] = review_item
 
@@ -381,6 +474,8 @@ class InMemoryKnowledgeStore:
             "chunk": self.chunks,
             "entity": self.entities,
             "hyperedge": self.hyperedges,
+            "knowledge_claim": self.knowledge_claims,
+            "digest_note": self.digest_notes,
         }
         target_map = targets.get(target_type)
         if target_map is None:
@@ -579,6 +674,9 @@ class InMemoryKnowledgeStore:
 
     def list_chunks_for_sources(self, source_item_ids: set[str]) -> list[Chunk]:
         return [chunk for chunk in self.chunks.values() if chunk.source_item_id in source_item_ids]
+
+    def list_documents_for_sources(self, source_item_ids: set[str]) -> list[Document]:
+        return [document for document in self.documents.values() if document.source_item_id in source_item_ids]
 
     def list_chunks_missing_embedding(self, *, provider: str, model: str, limit: int | None = None) -> list[Chunk]:
         chunks = [
@@ -844,9 +942,16 @@ class InMemoryKnowledgeStore:
             "connector_states": self.connector_states,
             "documents": self.documents,
             "chunks": self.chunks,
+            "passage_windows": {},
+            "graph_nodes": {},
+            "graph_edges": {},
             "users": self.users,
             "entities": self.entities,
             "hyperedges": self.hyperedges,
+            "knowledge_claims": self.knowledge_claims,
+            "digest_notes": self.digest_notes,
+            "knowledge_claim_links": {},
+            "digest_note_links": {},
             "review_items": self.review_items,
             "agent_memories": self.agent_memories,
             "user_profile_cards": self.profile_cards,

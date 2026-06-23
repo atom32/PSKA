@@ -20,6 +20,9 @@ historical planning notes.
 The digest scheduler is incremental. The local daemon checks every 300 seconds
 by default; it is not a fixed once-per-day cron.
 
+Directory-level material packs can opt into source collection ingest with
+`.pska-source.json`; see the [Operations Runbook](../core/docs/operations-runbook-zh.md#source-collection-marker).
+
 ## Architecture And API
 
 - [Architecture](ARCHITECTURE.md): current system shape, source-centric flow, discovery invariants, and scheduler behavior.

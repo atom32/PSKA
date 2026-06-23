@@ -822,10 +822,14 @@ def test_external_agentic_adapter_returns_trace_and_citations() -> None:
     store = make_store()
 
     class FakeFastreactClient:
+        def __init__(self):
+            self.captured_kwargs = {}
+
         def ready(self):
             return {"ok": True, "pska_tools_loaded": True}
 
         def chat_completion(self, **kwargs):
+            self.captured_kwargs = kwargs
             return {
                 "run_id": "run_agentic",
                 "session_id": "session_agentic",
@@ -862,6 +866,10 @@ def test_external_agentic_adapter_returns_trace_and_citations() -> None:
     assert response["trace"]["events"][0]["type"] == "tool_call"
     assert response["answer"] == "The note cites external agentic evidence."
     assert response["agentic_service"]["provider"] == "fastreact"
+    prompt = "\n".join(message["content"] for message in service.client.captured_kwargs["messages"])
+    assert "HippoRAG-style loop" in prompt
+    assert "previous/next passage window" in prompt
+    assert "connected entity/fact/claim neighbors" in prompt
 
 
 def test_external_agentic_adapter_prefers_background_run_events() -> None:

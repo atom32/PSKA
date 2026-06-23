@@ -5,7 +5,7 @@ import math
 import re
 from typing import Any
 
-from pska_core.models import Chunk, Entity, Hyperedge, HyperedgeMember, SourceItem, SourceRef
+from pska_core.models import Chunk, Entity, Hyperedge, HyperedgeMember, KnowledgeClaim, SourceItem, SourceRef
 from pska_core.serde import to_jsonable
 
 
@@ -19,6 +19,8 @@ class HippoRAGFact:
     evidence_text: str
     confidence: float
     source_refs: list[SourceRef] = field(default_factory=list)
+    fact_kind: str = "hyperedge"
+    object_id: str = ""
 
     @property
     def text(self) -> str:
@@ -63,6 +65,7 @@ class HippoRAGOfflineIndex:
         *,
         entities: list[Entity],
         hyperedges: list[tuple[Hyperedge, list[HyperedgeMember]]],
+        knowledge_claims: list[KnowledgeClaim] | None = None,
         chunks: list[Chunk],
         item_by_id: dict[str, SourceItem],
     ) -> "HippoRAGOfflineIndex":
@@ -119,6 +122,8 @@ class HippoRAGOfflineIndex:
                 evidence_text=edge.evidence_text,
                 confidence=max(0.0, min(1.0, float(edge.confidence or 0.0))),
                 source_refs=list(edge.source_refs),
+                fact_kind="hyperedge",
+                object_id=edge.hyperedge_id,
             )
             facts.append(fact)
             add_node(fact.fact_id)
@@ -140,6 +145,31 @@ class HippoRAGOfflineIndex:
                 for entity_id in member_entity_ids:
                     entity_to_chunk_ids.setdefault(entity_id, set()).add(chunk_id)
                     add_edge(_entity_node(entity_id), _chunk_node(chunk_id), chunk_weight)
+
+        for claim in knowledge_claims or []:
+            member_entity_ids = _claim_entity_ids(claim, entity_by_id)
+            member_labels = [entity_by_id[entity_id].label for entity_id in member_entity_ids]
+            fact = HippoRAGFact(
+                fact_id=_claim_fact_node(claim.knowledge_claim_id),
+                hyperedge_id="",
+                relation_type=claim.predicate or claim.claim_type,
+                member_entity_ids=member_entity_ids,
+                member_labels=member_labels,
+                evidence_text=" ".join(part for part in [claim.statement, claim.evidence_text] if part),
+                confidence=max(0.0, min(1.0, float(claim.confidence or 0.0))),
+                source_refs=list(claim.source_refs),
+                fact_kind="knowledge_claim",
+                object_id=claim.knowledge_claim_id,
+            )
+            facts.append(fact)
+            add_node(fact.fact_id)
+            claim_weight = 0.55 + fact.confidence * 0.25 + (0.1 if fact.source_refs else 0.0)
+            for entity_id in member_entity_ids:
+                add_edge(fact.fact_id, _entity_node(entity_id), claim_weight)
+            evidence_chunk_ids = _chunks_for_source_refs(fact.source_refs, chunk_by_source_item_id, chunk_by_id)
+            fact_to_chunk_ids[fact.fact_id] = set(evidence_chunk_ids)
+            for chunk_id in evidence_chunk_ids:
+                add_edge(fact.fact_id, _chunk_node(chunk_id), 0.55 + fact.confidence * 0.25)
 
         graph_info = {
             "num_phrase_nodes": len(entity_by_id),
@@ -210,6 +240,8 @@ class HippoRAGOfflineIndex:
                     },
                     "summary": {
                         "hyperedge_id": fact.hyperedge_id,
+                        "fact_kind": fact.fact_kind,
+                        "object_id": fact.object_id,
                         "relation_type": fact.relation_type,
                         "score": round(score, 8),
                         "members": list(fact.member_labels),
@@ -351,6 +383,26 @@ def _chunk_node(chunk_id: str) -> str:
 
 def _fact_node(hyperedge_id: str) -> str:
     return f"fact:{hyperedge_id}"
+
+
+def _claim_fact_node(knowledge_claim_id: str) -> str:
+    return f"fact:claim:{knowledge_claim_id}"
+
+
+def _claim_entity_ids(claim: KnowledgeClaim, entity_by_id: dict[str, Entity]) -> list[str]:
+    labels = {
+        _normalize_match_text(value)
+        for value in [claim.subject, claim.object]
+        if isinstance(value, str) and value.strip()
+    }
+    if not labels:
+        return []
+    result = []
+    for entity in entity_by_id.values():
+        aliases = {_normalize_match_text(alias) for alias in _entity_aliases(entity)}
+        if labels & aliases:
+            result.append(entity.entity_id)
+    return result
 
 
 def _terms(text: str) -> list[str]:

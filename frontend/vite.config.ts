@@ -14,7 +14,19 @@ export default defineConfig({
         target: "http://127.0.0.1:8765",
         changeOrigin: true
       },
+      "/files": {
+        target: "http://127.0.0.1:8765",
+        changeOrigin: true
+      },
+      "/digest": {
+        target: "http://127.0.0.1:8765",
+        changeOrigin: true
+      },
       "/review-items": {
+        target: "http://127.0.0.1:8765",
+        changeOrigin: true
+      },
+      "/knowledge-sources": {
         target: "http://127.0.0.1:8765",
         changeOrigin: true
       }
