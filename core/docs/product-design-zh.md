@@ -80,6 +80,86 @@ PSKA 需要区分两个界面层次：
 4. Evidence Inspector：任何回答、建议、memory、profile 或 graph edge 都应能展开出处、证据片段、置信度、review 状态和是否缺失 grounding。
 5. Retrieval Quality Loop：产品上必须承认当前是 HippoRAG-inspired GraphRAG v0，而不是成熟 HippoRAG 2/GNN；它已有离线 fact/entity/passage 图索引、fact/entity embedding linking、PPR 融合和普通 RAG fallback，下一步通过 fixture、expected citations、rerank、PPR 参数调优和真实问题回放提升质量。
 
+### 产品验收门槛
+
+PSKA 的产品目标不能只靠“某个接口能跑”来判断。当前稳定验收入口是 `product-gate`，它把五层架构作为 release gate：
+
+```bash
+./scripts/pska --config .pska/config.json product-gate --summary
+```
+
+默认 gate 不调用 LLM，检查：
+
+- Evidence Layer：source/document/passage 是否存在，能否提供 grounding。
+- Agentic Understanding Layer：是否已有带 evidence/source refs 的 claims 和 digest notes。
+- Semantic Graph / HippoRAG Layer：是否已有 entities/hyperedges，以及 `contains/grounds/summarizes/formalizes` 等显式证据链。
+- Human Review Layer：pending review proposal 是否有 `plain_text_summary` 等可读摘要。
+- Exploration Layer：Graph API 是否返回 typed nodes/edges，前端能据此做证据链探索。
+
+带 QA 的 gate 用当前真实 PSKA 数据生成问题并跑 GraphRAG：
+
+```bash
+./scripts/pska --config .pska/config.json product-gate \
+  --run-qa \
+  --qa-mode agentic \
+  --qa-limit 3 \
+  --agentic-timeout-seconds 90 \
+  --summary
+```
+
+Graph v2 现在把 `Fact` 和 `Phrase` 作为一等 typed node 暴露给前端和 Graph API：当前 `Fact` 实现是从已有 hyperedge 派生 `fact:<hyperedge_id>`，并通过 `represented_by` 连接回原 hyperedge，通过 `participates_in` 连接成员 entity，通过 `grounds/formalizes/suggests_relationship` 连接 passage/claim/digest；`Phrase` 当前从 entity label 与 claim subject/object 派生，并通过 `links_to/mentions` 连接回 entity/claim，为后续 HippoRAG phrase seeds 做准备。底层数据库仍保留 hyperedge 作为 n-ary 关系存储；独立 fact 表和 phrase 表属于下一阶段物理化工作。
+
+Graph API 同时返回 `insights`，把图谱从“节点列表”提升为“知识解释器”的输入：`layer_coverage` 展示 evidence/understanding/semantic/review/exploration 五层覆盖，`evidence_health` 展示 grounded 节点与证据边，`topic_clusters` 根据图连通性和中心节点生成可探索主题簇，`guided_tour` 给前端提供“先看主题、再看 digest、再看 fact、最后验证 passage 证据链”的操作路径。前端 Graph 页面用这些 insights 显示 Graph Insights 面板，并支持点击主题簇/中心节点直接跳到局部邻域和 evidence path。
+
+Graph 页面性能原则是默认展示 Overview，而不是一次渲染完整图谱。当前真实库 `/workspace/graph/data?limit=80` 后端请求约 0.3 秒，但会返回千级节点/数千边，卡顿主要来自前端 Cytoscape CPU 布局；因此默认 Graph 页面使用 `limit=20`、默认隐藏高密度 `entity/phrase` 节点，并提供 Detail 模式按需加载更大图。小图继续使用 `cose` 关系布局，大图自动降级为更便宜的 grid 布局。Graph API 支持 `node_types` server-side projection filter，前端默认只请求主干类型，当前真实库 `limit=20` 从 420 nodes / 955 edges 裁剪为 235 nodes / 659 edges，再交给浏览器布局。
+
+Graph v2 已新增局部展开入口 `/workspace/graph/subgraph`：前端选择节点后可以请求 `node_id + hops` 的局部子图，返回局部 nodes/edges、`evidence_path` 和局部 insights，再合并进当前画布。Graph v2 也新增 `/workspace/graph/search-subgraph`：用户可以从关键词直接进入图谱，后端先匹配相关 claim/fact/digest/passage/source 节点，再返回这些 seed 的局部子图。这个 v0 让 Graph 页面从“加载一张大图”转向“Overview + search-subgraph + expand-neighborhood”的探索模式。后续如果要做全库探索，应继续补保存视图、server-side community layout 或 WebGL 图组件，而不是默认把完整图谱扔给浏览器布局。
+
+图谱投影可以不用清库重建。`graph-reindex` 会从当前 Graph v2 typed projection 重建物理 `graph_nodes/graph_edges` 表：
+
+```bash
+./scripts/pska --config .pska/config.json graph-reindex \
+  --owner-user-id user_primary \
+  --limit 100 \
+  --summary
+```
+
+2026-06-24 当前真实库投影结果为 1560 graph nodes、4176 graph edges。这个投影仍是 derived index，不改变 source/document/claim/digest/entity/hyperedge 等源表；当未来把 fact/phrase 做成真正持久表时，同一 reindex 命令会升级为物理索引重建入口。只有当 source/document/chunk 本身需要重新导入、清除错误来源或验证全新 ingestion pipeline 时，才需要使用 destructive `db-reset`。
+
+2026-06-24 的真实库验证结果：静态产品 gate 为 7/7 通过，图谱计数为 14 sources、14 documents、14 passages、400 claims、13 digest notes、637 entities、565 phrases、221 facts、221 hyperedges、42 review items；Graph API typed projection 为 1662 nodes、3621 edges，物理投影计数同步为 1662 graph nodes、3621 graph edges。Human Review 曾因历史 review 缺少 `plain_text_summary` 出现 warning，已通过 `review-backfill-summaries --execute` 回填，并补上新 review 入口的摘要约束。
+
+Review Center 已具备应用闭环 v0：`approve/apply/approve_apply/reject` API 除了返回更新后的 review item，还返回 `application_result`，说明是否写入长期知识、写入类型和目标 ID，例如 `profile_card_id`、`agent_memory_id` 或 `created_hyperedge_id`。前端 Review Center 会把这个摘要显示为操作结果，让用户知道候选是否真正进入 memory/profile/graph，而不是只看到状态变化。
+
+同日 deterministic QA gate 为 3/3 通过，平均回答约 1020 字，总计 24 citations、24 supporting passages、24 graph paths、12 top facts。Agentic QA gate 早期小批量为 2/2 通过，但其中 1/2 依赖 `deterministic_synthesis_for_short_agentic`。随后 PSKA 增加 agentic answer repair loop：当 FastReAct 第一次返回可解析但低于产品字数门槛的 GraphRAG 回答时，PSKA 会把上一版回答、deterministic seeds、citations、facts 和 graph paths 发回 FastReAct，请它重写为至少 300 字、带结论/风险/行动/不确定性的 grounded answer；repair 仍失败时才进入 deterministic fallback。
+
+加入 repair loop 后，同日真实库 agentic product gate 小批量为 2/2 通过，平均回答约 515 字，总计 16 citations、16 supporting passages、16 graph paths、8 top facts，`answer_modes` 为 2/2 `agentic_synthesis`，deterministic synthesis rate 从 0.5 降为 0。随后 QA aggregate 增加 repair 指标：`repair_attempted_count`、`repair_accepted_count`、`repair_attempt_rate`、`repair_accept_rate`。最近一次真实 agentic gate 为 2/2 通过，1 次 repair 被触发并成功接受，repair accept rate 为 1.0，deterministic synthesis rate 仍为 0。当前结论是：产品门槛已可重复验证通过；下一阶段质量重点是扩大真实问题集，并把 repair 成功率、纯 agentic synthesis 率、引用质量纳入长期趋势观察。
+
+### 真实 QA 质量门槛
+
+PSKA 的问答验收不能只看单元测试或 fixture。真实质量门槛使用当前个人知识库数据自动生成问题，并通过 FastReAct agentic GraphRAG 跑完整链路：
+
+```bash
+./scripts/pska --config .pska/config.json graph-qa-eval \
+  --mode agentic \
+  --limit 5 \
+  --top-k 8 \
+  --max-iterations 5 \
+  --agentic-timeout-seconds 90 \
+  --retries 1 \
+  --sleep-between-seconds 2 \
+  --summary
+```
+
+默认质量门槛：
+
+- 每题应有不少于 300 字的中文综合回答。
+- 每题应有 citations、supporting passages 或 source refs。
+- 每题应有 graph paths 或 top facts。
+- 每题应有 fact filtering diagnostics。
+- Agentic 模式应暴露 trace / expansion decisions；FastReAct timeout、MCP transport failure、unusable answer 必须作为失败原因显示，而不能伪装成成功。
+
+2026-06-23 的真实库试跑显示：PSKA 检索侧已经能稳定返回 citations、supporting passages、graph paths 和 top facts；早期短板主要是 FastReAct agentic run timeout、MCP transport 并发错误和回答过短。随后 PSKA 侧做了三项加固：压缩 GraphRAG seeds、允许 QA eval 配置更长 agentic timeout / retries / 题间隔、并在 agentic answer 过短时用 deterministic seeds 合成一个透明标注的 grounded fallback。加固后，当前真实库 3 题 agentic eval 在“产品可用门槛”下达到 3/3 通过：每题 8 个 citations、8 条 graph paths、4-5 个 top facts，平均答案约 730 字；其中 2/3 是纯 `agentic_synthesis`，1/3 依赖 `deterministic_synthesis_for_short_agentic`。在 `--require-agentic-synthesis` 的更严格门槛下，当前为 2/3 通过。下一阶段 QA 优先级是：把这套 eval 扩到更多真实问题，降低 deterministic synthesis fallback 率，并继续调 GraphRAG seeds 的相关性。
+
 参考方向：
 
 - gbrain：强调面向用户问题的合成答案、可读引用和缺口说明。

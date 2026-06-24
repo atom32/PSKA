@@ -509,6 +509,11 @@ def test_digest_logs_surface_events_claims_and_notes() -> None:
     assert payload["logs"][0]["job_id"] == job.job_id
     assert payload["logs"][0]["candidate_summary"]["knowledge_claims"] == 1
     assert payload["logs"][0]["candidate_summary"]["digest_notes"] == 1
+    assert payload["summary"]["candidate_totals"]["knowledge_claims"] == 1
+    assert payload["summary"]["candidate_totals"]["digest_notes"] == 1
+    assert payload["summary"]["recent_claims"][0]["statement"] == "Digest 日志需要可视化。"
+    assert payload["summary"]["recent_digest_notes"][0]["title"] == "Digest log"
+    assert payload["summary"]["has_useful_output"] is True
 
 
 class FakeFastreact:

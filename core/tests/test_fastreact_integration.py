@@ -1149,6 +1149,10 @@ def test_local_console_review_actions_use_review_api_and_audit() -> None:
 
     assert status == 200
     assert payload["review_item"]["status"] == "applied"
+    assert payload["application_result"]["applied"] is True
+    assert payload["application_result"]["promotion_type"] == "profile_card"
+    assert payload["application_result"]["target_ids"]["profile_card_id"]
+    assert "Promoted to profile card" in payload["application_result"]["summary"]
     assert refreshed_status == 200
     assert refreshed["total_matching"] == 0
     assert [event.action for event in api.store.list_audit_events()] == ["review.approve", "review.apply"]
@@ -1811,6 +1815,28 @@ def test_workspace_graph_data_links_digest_claim_hyperedge_to_passage_evidence()
             confidence=0.9,
         )
     )
+    api.store.add_agent_memory(
+        AgentMemory(
+            agent_memory_id="agm_graph_v2",
+            owner_user_id="user_primary",
+            layer=MemoryLayer.SEMANTIC,
+            text="PSKA GraphRAG v2 treats digest notes as graph nodes.",
+            confidence=0.8,
+            source_refs=[ref],
+        )
+    )
+    api.store.add_review_item(
+        ReviewItem(
+            review_item_id="rev_graph_v2_action",
+            owner_user_id="user_primary",
+            review_type=ReviewType.ACTION_CANDIDATE,
+            title="Review graph action",
+            proposal={
+                "plain_text_summary": "Check whether digest notes connect to evidence passages.",
+                "source_refs": [to_jsonable(ref)],
+            },
+        )
+    )
     api.store.add_entity(Entity("ent_pska_graphrag_v2", "system", "PSKA GraphRAG v2", "user_primary", "private_primary", Visibility.PRIVATE))
     api.store.add_entity(Entity("ent_digest_note", "artifact", "digest notes", "user_primary", "private_primary", Visibility.PRIVATE))
     graph = HypergraphService(api.store)
@@ -1830,10 +1856,50 @@ def test_workspace_graph_data_links_digest_claim_hyperedge_to_passage_evidence()
 
     node_types = {node["type"] for node in payload["nodes"]}
     edge_types = {edge["type"] for edge in payload["edges"]}
-    assert {"source", "document", "passage", "claim", "digest", "entity", "hyperedge"} <= node_types
-    assert {"contains", "grounds", "summarizes", "formalizes", "suggests_relationship", "member"} <= edge_types
+    assert {"source", "document", "passage", "claim", "digest", "phrase", "entity", "fact", "hyperedge", "memory", "action"} <= node_types
+    assert {"contains", "grounds", "summarizes", "formalizes", "suggests_relationship", "member", "represented_by", "participates_in", "mentions", "links_to", "remembered_from", "needs_review_from"} <= edge_types
     assert payload["counts"]["claims"] == 1
     assert payload["counts"]["digest_notes"] == 1
+    assert payload["counts"]["memories"] == 1
+    assert payload["counts"]["review_items"] == 1
+    assert payload["counts"]["phrases"] >= 2
+    assert payload["counts"]["facts"] == 1
+    insights = payload["insights"]
+    assert insights["layer_coverage"]["evidence"] >= 3
+    assert insights["layer_coverage"]["understanding"] >= 2
+    assert insights["layer_coverage"]["semantic"] >= 3
+    assert insights["evidence_health"]["grounded_nodes"] >= 4
+    assert insights["topic_clusters"]
+    assert insights["guided_tour"]
+    filtered = api.workspace_graph_data(owner_user_id="user_primary", limit=20, node_types={"source", "document", "passage", "claim", "digest", "fact", "hyperedge"})
+    assert {node["type"] for node in filtered["nodes"]}.isdisjoint({"entity", "phrase"})
+    assert filtered["projection"]["unfiltered_nodes"] >= filtered["projection"]["nodes"]
+    assert filtered["projection"]["node_types"] == ["claim", "digest", "document", "fact", "hyperedge", "passage", "source"]
+    subgraph = api.workspace_graph_subgraph(owner_user_id="user_primary", node_id="digest:dig_graph_v2", limit=20, hops=1)
+    subgraph_node_ids = {node["id"] for node in subgraph["nodes"]}
+    assert subgraph["ok"] is True
+    assert "digest:dig_graph_v2" in subgraph_node_ids
+    assert "claim:kc_graph_v2" in subgraph_node_ids
+    assert subgraph["projection"]["nodes"] < payload["projection"]["nodes"]
+    assert subgraph["evidence_path"]["understanding_node_count"] >= 1
+    search_subgraph = api.workspace_graph_search_subgraph(
+        owner_user_id="user_primary",
+        query="digest",
+        limit=20,
+        hops=1,
+        node_types={"source", "document", "passage", "claim", "digest", "fact", "hyperedge"},
+    )
+    assert search_subgraph["ok"] is True
+    assert search_subgraph["matches"]
+    assert {node["type"] for node in search_subgraph["nodes"]} <= {"source", "document", "passage", "claim", "digest", "fact", "hyperedge"}
+
+    reindex = api.graph_reindex(owner_user_id="user_primary", limit=20)
+
+    assert reindex["ok"] is True
+    assert reindex["projection"]["graph_nodes"] == len(payload["nodes"])
+    assert reindex["projection"]["graph_edges"] == len(payload["edges"])
+    assert api.store.count_table("graph_nodes") == len(payload["nodes"])
+    assert api.store.count_table("graph_edges") == len(payload["edges"])
 
 
 def test_workspace_graph_path_defaults_to_agentic_graphrag_with_deterministic_seeds() -> None:
@@ -1860,7 +1926,7 @@ def test_workspace_graph_path_defaults_to_agentic_graphrag_with_deterministic_se
         def search(self, query, user, *, represented_user_id=None, max_iterations=3):
             self.query = query
             return {
-                "answer": "Agentic GraphRAG answer.",
+                "answer": "Agentic GraphRAG answer. " * 40,
                 "retrieval": {"citations": [{"source_item_id": "src_graph_path"}]},
                 "trace": {
                     "retrieval_plan": ["deterministic_seeds", "graph_expansion", "synthesis"],
@@ -1868,6 +1934,10 @@ def test_workspace_graph_path_defaults_to_agentic_graphrag_with_deterministic_se
                         {"target": "previous_next_passage", "decision": "inspect_if_evidence_gap"},
                         {"target": "connected_fact_neighbors", "decision": "inspect_if_query_entities_match"},
                     ],
+                    "fact_relevance_filter": {
+                        "kept_facts": [{"fact_id": "fact_graph_path", "statement": "GraphRAG queries inspect passage neighbors."}],
+                        "filtered_out_facts": [{"fact_id": "fact_unrelated", "statement": "Unrelated fact."}],
+                    },
                     "evidence_check": "has_citations",
                 },
                 "source_refs": [{"source_item_id": "src_graph_path"}],
@@ -1882,12 +1952,156 @@ def test_workspace_graph_path_defaults_to_agentic_graphrag_with_deterministic_se
     assert payload["ok"] is True
     assert payload["mode"] == "agentic"
     assert payload["requires_agentic_service_online"] is True
-    assert payload["answer"] == "Agentic GraphRAG answer."
+    assert payload["answer"] == ("Agentic GraphRAG answer. " * 40).strip()
+    assert payload["answer_mode"] == "agentic_synthesis"
     assert payload["deterministic"]["mode"] == "deterministic"
     assert payload["agentic_contract"]["pattern"] == "hipporag_style_agentic_graphrag"
+    assert payload["query_seeds"]["terms"]
+    assert payload["supporting_passages"][0]["source_item_id"]
+    assert payload["path_summary"]["result_count"] >= 1
+    assert payload["path_summary"]["filter_mode"] == "agentic_llm_relevance"
+    assert payload["top_facts"][0]["fact_id"] == "fact_graph_path"
+    assert payload["filtered_out_facts"][0]["fact_id"] == "fact_unrelated"
     assert "deterministic_seeds" in agentic.query
+    assert "supporting_passages" in agentic.query
     assert "previous/next passage windows" in agentic.query
     assert payload["agentic_trace"]["expansion_decisions"][0]["target"] == "previous_next_passage"
+
+    deterministic = api.workspace_graph_path(query="GraphRAG online queries", owner_user_id="user_primary", mode="deterministic")
+    assert deterministic["path_summary"]["filter_mode"] == "deterministic_relevance"
+    assert "filtered_out_facts" in deterministic
+    assert "supporting_passages" in agentic.query
+    assert "score_debug" not in agentic.query
+
+
+def test_workspace_graph_path_synthesizes_grounded_answer_when_agentic_answer_is_short() -> None:
+    api = _api()
+    IngestService(api.store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "graph-path-short-answer",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "Graph Path Short Answer Note",
+            "content": {"text": "GraphRAG short agentic answers should be supplemented with grounded passages and citations."},
+        }
+    )
+
+    class ShortAgenticService(FakeAgenticService):
+        def __init__(self, retrieval):
+            super().__init__(retrieval)
+            self.calls = 0
+
+        def search(self, query, user, *, represented_user_id=None, max_iterations=3):
+            self.calls += 1
+            return {
+                "answer": "Too short.",
+                "trace": {"expansion_decisions": [{"target": "seed", "decision": "use"}]},
+                "agentic_service": {"provider": "test"},
+            }
+
+    service = ShortAgenticService(api.retrieval)
+    api.agentic_service = service
+
+    payload = api.workspace_graph_path(query="GraphRAG short agentic answers", owner_user_id="user_primary")
+
+    assert payload["ok"] is True
+    assert payload["answer_mode"] == "deterministic_synthesis_for_short_agentic"
+    assert payload["agentic_answer"] == "Too short."
+    assert payload["agentic_repair"]["attempted"] is True
+    assert payload["agentic_repair"]["accepted"] is False
+    assert service.calls == 2
+    assert "关键结论" in payload["answer"]
+    assert len(payload["answer"]) >= 300
+
+
+def test_workspace_graph_path_repairs_short_agentic_answer_before_fallback() -> None:
+    api = _api()
+    IngestService(api.store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "graph-path-repair-answer",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "Graph Path Repair Answer Note",
+            "content": {"text": "GraphRAG repaired agentic answers should remain agentic synthesis when the repair is grounded and long enough."},
+        }
+    )
+
+    class RepairingAgenticService(FakeAgenticService):
+        def __init__(self, retrieval):
+            super().__init__(retrieval)
+            self.queries = []
+
+        def search(self, query, user, *, represented_user_id=None, max_iterations=3):
+            self.queries.append(query)
+            if len(self.queries) == 1:
+                return {
+                    "answer": "Too short.",
+                    "trace": {"expansion_decisions": [{"target": "seed", "decision": "use"}]},
+                    "source_refs": [{"source_item_id": "src_first"}],
+                    "agentic_service": {"provider": "test"},
+                }
+            return {
+                "answer": "修复后的答案说明：PSKA 的 GraphRAG 会先使用 passage、claim、fact 和 digest 作为证据种子，再通过图谱路径检查相关事实是否足够支撑回答。关键结论是，系统应优先给出带引用的综合解释，而不是只返回实体列表。第二个结论是，digest note 和 knowledge claim 应该作为一等图谱节点参与问答，因为它们保存了文档被理解后的语义。风险是，如果 FastReAct 第一次回答过短，用户会误以为没有足够证据；因此 repair loop 会要求它重新组织关键结论、风险、下一步和不确定性。下一步是继续降低短回答比例，并记录 repair 是否成功。若证据不足，回答也必须明确指出缺口，而不能假装已经完成推理。证据来自 src_first 和当前 deterministic seeds。",
+                "retrieval": {"citations": [{"source_item_id": "src_repair"}]},
+                "trace": {"expansion_decisions": [{"target": "repair", "decision": "rewrite_with_seed_evidence"}]},
+                "source_refs": [{"source_item_id": "src_repair"}],
+                "agentic_service": {"provider": "test", "run_id": "repair_run"},
+            }
+
+    service = RepairingAgenticService(api.retrieval)
+    api.agentic_service = service
+
+    payload = api.workspace_graph_path(query="GraphRAG repaired agentic answers", owner_user_id="user_primary")
+
+    assert payload["ok"] is True
+    assert payload["answer_mode"] == "agentic_synthesis"
+    assert payload["agentic_repair"]["attempted"] is True
+    assert payload["agentic_repair"]["accepted"] is True
+    assert payload["agentic_trace"]["repair"]["accepted"] is True
+    assert payload["agentic_service"]["run_id"] == "repair_run"
+    assert len(service.queries) == 2
+    assert "Repair the previous PSKA GraphRAG answer" in service.queries[1]
+
+
+def test_workspace_graph_path_rejects_unusable_agentic_answer() -> None:
+    api = _api()
+    IngestService(api.store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "graph-path-unusable",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "Graph Path Unusable Note",
+            "content": {"text": "GraphRAG unusable answers should fall back when MCP tools fail."},
+        }
+    )
+
+    class UnusableAgenticService(FakeAgenticService):
+        def search(self, query, user, *, represented_user_id=None, max_iterations=3):
+            return {
+                "answer": "The PSKA knowledge tools are unavailable due to an MCP transport coroutine conflict (`readuntil()` concurrent call).",
+                "trace": {"events": [{"type": "error", "message": "MCP transport readuntil failed"}]},
+                "agentic_service": {"provider": "test"},
+            }
+
+    api.agentic_service = UnusableAgenticService(api.retrieval)
+
+    payload = api.workspace_graph_path(query="GraphRAG unusable answers", owner_user_id="user_primary")
+
+    assert payload["ok"] is False
+    assert payload["display_mode"] == "deterministic_fallback"
+    assert payload["error"]["type"] == "agentic_graph_answer_unusable"
 
 
 def test_user_workspace_writer_suggests_with_selected_text_and_evidence() -> None:

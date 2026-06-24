@@ -43,6 +43,9 @@ import {
   loadCorpusData,
   loadDigestLogs,
   loadGraphData,
+  loadGraphPath,
+  loadGraphSearchSubgraph,
+  loadGraphSubgraph,
   loadReviewCenter,
   loadSourcesConsole,
   loadToday,
@@ -68,6 +71,9 @@ import type {
   TodayResponse,
   TodayReviewItem,
   WorkspaceCorpusResponse,
+  WorkspaceGraphEdge,
+  WorkspaceGraphNode,
+  WorkspaceGraphPathResponse,
   WorkspaceGraphResponse,
   WorkspaceSearchResponse,
   WorkspaceMode
@@ -456,7 +462,7 @@ function TodayWorkspace({
       setSearchResult(result);
       setBrain(searchToBrain(result, query));
       if (result.error) {
-        setSearchError(displayText(result.error, "PSKA 查询失败。"));
+        setSearchError(displaySearchError(result.error));
       }
     } catch (error) {
       setSearchResult(null);
@@ -706,7 +712,7 @@ function TodayWorkspace({
   );
 }
 
-type ReviewActionState = "处理中" | "已批准" | "已批准并应用" | "已拒绝" | "已应用" | "操作失败";
+type ReviewActionState = string;
 
 function ReviewCenter({
   serviceToken,
@@ -734,16 +740,15 @@ function ReviewCenter({
   async function runReviewAction(item: ReviewCenterItem, action: "approve" | "approve_apply" | "reject" | "apply") {
     mark(item.review_item_id, "处理中");
     try {
+      let result;
       if (action === "reject") {
-        await rejectReviewItem(serviceToken, item.review_item_id);
-        mark(item.review_item_id, "已拒绝");
+        result = await rejectReviewItem(serviceToken, item.review_item_id);
       } else if (action === "apply") {
-        await applyReviewItem(serviceToken, item.review_item_id);
-        mark(item.review_item_id, "已应用");
+        result = await applyReviewItem(serviceToken, item.review_item_id);
       } else {
-        await approveReviewItem(serviceToken, item.review_item_id, action === "approve_apply");
-        mark(item.review_item_id, action === "approve_apply" ? "已批准并应用" : "已批准");
+        result = await approveReviewItem(serviceToken, item.review_item_id, action === "approve_apply");
       }
+      mark(item.review_item_id, reviewActionStatusLabel(action, result?.application_result?.summary));
       await reviewQuery.refetch();
     } catch {
       mark(item.review_item_id, "操作失败");
@@ -866,6 +871,19 @@ function ReviewCenter({
   );
 }
 
+function reviewActionStatusLabel(action: "approve" | "approve_apply" | "reject" | "apply", summary?: string) {
+  if (summary) {
+    return summary;
+  }
+  if (action === "reject") {
+    return "已拒绝";
+  }
+  if (action === "apply") {
+    return "已应用";
+  }
+  return action === "approve_apply" ? "已批准并应用" : "已批准";
+}
+
 function normalizeContinueItems(data?: TodayResponse): TodayContinueItem[] {
   const items = data?.continue_working || [];
   return items
@@ -880,7 +898,10 @@ function normalizeContinueItems(data?: TodayResponse): TodayContinueItem[] {
 
 function TodaySearchResult({ result }: { result: WorkspaceSearchResponse }) {
   const parsed = parseAgenticAnswer(result.answer);
-  const answer = cleanAgenticAnswer(parsed?.answer || result.answer || "");
+  const eventAnswer = finalAnswerFromTraceEvents(result);
+  const answer = cleanAgenticAnswer(parsed?.answer || result.answer || eventAnswer || "");
+  const events = agenticTraceEvents(result);
+  const streamItems = summarizeAgenticEvents(result).slice(0, 8);
   const refs = [
     ...(parsed?.source_refs || []),
     ...(parsed?.citations || []),
@@ -904,6 +925,26 @@ function TodaySearchResult({ result }: { result: WorkspaceSearchResponse }) {
     <article className="today-search-result">
       {answer ? <p className="answer-text">{displayText(answer)}</p> : null}
       {result.fallback_reason ? <small className="search-note">Fallback: {displayText(result.fallback_reason)}</small> : null}
+      {result.agentic_service?.run_id || result.trace?.event_count || events.length ? (
+        <div className="event-stream-summary">
+          <div className="event-stream-header">
+            <strong>FastReAct event stream</strong>
+            <span>
+              {displayText(result.agentic_service?.run_id || result.trace?.run_id, "run")} · {result.trace?.event_count ?? events.length} events
+            </span>
+          </div>
+          {streamItems.length > 0 ? (
+            <ol className="event-stream-list">
+              {streamItems.map((item, index) => (
+                <li key={`${item.type}-${index}`}>
+                  <span>{item.type}</span>
+                  <p>{displayText(item.message, "已记录事件")}</p>
+                </li>
+              ))}
+            </ol>
+          ) : null}
+        </div>
+      ) : null}
       {refs.length > 0 ? (
         <div className="source-ref-list">
           {refs.slice(0, 5).map((ref, index) => (
@@ -918,9 +959,116 @@ function TodaySearchResult({ result }: { result: WorkspaceSearchResponse }) {
   );
 }
 
+type AgenticEventSummary = {
+  type: string;
+  message: string;
+};
+
+function agenticTraceEvents(result: WorkspaceSearchResponse): Array<Record<string, unknown>> {
+  return Array.isArray(result.trace?.events) ? result.trace.events : [];
+}
+
+function finalAnswerFromTraceEvents(result: WorkspaceSearchResponse) {
+  const events = agenticTraceEvents(result);
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event.type !== "session_end") {
+      continue;
+    }
+    const metadata = isRecord(event.metadata) ? event.metadata : {};
+    const value = firstString(event.content, event.final_content, event.answer, metadata.final_content, metadata.final, metadata.answer);
+    if (value) {
+      return value;
+    }
+  }
+  return "";
+}
+
+function summarizeAgenticEvents(result: WorkspaceSearchResponse): AgenticEventSummary[] {
+  const events = agenticTraceEvents(result);
+  const summaries = events
+    .map((event) => summarizeAgenticEvent(event))
+    .filter((event): event is AgenticEventSummary => Boolean(event));
+  if (summaries.length > 0) {
+    return summaries;
+  }
+  return (result.trace?.tool_calls || []).map((call) => ({
+    type: displayText(asString(call.tool_name), "tool_call"),
+    message: compactJson(call.tool_args)
+  }));
+}
+
+function summarizeAgenticEvent(event: Record<string, unknown>): AgenticEventSummary | null {
+  const type = displayText(asString(event.type || event.event_type), "event");
+  if (type === "tool_call") {
+    return {
+      type: displayText(asString(event.tool_name), "tool_call"),
+      message: compactJson(event.tool_args || event.args || event.arguments)
+    };
+  }
+  if (type === "tool_result") {
+    return {
+      type: `${displayText(asString(event.tool_name), "tool_result")} result`,
+      message: compactJson(event.content || event.result || event.output)
+    };
+  }
+  if (type === "session_end") {
+    const metadata = isRecord(event.metadata) ? event.metadata : {};
+    return {
+      type: "session_end",
+      message: trimText(firstString(event.content, event.final_content, event.answer, metadata.final_content, metadata.final, metadata.answer), 260) || "Agentic run completed."
+    };
+  }
+  const metadata = isRecord(event.metadata) ? event.metadata : {};
+  const message = firstString(event.message, event.content, metadata.message, metadata.status, metadata.detail);
+  return message ? { type, message: trimText(message, 260) } : null;
+}
+
+function firstString(...values: unknown[]) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return "";
+}
+
+function asString(value: unknown) {
+  return typeof value === "string" ? value : "";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function compactJson(value: unknown) {
+  if (typeof value === "string") {
+    return trimText(value, 260);
+  }
+  if (value === null || value === undefined) {
+    return "";
+  }
+  try {
+    return trimText(JSON.stringify(value), 260);
+  } catch {
+    return String(value);
+  }
+}
+
+function displaySearchError(error: WorkspaceSearchResponse["error"]) {
+  if (!error) {
+    return "PSKA 查询失败。";
+  }
+  if (typeof error === "string") {
+    return error;
+  }
+  return displayText(error.message || error.detail || error.type, "PSKA 查询失败。");
+}
+
 function searchToBrain(result: WorkspaceSearchResponse, query: string): Partial<BrainState> {
   const parsed = parseAgenticAnswer(result.answer);
-  const answer = cleanAgenticAnswer(parsed?.answer || result.answer || "");
+  const eventAnswer = finalAnswerFromTraceEvents(result);
+  const answer = cleanAgenticAnswer(parsed?.answer || result.answer || eventAnswer || "");
   const refs = [
     ...(parsed?.source_refs || []),
     ...(parsed?.citations || []),
@@ -941,7 +1089,7 @@ function searchToBrain(result: WorkspaceSearchResponse, query: string): Partial<
     status: result.error ? "error" : "synced",
     lastTrigger: "manual",
     updatedAt: Date.now(),
-    error: result.error ? displayText(result.error, "PSKA 查询失败。") : null,
+    error: result.error ? displaySearchError(result.error) : null,
     relatedKnowledge: [
       ...(answer ? [{ id: "today-answer", title: query, snippet: displayText(answer), source: "PSKA Agentic answer" }] : []),
       ...refs
@@ -1414,6 +1562,8 @@ function CorpusWorkspace({
         ) : null}
       </div>
 
+      <UnderstandingSummary payload={digestLogs} />
+
       <div className="corpus-tools">
         <label>
           <Search size={16} />
@@ -1490,6 +1640,35 @@ function CorpusWorkspace({
           </section>
         </div>
       )}
+    </section>
+  );
+}
+
+function UnderstandingSummary({ payload }: { payload?: DigestLogsResponse }) {
+  const summary = payload?.summary;
+  const totals = summary?.candidate_totals || {};
+  const statusCounts = summary?.status_counts || {};
+  const recentNote = summary?.recent_digest_notes?.[0];
+  const recentClaim = summary?.recent_claims?.[0];
+  const latestFailure = summary?.latest_failure;
+  return (
+    <section className="understanding-summary" aria-label="理解结果摘要">
+      <div>
+        <span className="eyebrow">理解结果</span>
+        <h2>{displayText(recentNote?.title || recentClaim?.statement || "等待新的 Digest 输出", "等待新的 Digest 输出")}</h2>
+        <p>
+          {displayText(
+            recentNote?.synopsis || latestFailure?.error || (summary?.has_useful_output ? "最近任务已产生可回顾的候选知识。" : "同步后运行“同步并理解”，这里会显示 claims、digest、回顾项和失败原因。")
+          )}
+        </p>
+      </div>
+      <div className="understanding-metrics">
+        <span><strong>{totals.knowledge_claims ?? 0}</strong> Claims</span>
+        <span><strong>{totals.digest_notes ?? 0}</strong> Digest</span>
+        <span><strong>{totals.hyperedges ?? 0}</strong> 连接</span>
+        <span><strong>{totals.review_candidates ?? totals.review_items ?? 0}</strong> 待确认</span>
+        <span><strong>{statusCounts.failed ?? 0}</strong> 失败</span>
+      </div>
     </section>
   );
 }
@@ -1905,19 +2084,40 @@ function GraphWorkspace({
   onPinCurrent: () => void;
   pinStatus: "idle" | "saved" | "failed";
 }) {
+  const [graphLimit, setGraphLimit] = useState(20);
+  const [activeTypes, setActiveTypes] = useState(() => new Set(["source", "document", "passage", "claim", "digest", "fact", "hyperedge", "memory", "memory_suggestion", "action"]));
+  const activeTypeList = useMemo(() => Array.from(activeTypes).sort(), [activeTypes]);
   const graphQuery = useQuery({
-    queryKey: ["workspace-graph-v2", serviceToken],
-    queryFn: () => loadGraphData(serviceToken, 80),
+    queryKey: ["workspace-graph-v2", serviceToken, graphLimit, activeTypeList.join(",")],
+    queryFn: () => loadGraphData(serviceToken, graphLimit, activeTypeList),
     retry: 1
   });
-  const [activeTypes, setActiveTypes] = useState(() => new Set(["source", "document", "passage", "claim", "digest", "entity", "hyperedge"]));
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
-  const graph = graphQuery.data;
-  const graphElements = useMemo(() => graphToCytoscapeElements(graph, activeTypes), [graph, activeTypes]);
+  const [graphSearch, setGraphSearch] = useState("");
+  const [neighborhoodOnly, setNeighborhoodOnly] = useState(false);
+  const [pathQuery, setPathQuery] = useState("GraphRAG digest claims");
+  const [pathMode, setPathMode] = useState<"deterministic" | "agentic">("deterministic");
+  const [pathResult, setPathResult] = useState<WorkspaceGraphPathResponse | null>(null);
+  const [pathStatus, setPathStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
+  const [pathError, setPathError] = useState("");
+  const [controlsOpen, setControlsOpen] = useState(false);
+  const [insightsOpen, setInsightsOpen] = useState(false);
+  const [expandedGraph, setExpandedGraph] = useState<WorkspaceGraphResponse | null>(null);
+  const [expandStatus, setExpandStatus] = useState<"idle" | "loading" | "error">("idle");
+  const [expandError, setExpandError] = useState("");
+  const graph = useMemo(() => mergeGraphResponses(graphQuery.data, expandedGraph) || undefined, [graphQuery.data, expandedGraph]);
+  const selectedEvidencePath = useMemo(() => graphEvidencePath(graph, selectedNodeId), [graph, selectedNodeId]);
+  const graphElements = useMemo(
+    () => graphToCytoscapeElements(graph, activeTypes, graphSearch, neighborhoodOnly ? selectedNodeId : null, selectedEvidencePath),
+    [graph, activeTypes, graphSearch, neighborhoodOnly, selectedNodeId, selectedEvidencePath]
+  );
+  const cytoscapeLayout = useMemo(() => graphLayoutForElementCount(graphElements.length), [graphElements.length]);
   const selectedNode = (graph?.nodes || []).find((node) => node.id === selectedNodeId);
+  const graphSearchMatches = useMemo(() => graphSearchResultNodes(graph, activeTypes, graphSearch), [graph, activeTypes, graphSearch]);
+  const selectedNeighborhood = useMemo(() => graphNodeNeighborhood(graph, selectedNodeId), [graph, selectedNodeId]);
   const loading = graphQuery.isLoading;
   const error = graphQuery.isError;
-  const typeOptions = ["source", "document", "passage", "claim", "digest", "entity", "hyperedge"];
+  const typeOptions = ["source", "document", "passage", "claim", "digest", "phrase", "entity", "fact", "hyperedge", "memory", "memory_suggestion", "action"];
 
   function toggleType(type: string) {
     setActiveTypes((current) => {
@@ -1929,6 +2129,62 @@ function GraphWorkspace({
       }
       return next;
     });
+  }
+
+  async function handleGraphPath(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const query = pathQuery.trim();
+    if (!query) {
+      return;
+    }
+    setPathStatus("loading");
+    setPathError("");
+    try {
+      const payload = await loadGraphPath(serviceToken, query, pathMode);
+      setPathResult(payload);
+      setPathStatus(payload.ok === false ? "error" : "success");
+      setPathError(displayText(payload.error));
+    } catch (err) {
+      setPathStatus("error");
+      setPathError(err instanceof Error ? err.message : "Graph path 查询失败。");
+    }
+  }
+
+  async function handleExpandSelectedNode() {
+    if (!selectedNodeId) {
+      return;
+    }
+    setExpandStatus("loading");
+    setExpandError("");
+    try {
+      const payload = await loadGraphSubgraph(serviceToken, selectedNodeId, Math.max(graphLimit, 80), 1, activeTypeList);
+      setExpandedGraph((current) => mergeGraphResponses(current, payload));
+      setExpandStatus("idle");
+    } catch (err) {
+      setExpandStatus("error");
+      setExpandError(err instanceof Error ? err.message : "Graph subgraph 展开失败。");
+    }
+  }
+
+  async function handleSearchSubgraph() {
+    const query = graphSearch.trim();
+    if (!query) {
+      return;
+    }
+    setExpandStatus("loading");
+    setExpandError("");
+    try {
+      const payload = await loadGraphSearchSubgraph(serviceToken, query, Math.max(graphLimit, 80), 1, 5, activeTypeList);
+      setExpandedGraph((current) => mergeGraphResponses(current, payload));
+      const firstNodeId = payload.nodes?.[0]?.id;
+      if (firstNodeId) {
+        setSelectedNodeId(firstNodeId);
+      }
+      setExpandStatus("idle");
+    } catch (err) {
+      setExpandStatus("error");
+      setExpandError(err instanceof Error ? err.message : "Graph search subgraph 失败。");
+    }
   }
 
   return (
@@ -1945,20 +2201,100 @@ function GraphWorkspace({
           刷新
         </button>
       </div>
-      <div className="graph-summary" aria-label="Graph 摘要">
-        <span><strong>{graph?.counts?.sources ?? 0}</strong> Sources</span>
-        <span><strong>{graph?.counts?.documents ?? 0}</strong> Documents</span>
-        <span><strong>{graph?.counts?.passages ?? 0}</strong> Passages</span>
-        <span><strong>{graph?.counts?.claims ?? 0}</strong> Claims</span>
-        <span><strong>{graph?.counts?.digest_notes ?? 0}</strong> Digest</span>
-        <span><strong>{graph?.counts?.hyperedges ?? 0}</strong> Hyperedges</span>
-      </div>
-      <div className="graph-filterbar" aria-label="Graph 节点类型过滤">
-        {typeOptions.map((type) => (
-          <button key={type} type="button" className={activeTypes.has(type) ? "active" : ""} onClick={() => toggleType(type)}>
-            {graphTypeLabel(type)}
-          </button>
-        ))}
+      <div className={`graph-control-dock ${controlsOpen ? "open" : ""}`} aria-label="Graph 控制抽屉">
+        <div className="graph-control-head">
+          <div className="graph-summary" aria-label="Graph 摘要">
+            <span><strong>{graph?.counts?.sources ?? 0}</strong> Sources</span>
+            <span><strong>{graph?.counts?.claims ?? 0}</strong> Claims</span>
+            <span><strong>{graph?.counts?.digest_notes ?? 0}</strong> Digest</span>
+            <span><strong>{graph?.counts?.facts ?? 0}</strong> Facts</span>
+          </div>
+          <div className="graph-dock-actions">
+            <button type="button" className={insightsOpen ? "active" : ""} onClick={() => setInsightsOpen((value) => !value)}>
+              <Sparkles size={14} />
+              Insights
+            </button>
+            <button type="button" className={controlsOpen ? "active" : ""} onClick={() => setControlsOpen((value) => !value)}>
+              {controlsOpen ? <ChevronLeft size={14} /> : <ChevronRight size={14} />}
+              Controls
+            </button>
+          </div>
+        </div>
+        {insightsOpen ? <GraphInsightsPanel graph={graph} onSelectNode={setSelectedNodeId} /> : null}
+        {controlsOpen ? (
+          <div className="graph-control-body">
+            <div className="graph-filterbar" aria-label="Graph 节点类型过滤">
+              {typeOptions.map((type) => (
+                <button key={type} type="button" className={activeTypes.has(type) ? "active" : ""} onClick={() => toggleType(type)}>
+                  {graphTypeLabel(type)}
+                </button>
+              ))}
+            </div>
+            <div className="graph-densitybar" aria-label="Graph 数据密度">
+              <button
+                type="button"
+                className={graphLimit === 20 ? "active" : ""}
+                onClick={() => {
+                  setGraphLimit(20);
+                  setSelectedNodeId(null);
+                }}
+              >
+                Overview
+              </button>
+              <button
+                type="button"
+                className={graphLimit === 80 ? "active" : ""}
+                onClick={() => setGraphLimit(80)}
+              >
+                Detail
+              </button>
+              <span>{graphElements.length} visible</span>
+            </div>
+            <div className="graph-local-search" aria-label="Graph 本地搜索">
+              <Search size={15} />
+              <input
+                value={graphSearch}
+                onChange={(event) => setGraphSearch(event.target.value)}
+                placeholder="搜索节点、摘要、证据"
+              />
+              {graphSearch ? <span>{graphSearchMatches.length} 命中</span> : <span>本地图谱</span>}
+              <button
+                type="button"
+                className={neighborhoodOnly ? "active" : ""}
+                disabled={!selectedNodeId}
+                onClick={() => setNeighborhoodOnly((value) => !value)}
+              >
+                邻域
+              </button>
+              <button
+                type="button"
+                disabled={!graphSearch.trim() || expandStatus === "loading"}
+                onClick={() => void handleSearchSubgraph()}
+              >
+                拉取子图
+              </button>
+            </div>
+            <form className="graph-path-search" onSubmit={(event) => void handleGraphPath(event)} aria-label="GraphRAG 路径查询">
+              <Search size={15} />
+              <input
+                value={pathQuery}
+                onChange={(event) => setPathQuery(event.target.value)}
+                placeholder="查询 GraphRAG 路径、facts 与证据"
+              />
+              <div className="graph-path-mode" aria-label="GraphRAG 查询模式">
+                <button type="button" className={pathMode === "deterministic" ? "active" : ""} onClick={() => setPathMode("deterministic")}>
+                  Direct
+                </button>
+                <button type="button" className={pathMode === "agentic" ? "active" : ""} onClick={() => setPathMode("agentic")}>
+                  Agentic
+                </button>
+              </div>
+              <button type="submit" disabled={pathStatus === "loading"}>
+                {pathStatus === "loading" ? "查询中" : pathMode === "agentic" ? "Agentic 问答" : "解释路径"}
+              </button>
+            </form>
+          </div>
+        ) : null}
       </div>
       {error ? (
         <div className="review-empty error-state">Graph 无法加载。请检查 8765 后端或服务令牌。</div>
@@ -1971,7 +2307,7 @@ function GraphWorkspace({
           <CytoscapeComponent
             elements={graphElements}
             stylesheet={graphStylesheet}
-            layout={{ name: "cose", animate: false, fit: true, padding: 48, nodeRepulsion: 8000, idealEdgeLength: 160 }}
+            layout={cytoscapeLayout}
             className="cytoscape-graph"
             cy={(cy: any) => {
               cy.removeAllListeners("tap");
@@ -1995,6 +2331,15 @@ function GraphWorkspace({
                   {selectedNode.confidence !== undefined ? <div><dt>置信度</dt><dd>{selectedNode.confidence}</dd></div> : null}
                   {selectedNode.token_estimate !== undefined ? <div><dt>Tokens</dt><dd>{selectedNode.token_estimate}</dd></div> : null}
                 </dl>
+                <div className="graph-inspector-actions">
+                  <button type="button" onClick={() => void handleExpandSelectedNode()} disabled={expandStatus === "loading"}>
+                    {expandStatus === "loading" ? "展开中" : "Expand"}
+                  </button>
+                  <button type="button" onClick={() => setNeighborhoodOnly((value) => !value)}>
+                    {neighborhoodOnly ? "显示全图" : "只看邻域"}
+                  </button>
+                </div>
+                {expandError ? <p className="graph-path-warning">{expandError}</p> : null}
                 {selectedNode.source_refs?.length ? (
                   <div className="graph-source-refs">
                     <strong>Evidence refs</strong>
@@ -2003,6 +2348,8 @@ function GraphWorkspace({
                     ))}
                   </div>
                 ) : null}
+                <GraphNeighborhoodPanel graph={graph} selectedNodeId={selectedNodeId} neighborhood={selectedNeighborhood} />
+                <GraphEvidencePathPanel evidencePath={selectedEvidencePath} />
               </>
             ) : (
               <>
@@ -2011,11 +2358,382 @@ function GraphWorkspace({
                 <p>点击 digest、claim、hyperedge 或 passage，查看它如何追溯到原文证据。</p>
               </>
             )}
+            <GraphPathPanel result={pathResult} status={pathStatus} error={pathError} />
           </aside>
         </div>
       )}
     </section>
   );
+}
+
+function GraphInsightsPanel({
+  graph,
+  onSelectNode
+}: {
+  graph?: WorkspaceGraphResponse;
+  onSelectNode: (nodeId: string) => void;
+}) {
+  const insights = graph?.insights;
+  if (!insights) {
+    return null;
+  }
+  const coverage = insights.layer_coverage || {};
+  const health = insights.evidence_health || {};
+  const clusters = insights.topic_clusters || [];
+  const tour = insights.guided_tour || [];
+  const centralNodes = insights.central_nodes || [];
+  return (
+    <section className="graph-insights" aria-label="Graph Insights">
+      <div className="graph-insight-header">
+        <div>
+          <span className="eyebrow">Graph Insights</span>
+          <h2>知识解释器</h2>
+        </div>
+        <span>{Math.round((health.grounded_ratio ?? 0) * 100)}% grounded</span>
+      </div>
+      <div className="graph-insight-metrics">
+        <span><strong>{coverage.evidence ?? 0}</strong> Evidence</span>
+        <span><strong>{coverage.understanding ?? 0}</strong> Understanding</span>
+        <span><strong>{coverage.semantic ?? 0}</strong> Semantic</span>
+        <span><strong>{coverage.review ?? 0}</strong> Review</span>
+      </div>
+      {tour.length ? (
+        <div className="graph-insight-section">
+          <strong>Guided Tour</strong>
+          <div className="graph-tour-list">
+            {tour.slice(0, 4).map((step, index) => (
+              <article key={`tour-${index}`}>
+                <b>{trimText(step.title || `Step ${index + 1}`, 86)}</b>
+                <small>{trimText(step.reason || "", 145)}</small>
+                <div>
+                  {(step.node_ids || []).slice(0, 4).map((nodeId) => (
+                    <button key={nodeId} type="button" onClick={() => onSelectNode(nodeId)}>
+                      {trimText(graphNodeLabel(graph, nodeId), 34)}
+                    </button>
+                  ))}
+                </div>
+              </article>
+            ))}
+          </div>
+        </div>
+      ) : null}
+      {clusters.length ? (
+        <div className="graph-insight-section">
+          <strong>Topic Clusters</strong>
+          <div className="graph-cluster-list">
+            {clusters.slice(0, 4).map((cluster) => (
+              <article key={cluster.cluster_id || cluster.title}>
+                <b>{trimText(cluster.title || "Topic cluster", 90)}</b>
+                <small>{trimText(cluster.summary || "", 150)}</small>
+                <span>{cluster.node_count ?? 0} nodes · {cluster.edge_count ?? 0} edges</span>
+                <div>
+                  {(cluster.anchor_nodes || []).slice(0, 3).map((node) => (
+                    <button key={node.id} type="button" onClick={() => node.id && onSelectNode(node.id)}>
+                      {graphTypeLabel(node.type || "node")} · {trimText(node.label || node.id || "", 28)}
+                    </button>
+                  ))}
+                </div>
+              </article>
+            ))}
+          </div>
+        </div>
+      ) : null}
+      {centralNodes.length ? (
+        <div className="graph-insight-section">
+          <strong>Central Nodes</strong>
+          <div className="graph-central-list">
+            {centralNodes.slice(0, 6).map((node) => (
+              <button key={node.id} type="button" onClick={() => node.id && onSelectNode(node.id)}>
+                <span>{graphTypeLabel(node.type || "node")}</span>
+                <b>{trimText(node.label || node.id || "", 42)}</b>
+                <small>{node.degree ?? 0} links</small>
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function GraphPathPanel({
+  result,
+  status,
+  error
+}: {
+  result: WorkspaceGraphPathResponse | null;
+  status: "idle" | "loading" | "success" | "error";
+  error: string;
+}) {
+  if (status === "idle" && !result) {
+    return (
+      <div className="graph-path-panel">
+        <span className="eyebrow">Path Explain</span>
+        <p>输入问题后，这里会显示 query seeds、facts、passages 和 citations。</p>
+      </div>
+    );
+  }
+  if (status === "loading") {
+    return (
+      <div className="graph-path-panel">
+        <span className="eyebrow">Path Explain</span>
+        <p>正在计算 GraphRAG 检索路径...</p>
+      </div>
+    );
+  }
+  if (status === "error" && !result) {
+    return (
+      <div className="graph-path-panel error-state">
+        <span className="eyebrow">Path Explain</span>
+        <p>{error || "Graph path 查询失败。"}</p>
+      </div>
+    );
+  }
+
+  const seeds = result?.query_seeds;
+  const facts = result?.top_facts || [];
+  const filteredFacts = result?.filtered_out_facts || [];
+  const passages = result?.supporting_passages || [];
+  const citations = result?.citations || [];
+  const graphPaths = result?.graph_paths || [];
+  const expansionDecisions = result?.agentic_trace?.expansion_decisions || [];
+  return (
+    <div className="graph-path-panel">
+      <span className="eyebrow">Path Explain</span>
+      <h3>{displayText(result?.query, "GraphRAG 查询")}</h3>
+      <p>{result?.answer || result?.path_summary?.summary || "暂无路径摘要。"}</p>
+      {error ? <p className="graph-path-warning">{error}</p> : null}
+      {result?.mode || result?.agentic_service ? (
+        <div className="graph-path-run">
+          <span>{displayText(result.mode, "deterministic")}</span>
+          {result.requires_agentic_service_online ? <span>FastReAct required</span> : <span>direct retrieval</span>}
+          {result.display_mode ? <span>{displayText(result.display_mode)}</span> : null}
+          {result.agentic_service ? <span>{displayText(result.agentic_service.provider || result.agentic_service.adapter || result.agentic_service.run_id, "agentic service")}</span> : null}
+        </div>
+      ) : null}
+      <div className="graph-path-metrics">
+        <span><strong>{seeds?.terms?.length ?? 0}</strong> Seeds</span>
+        <span><strong>{facts.length}</strong> Facts</span>
+        <span><strong>{passages.length}</strong> Passages</span>
+        <span><strong>{citations.length}</strong> Citations</span>
+        <span><strong>{filteredFacts.length}</strong> Filtered</span>
+        <span><strong>{graphPaths.length}</strong> Paths</span>
+      </div>
+      {result?.path_summary?.filter_mode ? (
+        <p className="graph-path-filter-note">
+          {displayText(result.path_summary.filter_mode)} · kept {result.path_summary.kept_fact_count ?? facts.length} · filtered {result.path_summary.filtered_fact_count ?? filteredFacts.length}
+        </p>
+      ) : null}
+      {result?.agentic_repair?.attempted ? (
+        <p className={result.agentic_repair.accepted ? "graph-path-repair-note" : "graph-path-warning"}>
+          Repair {result.agentic_repair.accepted ? "accepted" : "not accepted"} · {displayText(result.agentic_repair.final_answer_mode || result.display_mode || result.mode)}
+          {result.agentic_repair.repaired_answer_chars ? ` · ${result.agentic_repair.repaired_answer_chars} chars` : ""}
+        </p>
+      ) : null}
+      {expansionDecisions.length ? (
+        <div className="graph-path-section">
+          <strong>Agentic Expansion</strong>
+          {expansionDecisions.slice(0, 4).map((decision, index) => (
+            <article key={`expansion-${index}`}>
+              <b>{trimText(decision.target || decision.action || decision.type || `decision ${index + 1}`, 92)}</b>
+              <small>{trimText(decision.decision || decision.reason || decision.summary || decision, 140)}</small>
+            </article>
+          ))}
+        </div>
+      ) : null}
+      {result?.agentic_trace?.evidence_check ? (
+        <div className="graph-path-section">
+          <strong>Evidence Check</strong>
+          <article>
+            <small>{trimText(result.agentic_trace.evidence_check, 180)}</small>
+          </article>
+        </div>
+      ) : null}
+      {seeds?.terms?.length ? (
+        <div className="graph-path-section">
+          <strong>Query Seeds</strong>
+          <p>{seeds.terms.join(" · ")}</p>
+        </div>
+      ) : null}
+      {facts.length ? (
+        <div className="graph-path-section">
+          <strong>Top Facts</strong>
+          {facts.slice(0, 4).map((fact, index) => (
+            <article key={`fact-${index}`}>
+              <b>{trimText(fact.statement || fact.summary || fact.explanation || fact.fact_id, 92)}</b>
+              <small>{trimText(fact.filter_reason || fact.why_it_matters || fact.relation_type || fact.fact_id, 120)}</small>
+            </article>
+          ))}
+        </div>
+      ) : null}
+      {filteredFacts.length ? (
+        <div className="graph-path-section subdued">
+          <strong>Filtered Facts</strong>
+          {filteredFacts.slice(0, 3).map((fact, index) => (
+            <article key={`filtered-fact-${index}`}>
+              <b>{trimText(fact.statement || fact.summary || fact.explanation || fact.fact_id, 92)}</b>
+              <small>{trimText(fact.filter_reason || "Filtered by relevance check", 120)}</small>
+            </article>
+          ))}
+        </div>
+      ) : null}
+      {passages.length ? (
+        <div className="graph-path-section">
+          <strong>Supporting Passages</strong>
+          {passages.slice(0, 4).map((passage, index) => (
+            <article key={`passage-${index}`}>
+              <b>{trimText(passage.title || passage.source_item_id || passage.result_id, 82)}</b>
+              <small>{trimText(passage.snippet, 140)}</small>
+            </article>
+          ))}
+        </div>
+      ) : null}
+      {graphPaths.length ? (
+        <div className="graph-path-section">
+          <strong>Graph Paths</strong>
+          {graphPaths.slice(0, 3).map((path, index) => (
+            <article key={`graph-path-${index}`}>
+              <b>{trimText(path.explanation || path.path_id || "graph path", 110)}</b>
+              <small>{trimText(graphPathMeta(path), 140)}</small>
+            </article>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function GraphNeighborhoodPanel({
+  graph,
+  selectedNodeId,
+  neighborhood
+}: {
+  graph?: WorkspaceGraphResponse;
+  selectedNodeId: string | null;
+  neighborhood: GraphNeighborhood;
+}) {
+  if (!selectedNodeId) {
+    return null;
+  }
+  if (neighborhood.edges.length === 0) {
+    return (
+      <div className="graph-neighborhood-panel">
+        <strong>Local Connections</strong>
+        <p>这个节点当前没有可见的一跳连接。</p>
+      </div>
+    );
+  }
+  const nodeById = new Map((graph?.nodes || []).map((node) => [node.id, node]));
+  return (
+    <div className="graph-neighborhood-panel">
+      <strong>Local Connections</strong>
+      <div className="graph-neighborhood-metrics">
+        <span><b>{neighborhood.neighborIds.size}</b> neighbors</span>
+        <span><b>{neighborhood.edges.length}</b> edges</span>
+      </div>
+      <div className="graph-neighborhood-list">
+        {neighborhood.edges.slice(0, 8).map((edge) => {
+          const neighborId = edge.source === selectedNodeId ? edge.target : edge.source;
+          const neighbor = nodeById.get(neighborId);
+          return (
+            <article key={edge.id}>
+              <span>{edge.source === selectedNodeId ? "out" : "in"} · {edge.label || edge.type}</span>
+              <b>{trimText(neighbor?.label || neighborId, 80)}</b>
+              <small>{graphTypeLabel(neighbor?.type || "node")} · {trimText(neighbor?.summary || edge.type || "", 110)}</small>
+            </article>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function GraphEvidencePathPanel({ evidencePath }: { evidencePath: GraphEvidencePath }) {
+  if (!evidencePath.selectedNodeId) {
+    return null;
+  }
+  if (evidencePath.nodes.length <= 1 && evidencePath.edges.length === 0) {
+    return (
+      <div className="graph-evidence-panel">
+        <strong>Evidence Path</strong>
+        <p>这个节点当前还没有可追溯的证据链。</p>
+      </div>
+    );
+  }
+  const evidenceNodes = evidencePath.nodes.filter((node) => ["source", "document", "passage"].includes(node.type));
+  const understandingNodes = evidencePath.nodes.filter((node) => ["claim", "digest", "phrase", "fact", "hyperedge", "memory", "memory_suggestion", "action"].includes(node.type));
+  return (
+    <div className="graph-evidence-panel">
+      <strong>Evidence Path</strong>
+      <div className="graph-evidence-metrics">
+        <span><b>{evidenceNodes.length}</b> evidence</span>
+        <span><b>{understandingNodes.length}</b> understanding</span>
+        <span><b>{evidencePath.edges.length}</b> links</span>
+      </div>
+      {evidenceNodes.length ? (
+        <div className="graph-evidence-list">
+          <span>来自哪里</span>
+          {evidenceNodes.slice(0, 6).map((node) => (
+            <article key={`evidence-${node.id}`}>
+              <b>{trimText(node.label || node.id, 86)}</b>
+              <small>{graphTypeLabel(node.type)} · {trimText(node.summary || node.object_id || "", 118)}</small>
+            </article>
+          ))}
+        </div>
+      ) : null}
+      {understandingNodes.length ? (
+        <div className="graph-evidence-list">
+          <span>产生了什么理解</span>
+          {understandingNodes.slice(0, 6).map((node) => (
+            <article key={`understanding-${node.id}`}>
+              <b>{trimText(node.label || node.id, 86)}</b>
+              <small>{graphTypeLabel(node.type)} · {trimText(node.summary || node.object_id || "", 118)}</small>
+            </article>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function graphPathMeta(path: Record<string, unknown>) {
+  const depth = displayText(path.depth, "");
+  const score = typeof path.score === "number" ? `score ${path.score.toFixed(2)}` : "";
+  const edgeCount = Array.isArray(path.edges) ? `${path.edges.length} edges` : "";
+  return [depth ? `depth ${depth}` : "", score, edgeCount].filter(Boolean).join(" · ") || "Graph traversal path";
+}
+
+function mergeGraphResponses(
+  base: WorkspaceGraphResponse | null | undefined,
+  extra: WorkspaceGraphResponse | null | undefined
+): WorkspaceGraphResponse | null {
+  if (!base && !extra) {
+    return null;
+  }
+  if (!base) {
+    return extra || null;
+  }
+  if (!extra) {
+    return base;
+  }
+  const nodesById = new Map<string, WorkspaceGraphNode>();
+  for (const node of [...(base.nodes || []), ...(extra.nodes || [])]) {
+    nodesById.set(node.id, node);
+  }
+  const edgesById = new Map<string, WorkspaceGraphEdge>();
+  for (const edge of [...(base.edges || []), ...(extra.edges || [])]) {
+    edgesById.set(edge.id, edge);
+  }
+  return {
+    ...base,
+    nodes: Array.from(nodesById.values()),
+    edges: Array.from(edgesById.values()),
+    projection: {
+      ...(base.projection || {}),
+      nodes: nodesById.size,
+      edges: edgesById.size
+    }
+  };
 }
 
 const graphStylesheet = [
@@ -2056,22 +2774,129 @@ const graphStylesheet = [
       "border-width": 4,
       "border-color": "#1f8f6a"
     }
+  },
+  {
+    selector: "node.search-match",
+    style: {
+      "border-width": 4,
+      "border-color": "#d7a63e",
+      "background-blacken": -0.08
+    }
+  },
+  {
+    selector: "node.focus-node",
+    style: {
+      "border-width": 5,
+      "border-color": "#1f8f6a",
+      "font-size": 12
+    }
+  },
+  {
+    selector: "node.evidence-path-node",
+    style: {
+      "border-width": 4,
+      "border-color": "#315f7c",
+      "background-blacken": -0.05
+    }
+  },
+  {
+    selector: "edge.neighborhood-edge",
+    style: {
+      width: 2.6,
+      "line-color": "#1f8f6a",
+      "target-arrow-color": "#1f8f6a"
+    }
+  },
+  {
+    selector: "edge.evidence-path-edge",
+    style: {
+      width: 3.1,
+      "line-color": "#315f7c",
+      "target-arrow-color": "#315f7c",
+      "font-size": 9
+    }
   }
 ];
 
-function graphToCytoscapeElements(graph: WorkspaceGraphResponse | undefined, activeTypes: Set<string>) {
+const graphLayout = {
+  name: "cose",
+  animate: false,
+  fit: true,
+  padding: 72,
+  nodeRepulsion: 18000,
+  idealEdgeLength: 230,
+  componentSpacing: 140,
+  nodeOverlap: 20
+};
+
+function graphLayoutForElementCount(elementCount: number) {
+  if (elementCount > 700) {
+    return {
+      name: "grid",
+      animate: false,
+      fit: true,
+      padding: 60,
+      avoidOverlap: true
+    };
+  }
+  if (elementCount > 380) {
+    return {
+      ...graphLayout,
+      nodeRepulsion: 10000,
+      idealEdgeLength: 170,
+      componentSpacing: 90,
+      padding: 54
+    };
+  }
+  return graphLayout;
+}
+
+type GraphNeighborhood = {
+  nodeIds: Set<string>;
+  neighborIds: Set<string>;
+  edges: WorkspaceGraphEdge[];
+};
+
+type GraphEvidencePath = {
+  selectedNodeId: string | null;
+  nodeIds: Set<string>;
+  edgeIds: Set<string>;
+  nodes: WorkspaceGraphNode[];
+  edges: WorkspaceGraphEdge[];
+};
+
+function graphToCytoscapeElements(
+  graph: WorkspaceGraphResponse | undefined,
+  activeTypes: Set<string>,
+  searchText = "",
+  focusNodeId: string | null = null,
+  evidencePath: GraphEvidencePath | null = null
+) {
   const nodes = (graph?.nodes || []).filter((node) => activeTypes.has(node.type));
-  const nodeIds = new Set(nodes.map((node) => node.id));
-  const elements: Array<{ data: Record<string, unknown>; classes?: string }> = nodes.map((node) => ({
+  const searchMatches = new Set(graphSearchResultNodes(graph, activeTypes, searchText).map((node) => node.id));
+  const neighborhood = graphNodeNeighborhood(graph, focusNodeId);
+  const visibleNodeIds = focusNodeId ? neighborhood.nodeIds : new Set(nodes.map((node) => node.id));
+  const visibleEdgeIds = focusNodeId ? new Set(neighborhood.edges.map((edge) => edge.id)) : null;
+  const filteredNodes = nodes.filter((node) => visibleNodeIds.has(node.id));
+  const nodeIds = new Set(filteredNodes.map((node) => node.id));
+  const elements: Array<{ data: Record<string, unknown>; classes?: string }> = filteredNodes.map((node) => ({
     data: {
       id: node.id,
       label: trimText(displayText(node.label || node.id, "node"), 36),
       color: graphNodeColor(node.type),
       size: graphNodeSize(node.type)
     },
-    classes: node.type
+    classes: [
+      node.type,
+      searchMatches.has(node.id) ? "search-match" : "",
+      focusNodeId === node.id ? "focus-node" : "",
+      evidencePath?.nodeIds.has(node.id) ? "evidence-path-node" : ""
+    ].filter(Boolean).join(" ")
   }));
   for (const edge of graph?.edges || []) {
+    if (visibleEdgeIds && !visibleEdgeIds.has(edge.id)) {
+      continue;
+    }
     if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target)) {
       continue;
     }
@@ -2084,10 +2909,145 @@ function graphToCytoscapeElements(graph: WorkspaceGraphResponse | undefined, act
         color: "#9d988d",
         size: 1
       },
-      classes: edge.type || "edge"
+      classes: [
+        edge.type || "edge",
+        focusNodeId ? "neighborhood-edge" : "",
+        evidencePath?.edgeIds.has(edge.id) ? "evidence-path-edge" : ""
+      ].filter(Boolean).join(" ")
     });
   }
   return elements;
+}
+
+function graphSearchResultNodes(graph: WorkspaceGraphResponse | undefined, activeTypes: Set<string>, searchText: string) {
+  const query = searchText.trim().toLowerCase();
+  if (!query) {
+    return [];
+  }
+  return (graph?.nodes || [])
+    .filter((node) => activeTypes.has(node.type))
+    .filter((node) => graphSearchHaystack(node).includes(query))
+    .slice(0, 50);
+}
+
+function graphSearchHaystack(node: WorkspaceGraphNode) {
+  return corpusText([node.id, node.type, node.label, node.summary, node.object_type, node.object_id, JSON.stringify(node.source_refs || [])]);
+}
+
+function graphNodeLabel(graph: WorkspaceGraphResponse | undefined, nodeId: string) {
+  const node = (graph?.nodes || []).find((item) => item.id === nodeId);
+  return node?.label || node?.object_id || nodeId;
+}
+
+function graphNodeNeighborhood(graph: WorkspaceGraphResponse | undefined, selectedNodeId: string | null): GraphNeighborhood {
+  const nodeIds = new Set<string>();
+  const neighborIds = new Set<string>();
+  const edges: WorkspaceGraphEdge[] = [];
+  if (!graph || !selectedNodeId) {
+    return { nodeIds, neighborIds, edges };
+  }
+  nodeIds.add(selectedNodeId);
+  for (const edge of graph.edges || []) {
+    if (edge.source !== selectedNodeId && edge.target !== selectedNodeId) {
+      continue;
+    }
+    edges.push(edge);
+    const neighborId = edge.source === selectedNodeId ? edge.target : edge.source;
+    neighborIds.add(neighborId);
+    nodeIds.add(neighborId);
+  }
+  return { nodeIds, neighborIds, edges };
+}
+
+function graphEvidencePath(graph: WorkspaceGraphResponse | undefined, selectedNodeId: string | null): GraphEvidencePath {
+  const empty = {
+    selectedNodeId,
+    nodeIds: new Set<string>(),
+    edgeIds: new Set<string>(),
+    nodes: [] as WorkspaceGraphNode[],
+    edges: [] as WorkspaceGraphEdge[]
+  };
+  if (!graph || !selectedNodeId) {
+    return empty;
+  }
+  const nodeById = new Map((graph.nodes || []).map((node) => [node.id, node]));
+  if (!nodeById.has(selectedNodeId)) {
+    return empty;
+  }
+  const evidenceLabels = new Set([
+    "contains",
+    "grounds",
+    "summarizes",
+    "formalizes",
+    "member",
+    "evidence",
+    "remembered_from",
+    "needs_review_from",
+    "suggests",
+    "suggests_relationship",
+    "represented_by",
+    "participates_in",
+    "mentions",
+    "links_to"
+  ]);
+  const adjacency = new Map<string, WorkspaceGraphEdge[]>();
+  for (const edge of graph.edges || []) {
+    const key = (edge.label || edge.type || "").toLowerCase();
+    if (!evidenceLabels.has(key)) {
+      continue;
+    }
+    adjacency.set(edge.source, [...(adjacency.get(edge.source) || []), edge]);
+    adjacency.set(edge.target, [...(adjacency.get(edge.target) || []), edge]);
+  }
+  const nodeIds = new Set<string>([selectedNodeId]);
+  const edgeIds = new Set<string>();
+  const selectedEdges: WorkspaceGraphEdge[] = [];
+  const queue: Array<{ nodeId: string; depth: number }> = [{ nodeId: selectedNodeId, depth: 0 }];
+  const maxDepth = 5;
+  const maxNodes = 44;
+  const maxEdges = 70;
+  while (queue.length && nodeIds.size < maxNodes && edgeIds.size < maxEdges) {
+    const current = queue.shift();
+    if (!current || current.depth >= maxDepth) {
+      continue;
+    }
+    for (const edge of adjacency.get(current.nodeId) || []) {
+      if (edgeIds.size >= maxEdges) {
+        break;
+      }
+      const nextNodeId = edge.source === current.nodeId ? edge.target : edge.source;
+      if (!nodeById.has(nextNodeId)) {
+        continue;
+      }
+      if (!edgeIds.has(edge.id)) {
+        edgeIds.add(edge.id);
+        selectedEdges.push(edge);
+      }
+      if (!nodeIds.has(nextNodeId) && nodeIds.size < maxNodes) {
+        nodeIds.add(nextNodeId);
+        queue.push({ nodeId: nextNodeId, depth: current.depth + 1 });
+      }
+    }
+  }
+  const typeRank: Record<string, number> = {
+    source: 0,
+    document: 1,
+    passage: 2,
+    claim: 3,
+    phrase: 4,
+    fact: 5,
+    hyperedge: 6,
+    digest: 7,
+    memory: 8,
+    memory_suggestion: 7,
+    action: 8,
+    entity: 9
+  };
+  const pathNodes = Array.from(nodeIds)
+    .map((nodeId) => nodeById.get(nodeId))
+    .filter((node): node is WorkspaceGraphNode => Boolean(node))
+    .sort((left, right) => (typeRank[left.type] ?? 99) - (typeRank[right.type] ?? 99));
+  return { selectedNodeId, nodeIds, edgeIds, nodes: pathNodes, edges: selectedEdges };
 }
 
 function graphNodeColor(type: string) {
@@ -2097,14 +3057,19 @@ function graphNodeColor(type: string) {
     passage: "#d5a03a",
     claim: "#ba6b57",
     digest: "#8f6fc8",
+    phrase: "#66835d",
     entity: "#4f9d7a",
-    hyperedge: "#c15472"
+    fact: "#315f7c",
+    hyperedge: "#c15472",
+    memory: "#3f7d90",
+    memory_suggestion: "#b78246",
+    action: "#9a7050"
   };
   return colors[type] || "#6c756f";
 }
 
 function graphNodeSize(type: string) {
-  return type === "hyperedge" || type === "digest" ? 42 : type === "source" || type === "document" ? 38 : 32;
+  return type === "fact" || type === "hyperedge" || type === "digest" ? 42 : type === "source" || type === "document" ? 38 : 32;
 }
 
 function graphTypeLabel(type: string) {
@@ -2114,8 +3079,13 @@ function graphTypeLabel(type: string) {
     passage: "Passage",
     claim: "Claim",
     digest: "Digest",
+    phrase: "Phrase",
     entity: "Entity",
-    hyperedge: "Hyperedge"
+    fact: "Fact",
+    hyperedge: "Hyperedge",
+    memory: "Memory",
+    memory_suggestion: "Memory Suggestion",
+    action: "Action"
   };
   return labels[type] || type;
 }

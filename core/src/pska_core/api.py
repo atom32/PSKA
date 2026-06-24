@@ -6,11 +6,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
+import re
 import sys
 import time
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from psycopg.types.json import Jsonb
 
@@ -94,6 +95,8 @@ class PSKAApi:
             "hyperedges": self.store.count_table("hyperedges"),
             "knowledge_claims": self.store.count_table("knowledge_claims"),
             "digest_notes": self.store.count_table("digest_notes"),
+            "graph_nodes": self.store.count_table("graph_nodes"),
+            "graph_edges": self.store.count_table("graph_edges"),
             "review_items": self.store.count_table("review_items"),
             "jobs": self.store.count_table("jobs"),
             "offline_index_states": self.store.count_table("offline_index_states"),
@@ -313,19 +316,19 @@ class PSKAApi:
             review_item = self.reviews.approve_and_apply(review_item_id, actor_user_id=actor_user_id, reason=reason)
         else:
             review_item = self.reviews.approve(review_item_id, actor_user_id=actor_user_id, reason=reason)
-        return {"review_item": to_jsonable(review_item)}
+        return {"review_item": to_jsonable(review_item), "application_result": _review_application_result(self.store, review_item)}
 
     def reject_review_item(self, review_item_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         actor_user_id = str(payload.get("actor_user_id") or "user_primary")
         reason = str(payload.get("reason") or "")
         review_item = self.reviews.reject(review_item_id, actor_user_id=actor_user_id, reason=reason)
-        return {"review_item": to_jsonable(review_item)}
+        return {"review_item": to_jsonable(review_item), "application_result": _review_application_result(self.store, review_item)}
 
     def apply_review_item(self, review_item_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         actor_user_id = str(payload.get("actor_user_id") or "user_primary")
         reason = str(payload.get("reason") or "")
         review_item = self.reviews.apply(review_item_id, actor_user_id=actor_user_id, reason=reason)
-        return {"review_item": to_jsonable(review_item)}
+        return {"review_item": to_jsonable(review_item), "application_result": _review_application_result(self.store, review_item)}
 
     def accept_discovery_item(self, discovery_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         actor_user_id = str(payload.get("actor_user_id") or "user_primary")
@@ -595,6 +598,7 @@ class PSKAApi:
         return {
             "ok": True,
             "owner_user_id": owner_user_id,
+            "summary": _digest_logs_summary(entries),
             "logs": to_jsonable(entries),
             "count": len(entries),
         }
@@ -1078,6 +1082,7 @@ class PSKAApi:
         *,
         owner_user_id: str | None = None,
         limit: int = 30,
+        node_types: set[str] | None = None,
         context: RequestContext | None = None,
     ) -> dict[str, Any]:
         owner_user_id = _workspace_owner_user_id(context, owner_user_id)
@@ -1089,6 +1094,12 @@ class PSKAApi:
         passage_windows = _passage_windows_for_documents(documents, chunks)
         claims = self.store.list_knowledge_claims(owner_user_id=owner_user_id, source_item_ids=source_ids, limit=limit * 4)
         digest_notes = self.store.list_digest_notes(owner_user_id=owner_user_id, source_item_ids=source_ids, limit=limit)
+        memories = self.store.list_agent_memories(owner_user_id=owner_user_id)[:limit]
+        review_items = [
+            item
+            for item in self.store.list_review_items()
+            if getattr(item, "owner_user_id", "") == owner_user_id and getattr(item, "status", "") == "pending"
+        ][:limit]
         entities = [entity for entity in self.store.list_entities() if getattr(entity, "owner_user_id", "") == owner_user_id]
         entity_by_id = {entity.entity_id: entity for entity in entities}
         hyperedges = [
@@ -1102,27 +1113,162 @@ class PSKAApi:
             passage_windows=passage_windows,
             claims=claims,
             digest_notes=digest_notes,
+            memories=memories,
+            review_items=review_items,
             entities=entities[: limit * 2],
             hyperedges=hyperedges[: limit * 2],
         )
+        unfiltered_counts = {"nodes": len(nodes), "edges": len(edges)}
+        nodes, edges = _filter_workspace_graph_projection(nodes, edges, node_types=node_types)
         return {
             "ok": True,
             "owner_user_id": owner_user_id,
             "ontology_version": "pska.graph.v2",
             "nodes": nodes,
             "edges": edges,
+            "insights": _workspace_graph_insights(nodes, edges),
+            "projection": {
+                "nodes": len(nodes),
+                "edges": len(edges),
+                "unfiltered_nodes": unfiltered_counts["nodes"],
+                "unfiltered_edges": unfiltered_counts["edges"],
+                "node_types": sorted(node_types) if node_types else None,
+            },
             "counts": {
                 "sources": len(source_items),
                 "documents": len(documents),
                 "passages": len(passage_windows),
                 "claims": len(claims),
                 "digest_notes": len(digest_notes),
+                "memories": len(memories),
+                "review_items": len(review_items),
                 "entities": len(entities),
+                "phrases": sum(1 for node in nodes if node.get("type") == "phrase"),
+                "facts": len(hyperedges),
                 "hyperedges": len(hyperedges),
             },
             "notes": [
                 "Graph v2 treats digest notes and knowledge claims as first-class nodes.",
                 "Passage windows are document-first context windows; chunks remain retrieval slices for compatibility.",
+            ],
+        }
+
+    def workspace_graph_subgraph(
+        self,
+        *,
+        node_id: str,
+        owner_user_id: str | None = None,
+        limit: int = 80,
+        hops: int = 1,
+        node_types: set[str] | None = None,
+        context: RequestContext | None = None,
+    ) -> dict[str, Any]:
+        owner_user_id = _workspace_owner_user_id(context, owner_user_id)
+        limit = max(1, min(limit, 160))
+        hops = max(1, min(hops, 3))
+        graph = self.workspace_graph_data(owner_user_id=owner_user_id, limit=limit, node_types=None, context=context)
+        nodes = _list_of_dicts(graph.get("nodes"))
+        edges = _list_of_dicts(graph.get("edges"))
+        sub_nodes, sub_edges = _workspace_graph_subgraph(nodes, edges, node_id=node_id, hops=hops, node_types=node_types)
+        return {
+            "ok": bool(sub_nodes),
+            "owner_user_id": owner_user_id,
+            "ontology_version": graph.get("ontology_version") or "pska.graph.v2",
+            "node_id": node_id,
+            "hops": hops,
+            "nodes": sub_nodes,
+            "edges": sub_edges,
+            "insights": _workspace_graph_insights(sub_nodes, sub_edges),
+            "evidence_path": _workspace_graph_evidence_path(sub_nodes, sub_edges, node_id),
+            "projection": {
+                "nodes": len(sub_nodes),
+                "edges": len(sub_edges),
+                "source_nodes": len(nodes),
+                "source_edges": len(edges),
+                "node_types": sorted(node_types) if node_types else None,
+            },
+            "counts": graph.get("counts") or {},
+            "notes": [
+                "Subgraph is derived from the current Graph v2 projection.",
+                "Use it for local expansion instead of loading the full graph into the browser.",
+            ],
+        }
+
+    def workspace_graph_search_subgraph(
+        self,
+        *,
+        query: str,
+        owner_user_id: str | None = None,
+        limit: int = 80,
+        hops: int = 1,
+        top_k: int = 5,
+        node_types: set[str] | None = None,
+        context: RequestContext | None = None,
+    ) -> dict[str, Any]:
+        owner_user_id = _workspace_owner_user_id(context, owner_user_id)
+        limit = max(1, min(limit, 160))
+        hops = max(1, min(hops, 3))
+        top_k = max(1, min(top_k, 20))
+        graph = self.workspace_graph_data(owner_user_id=owner_user_id, limit=limit, node_types=None, context=context)
+        nodes = _list_of_dicts(graph.get("nodes"))
+        edges = _list_of_dicts(graph.get("edges"))
+        matches = _workspace_graph_search_nodes(nodes, query=query, node_types=node_types, limit=top_k)
+        merged_nodes: dict[str, dict[str, Any]] = {}
+        merged_edges: dict[str, dict[str, Any]] = {}
+        for match in matches:
+            sub_nodes, sub_edges = _workspace_graph_subgraph(nodes, edges, node_id=str(match.get("id") or ""), hops=hops, node_types=node_types)
+            for node in sub_nodes:
+                merged_nodes[str(node.get("id"))] = node
+            for edge in sub_edges:
+                merged_edges[str(edge.get("id"))] = edge
+        sub_nodes = list(merged_nodes.values())
+        sub_edges = list(merged_edges.values())
+        return {
+            "ok": bool(matches),
+            "owner_user_id": owner_user_id,
+            "ontology_version": graph.get("ontology_version") or "pska.graph.v2",
+            "query": query,
+            "hops": hops,
+            "matches": matches,
+            "nodes": sub_nodes,
+            "edges": sub_edges,
+            "insights": _workspace_graph_insights(sub_nodes, sub_edges),
+            "projection": {
+                "nodes": len(sub_nodes),
+                "edges": len(sub_edges),
+                "source_nodes": len(nodes),
+                "source_edges": len(edges),
+                "node_types": sorted(node_types) if node_types else None,
+            },
+            "counts": graph.get("counts") or {},
+            "notes": [
+                "Search subgraph is derived from the current Graph v2 projection.",
+                "Use it to enter Graph exploration from a keyword without loading the full graph.",
+            ],
+        }
+
+    def graph_reindex(
+        self,
+        *,
+        owner_user_id: str = "user_primary",
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        graph = self.workspace_graph_data(owner_user_id=owner_user_id, limit=limit)
+        counts = self.store.replace_graph_projection(
+            owner_user_id=owner_user_id,
+            nodes=graph.get("nodes") or [],
+            edges=graph.get("edges") or [],
+        )
+        return {
+            "ok": True,
+            "owner_user_id": owner_user_id,
+            "ontology_version": graph.get("ontology_version"),
+            "projection": counts,
+            "graph_counts": graph.get("counts") or {},
+            "limit": limit,
+            "notes": [
+                "Rebuilt graph_nodes/graph_edges from Graph v2 typed projection.",
+                "Fact/Phrase are currently derived projection nodes; source tables remain unchanged.",
             ],
         }
 
@@ -1155,6 +1301,7 @@ class PSKAApi:
             "sensitivity": result.sensitivity,
             "agentic_contract": _graph_agentic_contract(),
         }
+        deterministic.update(_graph_path_product_payload(query, deterministic))
         if mode == "deterministic":
             return deterministic
         if mode != "agentic":
@@ -1180,15 +1327,55 @@ class PSKAApi:
                 },
                 "deterministic": deterministic,
             }
+        unusable = _agentic_graph_unusable_reason(agentic)
+        if unusable:
+            return {
+                **deterministic,
+                "ok": False,
+                "mode": "agentic",
+                "requires_agentic_service_online": True,
+                "display_mode": "deterministic_fallback",
+                "error": {
+                    "type": "agentic_graph_answer_unusable",
+                    "message": "Agentic GraphRAG returned an unusable answer. Deterministic graph retrieval path is shown.",
+                    "detail": unusable,
+                },
+                "agentic_service": agentic.get("agentic_service") if isinstance(agentic.get("agentic_service"), dict) else {},
+                "deterministic": deterministic,
+            }
+        repair_agentic = None
+        if _agentic_graph_answer_too_short(agentic, deterministic):
+            try:
+                repair_agentic = self._agentic_service_search(
+                    _graph_agentic_repair_query(query, deterministic, agentic),
+                    user,
+                    represented_user_id=owner_user_id,
+                    max_iterations=max(1, min(int(max_iterations or 3), 8)),
+                )
+                repair_unusable = _agentic_graph_unusable_reason(repair_agentic)
+                if not repair_unusable and not _agentic_graph_answer_too_short(repair_agentic, deterministic):
+                    agentic = _merge_graph_agentic_repair(agentic, repair_agentic)
+            except AgenticServiceError as exc:
+                repair_agentic = {
+                    "ok": False,
+                    "error": {
+                        "type": "agentic_graph_repair_unavailable",
+                        "detail": str(exc),
+                    },
+                }
+        answer_payload = _graph_agentic_answer_payload(agentic, deterministic)
+        if repair_agentic is not None:
+            answer_payload["agentic_repair"] = _graph_agentic_repair_summary(repair_agentic, answer_payload)
         return {
             **deterministic,
             "mode": "agentic",
             "requires_agentic_service_online": True,
-            "answer": agentic.get("answer") or "",
+            **answer_payload,
             "agentic_retrieval": agentic.get("retrieval") if isinstance(agentic.get("retrieval"), dict) else {},
             "agentic_trace": agentic.get("trace") if isinstance(agentic.get("trace"), dict) else {},
             "agentic_source_refs": agentic.get("source_refs") if isinstance(agentic.get("source_refs"), list) else [],
             "agentic_service": agentic.get("agentic_service") if isinstance(agentic.get("agentic_service"), dict) else {},
+            **_agentic_fact_filter_payload(agentic, deterministic),
             "deterministic": deterministic,
         }
 
@@ -1746,6 +1933,32 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
                 self.api.workspace_graph_data(
                     owner_user_id=_first(query.get("owner_user_id")),
                     limit=_int_first(query.get("limit")) or 30,
+                    node_types=_node_types_param(_first(query.get("node_types"))),
+                    context=context,
+                ),
+            )
+        if path == "/workspace/graph/subgraph":
+            return self._json(
+                200,
+                self.api.workspace_graph_subgraph(
+                    node_id=_first(query.get("node_id")) or "",
+                    owner_user_id=_first(query.get("owner_user_id")),
+                    limit=_int_first(query.get("limit")) or 80,
+                    hops=_int_first(query.get("hops")) or 1,
+                    node_types=_node_types_param(_first(query.get("node_types"))),
+                    context=context,
+                ),
+            )
+        if path == "/workspace/graph/search-subgraph":
+            return self._json(
+                200,
+                self.api.workspace_graph_search_subgraph(
+                    query=_first(query.get("query")) or "",
+                    owner_user_id=_first(query.get("owner_user_id")),
+                    limit=_int_first(query.get("limit")) or 80,
+                    hops=_int_first(query.get("hops")) or 1,
+                    top_k=_int_first(query.get("top_k")) or 5,
+                    node_types=_node_types_param(_first(query.get("node_types"))),
                     context=context,
                 ),
             )
@@ -2083,6 +2296,72 @@ def _digest_log_entry(job: Any, events: list[Any], claims: list[Any], notes: lis
             for event in events
         ],
     }
+
+
+def _digest_logs_summary(entries: list[dict[str, Any]]) -> dict[str, Any]:
+    status_counts: dict[str, int] = {}
+    candidate_totals = {
+        "knowledge_claims": 0,
+        "digest_notes": 0,
+        "hyperedges": 0,
+        "review_items": 0,
+        "saved_candidates": 0,
+        "review_candidates": 0,
+    }
+    recent_claims: list[dict[str, Any]] = []
+    recent_digest_notes: list[dict[str, Any]] = []
+    latest_failure: dict[str, Any] | None = None
+    for entry in entries:
+        status = str(entry.get("status") or "unknown")
+        status_counts[status] = status_counts.get(status, 0) + 1
+        summary = entry.get("candidate_summary") if isinstance(entry.get("candidate_summary"), dict) else {}
+        for key in candidate_totals:
+            candidate_totals[key] += int(summary.get(key) or 0)
+        if status == "failed" and latest_failure is None:
+            latest_failure = {
+                "job_id": entry.get("job_id"),
+                "error": entry.get("error"),
+                "updated_at": entry.get("updated_at"),
+            }
+        for claim in _iter_mapping_or_objects(entry.get("knowledge_claims")):
+            recent_claims.append(
+                {
+                    "statement": _object_value(claim, "statement"),
+                    "claim_type": _object_value(claim, "claim_type"),
+                    "confidence": _object_value(claim, "confidence"),
+                    "job_id": entry.get("job_id"),
+                }
+            )
+            if len(recent_claims) >= 5:
+                break
+        for note in _iter_mapping_or_objects(entry.get("digest_notes")):
+            recent_digest_notes.append(
+                {
+                    "title": _object_value(note, "title"),
+                    "synopsis": _object_value(note, "synopsis"),
+                    "job_id": entry.get("job_id"),
+                }
+            )
+            if len(recent_digest_notes) >= 5:
+                break
+    return {
+        "status_counts": status_counts,
+        "candidate_totals": candidate_totals,
+        "recent_claims": recent_claims[:5],
+        "recent_digest_notes": recent_digest_notes[:5],
+        "latest_failure": latest_failure,
+        "has_useful_output": bool(candidate_totals["knowledge_claims"] or candidate_totals["digest_notes"] or candidate_totals["saved_candidates"]),
+    }
+
+
+def _iter_mapping_or_objects(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+def _object_value(value: Any, key: str) -> Any:
+    if isinstance(value, dict):
+        return value.get(key)
+    return getattr(value, key, None)
 
 
 def _job_candidate_summary(job: Any, events: list[Any]) -> dict[str, Any]:
@@ -2441,6 +2720,48 @@ def _console_review_item(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _review_application_result(store: Any, review_item: ReviewItem) -> dict[str, Any]:
+    events = store.list_audit_events("review_item", review_item.review_item_id)
+    latest = events[-1] if events else None
+    metadata = latest.metadata if latest and isinstance(latest.metadata, dict) else {}
+    applied = review_item.status == "applied"
+    target_ids = {
+        key: metadata.get(key)
+        for key in ("agent_memory_id", "profile_card_id", "created_hyperedge_id")
+        if metadata.get(key)
+    }
+    promotion_type = metadata.get("promotion_type")
+    if not promotion_type and metadata.get("created_hyperedge_id"):
+        promotion_type = "hyperedge"
+    return {
+        "applied": applied,
+        "status": review_item.status,
+        "review_type": review_item.review_type.value if hasattr(review_item.review_type, "value") else str(review_item.review_type),
+        "action": latest.action if latest else None,
+        "promotion_type": promotion_type,
+        "target_ids": target_ids,
+        "source_refs": metadata.get("source_refs") or [],
+        "summary": _review_application_summary(review_item, metadata),
+        "metadata": metadata,
+    }
+
+
+def _review_application_summary(review_item: ReviewItem, metadata: dict[str, Any]) -> str:
+    if review_item.status == "rejected":
+        return "Review item was rejected and no long-term knowledge was changed."
+    if review_item.status == "approved":
+        return "Review item was approved and is ready to apply."
+    if review_item.status != "applied":
+        return f"Review item status is {review_item.status}."
+    if metadata.get("agent_memory_id"):
+        return f"Promoted to agent memory {metadata['agent_memory_id']}."
+    if metadata.get("profile_card_id"):
+        return f"Promoted to profile card {metadata['profile_card_id']}."
+    if metadata.get("created_hyperedge_id"):
+        return f"Created graph relationship {metadata['created_hyperedge_id']}."
+    return "Review item was applied."
+
+
 def _console_review_type(value: Any) -> str:
     if isinstance(value, dict):
         return str(value.get("value") or value.get("name") or "unknown")
@@ -2718,6 +3039,8 @@ def _workspace_graph_nodes_edges(
     passage_windows: list[PassageWindow],
     claims: list[Any],
     digest_notes: list[Any],
+    memories: list[Any],
+    review_items: list[Any],
     entities: list[Any],
     hyperedges: list[tuple[Any, list[Any]]],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -2752,6 +3075,21 @@ def _workspace_graph_nodes_edges(
             "label": label or edge_type,
             **extra,
         }
+
+    def add_phrase(text: Any, source_node_id: str, edge_type: str) -> None:
+        phrase = " ".join(str(text or "").strip().split())
+        if not phrase or len(phrase) > 120 or source_node_id not in nodes:
+            return
+        phrase_id = f"phrase:{uuid5(NAMESPACE_URL, phrase.casefold()).hex}"
+        add_node(
+            phrase_id,
+            "phrase",
+            phrase,
+            "query/entity phrase seed",
+            object_type="phrase",
+            object_id=phrase,
+        )
+        add_edge(source_node_id, phrase_id, edge_type)
 
     for item in source_items:
         add_node(
@@ -2802,6 +3140,8 @@ def _workspace_graph_nodes_edges(
             source_refs=source_refs,
         )
         _add_source_ref_edges(add_edge, source_refs, f"claim:{claim_id}", "grounds", passage_by_document, passage_by_source)
+        add_phrase(getattr(claim, "subject", ""), f"claim:{claim_id}", "mentions")
+        add_phrase(getattr(claim, "object", ""), f"claim:{claim_id}", "mentions")
     for note in digest_notes:
         note_id = getattr(note, "digest_note_id", "")
         source_refs = _source_refs_payload(getattr(note, "source_refs", []))
@@ -2819,6 +3159,36 @@ def _workspace_graph_nodes_edges(
         for claim in claims[:20]:
             if _source_refs_overlap(source_refs, _source_refs_payload(getattr(claim, "source_refs", []))):
                 add_edge(f"digest:{note_id}", f"claim:{getattr(claim, 'knowledge_claim_id', '')}", "summarizes")
+    for memory in memories:
+        memory_id = getattr(memory, "agent_memory_id", "")
+        source_refs = _source_refs_payload(getattr(memory, "source_refs", []))
+        add_node(
+            f"memory:{memory_id}",
+            "memory",
+            getattr(memory, "text", "") or memory_id,
+            f"confidence {float(getattr(memory, 'confidence', 0.0) or 0.0):.2f}",
+            object_type="agent_memory",
+            object_id=memory_id,
+            confidence=getattr(memory, "confidence", 0.0),
+            source_refs=source_refs,
+        )
+        _add_source_ref_edges(add_edge, source_refs, f"memory:{memory_id}", "remembered_from", passage_by_document, passage_by_source)
+    for review in review_items:
+        review_id = getattr(review, "review_item_id", "")
+        proposal = getattr(review, "proposal", {}) if isinstance(getattr(review, "proposal", {}), dict) else {}
+        review_type = str(getattr(getattr(review, "review_type", ""), "value", getattr(review, "review_type", "")))
+        node_type = "memory_suggestion" if "memory" in review_type or "profile" in review_type else "action"
+        source_refs = _source_refs_payload(proposal.get("source_refs") or proposal.get("sourceRefs") or [])
+        add_node(
+            f"{node_type}:{review_id}",
+            node_type,
+            getattr(review, "title", "") or proposal.get("plain_text_summary") or review_id,
+            proposal.get("plain_text_summary") or proposal.get("summary") or review_type,
+            object_type="review_item",
+            object_id=review_id,
+            source_refs=source_refs,
+        )
+        _add_source_ref_edges(add_edge, source_refs, f"{node_type}:{review_id}", "needs_review_from", passage_by_document, passage_by_source)
     for entity in entities:
         entity_id = getattr(entity, "entity_id", "")
         add_node(
@@ -2829,9 +3199,24 @@ def _workspace_graph_nodes_edges(
             object_type="entity",
             object_id=entity_id,
         )
+        add_phrase(getattr(entity, "label", ""), f"entity:{entity_id}", "links_to")
     for edge, members in hyperedges:
         hyperedge_id = getattr(edge, "hyperedge_id", "")
         source_refs = _source_refs_payload(getattr(edge, "source_refs", []))
+        fact_id = f"fact:{hyperedge_id}"
+        statement = _fact_statement(edge, members, entity_by_id)
+        add_node(
+            fact_id,
+            "fact",
+            statement or getattr(edge, "relation_type", "") or hyperedge_id,
+            getattr(edge, "evidence_text", "") or statement,
+            object_type="fact",
+            object_id=hyperedge_id,
+            confidence=getattr(edge, "confidence", 0.0),
+            source_refs=source_refs,
+            relation_type=getattr(edge, "relation_type", ""),
+            hyperedge_id=hyperedge_id,
+        )
         add_node(
             f"hyperedge:{hyperedge_id}",
             "hyperedge",
@@ -2842,20 +3227,380 @@ def _workspace_graph_nodes_edges(
             confidence=getattr(edge, "confidence", 0.0),
             source_refs=source_refs,
         )
+        add_edge(fact_id, f"hyperedge:{hyperedge_id}", "represented_by", "represented_by")
         _add_source_ref_edges(add_edge, source_refs, f"hyperedge:{hyperedge_id}", "evidence", passage_by_document, passage_by_source)
+        _add_source_ref_edges(add_edge, source_refs, fact_id, "grounds", passage_by_document, passage_by_source)
         for member in members:
             entity_id = getattr(member, "entity_id", "")
             entity = entity_by_id.get(entity_id)
             if entity:
                 add_node(f"entity:{entity_id}", "entity", getattr(entity, "label", "") or entity_id, getattr(entity, "entity_type", "") or "entity", object_type="entity", object_id=entity_id)
             add_edge(f"entity:{entity_id}", f"hyperedge:{hyperedge_id}", "member", getattr(member, "role", "") or "member")
+            add_edge(f"entity:{entity_id}", fact_id, "participates_in", getattr(member, "role", "") or "participant")
         for claim in claims[:40]:
             if _source_refs_overlap(source_refs, _source_refs_payload(getattr(claim, "source_refs", []))):
                 add_edge(f"claim:{getattr(claim, 'knowledge_claim_id', '')}", f"hyperedge:{hyperedge_id}", "formalizes")
+                add_edge(f"claim:{getattr(claim, 'knowledge_claim_id', '')}", fact_id, "formalizes")
         for note in digest_notes[:20]:
             if _source_refs_overlap(source_refs, _source_refs_payload(getattr(note, "source_refs", []))):
                 add_edge(f"digest:{getattr(note, 'digest_note_id', '')}", f"hyperedge:{hyperedge_id}", "suggests_relationship")
+                add_edge(f"digest:{getattr(note, 'digest_note_id', '')}", fact_id, "suggests_relationship")
     return list(nodes.values()), list(edges.values())
+
+
+def _filter_workspace_graph_projection(
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+    *,
+    node_types: set[str] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if not node_types:
+        return nodes, edges
+    filtered_nodes = [node for node in nodes if str(node.get("type") or "") in node_types]
+    node_ids = {str(node.get("id") or "") for node in filtered_nodes}
+    filtered_edges = [
+        edge
+        for edge in edges
+        if str(edge.get("source") or "") in node_ids and str(edge.get("target") or "") in node_ids
+    ]
+    return filtered_nodes, filtered_edges
+
+
+def _workspace_graph_subgraph(
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+    *,
+    node_id: str,
+    hops: int,
+    node_types: set[str] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    node_by_id = {str(node.get("id") or ""): node for node in nodes if node.get("id")}
+    if node_id not in node_by_id:
+        return [], []
+    adjacency: dict[str, list[dict[str, Any]]] = {item: [] for item in node_by_id}
+    for edge in edges:
+        source = str(edge.get("source") or "")
+        target = str(edge.get("target") or "")
+        if source in adjacency and target in adjacency:
+            adjacency[source].append(edge)
+            adjacency[target].append(edge)
+    selected_ids = {node_id}
+    frontier = {node_id}
+    for _ in range(hops):
+        next_frontier: set[str] = set()
+        for current in frontier:
+            for edge in adjacency.get(current, []):
+                neighbor = str(edge.get("target") if edge.get("source") == current else edge.get("source") or "")
+                if neighbor and neighbor not in selected_ids:
+                    selected_ids.add(neighbor)
+                    next_frontier.add(neighbor)
+        frontier = next_frontier
+        if not frontier:
+            break
+    filtered_nodes = [node for node in nodes if str(node.get("id") or "") in selected_ids]
+    if node_types:
+        filtered_nodes = [node for node in filtered_nodes if str(node.get("type") or "") in node_types or str(node.get("id") or "") == node_id]
+    filtered_ids = {str(node.get("id") or "") for node in filtered_nodes}
+    filtered_edges = [
+        edge
+        for edge in edges
+        if str(edge.get("source") or "") in filtered_ids and str(edge.get("target") or "") in filtered_ids
+    ]
+    return filtered_nodes, filtered_edges
+
+
+def _workspace_graph_search_nodes(
+    nodes: list[dict[str, Any]],
+    *,
+    query: str,
+    node_types: set[str] | None,
+    limit: int,
+) -> list[dict[str, Any]]:
+    terms = [term for term in re.split(r"\s+", query.casefold().strip()) if term]
+    if not terms:
+        return []
+    scored: list[tuple[float, dict[str, Any]]] = []
+    for node in nodes:
+        node_type = str(node.get("type") or "")
+        if node_types and node_type not in node_types:
+            continue
+        haystack = " ".join(
+            str(value or "")
+            for value in (
+                node.get("id"),
+                node.get("label"),
+                node.get("summary"),
+                node.get("object_type"),
+                node.get("object_id"),
+            )
+        ).casefold()
+        matched = sum(1 for term in terms if term in haystack)
+        if not matched:
+            continue
+        exact = 2.0 if query.casefold().strip() in haystack else 0.0
+        score = matched + exact + (_graph_node_priority(node_type) * 0.05)
+        scored.append((score, node))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return [
+        {
+            "id": node.get("id"),
+            "type": node.get("type"),
+            "label": node.get("label"),
+            "summary": node.get("summary"),
+            "score": round(score, 3),
+        }
+        for score, node in scored[:limit]
+    ]
+
+
+def _workspace_graph_evidence_path(
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+    node_id: str,
+) -> dict[str, Any]:
+    evidence_labels = {"contains", "grounds", "evidence", "summarizes", "formalizes", "remembered_from", "needs_review_from", "suggests_relationship"}
+    node_by_id = {str(node.get("id") or ""): node for node in nodes if node.get("id")}
+    evidence_edges = [
+        edge
+        for edge in edges
+        if str(edge.get("label") or edge.get("type") or "") in evidence_labels
+    ]
+    evidence_node_ids = {node_id}
+    for edge in evidence_edges:
+        if edge.get("source") in evidence_node_ids or edge.get("target") in evidence_node_ids:
+            evidence_node_ids.add(str(edge.get("source") or ""))
+            evidence_node_ids.add(str(edge.get("target") or ""))
+    evidence_nodes = [node_by_id[item] for item in evidence_node_ids if item in node_by_id]
+    return {
+        "node_id": node_id,
+        "nodes": evidence_nodes,
+        "edges": [
+            edge
+            for edge in evidence_edges
+            if str(edge.get("source") or "") in evidence_node_ids and str(edge.get("target") or "") in evidence_node_ids
+        ],
+        "evidence_node_count": sum(1 for node in evidence_nodes if node.get("type") in {"source", "document", "passage"}),
+        "understanding_node_count": sum(1 for node in evidence_nodes if node.get("type") not in {"source", "document", "passage"}),
+    }
+
+
+def _workspace_graph_insights(nodes: list[dict[str, Any]], edges: list[dict[str, Any]]) -> dict[str, Any]:
+    node_by_id = {str(node.get("id")): node for node in nodes if node.get("id")}
+    degree: dict[str, int] = {node_id: 0 for node_id in node_by_id}
+    incoming: dict[str, list[dict[str, Any]]] = {node_id: [] for node_id in node_by_id}
+    outgoing: dict[str, list[dict[str, Any]]] = {node_id: [] for node_id in node_by_id}
+    evidence_edge_labels = {"contains", "grounds", "evidence", "summarizes", "formalizes", "remembered_from", "needs_review_from"}
+    graph_edge_labels = {"formalizes", "member", "participates_in", "represented_by", "suggests_relationship", "links_to", "mentions"}
+    for edge in edges:
+        source = str(edge.get("source") or "")
+        target = str(edge.get("target") or "")
+        if source in degree:
+            degree[source] += 1
+            outgoing[source].append(edge)
+        if target in degree:
+            degree[target] += 1
+            incoming[target].append(edge)
+    type_counts: dict[str, int] = {}
+    grounded_by_type: dict[str, int] = {}
+    for node in nodes:
+        node_type = str(node.get("type") or "unknown")
+        node_id = str(node.get("id") or "")
+        type_counts[node_type] = type_counts.get(node_type, 0) + 1
+        source_refs = node.get("source_refs") if isinstance(node.get("source_refs"), list) else []
+        has_evidence_edge = any(str(edge.get("label") or edge.get("type") or "") in evidence_edge_labels for edge in incoming.get(node_id, []) + outgoing.get(node_id, []))
+        if source_refs or has_evidence_edge:
+            grounded_by_type[node_type] = grounded_by_type.get(node_type, 0) + 1
+    central_nodes = sorted(nodes, key=lambda node: (degree.get(str(node.get("id")), 0), _graph_node_priority(str(node.get("type") or ""))), reverse=True)[:12]
+    clusters = _workspace_graph_topic_clusters(node_by_id, edges, degree)
+    guided_tour = _workspace_graph_guided_tour(nodes, edges, degree, clusters)
+    return {
+        "layer_coverage": {
+            "evidence": sum(type_counts.get(item, 0) for item in ("source", "document", "passage")),
+            "understanding": sum(type_counts.get(item, 0) for item in ("claim", "digest")),
+            "semantic": sum(type_counts.get(item, 0) for item in ("entity", "phrase", "fact", "hyperedge")),
+            "review": sum(type_counts.get(item, 0) for item in ("memory", "memory_suggestion", "action")),
+            "exploration": len(nodes),
+        },
+        "evidence_health": {
+            "grounded_nodes": sum(grounded_by_type.values()),
+            "total_nodes": len(nodes),
+            "grounded_ratio": round(sum(grounded_by_type.values()) / max(1, len(nodes)), 3),
+            "grounded_by_type": grounded_by_type,
+            "evidence_edge_count": sum(1 for edge in edges if str(edge.get("label") or edge.get("type") or "") in evidence_edge_labels),
+            "semantic_edge_count": sum(1 for edge in edges if str(edge.get("label") or edge.get("type") or "") in graph_edge_labels),
+        },
+        "central_nodes": [_graph_insight_node(node, degree.get(str(node.get("id")), 0)) for node in central_nodes],
+        "topic_clusters": clusters,
+        "guided_tour": guided_tour,
+    }
+
+
+def _workspace_graph_topic_clusters(
+    node_by_id: dict[str, dict[str, Any]],
+    edges: list[dict[str, Any]],
+    degree: dict[str, int],
+) -> list[dict[str, Any]]:
+    adjacency: dict[str, set[str]] = {node_id: set() for node_id in node_by_id}
+    for edge in edges:
+        source = str(edge.get("source") or "")
+        target = str(edge.get("target") or "")
+        if source in adjacency and target in adjacency:
+            adjacency[source].add(target)
+            adjacency[target].add(source)
+    visited: set[str] = set()
+    clusters: list[dict[str, Any]] = []
+    for node_id in sorted(node_by_id, key=lambda item: degree.get(item, 0), reverse=True):
+        if node_id in visited:
+            continue
+        queue = [node_id]
+        component: list[str] = []
+        visited.add(node_id)
+        while queue and len(component) < 60:
+            current = queue.pop(0)
+            component.append(current)
+            for neighbor in sorted(adjacency.get(current, set()), key=lambda item: degree.get(item, 0), reverse=True):
+                if neighbor not in visited:
+                    visited.add(neighbor)
+                    queue.append(neighbor)
+        if len(component) < 3:
+            continue
+        cluster_nodes = [node_by_id[item] for item in component if item in node_by_id]
+        anchor_nodes = sorted(cluster_nodes, key=lambda node: (degree.get(str(node.get("id")), 0), _graph_node_priority(str(node.get("type") or ""))), reverse=True)[:5]
+        title = _workspace_graph_cluster_title(anchor_nodes)
+        clusters.append(
+            {
+                "cluster_id": f"cluster:{len(clusters) + 1}",
+                "title": title,
+                "summary": _workspace_graph_cluster_summary(cluster_nodes, anchor_nodes),
+                "node_count": len(cluster_nodes),
+                "edge_count": sum(1 for edge in edges if edge.get("source") in component and edge.get("target") in component),
+                "types": _graph_type_counts(cluster_nodes),
+                "anchor_nodes": [_graph_insight_node(node, degree.get(str(node.get("id")), 0)) for node in anchor_nodes],
+            }
+        )
+        if len(clusters) >= 8:
+            break
+    return clusters
+
+
+def _workspace_graph_guided_tour(
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+    degree: dict[str, int],
+    clusters: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    node_by_id = {str(node.get("id")): node for node in nodes if node.get("id")}
+    tour: list[dict[str, Any]] = []
+    digest_nodes = sorted([node for node in nodes if node.get("type") == "digest"], key=lambda node: degree.get(str(node.get("id")), 0), reverse=True)
+    claim_nodes = sorted([node for node in nodes if node.get("type") == "claim"], key=lambda node: degree.get(str(node.get("id")), 0), reverse=True)
+    fact_nodes = sorted([node for node in nodes if node.get("type") == "fact"], key=lambda node: degree.get(str(node.get("id")), 0), reverse=True)
+    passage_nodes = sorted([node for node in nodes if node.get("type") == "passage"], key=lambda node: degree.get(str(node.get("id")), 0), reverse=True)
+    if clusters:
+        tour.append(
+            {
+                "title": "先看最大的主题簇",
+                "reason": clusters[0].get("summary"),
+                "node_ids": [node.get("id") for node in clusters[0].get("anchor_nodes", []) if isinstance(node, dict)],
+            }
+        )
+    if digest_nodes:
+        tour.append(
+            {
+                "title": "从 digest 开始理解这批资料",
+                "reason": "Digest 节点把 claims、facts 和原文 passage 串成可读结论。",
+                "node_ids": [str(digest_nodes[0].get("id"))],
+            }
+        )
+    if fact_nodes:
+        tour.append(
+            {
+                "title": "检查最核心的事实/关系",
+                "reason": "Fact 节点是 HippoRAG-style 检索的语义跳点，应该能回溯到 claim 和 passage。",
+                "node_ids": [str(fact_nodes[0].get("id"))],
+            }
+        )
+    if claim_nodes and passage_nodes:
+        evidence_targets = [
+            str(edge.get("target"))
+            for edge in edges
+            if str(edge.get("source")) == str(passage_nodes[0].get("id")) or str(edge.get("target")) == str(passage_nodes[0].get("id"))
+        ]
+        tour.append(
+            {
+                "title": "验证证据链",
+                "reason": "从 passage 到 claim/fact/digest 的边说明理解结果来自哪里。",
+                "node_ids": [str(passage_nodes[0].get("id")), *[item for item in evidence_targets if item in node_by_id][:3]],
+            }
+        )
+    return tour[:5]
+
+
+def _workspace_graph_cluster_title(anchor_nodes: list[dict[str, Any]]) -> str:
+    for node in anchor_nodes:
+        if node.get("type") in {"digest", "fact", "claim", "entity", "phrase"} and node.get("label"):
+            return str(node.get("label"))[:80]
+    if anchor_nodes:
+        return str(anchor_nodes[0].get("label") or anchor_nodes[0].get("id") or "Topic cluster")[:80]
+    return "Topic cluster"
+
+
+def _workspace_graph_cluster_summary(cluster_nodes: list[dict[str, Any]], anchor_nodes: list[dict[str, Any]]) -> str:
+    type_counts = _graph_type_counts(cluster_nodes)
+    anchors = [str(node.get("label") or node.get("id") or "") for node in anchor_nodes[:3] if node.get("label") or node.get("id")]
+    layer_bits = ", ".join(f"{key} {value}" for key, value in sorted(type_counts.items()) if value)
+    if anchors:
+        return f"围绕 {' / '.join(anchors)} 展开，包含 {layer_bits}。"
+    return f"包含 {layer_bits}。"
+
+
+def _graph_type_counts(nodes: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for node in nodes:
+        node_type = str(node.get("type") or "unknown")
+        counts[node_type] = counts.get(node_type, 0) + 1
+    return counts
+
+
+def _graph_node_priority(node_type: str) -> int:
+    return {
+        "digest": 9,
+        "fact": 8,
+        "claim": 7,
+        "entity": 6,
+        "phrase": 5,
+        "passage": 4,
+        "document": 3,
+        "source": 2,
+    }.get(node_type, 1)
+
+
+def _graph_insight_node(node: dict[str, Any], degree: int) -> dict[str, Any]:
+    return {
+        "id": node.get("id"),
+        "type": node.get("type"),
+        "label": node.get("label"),
+        "summary": node.get("summary"),
+        "degree": degree,
+    }
+
+
+def _fact_statement(edge: Any, members: list[Any], entity_by_id: dict[str, Any]) -> str:
+    relation = str(getattr(edge, "relation_type", "") or "").strip()
+    labels = []
+    for member in members[:4]:
+        entity = entity_by_id.get(getattr(member, "entity_id", ""))
+        label = str(getattr(entity, "label", "") or getattr(member, "entity_id", "") or "").strip()
+        role = str(getattr(member, "role", "") or "").strip()
+        if label and role:
+            labels.append(f"{role}: {label}")
+        elif label:
+            labels.append(label)
+    evidence = str(getattr(edge, "evidence_text", "") or "").strip()
+    if labels and relation:
+        return f"{relation} ({'; '.join(labels)})"
+    if evidence:
+        return evidence[:220]
+    return relation
 
 
 def _graph_agentic_contract() -> dict[str, Any]:
@@ -2888,26 +3633,559 @@ def _graph_agentic_contract() -> dict[str, Any]:
 def _graph_agentic_query(query: str, deterministic: dict[str, Any]) -> str:
     seed_payload = {
         "query": query,
-        "deterministic_seeds": {
-            "results": deterministic.get("results") or [],
-            "citations": deterministic.get("citations") or [],
-            "graph_paths": deterministic.get("graph_paths") or [],
-            "score_debug": deterministic.get("score_debug") or {},
-            "gaps": deterministic.get("gaps") or [],
-            "conflicts": deterministic.get("conflicts") or [],
-        },
+        "deterministic_seeds": _compact_graph_agentic_seeds(deterministic),
         "agentic_contract": _graph_agentic_contract(),
     }
     return (
-        "Run PSKA online GraphRAG for the user query below. Use PSKA search tools as needed. "
+        "Run PSKA online GraphRAG for the user query below. First try to answer from the provided compact seeds. "
+        "Use PSKA search tools only when the seeds are clearly insufficient, and avoid redundant searches. "
         "The included deterministic retrieval payload is only the first seed set, not the final answer. "
         "Think like HippoRAG: use passage/entity/fact/claim seeds, decide whether to inspect adjacent "
         "passage windows or graph neighbors, run follow-up searches if needed, filter irrelevant facts, "
-        "and return a cited answer. Return JSON with answer, retrieval, trace, source_refs, and citations. "
+        "and return a cited answer. Return valid JSON with answer, retrieval, trace, source_refs, and citations. "
+        "The answer must be Chinese, substantive, about 400-800 Chinese characters when evidence is available, "
+        "and organized as: key conclusions, risks, next actions, and uncertainty. "
+        "Use citation/source_ref identifiers from the provided seeds wherever possible. "
+        "If a PSKA tool call fails, do not stop: synthesize the best grounded answer from the provided seeds and record "
+        "the tool failure in trace.gaps or trace.evidence_check. "
         "In trace include expansion_decisions explaining whether previous/next passage windows or graph "
         "neighbors were queried or intentionally skipped.\n\n"
         f"{json.dumps(seed_payload, ensure_ascii=False)}"
     )
+
+
+def _graph_agentic_repair_query(query: str, deterministic: dict[str, Any], first_agentic: dict[str, Any]) -> str:
+    seed_payload = {
+        "query": query,
+        "previous_agentic_answer": str(first_agentic.get("answer") or "")[:1200],
+        "previous_trace": first_agentic.get("trace") if isinstance(first_agentic.get("trace"), dict) else {},
+        "deterministic_seeds": _compact_graph_agentic_seeds(deterministic),
+        "required_output": {
+            "answer_language": "zh",
+            "minimum_chinese_characters": 300,
+            "target_chinese_characters": "500-900",
+            "must_include": [
+                "key conclusions grounded in citations",
+                "risks or caveats if present",
+                "next actions or review suggestions if present",
+                "uncertainty / evidence gaps",
+                "citation or source_ref identifiers from seeds",
+            ],
+        },
+    }
+    return (
+        "Repair the previous PSKA GraphRAG answer. The prior answer was too short for the product QA gate. "
+        "Do not run broad redundant searches unless the provided seeds are insufficient. Use the deterministic seeds below "
+        "as grounded evidence and produce valid JSON with answer, retrieval, trace, source_refs, and citations. "
+        "The repaired answer must be Chinese, at least 300 Chinese characters, specific to the user's question, "
+        "and organized into key conclusions, risks/caveats, next actions, and uncertainty. "
+        "If you cannot improve the answer, explain the evidence gap in trace.evidence_check but still synthesize "
+        "the richest grounded answer possible from the seeds.\n\n"
+        f"{json.dumps(seed_payload, ensure_ascii=False)}"
+    )
+
+
+def _compact_graph_agentic_seeds(deterministic: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "query_seeds": deterministic.get("query_seeds") or {},
+        "path_summary": deterministic.get("path_summary") or {},
+        "top_facts": [_compact_graph_fact(item) for item in _list_of_dicts(deterministic.get("top_facts"))[:8]],
+        "supporting_passages": [_compact_supporting_passage(item) for item in _list_of_dicts(deterministic.get("supporting_passages"))[:8]],
+        "citations": [_compact_citation(item) for item in _list_of_dicts(deterministic.get("citations"))[:8]],
+        "graph_paths": [_compact_graph_path(item) for item in _list_of_dicts(deterministic.get("graph_paths"))[:6]],
+        "filtered_out_facts": [_compact_graph_fact(item) for item in _list_of_dicts(deterministic.get("filtered_out_facts"))[:5]],
+        "gaps": deterministic.get("gaps") or [],
+        "conflicts": deterministic.get("conflicts") or [],
+        "sensitivity": deterministic.get("sensitivity") or [],
+    }
+
+
+def _compact_supporting_passage(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "result_id": item.get("result_id"),
+        "source_item_id": item.get("source_item_id"),
+        "title": item.get("title"),
+        "snippet": str(item.get("snippet") or "")[:700],
+        "score": item.get("score"),
+        "source": item.get("source"),
+        "source_refs": item.get("source_refs") or [],
+    }
+
+
+def _compact_citation(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "source_item_id": item.get("source_item_id"),
+        "chunk_id": item.get("chunk_id"),
+        "title": item.get("title"),
+        "url": item.get("url"),
+    }
+
+
+def _compact_graph_fact(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "fact_id": item.get("fact_id") or item.get("hyperedge_id") or item.get("path_id"),
+        "statement": item.get("statement") or item.get("summary") or item.get("explanation"),
+        "relation_type": item.get("relation_type"),
+        "evidence_text": str(item.get("evidence_text") or "")[:360],
+        "source_refs": item.get("source_refs") or [],
+        "why_it_matters": item.get("why_it_matters"),
+        "relevance_status": item.get("relevance_status"),
+        "relevance_score": item.get("relevance_score"),
+        "filter_reason": item.get("filter_reason"),
+    }
+
+
+def _compact_graph_path(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "path_id": item.get("path_id"),
+        "depth": item.get("depth"),
+        "explanation": item.get("explanation"),
+        "score": item.get("score"),
+        "entities": [
+            {
+                "entity_id": entity.get("entity_id"),
+                "label": entity.get("label"),
+                "entity_type": entity.get("entity_type"),
+            }
+            for entity in _list_of_dicts(item.get("entities"))[:6]
+        ],
+        "edges": [
+            {
+                "hyperedge_id": edge.get("hyperedge_id"),
+                "relation_type": edge.get("relation_type"),
+                "evidence_text": str(edge.get("evidence_text") or "")[:360],
+                "confidence": edge.get("confidence"),
+                "source_refs": edge.get("source_refs") or [],
+            }
+            for edge in _list_of_dicts(item.get("edges"))[:4]
+        ],
+    }
+
+
+def _agentic_fact_filter_payload(agentic: dict[str, Any], deterministic: dict[str, Any]) -> dict[str, Any]:
+    retrieval = agentic.get("retrieval") if isinstance(agentic.get("retrieval"), dict) else {}
+    trace = agentic.get("trace") if isinstance(agentic.get("trace"), dict) else {}
+    relevance = trace.get("fact_relevance_filter")
+    if not isinstance(relevance, dict):
+        relevance = retrieval.get("fact_relevance_filter") if isinstance(retrieval.get("fact_relevance_filter"), dict) else {}
+    kept = _list_of_dicts(relevance.get("kept_facts")) or _list_of_dicts(retrieval.get("top_facts"))
+    filtered = _list_of_dicts(relevance.get("filtered_out_facts")) or _list_of_dicts(retrieval.get("filtered_out_facts"))
+    if not kept and not filtered:
+        return {}
+    path_summary = dict(deterministic.get("path_summary") if isinstance(deterministic.get("path_summary"), dict) else {})
+    path_summary.update(
+        {
+            "kept_fact_count": len(kept),
+            "filtered_fact_count": len(filtered),
+            "filter_mode": "agentic_llm_relevance",
+        }
+    )
+    return {
+        "top_facts": kept,
+        "filtered_out_facts": filtered,
+        "path_summary": path_summary,
+    }
+
+
+def _graph_agentic_answer_payload(agentic: dict[str, Any], deterministic: dict[str, Any]) -> dict[str, Any]:
+    agentic_answer = str(agentic.get("answer") or "").strip()
+    deterministic_answer = str(deterministic.get("answer") or "").strip()
+    if len(agentic_answer) >= 300 or not deterministic_answer:
+        return {
+            "answer": agentic_answer,
+            "answer_mode": "agentic_synthesis",
+            "agentic_answer": agentic_answer,
+        }
+    return {
+        "answer": deterministic_answer,
+        "answer_mode": "deterministic_synthesis_for_short_agentic",
+        "agentic_answer": agentic_answer,
+        "answer_warning": "Agentic answer was shorter than the product QA threshold; PSKA synthesized a grounded fallback from deterministic seeds.",
+    }
+
+
+def _agentic_graph_answer_too_short(agentic: dict[str, Any], deterministic: dict[str, Any]) -> bool:
+    answer = str(agentic.get("answer") or "").strip()
+    deterministic_answer = str(deterministic.get("answer") or "").strip()
+    return bool(deterministic_answer) and 0 < len(answer) < 300
+
+
+def _merge_graph_agentic_repair(first_agentic: dict[str, Any], repair_agentic: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(repair_agentic)
+    first_trace = first_agentic.get("trace") if isinstance(first_agentic.get("trace"), dict) else {}
+    repair_trace = repair_agentic.get("trace") if isinstance(repair_agentic.get("trace"), dict) else {}
+    merged_trace = dict(repair_trace)
+    merged_trace["repair"] = {
+        "attempted": True,
+        "accepted": True,
+        "first_answer_chars": len(str(first_agentic.get("answer") or "")),
+        "repaired_answer_chars": len(str(repair_agentic.get("answer") or "")),
+        "first_trace": first_trace,
+    }
+    merged["trace"] = merged_trace
+    merged["agentic_service"] = {
+        **(first_agentic.get("agentic_service") if isinstance(first_agentic.get("agentic_service"), dict) else {}),
+        **(repair_agentic.get("agentic_service") if isinstance(repair_agentic.get("agentic_service"), dict) else {}),
+    }
+    merged["source_refs"] = _merge_source_ref_dicts(
+        first_agentic.get("source_refs") if isinstance(first_agentic.get("source_refs"), list) else [],
+        repair_agentic.get("source_refs") if isinstance(repair_agentic.get("source_refs"), list) else [],
+    )
+    retrieval = repair_agentic.get("retrieval") if isinstance(repair_agentic.get("retrieval"), dict) else {}
+    if first_agentic.get("retrieval") and isinstance(first_agentic.get("retrieval"), dict):
+        retrieval = {**first_agentic["retrieval"], **retrieval}
+    merged["retrieval"] = retrieval
+    return merged
+
+
+def _graph_agentic_repair_summary(repair_agentic: dict[str, Any], answer_payload: dict[str, Any]) -> dict[str, Any]:
+    if repair_agentic.get("ok") is False:
+        return {
+            "attempted": True,
+            "accepted": False,
+            "error": repair_agentic.get("error"),
+            "final_answer_mode": answer_payload.get("answer_mode"),
+        }
+    repaired_chars = len(str(repair_agentic.get("answer") or ""))
+    accepted = answer_payload.get("answer_mode") == "agentic_synthesis" and repaired_chars >= 300
+    return {
+        "attempted": True,
+        "accepted": accepted,
+        "repaired_answer_chars": repaired_chars,
+        "final_answer_mode": answer_payload.get("answer_mode"),
+    }
+
+
+def _merge_source_ref_dicts(*groups: list[Any]) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for group in groups:
+        for ref in group:
+            if not isinstance(ref, dict):
+                continue
+            key = json.dumps(ref, ensure_ascii=False, sort_keys=True)
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(ref)
+    return merged
+
+
+def _agentic_graph_unusable_reason(agentic: dict[str, Any]) -> str | None:
+    answer = str(agentic.get("answer") or "")
+    trace = agentic.get("trace") if isinstance(agentic.get("trace"), dict) else {}
+    haystack = " ".join(
+        [
+            answer,
+            json.dumps(trace.get("events") or [], ensure_ascii=False)[:4000],
+        ]
+    ).lower()
+    failure_markers = [
+        "mcp tools are unavailable",
+        "mcp transport",
+        "readuntil",
+        "unable to complete pska search",
+        "message also truncated",
+        "full query truncated",
+        "pska search tools are unavailable",
+    ]
+    for marker in failure_markers:
+        if marker in haystack:
+            return marker
+    if not answer.strip() and not trace:
+        return "empty_agentic_answer"
+    return None
+
+
+def _graph_seed_answer(
+    query: str,
+    supporting_passages: list[dict[str, Any]],
+    top_facts: list[dict[str, Any]],
+    graph_paths: list[dict[str, Any]],
+    filtered_out_facts: list[dict[str, Any]],
+) -> str:
+    if not supporting_passages and not top_facts and not graph_paths:
+        return ""
+    title = _graph_answer_topic(query, supporting_passages)
+    conclusions = _graph_answer_conclusions(supporting_passages, top_facts)
+    risks = _graph_answer_risks(supporting_passages, filtered_out_facts)
+    actions = _graph_answer_actions(supporting_passages)
+    uncertainty = _graph_answer_uncertainty(top_facts, graph_paths, filtered_out_facts)
+    citations = _graph_answer_citations(supporting_passages)
+    return (
+        f"基于当前 PSKA 检索与图谱路径，关于“{title}”可以先形成一个有证据但仍需人工复核的回答。\n\n"
+        f"关键结论：{conclusions}\n\n"
+        f"风险与约束：{risks}\n\n"
+        f"后续行动：{actions}\n\n"
+        f"不确定性：{uncertainty}\n\n"
+        f"引用线索：{citations}"
+    )
+
+
+def _graph_answer_topic(query: str, passages: list[dict[str, Any]]) -> str:
+    for passage in passages:
+        title = str(passage.get("title") or "").strip()
+        if title:
+            return title
+    return query[:80]
+
+
+def _graph_answer_conclusions(passages: list[dict[str, Any]], facts: list[dict[str, Any]]) -> str:
+    fact_bits = [
+        str(fact.get("statement") or fact.get("evidence_text") or "").strip()
+        for fact in facts[:3]
+        if str(fact.get("statement") or fact.get("evidence_text") or "").strip()
+    ]
+    passage_bits = [
+        _clean_graph_snippet(passage.get("snippet"))
+        for passage in passages[:3]
+        if _clean_graph_snippet(passage.get("snippet"))
+    ]
+    bits = [*fact_bits, *passage_bits]
+    if not bits:
+        return "当前证据显示该问题已有相关资料命中，但可读事实不足，需要进一步 digest 或人工补充。"
+    return "；".join(bits[:5]) + "。"
+
+
+def _graph_answer_risks(passages: list[dict[str, Any]], filtered_facts: list[dict[str, Any]]) -> str:
+    text = " ".join(_clean_graph_snippet(passage.get("snippet")) for passage in passages[:6])
+    risk_terms = ["风险", "问题", "限制", "成本", "失败", "幻觉", "冲突", "不确定", "人工", "验证", "追溯"]
+    matched = [term for term in risk_terms if term in text]
+    if filtered_facts:
+        return f"有 {len(filtered_facts)} 条 fact 被相关性过滤或降权，说明部分图谱关系可能只提供背景，不能直接支撑结论；同时需关注证据中的{ '、'.join(matched[:4]) if matched else '置信度、追溯和人工验证' }。"
+    return f"主要风险在于证据需要持续校验，尤其是{ '、'.join(matched[:4]) if matched else '版本变化、关系置信度、引用完整性和人工复核' }；图谱路径可辅助定位，但不能替代最终判断。"
+
+
+def _graph_answer_actions(passages: list[dict[str, Any]]) -> str:
+    text = " ".join(_clean_graph_snippet(passage.get("snippet")) for passage in passages[:8])
+    action_terms = ["建立", "实现", "设计", "准备", "评估", "记录", "追溯", "优化", "校验", "迭代", "测试"]
+    matched = [term for term in action_terms if term in text]
+    if matched:
+        return f"建议把资料中出现的“{ '、'.join(matched[:5]) }”转成可跟踪任务：先确认目标和验收指标，再补齐证据引用，最后把需要人工判断的候选放入 review。"
+    return "建议先把命中的 passages 和 facts 做人工 review，确认哪些值得进入长期 memory/profile/graph，再对缺证据的结论补充来源。"
+
+
+def _graph_answer_uncertainty(facts: list[dict[str, Any]], graph_paths: list[dict[str, Any]], filtered_facts: list[dict[str, Any]]) -> str:
+    review_facts = [fact for fact in facts if fact.get("relevance_status") == "review"]
+    parts = []
+    if review_facts:
+        parts.append(f"{len(review_facts)} 条 fact 处于 review 相关性状态")
+    if graph_paths:
+        parts.append(f"当前使用 {len(graph_paths)} 条 graph path 作为多跳线索")
+    if filtered_facts:
+        parts.append(f"{len(filtered_facts)} 条 fact 被过滤")
+    if not parts:
+        parts.append("当前主要依赖 lexical/vector passage seeds，图谱信号有限")
+    return "；".join(parts) + "。因此答案应被视为 grounded draft，而不是最终事实裁决。"
+
+
+def _graph_answer_citations(passages: list[dict[str, Any]]) -> str:
+    refs = []
+    for passage in passages[:6]:
+        refs.append(str(passage.get("result_id") or passage.get("source_item_id") or passage.get("title") or "").strip())
+    refs = [ref for ref in refs if ref]
+    return "、".join(refs) if refs else "暂无可显示 citation id。"
+
+
+def _clean_graph_snippet(value: Any) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    return text[:180]
+
+
+def _graph_path_product_payload(query: str, deterministic: dict[str, Any]) -> dict[str, Any]:
+    results = _list_of_dicts(deterministic.get("results"))
+    citations = _list_of_dicts(deterministic.get("citations"))
+    graph_paths = _list_of_dicts(deterministic.get("graph_paths"))
+    score_debug = deterministic.get("score_debug") if isinstance(deterministic.get("score_debug"), dict) else {}
+    diagnostics = score_debug.get("diagnostics") if isinstance(score_debug.get("diagnostics"), dict) else {}
+    query_terms = _graph_query_terms(query)
+    supporting_passages = _graph_supporting_passages(results, citations)
+    ranked_facts = _graph_filter_facts(_graph_top_facts(graph_paths, score_debug), query_terms)
+    top_facts = [fact for fact in ranked_facts if fact.get("relevance_status") != "dropped"]
+    filtered_out_facts = [fact for fact in ranked_facts if fact.get("relevance_status") == "dropped"]
+    return {
+        "query_seeds": {
+            "terms": query_terms,
+            "passages": [
+                {
+                    "result_id": passage.get("result_id"),
+                    "source_item_id": passage.get("source_item_id"),
+                    "title": passage.get("title"),
+                    "score": passage.get("score"),
+                    "source": passage.get("source"),
+                }
+                for passage in supporting_passages[:5]
+            ],
+            "facts": [
+                {
+                    "fact_id": fact.get("fact_id") or fact.get("hyperedge_id") or fact.get("path_id"),
+                    "statement": fact.get("statement") or fact.get("summary") or fact.get("explanation"),
+                    "score": fact.get("score"),
+                }
+                for fact in top_facts[:5]
+            ],
+            "graph_path_count": len(graph_paths),
+        },
+        "top_facts": top_facts,
+        "supporting_passages": supporting_passages,
+        "filtered_out_facts": filtered_out_facts,
+        "answer": _graph_seed_answer(query, supporting_passages, top_facts, graph_paths, filtered_out_facts),
+        "answer_mode": "deterministic_synthesis",
+        "path_summary": {
+            "summary": _graph_path_summary(supporting_passages, top_facts, graph_paths),
+            "result_count": len(results),
+            "citation_count": len(citations),
+            "graph_path_count": len(graph_paths),
+            "kept_fact_count": len(top_facts),
+            "filtered_fact_count": len(filtered_out_facts),
+            "filter_mode": "deterministic_relevance",
+            "has_graph_signal": bool(top_facts or graph_paths or score_debug.get("graph_context_used")),
+            "fallback": "ordinary_rag" if not (top_facts or graph_paths or score_debug.get("graph_context_used")) else None,
+            "diagnostics": diagnostics,
+        },
+    }
+
+
+def _graph_query_terms(query: str) -> list[str]:
+    seen: set[str] = set()
+    terms: list[str] = []
+    for match in re.findall(r"[\w\u4e00-\u9fff]+", query.lower()):
+        if len(match) < 2 or match in seen:
+            continue
+        seen.add(match)
+        terms.append(match)
+        if len(terms) >= 12:
+            break
+    return terms
+
+
+def _graph_supporting_passages(results: list[dict[str, Any]], citations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    citation_by_source = {
+        str(item.get("source_item_id")): item
+        for item in citations
+        if item.get("source_item_id")
+    }
+    passages: list[dict[str, Any]] = []
+    for item in results[:8]:
+        citation = citation_by_source.get(str(item.get("source_item_id"))) or {}
+        passages.append(
+            {
+                "result_id": item.get("result_id"),
+                "source_item_id": item.get("source_item_id"),
+                "title": item.get("title") or citation.get("title"),
+                "snippet": item.get("snippet") or citation.get("snippet"),
+                "score": item.get("score"),
+                "source": item.get("source"),
+                "source_refs": [
+                    {
+                        "source_item_id": item.get("source_item_id") or citation.get("source_item_id"),
+                        "chunk_id": item.get("result_id") or citation.get("chunk_id"),
+                        "url": citation.get("url"),
+                    }
+                ],
+                "score_debug": item.get("score_debug") if isinstance(item.get("score_debug"), dict) else {},
+            }
+        )
+    return passages
+
+
+def _graph_top_facts(graph_paths: list[dict[str, Any]], score_debug: dict[str, Any]) -> list[dict[str, Any]]:
+    facts: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for path in graph_paths[:8]:
+        path_id = str(path.get("path_id") or "")
+        edges = _list_of_dicts(path.get("edges"))
+        for edge in edges:
+            fact_id = str(edge.get("hyperedge_id") or edge.get("fact_id") or edge.get("id") or path_id)
+            if not fact_id or fact_id in seen:
+                continue
+            seen.add(fact_id)
+            facts.append(
+                {
+                    "fact_id": fact_id,
+                    "path_id": path_id,
+                    "statement": edge.get("summary") or edge.get("label") or path.get("explanation"),
+                    "relation_type": edge.get("relation_type"),
+                    "score": path.get("score"),
+                    "evidence_text": edge.get("evidence_text"),
+                    "source_refs": edge.get("source_refs") or edge.get("evidence_citations") or [],
+                    "why_it_matters": edge.get("why_it_matters") or path.get("explanation"),
+                }
+            )
+    diagnostics = score_debug.get("diagnostics") if isinstance(score_debug.get("diagnostics"), dict) else {}
+    offline_facts = diagnostics.get("top_facts") if isinstance(diagnostics.get("top_facts"), list) else []
+    for index, item in enumerate(offline_facts):
+        fact_id = f"offline_fact_seed:{index}"
+        if fact_id in seen:
+            continue
+        facts.append(
+            {
+                "fact_id": fact_id,
+                "statement": item if isinstance(item, str) else json.dumps(item, ensure_ascii=False),
+                "score": None,
+                "source_refs": [],
+                "why_it_matters": "Matched by HippoRAG-style offline fact seeding.",
+            }
+        )
+    return facts[:8]
+
+
+def _graph_filter_facts(facts: list[dict[str, Any]], query_terms: list[str]) -> list[dict[str, Any]]:
+    if not facts:
+        return []
+    if not query_terms:
+        return [
+            {
+                **fact,
+                "relevance_status": "review",
+                "relevance_score": 0.0,
+                "filter_reason": "no_query_terms",
+            }
+            for fact in facts
+        ]
+    ranked: list[dict[str, Any]] = []
+    normalized_terms = [term.lower() for term in query_terms if term]
+    for fact in facts:
+        text = " ".join(
+            str(fact.get(key) or "")
+            for key in ("statement", "summary", "explanation", "evidence_text", "relation_type", "why_it_matters")
+        ).lower()
+        matches = sorted({term for term in normalized_terms if term in text})
+        has_evidence = bool(fact.get("evidence_text") or fact.get("source_refs"))
+        lexical_score = len(matches) / max(len(normalized_terms), 1)
+        path_score = float(fact.get("score") or 0.0)
+        relevance_score = min(1.0, lexical_score + min(path_score, 1.0) * 0.25 + (0.15 if has_evidence else 0.0))
+        if matches or relevance_score >= 0.35:
+            status = "kept"
+            reason = "matched_query_terms" if matches else "high_graph_score"
+        elif has_evidence and path_score > 0:
+            status = "review"
+            reason = "graph_supported_but_weak_lexical_match"
+        else:
+            status = "dropped"
+            reason = "weak_query_match_and_no_evidence"
+        ranked.append(
+            {
+                **fact,
+                "relevance_status": status,
+                "relevance_score": round(relevance_score, 4),
+                "matched_terms": matches,
+                "filter_reason": reason,
+            }
+        )
+    return sorted(ranked, key=lambda item: (item.get("relevance_status") == "dropped", -float(item.get("relevance_score") or 0.0)))
+
+
+def _graph_path_summary(
+    supporting_passages: list[dict[str, Any]],
+    top_facts: list[dict[str, Any]],
+    graph_paths: list[dict[str, Any]],
+) -> str:
+    if graph_paths and top_facts:
+        return f"GraphRAG found {len(supporting_passages)} supporting passages and {len(top_facts)} fact/path candidates."
+    if supporting_passages:
+        return f"No strong graph path was found; using {len(supporting_passages)} lexical/vector passage seeds as ordinary RAG evidence."
+    return "No supporting passage or graph fact was found for this query."
 
 
 def _source_refs_payload(source_refs: Any) -> list[dict[str, Any]]:
@@ -3969,6 +5247,13 @@ def _int_first(values: list[str] | None) -> int | None:
         return int(value)
     except ValueError:
         return None
+
+
+def _node_types_param(value: str | None) -> set[str] | None:
+    if not value:
+        return None
+    node_types = {item.strip() for item in value.split(",") if item.strip()}
+    return node_types or None
 
 
 def _float_first(values: list[str] | None, default: float) -> float:

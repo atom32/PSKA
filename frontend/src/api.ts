@@ -6,10 +6,12 @@ import type {
   FileSyncResponse,
   KnowledgeSourceCleanupResponse,
   ReviewCenterResponse,
+  ReviewActionResponse,
   TodayResponse,
   WorkspaceActivityResponse,
   WorkspaceActivityType,
   WorkspaceCorpusResponse,
+  WorkspaceGraphPathResponse,
   WorkspaceGraphResponse,
   WorkspaceMode,
   WorkspaceSearchResponse
@@ -83,12 +85,85 @@ export async function loadCorpusData(serviceToken: string, limit = 16): Promise<
   return (await response.json()) as WorkspaceCorpusResponse;
 }
 
-export async function loadGraphData(serviceToken: string, limit = 60): Promise<WorkspaceGraphResponse> {
-  const response = await fetch(`/workspace/graph/data?owner_user_id=user_primary&limit=${limit}`, { headers: headers(serviceToken) });
+export async function loadGraphData(serviceToken: string, limit = 60, nodeTypes: string[] = []): Promise<WorkspaceGraphResponse> {
+  const params = new URLSearchParams({
+    owner_user_id: "user_primary",
+    limit: String(limit)
+  });
+  if (nodeTypes.length > 0) {
+    params.set("node_types", nodeTypes.join(","));
+  }
+  const response = await fetch(`/workspace/graph/data?${params.toString()}`, { headers: headers(serviceToken) });
   if (!response.ok) {
     throw new Error(`graph ${response.status}`);
   }
   return (await response.json()) as WorkspaceGraphResponse;
+}
+
+export async function loadGraphSubgraph(
+  serviceToken: string,
+  nodeId: string,
+  limit = 80,
+  hops = 1,
+  nodeTypes: string[] = []
+): Promise<WorkspaceGraphResponse> {
+  const params = new URLSearchParams({
+    owner_user_id: "user_primary",
+    node_id: nodeId,
+    limit: String(limit),
+    hops: String(hops)
+  });
+  if (nodeTypes.length > 0) {
+    params.set("node_types", nodeTypes.join(","));
+  }
+  const response = await fetch(`/workspace/graph/subgraph?${params.toString()}`, { headers: headers(serviceToken) });
+  if (!response.ok) {
+    throw new Error(`graph subgraph ${response.status}`);
+  }
+  return (await response.json()) as WorkspaceGraphResponse;
+}
+
+export async function loadGraphSearchSubgraph(
+  serviceToken: string,
+  query: string,
+  limit = 80,
+  hops = 1,
+  topK = 5,
+  nodeTypes: string[] = []
+): Promise<WorkspaceGraphResponse> {
+  const params = new URLSearchParams({
+    owner_user_id: "user_primary",
+    query,
+    limit: String(limit),
+    hops: String(hops),
+    top_k: String(topK)
+  });
+  if (nodeTypes.length > 0) {
+    params.set("node_types", nodeTypes.join(","));
+  }
+  const response = await fetch(`/workspace/graph/search-subgraph?${params.toString()}`, { headers: headers(serviceToken) });
+  if (!response.ok) {
+    throw new Error(`graph search subgraph ${response.status}`);
+  }
+  return (await response.json()) as WorkspaceGraphResponse;
+}
+
+export async function loadGraphPath(
+  serviceToken: string,
+  query: string,
+  mode: "deterministic" | "agentic" = "deterministic"
+): Promise<WorkspaceGraphPathResponse> {
+  const params = new URLSearchParams({
+    owner_user_id: "user_primary",
+    query,
+    mode,
+    top_k: "8"
+  });
+  const response = await fetch(`/workspace/graph/path?${params.toString()}`, { headers: headers(serviceToken) });
+  if (!response.ok) {
+    throw new Error(`graph path ${response.status}`);
+  }
+  return (await response.json()) as WorkspaceGraphPathResponse;
 }
 
 export async function loadSourcesConsole(serviceToken: string, limit = 20): Promise<ConsoleSourcesResponse> {
@@ -285,7 +360,7 @@ export async function snoozeDiscovery(serviceToken: string, discoveryId: string)
   }
 }
 
-export async function approveReviewItem(serviceToken: string, reviewItemId: string, apply = false): Promise<void> {
+export async function approveReviewItem(serviceToken: string, reviewItemId: string, apply = false): Promise<ReviewActionResponse> {
   const response = await fetch(`/review-items/${encodeURIComponent(reviewItemId)}/approve`, {
     method: "POST",
     headers: headers(serviceToken),
@@ -298,9 +373,10 @@ export async function approveReviewItem(serviceToken: string, reviewItemId: stri
   if (!response.ok) {
     throw new Error(`approve ${response.status}`);
   }
+  return (await response.json()) as ReviewActionResponse;
 }
 
-export async function rejectReviewItem(serviceToken: string, reviewItemId: string): Promise<void> {
+export async function rejectReviewItem(serviceToken: string, reviewItemId: string): Promise<ReviewActionResponse> {
   const response = await fetch(`/review-items/${encodeURIComponent(reviewItemId)}/reject`, {
     method: "POST",
     headers: headers(serviceToken),
@@ -312,9 +388,10 @@ export async function rejectReviewItem(serviceToken: string, reviewItemId: strin
   if (!response.ok) {
     throw new Error(`reject ${response.status}`);
   }
+  return (await response.json()) as ReviewActionResponse;
 }
 
-export async function applyReviewItem(serviceToken: string, reviewItemId: string): Promise<void> {
+export async function applyReviewItem(serviceToken: string, reviewItemId: string): Promise<ReviewActionResponse> {
   const response = await fetch(`/review-items/${encodeURIComponent(reviewItemId)}/apply`, {
     method: "POST",
     headers: headers(serviceToken),
@@ -326,6 +403,7 @@ export async function applyReviewItem(serviceToken: string, reviewItemId: string
   if (!response.ok) {
     throw new Error(`apply ${response.status}`);
   }
+  return (await response.json()) as ReviewActionResponse;
 }
 
 function mapSearchToBrain(data: WorkspaceSearchResponse, trigger: BrainState["lastTrigger"]): Partial<BrainState> {

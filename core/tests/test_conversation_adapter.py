@@ -131,6 +131,7 @@ def test_agent_capture_missing_refs_goes_to_review() -> None:
     review = next(iter(store.review_items.values()))
     assert review.review_type == ReviewType.LOW_CONFIDENCE
     assert review.proposal["violation"] == "capture requires source_refs before saving"
+    assert review.proposal["plain_text_summary"] == "Maybe."
 
 
 def test_agent_capture_sensitive_content_goes_to_review_and_sanitizes_tool_calls() -> None:
@@ -163,6 +164,7 @@ def test_agent_capture_sensitive_content_goes_to_review_and_sanitizes_tool_calls
     review = next(iter(store.review_items.values()))
     assert review.review_type == ReviewType.SENSITIVE_CONTENT
     assert review.proposal["sensitivity"] == "high"
+    assert review.proposal["plain_text_summary"] == "sensitive answer"
     assert saved.metadata["content"]["tool_calls"] == [{"name": "internal_tool", "status": "ok"}]
 
 

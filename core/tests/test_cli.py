@@ -12,6 +12,8 @@ from pska_core.cli import (
     _apply_workspace_defaults,
     _daily_briefing_payload,
     _fastreact_digest_worker_command_payload,
+    _graph_qa_eval_questions,
+    _graph_qa_eval_result,
     _digest_now_candidate_summary,
     _digest_now_diagnostics,
     _digest_now_fallback_review,
@@ -24,13 +26,16 @@ from pska_core.cli import (
     _ops_briefing_payload,
     _ops_briefing_text,
     _profile_list_payload,
+    _product_gate_payload,
+    _product_gate_summary,
+    _review_backfill_summaries_payload,
     _review_batch_payload,
     _review_items_payload,
 )
 from pska_core.enums import MemoryLayer, ReviewType, Visibility
 from pska_core.fastreact_client import FastreactError
 from pska_core.ingest import IngestService
-from pska_core.models import AgentMemory, ConnectorState, Job, ReviewItem, SourceItem, SourceRef, UserProfileCard
+from pska_core.models import AgentMemory, ConnectorState, DigestNote, Job, KnowledgeClaim, ReviewItem, SourceItem, SourceRef, UserProfileCard
 from pska_core.store import InMemoryKnowledgeStore
 
 
@@ -109,6 +114,31 @@ def test_cli_accepts_search_and_smoke() -> None:
     search = build_parser().parse_args(["search", "--query", "hello", "--top-k", "3"])
     smoke = build_parser().parse_args(["smoke-twitter-import"])
     agentic = build_parser().parse_args(["agentic-search", "--query", "hello", "--capture"])
+    graph_qa_eval = build_parser().parse_args([
+        "graph-qa-eval",
+        "--mode",
+        "agentic",
+        "--limit",
+        "2",
+        "--question",
+        "PSKA 如何使用 GraphRAG？",
+        "--agentic-timeout-seconds",
+        "90",
+        "--retries",
+        "2",
+    ])
+    product_gate = build_parser().parse_args([
+        "product-gate",
+        "--run-qa",
+        "--qa-mode",
+        "deterministic",
+        "--qa-limit",
+        "2",
+        "--min-claims",
+        "2",
+        "--summary",
+    ])
+    graph_reindex = build_parser().parse_args(["graph-reindex", "--owner-user-id", "user_primary", "--limit", "80", "--summary"])
     extract = build_parser().parse_args(["extract-all", "--owner-user-id", "user_primary"])
     serve = build_parser().parse_args(["serve", "--port", "8765"])
     local_daemon = build_parser().parse_args(["local-daemon", "--no-worker", "--digest-interval-seconds", "60"])
@@ -148,6 +178,20 @@ def test_cli_accepts_search_and_smoke() -> None:
     assert smoke.command == "smoke-twitter-import"
     assert agentic.command == "agentic-search"
     assert agentic.capture is True
+    assert graph_qa_eval.command == "graph-qa-eval"
+    assert graph_qa_eval.question == ["PSKA 如何使用 GraphRAG？"]
+    assert graph_qa_eval.agentic_timeout_seconds == 90
+    assert graph_qa_eval.retries == 2
+    assert product_gate.command == "product-gate"
+    assert product_gate.run_qa is True
+    assert product_gate.qa_mode == "deterministic"
+    assert product_gate.qa_limit == 2
+    assert product_gate.min_claims == 2
+    assert product_gate.summary is True
+    assert graph_reindex.command == "graph-reindex"
+    assert graph_reindex.owner_user_id == "user_primary"
+    assert graph_reindex.limit == 80
+    assert graph_reindex.summary is True
     assert extract.command == "extract-all"
     assert serve.command == "serve"
     assert local_daemon.command == "local-daemon"
@@ -216,6 +260,262 @@ def test_cli_accepts_search_and_smoke() -> None:
     assert str(files_watch.root[0]) == "notes"
     assert files_watch.initial_sync is True
     assert files_watch.max_events == 1
+
+
+def test_graph_qa_eval_questions_use_digest_claim_and_explicit_questions() -> None:
+    store = InMemoryKnowledgeStore()
+    ref = SourceRef(source_item_id="src_eval")
+    store.add_digest_note(
+        DigestNote(
+            digest_note_id="dig_eval",
+            owner_user_id="user_primary",
+            title="GraphRAG Digest",
+            synopsis="GraphRAG digest summarizes evidence.",
+            source_refs=[ref],
+            open_questions=[{"question": "GraphRAG 如何降低幻觉？"}],
+        )
+    )
+    store.add_knowledge_claim(
+        KnowledgeClaim(
+            knowledge_claim_id="kc_eval",
+            owner_user_id="user_primary",
+            claim_type="fact",
+            statement="PSKA uses graph paths for grounded answers.",
+            evidence_text="graph paths for grounded answers",
+            source_refs=[ref],
+            subject="PSKA",
+        )
+    )
+
+    questions = _graph_qa_eval_questions(
+        store,
+        owner_user_id="user_primary",
+        explicit_questions=["我的资料里 PSKA 的目标是什么？"],
+        limit=4,
+    )
+
+    assert questions[0] == "我的资料里 PSKA 的目标是什么？"
+    assert any("GraphRAG Digest" in question for question in questions)
+    assert any("GraphRAG 如何降低幻觉" in question for question in questions)
+
+
+def test_graph_qa_eval_result_scores_rich_grounded_agentic_answer() -> None:
+    result = _graph_qa_eval_result(
+        "PSKA 如何使用 GraphRAG？",
+        {
+            "answer": "PSKA 使用 GraphRAG 把 passage、claim、fact 和 digest 连接起来。" * 6,
+            "citations": [{"source_item_id": "src_eval"}],
+            "supporting_passages": [{"source_item_id": "src_eval", "snippet": "GraphRAG"}],
+            "graph_paths": [{"path_id": "p1"}],
+            "top_facts": [{"fact_id": "f1", "statement": "PSKA uses GraphRAG."}],
+            "path_summary": {"filter_mode": "agentic_llm_relevance", "has_graph_signal": True},
+            "agentic_trace": {"expansion_decisions": [{"target": "neighbors", "decision": "inspect"}]},
+            "agentic_repair": {"attempted": True, "accepted": True, "repaired_answer_chars": 420},
+            "answer_mode": "agentic_synthesis",
+        },
+        mode="agentic",
+        min_answer_chars=120,
+    )
+
+    assert result["ok"] is True
+    assert result["checks"]["has_rich_answer"] is True
+    assert result["metrics"]["citation_count"] == 1
+    assert result["metrics"]["graph_path_count"] == 1
+    assert result["metrics"]["answer_mode"] == "agentic_synthesis"
+    assert result["metrics"]["repair_attempted"] is True
+    assert result["metrics"]["repair_accepted"] is True
+
+
+def test_graph_qa_eval_can_require_pure_agentic_synthesis() -> None:
+    result = _graph_qa_eval_result(
+        "PSKA 如何使用 GraphRAG？",
+        {
+            "answer": "PSKA 使用 GraphRAG 把 passage、claim、fact 和 digest 连接起来。" * 6,
+            "citations": [{"source_item_id": "src_eval"}],
+            "supporting_passages": [{"source_item_id": "src_eval", "snippet": "GraphRAG"}],
+            "graph_paths": [{"path_id": "p1"}],
+            "top_facts": [{"fact_id": "f1", "statement": "PSKA uses GraphRAG."}],
+            "path_summary": {"filter_mode": "deterministic_relevance", "has_graph_signal": True},
+            "agentic_trace": {"expansion_decisions": [{"target": "neighbors", "decision": "inspect"}]},
+            "answer_mode": "deterministic_synthesis_for_short_agentic",
+        },
+        mode="agentic",
+        min_answer_chars=120,
+        require_agentic_synthesis=True,
+    )
+
+    assert result["ok"] is False
+    assert result["checks"]["agentic_synthesis"] is False
+
+
+def test_graph_qa_eval_aggregate_tracks_agentic_repair_rates() -> None:
+    aggregate = cli_module._graph_qa_eval_aggregate(
+        [
+            {"score": 6, "metrics": {"answer_chars": 420, "citation_count": 2, "graph_path_count": 2, "top_fact_count": 1, "filtered_fact_count": 0, "supporting_passage_count": 2, "answer_mode": "agentic_synthesis", "fallback": "none", "repair_attempted": True, "repair_accepted": True}},
+            {"score": 6, "metrics": {"answer_chars": 380, "citation_count": 2, "graph_path_count": 2, "top_fact_count": 1, "filtered_fact_count": 0, "supporting_passage_count": 2, "answer_mode": "agentic_synthesis", "fallback": "none", "repair_attempted": False, "repair_accepted": False}},
+        ]
+    )
+
+    assert aggregate["repair_attempted_count"] == 1
+    assert aggregate["repair_accepted_count"] == 1
+    assert aggregate["repair_attempt_rate"] == 0.5
+    assert aggregate["repair_accept_rate"] == 1.0
+
+
+def test_product_gate_passes_when_five_layers_have_grounded_graph_data() -> None:
+    class FakeStore:
+        def list_knowledge_claims(self, *, owner_user_id: str, limit: int):
+            assert owner_user_id == "user_primary"
+            assert limit == 100
+            return [
+                KnowledgeClaim(
+                    knowledge_claim_id="kc_gate",
+                    owner_user_id="user_primary",
+                    claim_type="fact",
+                    statement="PSKA validates product gates.",
+                    evidence_text="product gates",
+                    source_refs=[SourceRef(source_item_id="src_gate", passage_window_id="pw_gate")],
+                )
+            ]
+
+        def list_digest_notes(self, *, owner_user_id: str, limit: int):
+            return [
+                DigestNote(
+                    digest_note_id="dig_gate",
+                    owner_user_id=owner_user_id,
+                    title="Product Gate",
+                    synopsis="Gate validates digest and graph layers.",
+                    source_refs=[SourceRef(source_item_id="src_gate", passage_window_id="pw_gate")],
+                )
+            ]
+
+        def list_review_items(self):
+            return [
+                ReviewItem(
+                    review_item_id="rev_gate",
+                    owner_user_id="user_primary",
+                    review_type=ReviewType.MEMORY_CANDIDATE,
+                    proposal={"plain_text_summary": "Remember that product gates are validated."},
+                    source_refs=[SourceRef(source_item_id="src_gate")],
+                )
+            ]
+
+    class FakeAPI:
+        store = FakeStore()
+
+        def ready(self):
+            return {"ok": True, "checks": {"database": {"ok": True}, "schema": {"ok": True}, "mcp": {"ok": True}, "jobs": {"ok": True}, "metrics": {"ok": True}}}
+
+        def metrics(self):
+            return {"ok": True, "index": {"source_items": 1, "chunks": 1, "hyperedges": 1, "graph_nodes": 5, "graph_edges": 4}}
+
+        def job_stats(self):
+            return {"stats": {"by_status": {}, "digest_backlog": {}}}
+
+        def workspace_graph_data(self, *, owner_user_id: str, limit: int):
+            return {
+                "counts": {"sources": 1, "documents": 1, "passages": 1, "claims": 1, "digest_notes": 1, "hyperedges": 1, "entities": 1},
+                "nodes": [
+                    {"id": "source:src_gate", "type": "source", "label": "Source"},
+                    {"id": "passage:pw_gate", "type": "passage", "label": "Passage"},
+                    {"id": "claim:kc_gate", "type": "claim", "label": "Claim"},
+                    {"id": "digest:dig_gate", "type": "digest", "label": "Digest"},
+                    {"id": "hyperedge:hyp_gate", "type": "hyperedge", "label": "Fact"},
+                ],
+                "edges": [
+                    {"id": "e1", "source": "source:src_gate", "target": "passage:pw_gate", "label": "contains"},
+                    {"id": "e2", "source": "passage:pw_gate", "target": "claim:kc_gate", "label": "grounds"},
+                    {"id": "e3", "source": "claim:kc_gate", "target": "hyperedge:hyp_gate", "label": "formalizes"},
+                    {"id": "e4", "source": "digest:dig_gate", "target": "claim:kc_gate", "label": "summarizes"},
+                ],
+            }
+
+        def digest_logs(self, *, owner_user_id: str, limit: int):
+            return {"summary": {"knowledge_claims": 1, "digest_notes": 1}}
+
+    payload = _product_gate_payload(FakeAPI(), owner_user_id="user_primary", run_qa=False)
+    summary = _product_gate_summary(payload)
+
+    assert payload["ok"] is True
+    assert payload["score"]["critical_failures"] == 0
+    assert summary["graph_counts"]["claims"] == 1
+    assert summary["graph_api_projection"] == {"nodes": 5, "edges": 4}
+    assert summary["physical_graph_projection"] == {"graph_nodes": 5, "graph_edges": 4}
+    assert summary["qa"] is None
+    assert any(check["id"] == "qa_quality_gate" and check["severity"] == "info" for check in payload["layer_checks"])
+
+
+def test_product_gate_fails_when_understanding_layer_is_missing() -> None:
+    class EmptyStore:
+        def list_knowledge_claims(self, *, owner_user_id: str, limit: int):
+            return []
+
+        def list_digest_notes(self, *, owner_user_id: str, limit: int):
+            return []
+
+        def list_review_items(self):
+            return []
+
+    class FakeAPI:
+        store = EmptyStore()
+
+        def ready(self):
+            return {"ok": True, "checks": {"database": {"ok": True}}}
+
+        def metrics(self):
+            return {"ok": True, "index": {}}
+
+        def job_stats(self):
+            return {"stats": {"by_status": {}, "digest_backlog": {}}}
+
+        def workspace_graph_data(self, *, owner_user_id: str, limit: int):
+            return {
+                "counts": {"sources": 1, "passages": 1, "claims": 0, "digest_notes": 0, "hyperedges": 1},
+                "nodes": [{"id": "source:src_gate", "type": "source"}],
+                "edges": [{"id": "e1", "source": "source:src_gate", "target": "passage:pw_gate", "label": "contains"}],
+            }
+
+        def digest_logs(self, *, owner_user_id: str, limit: int):
+            return {"summary": {}}
+
+    payload = _product_gate_payload(FakeAPI(), owner_user_id="user_primary")
+
+    assert payload["ok"] is False
+    failed_ids = {check["id"] for check in payload["layer_checks"] if not check["ok"]}
+    assert "agentic_understanding_layer" in failed_ids
+
+
+def test_review_backfill_summaries_updates_only_missing_plain_text_summary() -> None:
+    store = InMemoryKnowledgeStore()
+    store.add_review_item(
+        ReviewItem(
+            review_item_id="rev_missing",
+            owner_user_id="user_primary",
+            review_type=ReviewType.LOW_CONFIDENCE,
+            title="Review missing summary",
+            proposal={"reason": "needs_check", "source_refs": [{"source_item_id": "src_1"}]},
+        )
+    )
+    store.add_review_item(
+        ReviewItem(
+            review_item_id="rev_existing",
+            owner_user_id="user_primary",
+            review_type=ReviewType.MEMORY_CANDIDATE,
+            title="Review existing summary",
+            proposal={"plain_text_summary": "Already readable."},
+        )
+    )
+
+    dry_run = _review_backfill_summaries_payload(store, owner_user_id="user_primary", status="pending", execute=False)
+
+    assert dry_run["would_update"] == 1
+    assert "plain_text_summary" not in store.get_review_item("rev_missing").proposal
+
+    executed = _review_backfill_summaries_payload(store, owner_user_id="user_primary", status="pending", execute=True)
+
+    assert executed["updated"] == 1
+    assert store.get_review_item("rev_missing").proposal["plain_text_summary"] == "needs_check"
+    assert store.get_review_item("rev_existing").proposal["plain_text_summary"] == "Already readable."
 
 
 def test_workspace_defaults_are_applied_after_config_load(tmp_path) -> None:
@@ -295,6 +595,14 @@ def test_cli_accepts_review_commands() -> None:
     assert listing.owner_user_id == "user_primary"
     assert listing.limit == 5
     assert listing.summary is True
+
+    backfill = build_parser().parse_args(
+        ["review-backfill-summaries", "--status", "pending", "--owner-user-id", "user_primary", "--execute"]
+    )
+    assert backfill.command == "review-backfill-summaries"
+    assert backfill.status == "pending"
+    assert backfill.owner_user_id == "user_primary"
+    assert backfill.execute is True
 
     approve = build_parser().parse_args(
         ["review-approve", "rev_123", "--actor-user-id", "user_primary", "--reason", "ok", "--apply"]

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import Protocol
+from typing import Any, Protocol
 from uuid import uuid4
 
 from pska_core.models import (
@@ -102,6 +102,8 @@ class KnowledgeStore(Protocol):
     def get_review_item(self, review_item_id: str) -> ReviewItem: ...
     def list_review_items(self) -> list[ReviewItem]: ...
     def update_review_item_status(self, review_item_id: str, status: str) -> ReviewItem: ...
+    def update_review_item_proposal(self, review_item_id: str, proposal: dict[str, Any]) -> ReviewItem: ...
+    def replace_graph_projection(self, *, owner_user_id: str, nodes: list[dict[str, Any]], edges: list[dict[str, Any]]) -> dict[str, int]: ...
     def add_audit_event(self, event: AuditEvent) -> AuditEvent: ...
     def list_audit_events(self, target_type: str | None = None, target_id: str | None = None) -> list[AuditEvent]: ...
     def update_visibility(
@@ -207,6 +209,8 @@ class InMemoryKnowledgeStore:
         self.knowledge_claims: dict[str, KnowledgeClaim] = {}
         self.digest_notes: dict[str, DigestNote] = {}
         self.review_items: dict[str, ReviewItem] = {}
+        self.graph_nodes: dict[str, dict[str, Any]] = {}
+        self.graph_edges: dict[str, dict[str, Any]] = {}
         self.audit_events: list[AuditEvent] = []
         self.jobs: dict[str, Job] = {}
         self.job_events: list[JobEvent] = []
@@ -447,6 +451,32 @@ class InMemoryKnowledgeStore:
         review_item = self.review_items[review_item_id]
         review_item.status = status
         return review_item
+
+    def update_review_item_proposal(self, review_item_id: str, proposal: dict[str, Any]) -> ReviewItem:
+        review_item = self.review_items[review_item_id]
+        review_item.proposal = dict(proposal)
+        return review_item
+
+    def replace_graph_projection(self, *, owner_user_id: str, nodes: list[dict[str, Any]], edges: list[dict[str, Any]]) -> dict[str, int]:
+        self.graph_nodes = {
+            node_id: node
+            for node_id, node in self.graph_nodes.items()
+            if node.get("owner_user_id") != owner_user_id
+        }
+        self.graph_edges = {
+            edge_id: edge
+            for edge_id, edge in self.graph_edges.items()
+            if edge.get("owner_user_id") != owner_user_id
+        }
+        for node in nodes:
+            node_id = str(node.get("id") or "")
+            if node_id:
+                self.graph_nodes[node_id] = {**node, "owner_user_id": owner_user_id}
+        for edge in edges:
+            edge_id = str(edge.get("id") or "")
+            if edge_id:
+                self.graph_edges[edge_id] = {**edge, "owner_user_id": owner_user_id}
+        return {"graph_nodes": len(nodes), "graph_edges": len(edges)}
 
     def add_audit_event(self, event: AuditEvent) -> AuditEvent:
         self.audit_events.append(event)
@@ -943,8 +973,8 @@ class InMemoryKnowledgeStore:
             "documents": self.documents,
             "chunks": self.chunks,
             "passage_windows": {},
-            "graph_nodes": {},
-            "graph_edges": {},
+            "graph_nodes": self.graph_nodes,
+            "graph_edges": self.graph_edges,
             "users": self.users,
             "entities": self.entities,
             "hyperedges": self.hyperedges,

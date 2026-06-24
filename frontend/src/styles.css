@@ -423,6 +423,58 @@ button {
   color: var(--muted);
 }
 
+.event-stream-summary {
+  margin-top: 12px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.event-stream-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.event-stream-header span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.event-stream-list {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.event-stream-list li {
+  display: grid;
+  grid-template-columns: minmax(88px, 0.35fr) minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  border-top: 1px solid rgba(35, 90, 77, 0.12);
+  padding-top: 6px;
+}
+
+.event-stream-list span {
+  color: #235a4d;
+  font-size: 12px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.event-stream-list p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
 .source-ref-list {
   display: grid;
   gap: 8px;
@@ -952,6 +1004,55 @@ button {
   margin-top: 7px;
 }
 
+.understanding-summary {
+  max-width: 1180px;
+  margin: 0 auto 12px;
+  border: 1px solid rgba(46, 117, 100, 0.22);
+  border-radius: 8px;
+  background: linear-gradient(180deg, rgba(255, 254, 249, 0.98), rgba(240, 247, 243, 0.92));
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(360px, 520px);
+  gap: 14px;
+  padding: 13px;
+}
+
+.understanding-summary h2 {
+  margin: 4px 0 5px;
+  font-size: 17px;
+  line-height: 1.32;
+  overflow-wrap: anywhere;
+}
+
+.understanding-summary p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.understanding-metrics {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.understanding-metrics span {
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.72);
+  padding: 8px 9px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.understanding-metrics strong {
+  display: block;
+  color: var(--ink);
+  font-size: 18px;
+  line-height: 1;
+  margin-bottom: 4px;
+}
+
 .corpus-tools {
   max-width: 1180px;
   margin: 0 auto 12px;
@@ -1407,49 +1508,233 @@ button {
   background: var(--accent-soft);
 }
 
-.graph-summary {
+.graph-control-dock {
   position: absolute;
   z-index: 7;
   top: 58px;
   left: 14px;
+  width: min(520px, calc(100vw - 390px));
+  max-height: calc(100vh - 160px);
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: rgba(255, 254, 249, 0.95);
+  box-shadow: var(--shadow-soft);
+  padding: 9px;
   display: grid;
-  grid-template-columns: repeat(6, minmax(84px, auto));
-  gap: 8px;
+  gap: 9px;
+}
+
+.graph-control-dock:not(.open) {
+  width: min(520px, calc(100vw - 390px));
+}
+
+.graph-control-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 9px;
+  align-items: start;
+}
+
+.graph-dock-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.graph-dock-actions button {
+  height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--paper);
+  color: var(--ink);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px;
+  cursor: pointer;
+}
+
+.graph-dock-actions button.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.graph-control-body {
+  display: grid;
+  gap: 9px;
+}
+
+.graph-summary {
+  position: static;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(62px, 1fr));
+  gap: 6px;
+  max-width: none;
 }
 
 .graph-summary span {
   border: 1px solid var(--line);
-  border-radius: 8px;
-  background: rgba(255, 254, 249, 0.94);
-  padding: 8px 10px;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.68);
+  padding: 7px 8px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 11px;
 }
 
 .graph-summary strong {
   display: block;
   color: var(--ink);
-  font-size: 18px;
+  font-size: 16px;
   line-height: 1;
   margin-bottom: 3px;
 }
 
+.graph-insights {
+  position: static;
+  z-index: auto;
+  width: auto;
+  max-height: min(42vh, 360px);
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(251, 247, 237, 0.72);
+  box-shadow: none;
+  padding: 10px;
+  display: grid;
+  gap: 11px;
+}
+
+.graph-insight-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.graph-insight-header h2 {
+  margin: 2px 0 0;
+  font-size: 17px;
+}
+
+.graph-insight-header > span {
+  border: 1px solid rgba(49, 95, 124, 0.26);
+  border-radius: 999px;
+  background: rgba(230, 241, 245, 0.72);
+  color: #315f7c;
+  padding: 5px 9px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.graph-insight-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(104px, 1fr));
+  gap: 7px;
+}
+
+.graph-insight-metrics span,
+.graph-tour-list article,
+.graph-cluster-list article {
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #fbf7ed;
+  padding: 8px;
+}
+
+.graph-insight-metrics strong {
+  display: block;
+  font-size: 16px;
+  color: var(--ink);
+}
+
+.graph-insight-section {
+  display: grid;
+  gap: 8px;
+}
+
+.graph-tour-list,
+.graph-cluster-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 8px;
+}
+
+.graph-tour-list article,
+.graph-cluster-list article {
+  display: grid;
+  gap: 6px;
+  align-content: start;
+}
+
+.graph-tour-list b,
+.graph-cluster-list b {
+  font-size: 13px;
+}
+
+.graph-tour-list small,
+.graph-cluster-list small,
+.graph-cluster-list span {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.graph-tour-list article div,
+.graph-cluster-list article div,
+.graph-central-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.graph-tour-list button,
+.graph-cluster-list button,
+.graph-central-list button {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.74);
+  color: var(--ink);
+  padding: 4px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.graph-central-list button {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: center;
+  max-width: 100%;
+}
+
+.graph-central-list b {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.graph-central-list span,
+.graph-central-list small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
 .graph-filterbar {
-  position: absolute;
-  z-index: 7;
-  top: 116px;
-  left: 14px;
+  position: static;
+  z-index: auto;
   display: flex;
   flex-wrap: wrap;
   gap: 7px;
-  max-width: min(760px, calc(100vw - 360px));
+  max-width: none;
 }
 
 .graph-filterbar button {
   height: 30px;
   border: 1px solid var(--line);
   border-radius: 7px;
-  background: rgba(255, 254, 249, 0.94);
+  background: rgba(255, 255, 255, 0.68);
   color: var(--muted);
   padding: 0 10px;
   cursor: pointer;
@@ -1459,6 +1744,133 @@ button {
   border-color: var(--accent);
   background: var(--accent-soft);
   color: var(--ink);
+}
+
+.graph-densitybar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  align-items: center;
+}
+
+.graph-densitybar button {
+  height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.68);
+  color: var(--muted);
+  padding: 0 10px;
+  cursor: pointer;
+}
+
+.graph-densitybar button.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+
+.graph-densitybar span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.graph-local-search {
+  position: static;
+  z-index: auto;
+  display: grid;
+  grid-template-columns: 18px minmax(120px, 1fr) auto auto auto;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.68);
+  padding: 7px 8px;
+  box-shadow: none;
+}
+
+.graph-local-search input {
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  outline: none;
+}
+
+.graph-local-search span {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.graph-local-search button {
+  height: 28px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--paper);
+  padding: 0 10px;
+  cursor: pointer;
+}
+
+.graph-local-search button.active {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fffefa;
+}
+
+.graph-local-search button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.graph-path-search {
+  position: static;
+  z-index: auto;
+  display: grid;
+  grid-template-columns: 18px minmax(120px, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.68);
+  padding: 7px 8px;
+  box-shadow: none;
+}
+
+.graph-path-search input {
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  outline: none;
+}
+
+.graph-path-search button {
+  height: 28px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--accent-soft);
+  color: var(--ink);
+  padding: 0 10px;
+  cursor: pointer;
+}
+
+.graph-path-mode {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  overflow: hidden;
+}
+
+.graph-path-mode button {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+}
+
+.graph-path-mode button.active {
+  background: var(--accent);
+  color: #fffefa;
 }
 
 .graph-v2-layout {
@@ -1477,7 +1889,7 @@ button {
 .graph-inspector {
   border-left: 1px solid var(--line);
   background: rgba(255, 254, 249, 0.96);
-  padding: 154px 18px 18px;
+  padding: 18px;
   overflow: auto;
 }
 
@@ -1500,6 +1912,27 @@ button {
 .graph-inspector dl div {
   border-top: 1px solid var(--line);
   padding-top: 8px;
+}
+
+.graph-inspector-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  margin: 12px 0;
+}
+
+.graph-inspector-actions button {
+  height: 31px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--accent-soft);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.graph-inspector-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
 }
 
 .graph-inspector dt {
@@ -1526,6 +1959,177 @@ button {
   background: #f7f1e4;
   white-space: normal;
   overflow-wrap: anywhere;
+}
+
+.graph-neighborhood-panel {
+  border-top: 1px solid var(--line);
+  margin-top: 16px;
+  padding-top: 14px;
+  display: grid;
+  gap: 9px;
+}
+
+.graph-evidence-panel {
+  border-top: 1px solid var(--line);
+  margin-top: 16px;
+  padding-top: 14px;
+  display: grid;
+  gap: 9px;
+}
+
+.graph-neighborhood-panel p {
+  margin: 0;
+}
+
+.graph-evidence-panel p {
+  margin: 0;
+}
+
+.graph-neighborhood-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.graph-evidence-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.graph-neighborhood-metrics span,
+.graph-neighborhood-list article,
+.graph-evidence-metrics span,
+.graph-evidence-list article {
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #fbf7ed;
+  padding: 8px;
+}
+
+.graph-neighborhood-metrics b,
+.graph-evidence-metrics b {
+  display: block;
+  color: var(--ink);
+}
+
+.graph-neighborhood-list,
+.graph-evidence-list {
+  display: grid;
+  gap: 7px;
+}
+
+.graph-neighborhood-list article,
+.graph-evidence-list article {
+  display: grid;
+  gap: 4px;
+}
+
+.graph-neighborhood-list span,
+.graph-neighborhood-list small,
+.graph-evidence-list span,
+.graph-evidence-list small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.graph-neighborhood-list b,
+.graph-evidence-list b {
+  font-size: 12px;
+  color: var(--ink);
+}
+
+.graph-path-panel {
+  border-top: 1px solid var(--line);
+  margin-top: 18px;
+  padding-top: 16px;
+  display: grid;
+  gap: 10px;
+}
+
+.graph-path-panel h3 {
+  font-size: 15px;
+  margin: 0;
+}
+
+.graph-path-warning {
+  color: var(--rust);
+}
+
+.graph-path-repair-note {
+  border: 1px solid rgba(49, 95, 124, 0.28);
+  border-radius: 7px;
+  background: rgba(230, 241, 245, 0.74);
+  color: #315f7c;
+  padding: 7px 8px;
+  font-size: 12px;
+}
+
+.graph-path-run {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.graph-path-run span {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.68);
+  padding: 3px 7px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.graph-path-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
+  gap: 7px;
+}
+
+.graph-path-metrics span,
+.graph-path-section article {
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #fbf7ed;
+  padding: 8px;
+}
+
+.graph-path-metrics strong {
+  display: block;
+  color: var(--ink);
+}
+
+.graph-path-filter-note {
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.68);
+  padding: 7px 8px;
+  font-size: 12px;
+}
+
+.graph-path-section {
+  display: grid;
+  gap: 7px;
+}
+
+.graph-path-section.subdued article {
+  opacity: 0.76;
+  background: #f6f3eb;
+}
+
+.graph-path-section article {
+  display: grid;
+  gap: 4px;
+}
+
+.graph-path-section b {
+  font-size: 12px;
+  color: var(--ink);
+}
+
+.graph-path-section small {
+  color: var(--muted);
+  line-height: 1.35;
 }
 
 .canvas-card {
@@ -1835,12 +2439,17 @@ button {
   }
 
   .corpus-header,
-  .corpus-workspace-grid {
+  .corpus-workspace-grid,
+  .understanding-summary {
     grid-template-columns: 1fr;
   }
 
   .digest-log-list {
     grid-template-columns: 1fr;
+  }
+
+  .understanding-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .corpus-summary {
@@ -1919,9 +2528,35 @@ button {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
+  .graph-control-dock {
+    left: 10px;
+    right: 10px;
+    width: auto;
+    max-height: 52vh;
+  }
+
+  .graph-control-head {
+    grid-template-columns: 1fr;
+  }
+
+  .graph-dock-actions {
+    justify-content: flex-start;
+  }
+
   .graph-summary {
-    grid-template-columns: repeat(2, minmax(84px, auto));
-    right: 14px;
+    grid-template-columns: repeat(2, minmax(84px, 1fr));
+  }
+
+  .graph-local-search,
+  .graph-path-search {
+    grid-template-columns: 18px minmax(120px, 1fr);
+  }
+
+  .graph-local-search span,
+  .graph-local-search button,
+  .graph-path-mode,
+  .graph-path-search > button {
+    grid-column: 1 / -1;
   }
 
   .document-toolbar {

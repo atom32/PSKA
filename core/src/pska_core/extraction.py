@@ -302,6 +302,7 @@ Previous extraction:
         source_refs = proposal.get("source_refs")
         if not isinstance(source_refs, list) or not source_refs:
             proposal["source_refs"] = [asdict(source_ref)]
+        proposal.setdefault("plain_text_summary", _review_plain_text_summary(review_spec, proposal))
 
         message_ids = proposal.get("message_ids")
         if item.record_type == "conversation" and isinstance(message_ids, list):
@@ -336,3 +337,20 @@ Previous extraction:
 
     def _id(self, prefix: str, *parts: str) -> str:
         return f"{prefix}_{uuid5(NAMESPACE_URL, '|'.join(parts)).hex}"
+
+
+def _review_plain_text_summary(review_spec: dict, proposal: dict) -> str:
+    for value in (
+        proposal.get("plain_text_summary"),
+        review_spec.get("plain_text_summary"),
+        proposal.get("statement"),
+        proposal.get("summary"),
+        proposal.get("message"),
+        proposal.get("text"),
+        proposal.get("evidence_text"),
+        review_spec.get("title"),
+    ):
+        text = str(value or "").strip()
+        if text:
+            return text
+    return "候选结果需要人工确认。"

@@ -19,6 +19,7 @@ def test_reject_review_writes_audit_and_does_not_apply_profile() -> None:
         sensitivity="high",
     )
 
+    assert review.proposal["plain_text_summary"] == "Profile update requires human review."
     rejected = ReviewService(store).reject(review.review_item_id, actor_user_id="user_primary", reason="not now")
 
     assert rejected.status == "rejected"

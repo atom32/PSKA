@@ -251,6 +251,7 @@ def _write_capture_review(
             "violation": violation,
             "capture_dedupe_key": dedupe_key,
             "recommended_action": "approve_capture_after_redaction_or_add_source_refs",
+            "plain_text_summary": answer[:240] or prompt[:240] or f"Review captured agent conversation for {purpose}.",
         },
     )
     store.add_review_item(review)

@@ -850,6 +850,78 @@ class PostgresKnowledgeStore:
             raise KeyError(review_item_id)
         return self._review_item_from_row(row)
 
+    def update_review_item_proposal(self, review_item_id: str, proposal: dict[str, Any]) -> ReviewItem:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                update review_items
+                set proposal = %s, updated_at = now()
+                where review_item_id = %s
+                returning *
+                """,
+                (Jsonb(to_jsonable(proposal)), review_item_id),
+            ).fetchone()
+        if not row:
+            raise KeyError(review_item_id)
+        return self._review_item_from_row(row)
+
+    def replace_graph_projection(self, *, owner_user_id: str, nodes: list[dict[str, Any]], edges: list[dict[str, Any]]) -> dict[str, int]:
+        with self.connect() as conn:
+            conn.execute("delete from graph_edges where owner_user_id = %s", (owner_user_id,))
+            conn.execute("delete from graph_nodes where owner_user_id = %s", (owner_user_id,))
+            for node in nodes:
+                node_id = str(node.get("id") or "")
+                if not node_id:
+                    continue
+                conn.execute(
+                    """
+                    insert into graph_nodes(
+                        graph_node_id, owner_user_id, node_type, object_type, object_id,
+                        label, summary, source_refs, confidence, metadata, updated_at
+                    )
+                    values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+                    """,
+                    (
+                        node_id,
+                        owner_user_id,
+                        str(node.get("type") or ""),
+                        str(node.get("object_type") or node.get("type") or ""),
+                        str(node.get("object_id") or node_id),
+                        str(node.get("label") or ""),
+                        str(node.get("summary") or ""),
+                        Jsonb(to_jsonable(node.get("source_refs") or [])),
+                        node.get("confidence"),
+                        Jsonb(to_jsonable({key: value for key, value in node.items() if key not in {"id", "type", "object_type", "object_id", "label", "summary", "source_refs", "confidence"}})),
+                    ),
+                )
+            for edge in edges:
+                edge_id = str(edge.get("id") or "")
+                source_id = str(edge.get("source") or "")
+                target_id = str(edge.get("target") or "")
+                if not edge_id or not source_id or not target_id:
+                    continue
+                conn.execute(
+                    """
+                    insert into graph_edges(
+                        graph_edge_id, owner_user_id, edge_type, source_graph_node_id,
+                        target_graph_node_id, label, source_refs, confidence, metadata, updated_at
+                    )
+                    values (%s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+                    """,
+                    (
+                        edge_id,
+                        owner_user_id,
+                        str(edge.get("type") or ""),
+                        source_id,
+                        target_id,
+                        str(edge.get("label") or edge.get("type") or ""),
+                        Jsonb(to_jsonable(edge.get("source_refs") or [])),
+                        edge.get("confidence"),
+                        Jsonb(to_jsonable({key: value for key, value in edge.items() if key not in {"id", "source", "target", "type", "label", "source_refs", "confidence"}})),
+                    ),
+                )
+        return {"graph_nodes": len(nodes), "graph_edges": len(edges)}
+
     def add_audit_event(self, event: AuditEvent) -> AuditEvent:
         with self.connect() as conn:
             conn.execute(

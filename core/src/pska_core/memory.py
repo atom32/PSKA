@@ -114,6 +114,7 @@ class MemoryService:
                     "profile_delta": profile_delta,
                     "source_refs": [asdict(ref) for ref in source_refs],
                     "confidence": confidence,
+                    "plain_text_summary": _profile_plain_text_summary(profile_delta),
                 },
             )
             self.store.add_review_item(review)
@@ -224,6 +225,15 @@ def _normalize_text(value: str) -> str:
 
 def _profile_key(value: dict) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _profile_plain_text_summary(profile_delta: dict) -> str:
+    for key in ("plain_text_summary", "summary", "topic", "preference", "memory_candidate", "text"):
+        value = profile_delta.get(key)
+        text = str(value or "").strip()
+        if text:
+            return text
+    return "Profile update requires human review."
 
 
 def _merge_source_refs(existing: list[SourceRef], incoming: list[SourceRef]) -> list[SourceRef]:

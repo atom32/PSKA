@@ -74,7 +74,7 @@ export type WorkspaceCorpusResponse = {
 
 export type WorkspaceGraphNode = {
   id: string;
-  type: "source" | "document" | "passage" | "claim" | "digest" | "entity" | "hyperedge" | string;
+  type: "source" | "document" | "passage" | "claim" | "digest" | "phrase" | "entity" | "fact" | "hyperedge" | "memory" | "memory_suggestion" | "action" | string;
   label?: string;
   summary?: string;
   object_type?: string;
@@ -94,22 +94,132 @@ export type WorkspaceGraphEdge = {
   source_refs?: Array<{ source_item_id?: string; document_id?: string; chunk_id?: string; passage_window_id?: string }>;
 };
 
+export type WorkspaceGraphInsightNode = {
+  id?: string;
+  type?: string;
+  label?: string;
+  summary?: string;
+  degree?: number;
+};
+
 export type WorkspaceGraphResponse = {
   ok?: boolean;
   ontology_version?: string;
   owner_user_id?: string;
   nodes?: WorkspaceGraphNode[];
   edges?: WorkspaceGraphEdge[];
+  matches?: Array<WorkspaceGraphInsightNode & { score?: number }>;
+  projection?: {
+    nodes?: number;
+    edges?: number;
+    unfiltered_nodes?: number;
+    unfiltered_edges?: number;
+    source_nodes?: number;
+    source_edges?: number;
+    node_types?: string[] | null;
+  };
+  evidence_path?: {
+    node_id?: string;
+    nodes?: WorkspaceGraphNode[];
+    edges?: WorkspaceGraphEdge[];
+    evidence_node_count?: number;
+    understanding_node_count?: number;
+  };
+  insights?: {
+    layer_coverage?: Record<string, number>;
+    evidence_health?: {
+      grounded_nodes?: number;
+      total_nodes?: number;
+      grounded_ratio?: number;
+      grounded_by_type?: Record<string, number>;
+      evidence_edge_count?: number;
+      semantic_edge_count?: number;
+    };
+    central_nodes?: WorkspaceGraphInsightNode[];
+    topic_clusters?: Array<{
+      cluster_id?: string;
+      title?: string;
+      summary?: string;
+      node_count?: number;
+      edge_count?: number;
+      types?: Record<string, number>;
+      anchor_nodes?: WorkspaceGraphInsightNode[];
+    }>;
+    guided_tour?: Array<{
+      title?: string;
+      reason?: string;
+      node_ids?: string[];
+    }>;
+  };
   counts?: {
     sources?: number;
     documents?: number;
     passages?: number;
     claims?: number;
     digest_notes?: number;
+    memories?: number;
+    review_items?: number;
+    phrases?: number;
     entities?: number;
+    facts?: number;
     hyperedges?: number;
   };
   notes?: string[];
+};
+
+export type WorkspaceGraphPathResponse = {
+  ok?: boolean;
+  owner_user_id?: string;
+  query?: string;
+  ontology_version?: string;
+  mode?: "deterministic" | "agentic" | string;
+  display_mode?: string;
+  requires_agentic_service_online?: boolean;
+  answer?: string;
+  query_seeds?: {
+    terms?: string[];
+    passages?: Array<Record<string, unknown>>;
+    facts?: Array<Record<string, unknown>>;
+    graph_path_count?: number;
+  };
+  top_facts?: Array<Record<string, unknown>>;
+  supporting_passages?: Array<Record<string, unknown>>;
+  filtered_out_facts?: Array<Record<string, unknown>>;
+  citations?: Array<Record<string, unknown>>;
+  graph_paths?: Array<Record<string, unknown>>;
+  path_summary?: {
+    summary?: string;
+    result_count?: number;
+    citation_count?: number;
+    graph_path_count?: number;
+    kept_fact_count?: number;
+    filtered_fact_count?: number;
+    filter_mode?: string;
+    has_graph_signal?: boolean;
+    fallback?: string | null;
+    diagnostics?: Record<string, unknown>;
+  };
+  agentic_retrieval?: Record<string, unknown>;
+  agentic_repair?: {
+    attempted?: boolean;
+    accepted?: boolean;
+    repaired_answer_chars?: number;
+    final_answer_mode?: string;
+    error?: unknown;
+  };
+  agentic_trace?: {
+    retrieval_plan?: unknown;
+    query_understanding?: unknown;
+    iterations?: unknown;
+    expansion_decisions?: Array<Record<string, unknown>>;
+    graph_paths_used?: unknown;
+    fact_relevance_filter?: Record<string, unknown>;
+    evidence_check?: unknown;
+    events?: Array<Record<string, unknown>>;
+  };
+  agentic_source_refs?: Array<Record<string, unknown>>;
+  agentic_service?: Record<string, unknown>;
+  error?: string | { message?: string; detail?: string; type?: string };
 };
 
 export type FileSyncResponse = {
@@ -202,6 +312,21 @@ export type DigestLogEntry = {
 export type DigestLogsResponse = {
   ok?: boolean;
   owner_user_id?: string;
+  summary?: {
+    status_counts?: Record<string, number>;
+    candidate_totals?: {
+      knowledge_claims?: number;
+      digest_notes?: number;
+      hyperedges?: number;
+      review_items?: number;
+      saved_candidates?: number;
+      review_candidates?: number;
+    };
+    recent_claims?: Array<{ statement?: string; claim_type?: string; confidence?: number; job_id?: string }>;
+    recent_digest_notes?: Array<{ title?: string; synopsis?: string; job_id?: string }>;
+    latest_failure?: { job_id?: string; error?: string | null; updated_at?: string } | null;
+    has_useful_output?: boolean;
+  };
   logs?: DigestLogEntry[];
   count?: number;
 };
@@ -295,11 +420,30 @@ export type ConsoleSourcesResponse = {
 export type WorkspaceSearchResponse = {
   ok?: boolean;
   answer?: string;
-  error?: string;
+  error?: string | { type?: string; message?: string; detail?: string };
+  mode?: string;
+  display_mode?: string;
   fallback_reason?: string;
   source_refs?: Array<{ title?: string; snippet?: string; source_item_id?: string; url?: string }>;
   citations?: Array<{ title?: string; snippet?: string; source_item_id?: string; url?: string }>;
-  trace?: Array<Record<string, unknown>>;
+  trace?: {
+    events?: Array<Record<string, unknown>>;
+    tool_calls?: Array<Record<string, unknown>>;
+    event_count?: number;
+    run_id?: string;
+    session_id?: string;
+    status?: string;
+    error?: string;
+    fastreact_metadata?: Record<string, unknown>;
+    [key: string]: unknown;
+  };
+  agentic_service?: {
+    provider?: string;
+    adapter?: string;
+    url?: string;
+    run_id?: string;
+    session_id?: string;
+  };
   workspace?: {
     evidence?: {
       citations?: Array<{ title?: string; snippet?: string; source_item_id?: string }>;
@@ -415,6 +559,21 @@ export type ReviewCenterResponse = {
   count?: number;
   total_matching?: number;
   supports_single_item_actions?: boolean;
+};
+
+export type ReviewActionResponse = {
+  review_item?: ReviewCenterItem & { status?: string };
+  application_result?: {
+    applied?: boolean;
+    status?: string;
+    review_type?: string;
+    action?: string;
+    promotion_type?: string;
+    target_ids?: Record<string, string>;
+    source_refs?: Array<Record<string, unknown>>;
+    summary?: string;
+    metadata?: Record<string, unknown>;
+  };
 };
 
 export type WorkspaceActivityType = "opened" | "edited" | "viewed" | "pinned";

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import json
 import os
 from pathlib import Path
@@ -221,6 +221,44 @@ def build_parser() -> argparse.ArgumentParser:
     retrieval_eval_parser.add_argument("--real", action="store_true", help="Use real embedding model and LLM-backed agentic search")
     _add_embedding_args(retrieval_eval_parser, default_provider="disabled")
 
+    graph_qa_eval_parser = subparsers.add_parser("graph-qa-eval", help="Run live GraphRAG QA quality checks over current PSKA data")
+    graph_qa_eval_parser.add_argument("--owner-user-id", default="user_primary")
+    graph_qa_eval_parser.add_argument("--mode", choices=["deterministic", "agentic"], default="agentic")
+    graph_qa_eval_parser.add_argument("--limit", type=int, default=5)
+    graph_qa_eval_parser.add_argument("--top-k", type=int, default=8)
+    graph_qa_eval_parser.add_argument("--max-iterations", type=int, default=5)
+    graph_qa_eval_parser.add_argument("--question", action="append", default=[], help="Explicit question to include; can be repeated")
+    graph_qa_eval_parser.add_argument("--min-answer-chars", type=int, default=300)
+    graph_qa_eval_parser.add_argument("--agentic-timeout-seconds", type=float, default=None)
+    graph_qa_eval_parser.add_argument("--retries", type=int, default=1)
+    graph_qa_eval_parser.add_argument("--sleep-between-seconds", type=float, default=1.0)
+    graph_qa_eval_parser.add_argument("--require-agentic-synthesis", action="store_true", help="Fail answers that rely on deterministic synthesis fallback")
+    graph_qa_eval_parser.add_argument("--summary", action="store_true", help="Print compact JSON summary")
+
+    product_gate_parser = subparsers.add_parser("product-gate", help="Run PSKA product validation gate across digest, graph, review, and QA readiness")
+    product_gate_parser.add_argument("--owner-user-id", default="user_primary")
+    product_gate_parser.add_argument("--min-sources", type=int, default=1)
+    product_gate_parser.add_argument("--min-passages", type=int, default=1)
+    product_gate_parser.add_argument("--min-claims", type=int, default=1)
+    product_gate_parser.add_argument("--min-digest-notes", type=int, default=1)
+    product_gate_parser.add_argument("--min-hyperedges", type=int, default=1)
+    product_gate_parser.add_argument("--run-qa", action="store_true", help="Run graph-qa-eval as part of the product gate")
+    product_gate_parser.add_argument("--qa-mode", choices=["deterministic", "agentic"], default="agentic")
+    product_gate_parser.add_argument("--qa-limit", type=int, default=3)
+    product_gate_parser.add_argument("--qa-top-k", type=int, default=8)
+    product_gate_parser.add_argument("--qa-max-iterations", type=int, default=5)
+    product_gate_parser.add_argument("--qa-min-answer-chars", type=int, default=300)
+    product_gate_parser.add_argument("--qa-retries", type=int, default=1)
+    product_gate_parser.add_argument("--qa-sleep-between-seconds", type=float, default=1.0)
+    product_gate_parser.add_argument("--agentic-timeout-seconds", type=float, default=None)
+    product_gate_parser.add_argument("--require-agentic-synthesis", action="store_true")
+    product_gate_parser.add_argument("--summary", action="store_true", help="Print compact JSON summary")
+
+    graph_reindex_parser = subparsers.add_parser("graph-reindex", help="Rebuild physical graph_nodes/graph_edges projection from Graph v2")
+    graph_reindex_parser.add_argument("--owner-user-id", default="user_primary")
+    graph_reindex_parser.add_argument("--limit", type=int, default=100)
+    graph_reindex_parser.add_argument("--summary", action="store_true")
+
     digest_worker_command_parser = subparsers.add_parser(
         "fastreact-digest-worker-command",
         help="Print the Fastreact-side PSKA digest worker command for this PSKA config",
@@ -375,6 +413,12 @@ def build_parser() -> argparse.ArgumentParser:
     review_list_parser.add_argument("--limit", type=int, default=50)
     review_list_parser.add_argument("--summary", action="store_true", help="Print compact review item rows")
 
+    review_backfill_parser = subparsers.add_parser("review-backfill-summaries", help="Backfill missing review proposal plain_text_summary fields")
+    review_backfill_parser.add_argument("--owner-user-id", default=None)
+    review_backfill_parser.add_argument("--status", default=None)
+    review_backfill_parser.add_argument("--limit", type=int, default=500)
+    review_backfill_parser.add_argument("--execute", action="store_true", help="Write proposal updates; default is dry-run")
+
     memory_list_parser = subparsers.add_parser("memory-list", help="List user-owned agent memories without modifying them")
     memory_list_parser.add_argument("--owner-user-id", default="user_primary")
     memory_list_parser.add_argument("--limit", type=int, default=50)
@@ -480,6 +524,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         return ops_briefing(args)
     if args.command == "retrieval-eval":
         return retrieval_eval(args)
+    if args.command == "graph-qa-eval":
+        return graph_qa_eval(args, config)
+    if args.command == "product-gate":
+        return product_gate(args, config)
+    if args.command == "graph-reindex":
+        return graph_reindex(args, config)
     if args.command == "fastreact-digest-worker-command":
         return fastreact_digest_worker_command(args, config)
     if args.command == "service-check":
@@ -514,6 +564,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return seed_review_candidates(args)
     if args.command == "review-list":
         return review_list(args)
+    if args.command == "review-backfill-summaries":
+        return review_backfill_summaries(args)
     if args.command == "memory-list":
         return memory_list(args)
     if args.command == "profile-list":
@@ -1258,6 +1310,737 @@ def retrieval_eval(args: argparse.Namespace) -> int:
     return 0 if payload["ok"] else 1
 
 
+def graph_qa_eval(args: argparse.Namespace, config: PSKAConfig) -> int:
+    if args.agentic_timeout_seconds:
+        config = replace(
+            config,
+            agentic_service=replace(config.agentic_service, timeout_seconds=float(args.agentic_timeout_seconds)),
+        )
+    api = PSKAApi(args.database_url, config=config)
+    payload = _graph_qa_eval_payload(
+        api,
+        owner_user_id=args.owner_user_id,
+        mode=args.mode,
+        limit=args.limit,
+        top_k=args.top_k,
+        max_iterations=args.max_iterations,
+        explicit_questions=args.question or [],
+        min_answer_chars=args.min_answer_chars,
+        retries=max(0, args.retries),
+        sleep_between_seconds=max(0.0, args.sleep_between_seconds),
+        require_agentic_synthesis=bool(args.require_agentic_synthesis),
+    )
+    if args.summary:
+        compact = {
+            "ok": payload["ok"],
+            "owner_user_id": payload["owner_user_id"],
+            "mode": payload["mode"],
+            "question_count": payload["question_count"],
+            "passed": payload["passed"],
+            "failed": payload["failed"],
+            "aggregate": payload["aggregate"],
+            "questions": [
+                {
+                    "question": item["question"],
+                    "ok": item["ok"],
+                    "score": item["score"],
+                    "answer_chars": item["metrics"]["answer_chars"],
+                    "citation_count": item["metrics"]["citation_count"],
+                    "graph_path_count": item["metrics"]["graph_path_count"],
+                    "top_fact_count": item["metrics"]["top_fact_count"],
+                    "filter_mode": item["metrics"].get("filter_mode"),
+                    "answer_mode": item["metrics"].get("answer_mode"),
+                    "answer_warning": item.get("answer_warning"),
+                    "fallback": item["metrics"].get("fallback"),
+                    "error": item.get("error") or item.get("response_error"),
+                    "attempts": item.get("attempts"),
+                }
+                for item in payload["results"]
+            ],
+        }
+        print(dumps(compact))
+    else:
+        print(dumps(payload))
+    return 0 if payload["ok"] else 1
+
+
+def _graph_qa_eval_payload(
+    api: PSKAApi,
+    *,
+    owner_user_id: str,
+    mode: str,
+    limit: int,
+    top_k: int,
+    max_iterations: int,
+    explicit_questions: list[str],
+    min_answer_chars: int,
+    retries: int = 0,
+    sleep_between_seconds: float = 0.0,
+    require_agentic_synthesis: bool = False,
+) -> dict[str, Any]:
+    questions = _graph_qa_eval_questions(api.store, owner_user_id=owner_user_id, explicit_questions=explicit_questions, limit=limit)
+    results: list[dict[str, Any]] = []
+    for index, question in enumerate(questions):
+        results.append(
+            _run_graph_qa_eval_question(
+                api,
+                question,
+                owner_user_id=owner_user_id,
+                top_k=top_k,
+                mode=mode,
+                max_iterations=max_iterations,
+                min_answer_chars=min_answer_chars,
+                retries=retries,
+                require_agentic_synthesis=require_agentic_synthesis,
+            )
+        )
+        if sleep_between_seconds and index < len(questions) - 1:
+            time.sleep(sleep_between_seconds)
+    passed = sum(1 for item in results if item["ok"])
+    aggregate = _graph_qa_eval_aggregate(results)
+    return {
+        "ok": bool(results) and passed == len(results),
+        "owner_user_id": owner_user_id,
+        "mode": mode,
+        "question_count": len(results),
+        "passed": passed,
+        "failed": len(results) - passed,
+        "aggregate": aggregate,
+        "questions_source": "explicit_plus_pska_digest_claim_entity_data",
+        "run_policy": {
+            "top_k": top_k,
+            "max_iterations": max_iterations,
+            "retries": retries,
+            "sleep_between_seconds": sleep_between_seconds,
+            "require_agentic_synthesis": require_agentic_synthesis,
+        },
+        "results": results,
+    }
+
+
+def _run_graph_qa_eval_question(
+    api: PSKAApi,
+    question: str,
+    *,
+    owner_user_id: str,
+    top_k: int,
+    mode: str,
+    max_iterations: int,
+    min_answer_chars: int,
+    retries: int,
+    require_agentic_synthesis: bool,
+) -> dict[str, Any]:
+    attempts: list[dict[str, Any]] = []
+    for attempt in range(retries + 1):
+        try:
+            response = api.workspace_graph_path(
+                query=question,
+                owner_user_id=owner_user_id,
+                top_k=top_k,
+                mode=mode,
+                max_iterations=max_iterations,
+            )
+            result = _graph_qa_eval_result(
+                question,
+                response,
+                mode=mode,
+                min_answer_chars=min_answer_chars,
+                require_agentic_synthesis=require_agentic_synthesis,
+            )
+        except Exception as exc:  # noqa: BLE001 - eval should report individual failures.
+            result = {
+                "question": question,
+                "ok": False,
+                "score": 0,
+                "checks": {"exception": False},
+                "metrics": {},
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+        attempts.append(
+            {
+                "attempt": attempt + 1,
+                "ok": result["ok"],
+                "score": result.get("score"),
+                "error": result.get("error") or result.get("response_error"),
+                "fallback": result.get("metrics", {}).get("fallback") if isinstance(result.get("metrics"), dict) else None,
+                "answer_mode": result.get("metrics", {}).get("answer_mode") if isinstance(result.get("metrics"), dict) else None,
+                "answer_chars": result.get("metrics", {}).get("answer_chars") if isinstance(result.get("metrics"), dict) else 0,
+            }
+        )
+        if result["ok"] or not _graph_qa_eval_should_retry(result):
+            result["attempts"] = attempts
+            return result
+        time.sleep(0.75)
+    result["attempts"] = attempts
+    return result
+
+
+def _graph_qa_eval_should_retry(result: dict[str, Any]) -> bool:
+    error = result.get("response_error") or result.get("error")
+    metrics = result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
+    checks = result.get("checks") if isinstance(result.get("checks"), dict) else {}
+    fallback = str(metrics.get("fallback") or "")
+    if "deterministic_fallback" in fallback:
+        return True
+    if isinstance(error, dict):
+        return str(error.get("type") or "") in {"agentic_service_unavailable", "agentic_graph_answer_unusable"}
+    if checks.get("has_grounding") and not checks.get("has_rich_answer"):
+        return True
+    return bool(error)
+
+
+def _graph_qa_eval_questions(store: Any, *, owner_user_id: str, explicit_questions: list[str], limit: int) -> list[str]:
+    questions: list[str] = []
+    seen: set[str] = set()
+
+    def add(question: str) -> None:
+        normalized = " ".join(question.split())
+        if not normalized or normalized in seen:
+            return
+        seen.add(normalized)
+        questions.append(normalized)
+
+    for question in explicit_questions:
+        add(question)
+    for note in store.list_digest_notes(owner_user_id=owner_user_id, limit=max(limit, 5)):
+        title = str(getattr(note, "title", "") or "").strip()
+        if title:
+            add(f"基于我的资料，{title} 的关键结论、风险和后续行动是什么？请给出有引用的丰富回答。")
+        for question in getattr(note, "open_questions", []) or []:
+            if isinstance(question, dict):
+                text = question.get("question") or question.get("text") or question.get("summary")
+            else:
+                text = question
+            if text:
+                add(f"我的资料里如何回答这个开放问题：{text}？请说明证据和不确定性。")
+        if len(questions) >= limit:
+            return questions[:limit]
+    for claim in store.list_knowledge_claims(owner_user_id=owner_user_id, limit=max(limit * 2, 10)):
+        statement = str(getattr(claim, "statement", "") or "").strip()
+        subject = str(getattr(claim, "subject", "") or "").strip()
+        if subject:
+            add(f"我的资料里关于 {subject} 有哪些可验证事实、关系和证据？")
+        elif statement:
+            add(f"请解释并核对这个资料结论：{statement}")
+        if len(questions) >= limit:
+            return questions[:limit]
+    entity_labels = [
+        str(getattr(entity, "label", "") or "").strip()
+        for entity in store.list_entities()
+        if getattr(entity, "owner_user_id", "") == owner_user_id and str(getattr(entity, "label", "") or "").strip()
+    ]
+    for label in entity_labels[: max(limit, 8)]:
+        add(f"我的知识库里关于 {label} 形成了哪些主题、事实和连接？")
+        if len(questions) >= limit:
+            return questions[:limit]
+    add("我的资料里最近形成了哪些重要主题、可行动事项、风险和仍需确认的问题？请用证据支撑。")
+    return questions[:limit]
+
+
+def _graph_qa_eval_result(
+    question: str,
+    response: dict[str, Any],
+    *,
+    mode: str,
+    min_answer_chars: int,
+    require_agentic_synthesis: bool = False,
+) -> dict[str, Any]:
+    answer = str(response.get("answer") or "")
+    citations = response.get("citations") if isinstance(response.get("citations"), list) else []
+    source_refs = response.get("agentic_source_refs") if isinstance(response.get("agentic_source_refs"), list) else []
+    supporting_passages = response.get("supporting_passages") if isinstance(response.get("supporting_passages"), list) else []
+    graph_paths = response.get("graph_paths") if isinstance(response.get("graph_paths"), list) else []
+    top_facts = response.get("top_facts") if isinstance(response.get("top_facts"), list) else []
+    filtered_facts = response.get("filtered_out_facts") if isinstance(response.get("filtered_out_facts"), list) else []
+    path_summary = response.get("path_summary") if isinstance(response.get("path_summary"), dict) else {}
+    agentic_trace = response.get("agentic_trace") if isinstance(response.get("agentic_trace"), dict) else {}
+    expansion_decisions = agentic_trace.get("expansion_decisions") if isinstance(agentic_trace.get("expansion_decisions"), list) else []
+    answer_mode = str(response.get("answer_mode") or "")
+    agentic_repair = response.get("agentic_repair") if isinstance(response.get("agentic_repair"), dict) else {}
+    metrics = {
+        "answer_chars": len(answer),
+        "answer_mode": answer_mode,
+        "citation_count": len(citations),
+        "source_ref_count": len(source_refs),
+        "supporting_passage_count": len(supporting_passages),
+        "graph_path_count": len(graph_paths),
+        "top_fact_count": len(top_facts),
+        "filtered_fact_count": len(filtered_facts),
+        "expansion_decision_count": len(expansion_decisions),
+        "filter_mode": path_summary.get("filter_mode"),
+        "fallback": path_summary.get("fallback") or response.get("display_mode"),
+        "repair_attempted": bool(agentic_repair.get("attempted")),
+        "repair_accepted": bool(agentic_repair.get("accepted")),
+        "repair_repaired_answer_chars": int(agentic_repair.get("repaired_answer_chars") or 0),
+    }
+    checks = {
+        "has_rich_answer": mode != "agentic" or len(answer) >= min_answer_chars,
+        "has_grounding": bool(citations or source_refs or supporting_passages),
+        "has_graph_signal": bool(graph_paths or top_facts or path_summary.get("has_graph_signal")),
+        "has_filter_diagnostics": bool(path_summary.get("filter_mode")),
+        "agentic_trace_present": mode != "agentic" or bool(agentic_trace),
+        "agentic_synthesis": not require_agentic_synthesis or answer_mode == "agentic_synthesis",
+    }
+    score = sum(1 for value in checks.values() if value)
+    return {
+        "question": question,
+        "ok": all(checks.values()),
+        "score": score,
+        "checks": checks,
+        "metrics": metrics,
+        "answer_preview": answer[:500],
+        "answer_warning": response.get("answer_warning"),
+        "top_citations": citations[:5],
+        "top_facts": top_facts[:5],
+        "filtered_out_facts": filtered_facts[:3],
+        "graph_paths": graph_paths[:3],
+        "response_error": response.get("error"),
+        "response": to_jsonable(response),
+    }
+
+
+def _graph_qa_eval_aggregate(results: list[dict[str, Any]]) -> dict[str, Any]:
+    if not results:
+        return {
+            "avg_score": 0.0,
+            "avg_answer_chars": 0.0,
+            "total_citations": 0,
+            "total_graph_paths": 0,
+            "total_top_facts": 0,
+        }
+    answer_modes: dict[str, int] = {}
+    fallback_counts: dict[str, int] = {}
+    repair_attempted_count = 0
+    repair_accepted_count = 0
+    for item in results:
+        metrics = item.get("metrics", {}) if isinstance(item.get("metrics"), dict) else {}
+        answer_mode = str(metrics.get("answer_mode") or "unknown")
+        fallback = str(metrics.get("fallback") or "none")
+        answer_modes[answer_mode] = answer_modes.get(answer_mode, 0) + 1
+        fallback_counts[fallback] = fallback_counts.get(fallback, 0) + 1
+        if metrics.get("repair_attempted"):
+            repair_attempted_count += 1
+        if metrics.get("repair_accepted"):
+            repair_accepted_count += 1
+    deterministic_synthesis_count = sum(
+        count
+        for mode, count in answer_modes.items()
+        if mode.startswith("deterministic_synthesis")
+    )
+    return {
+        "avg_score": round(sum(float(item.get("score") or 0) for item in results) / len(results), 2),
+        "avg_answer_chars": round(sum(float(item.get("metrics", {}).get("answer_chars") or 0) for item in results) / len(results), 1),
+        "total_citations": sum(int(item.get("metrics", {}).get("citation_count") or 0) for item in results),
+        "total_source_refs": sum(int(item.get("metrics", {}).get("source_ref_count") or 0) for item in results),
+        "total_supporting_passages": sum(int(item.get("metrics", {}).get("supporting_passage_count") or 0) for item in results),
+        "total_graph_paths": sum(int(item.get("metrics", {}).get("graph_path_count") or 0) for item in results),
+        "total_top_facts": sum(int(item.get("metrics", {}).get("top_fact_count") or 0) for item in results),
+        "total_filtered_facts": sum(int(item.get("metrics", {}).get("filtered_fact_count") or 0) for item in results),
+        "answer_modes": answer_modes,
+        "fallback_counts": fallback_counts,
+        "deterministic_synthesis_count": deterministic_synthesis_count,
+        "deterministic_synthesis_rate": round(deterministic_synthesis_count / len(results), 3),
+        "repair_attempted_count": repair_attempted_count,
+        "repair_accepted_count": repair_accepted_count,
+        "repair_attempt_rate": round(repair_attempted_count / len(results), 3),
+        "repair_accept_rate": round(repair_accepted_count / repair_attempted_count, 3) if repair_attempted_count else 0.0,
+    }
+
+
+def product_gate(args: argparse.Namespace, config: PSKAConfig) -> int:
+    if args.agentic_timeout_seconds:
+        config = replace(
+            config,
+            agentic_service=replace(config.agentic_service, timeout_seconds=float(args.agentic_timeout_seconds)),
+        )
+    api = PSKAApi(args.database_url, config=config)
+    payload = _product_gate_payload(
+        api,
+        owner_user_id=args.owner_user_id,
+        min_sources=max(0, args.min_sources),
+        min_passages=max(0, args.min_passages),
+        min_claims=max(0, args.min_claims),
+        min_digest_notes=max(0, args.min_digest_notes),
+        min_hyperedges=max(0, args.min_hyperedges),
+        run_qa=bool(args.run_qa),
+        qa_mode=args.qa_mode,
+        qa_limit=max(1, args.qa_limit),
+        qa_top_k=max(1, args.qa_top_k),
+        qa_max_iterations=max(1, args.qa_max_iterations),
+        qa_min_answer_chars=max(0, args.qa_min_answer_chars),
+        qa_retries=max(0, args.qa_retries),
+        qa_sleep_between_seconds=max(0.0, args.qa_sleep_between_seconds),
+        require_agentic_synthesis=bool(args.require_agentic_synthesis),
+    )
+    if args.summary:
+        print(dumps(_product_gate_summary(payload)))
+    else:
+        print(dumps(payload))
+    return 0 if payload["ok"] else 1
+
+
+def graph_reindex(args: argparse.Namespace, config: PSKAConfig) -> int:
+    api = PSKAApi(args.database_url, config=config)
+    payload = api.graph_reindex(
+        owner_user_id=args.owner_user_id,
+        limit=max(1, args.limit),
+    )
+    if args.summary:
+        print(dumps({
+            "ok": payload.get("ok"),
+            "owner_user_id": payload.get("owner_user_id"),
+            "projection": payload.get("projection"),
+            "graph_counts": payload.get("graph_counts"),
+        }))
+    else:
+        print(dumps(payload))
+    return 0 if payload["ok"] else 1
+
+
+def _product_gate_payload(
+    api: PSKAApi,
+    *,
+    owner_user_id: str,
+    min_sources: int = 1,
+    min_passages: int = 1,
+    min_claims: int = 1,
+    min_digest_notes: int = 1,
+    min_hyperedges: int = 1,
+    run_qa: bool = False,
+    qa_mode: str = "agentic",
+    qa_limit: int = 3,
+    qa_top_k: int = 8,
+    qa_max_iterations: int = 5,
+    qa_min_answer_chars: int = 300,
+    qa_retries: int = 1,
+    qa_sleep_between_seconds: float = 1.0,
+    require_agentic_synthesis: bool = False,
+) -> dict[str, Any]:
+    try:
+        ready = api.ready()
+    except Exception as exc:  # noqa: BLE001 - product gate should report diagnostics.
+        ready = {"ok": False, "error": f"{type(exc).__name__}: {exc}", "checks": {}}
+    try:
+        metrics = api.metrics()
+    except Exception as exc:  # noqa: BLE001
+        metrics = {"ok": False, "error": f"{type(exc).__name__}: {exc}", "index": {}, "connectors": {}}
+    try:
+        jobs = api.job_stats()["stats"]
+    except Exception as exc:  # noqa: BLE001
+        jobs = {"ok": False, "error": f"{type(exc).__name__}: {exc}", "by_status": {}, "digest_backlog": {}}
+    try:
+        graph = api.workspace_graph_data(owner_user_id=owner_user_id, limit=160)
+    except Exception as exc:  # noqa: BLE001
+        graph = {"ok": False, "error": f"{type(exc).__name__}: {exc}", "nodes": [], "edges": [], "counts": {}}
+    try:
+        digest_logs = api.digest_logs(owner_user_id=owner_user_id, limit=10)
+    except Exception as exc:  # noqa: BLE001
+        digest_logs = {"ok": False, "error": f"{type(exc).__name__}: {exc}", "summary": {}}
+
+    store = getattr(api, "store", None)
+    claims = _safe_store_list(lambda: store.list_knowledge_claims(owner_user_id=owner_user_id, limit=100))
+    digest_notes = _safe_store_list(lambda: store.list_digest_notes(owner_user_id=owner_user_id, limit=100))
+    reviews = _safe_store_list(lambda: store.list_review_items())
+    graph_counts = graph.get("counts") if isinstance(graph, dict) else {}
+    graph_nodes = graph.get("nodes") if isinstance(graph, dict) and isinstance(graph.get("nodes"), list) else []
+    graph_edges = graph.get("edges") if isinstance(graph, dict) and isinstance(graph.get("edges"), list) else []
+    edge_labels = {str(edge.get("label") or edge.get("type") or "") for edge in graph_edges if isinstance(edge, dict)}
+    pending_reviews = [
+        item
+        for item in reviews
+        if getattr(item, "owner_user_id", owner_user_id) == owner_user_id and getattr(item, "status", "") == "pending"
+    ]
+    claim_evidence_count = sum(1 for claim in claims if getattr(claim, "evidence_text", "") and getattr(claim, "source_refs", []))
+    digest_grounded_count = sum(1 for note in digest_notes if getattr(note, "source_refs", []))
+    passage_count = int((graph_counts or {}).get("passages") or (graph_counts or {}).get("chunks") or 0)
+    source_count = int((graph_counts or {}).get("sources") or 0)
+    claim_count = int((graph_counts or {}).get("claims") or len(claims))
+    digest_count = int((graph_counts or {}).get("digest_notes") or len(digest_notes))
+    hyperedge_count = int((graph_counts or {}).get("hyperedges") or 0)
+
+    checks = [
+        _product_gate_check(
+            "service_readiness",
+            "Platform",
+            bool(ready.get("ok")),
+            "critical",
+            "PSKA database, schema, MCP, jobs, metrics, and configured service checks are ready.",
+            "PSKA readiness checks are failing.",
+            {"ready": ready.get("ok"), "failed_checks": _failed_ready_checks(ready)},
+            ["./scripts/pska service-check", "./scripts/pska ops-briefing --format text"],
+        ),
+        _product_gate_check(
+            "evidence_layer",
+            "Evidence Layer",
+            source_count >= min_sources and passage_count >= min_passages,
+            "critical",
+            "Evidence layer has source and passage/document material for grounding.",
+            "Evidence layer does not yet have enough source or passage material.",
+            {"sources": source_count, "passages": passage_count, "minimums": {"sources": min_sources, "passages": min_passages}},
+            ["./scripts/pska files-sync", "./scripts/pska digest-now --max-worker-runs 0"],
+        ),
+        _product_gate_check(
+            "agentic_understanding_layer",
+            "Agentic Understanding Layer",
+            claim_count >= min_claims and digest_count >= min_digest_notes and claim_evidence_count >= min(1, min_claims),
+            "critical",
+            "Agentic understanding has grounded claims and digest notes.",
+            "Agentic understanding is incomplete: claims/digest/evidence are missing or below threshold.",
+            {
+                "claims": claim_count,
+                "claims_with_evidence": claim_evidence_count,
+                "digest_notes": digest_count,
+                "digest_notes_with_source_refs": digest_grounded_count,
+                "minimums": {"claims": min_claims, "digest_notes": min_digest_notes},
+            },
+            ["./scripts/pska digest-now --force", "./scripts/pska ops-briefing --format text"],
+        ),
+        _product_gate_check(
+            "semantic_graph_layer",
+            "Semantic Graph / HippoRAG Layer",
+            hyperedge_count >= min_hyperedges and bool({"grounds", "summarizes", "formalizes"} & edge_labels),
+            "critical",
+            "Semantic graph has facts/hyperedges and explicit claim/digest/evidence linkage.",
+            "Semantic graph is missing enough hyperedges or explicit evidence linkage edges.",
+            {
+                "hyperedges": hyperedge_count,
+                "entities": int((graph_counts or {}).get("entities") or 0),
+                "edge_labels": sorted(label for label in edge_labels if label),
+                "minimums": {"hyperedges": min_hyperedges},
+            },
+            ["./scripts/pska digest-now --force", "./scripts/pska graph-qa-eval --mode deterministic --summary"],
+        ),
+        _product_gate_check(
+            "human_review_layer",
+            "Human Review Layer",
+            all(_review_item_readable(item) for item in pending_reviews[:20]),
+            "warning",
+            "Pending review items are readable and can be audited before long-term memory writes.",
+            "Some pending review items lack a readable proposal summary.",
+            {"pending_reviews": len(pending_reviews), "sampled": min(len(pending_reviews), 20)},
+            ["Open Review Center", "./scripts/pska daily-status"],
+        ),
+        _product_gate_check(
+            "exploration_layer",
+            "Exploration / Understandable Graph Layer",
+            bool(graph_nodes) and bool(graph_edges) and bool({"grounds", "summarizes", "contains"} & edge_labels),
+            "warning",
+            "Graph API exposes typed nodes and evidence edges for frontend exploration.",
+            "Graph API lacks enough typed nodes or evidence edges for useful exploration.",
+            {"nodes": len(graph_nodes), "edges": len(graph_edges), "edge_labels": sorted(label for label in edge_labels if label)},
+            ["Open Graph page", "./scripts/pska product-gate --run-qa --summary"],
+        ),
+    ]
+
+    qa_payload = None
+    if run_qa:
+        qa_payload = _graph_qa_eval_payload(
+            api,
+            owner_user_id=owner_user_id,
+            mode=qa_mode,
+            limit=qa_limit,
+            top_k=qa_top_k,
+            max_iterations=qa_max_iterations,
+            explicit_questions=[],
+            min_answer_chars=qa_min_answer_chars,
+            retries=qa_retries,
+            sleep_between_seconds=qa_sleep_between_seconds,
+            require_agentic_synthesis=require_agentic_synthesis,
+        )
+        checks.append(
+            _product_gate_check(
+                "qa_quality_gate",
+                "GraphRAG QA",
+                bool(qa_payload.get("ok")),
+                "critical",
+                "GraphRAG QA passed over current PSKA data.",
+                "GraphRAG QA did not pass over current PSKA data.",
+                {
+                    "mode": qa_mode,
+                    "question_count": qa_payload.get("question_count"),
+                    "passed": qa_payload.get("passed"),
+                    "failed": qa_payload.get("failed"),
+                    "aggregate": qa_payload.get("aggregate"),
+                },
+                ["./scripts/pska graph-qa-eval --mode agentic --summary", "./scripts/pska graph-qa-eval --mode deterministic --summary"],
+            )
+        )
+    else:
+        checks.append(
+            _product_gate_check(
+                "qa_quality_gate",
+                "GraphRAG QA",
+                True,
+                "info",
+                "GraphRAG QA was skipped for this deterministic product gate run.",
+                "GraphRAG QA was skipped.",
+                {"skipped": True, "run_with": "./scripts/pska product-gate --run-qa --summary"},
+                ["./scripts/pska product-gate --run-qa --summary"],
+            )
+        )
+
+    critical_failures = [check for check in checks if check["ok"] is False and check["severity"] == "critical"]
+    warning_failures = [check for check in checks if check["ok"] is False and check["severity"] == "warning"]
+    return {
+        "ok": not critical_failures,
+        "gate": "pska_personal_knowledge_os_product_gate_v1",
+        "owner_user_id": owner_user_id,
+        "checked_at": utc_now().isoformat(),
+        "requires_agentic_service_online": bool(run_qa and qa_mode == "agentic"),
+        "thresholds": {
+            "min_sources": min_sources,
+            "min_passages": min_passages,
+            "min_claims": min_claims,
+            "min_digest_notes": min_digest_notes,
+            "min_hyperedges": min_hyperedges,
+        },
+        "score": {
+            "passed": sum(1 for check in checks if check["ok"]),
+            "failed": sum(1 for check in checks if not check["ok"]),
+            "critical_failures": len(critical_failures),
+            "warning_failures": len(warning_failures),
+            "total": len(checks),
+        },
+        "layer_checks": checks,
+        "system_state": {
+            "ready": ready,
+            "metrics": metrics,
+            "jobs": jobs,
+            "digest_logs_summary": digest_logs.get("summary") if isinstance(digest_logs, dict) else {},
+            "graph_counts": graph_counts or {},
+        },
+        "qa_eval": qa_payload,
+        "next_actions": _product_gate_next_actions(checks),
+    }
+
+
+def _product_gate_check(
+    check_id: str,
+    layer: str,
+    ok: bool,
+    severity: str,
+    ok_summary: str,
+    fail_summary: str,
+    metrics: dict[str, Any],
+    next_actions: list[str],
+) -> dict[str, Any]:
+    return {
+        "id": check_id,
+        "layer": layer,
+        "ok": bool(ok),
+        "severity": "info" if ok else severity,
+        "summary": ok_summary if ok else fail_summary,
+        "metrics": metrics,
+        "next_actions": [] if ok else next_actions,
+    }
+
+
+def _product_gate_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    graph_api_projection = _product_gate_layer_metrics(payload, "exploration_layer")
+    return {
+        "ok": payload.get("ok"),
+        "gate": payload.get("gate"),
+        "owner_user_id": payload.get("owner_user_id"),
+        "requires_agentic_service_online": payload.get("requires_agentic_service_online"),
+        "score": payload.get("score"),
+        "failed_layers": [
+            {
+                "id": check.get("id"),
+                "layer": check.get("layer"),
+                "severity": check.get("severity"),
+                "summary": check.get("summary"),
+                "metrics": check.get("metrics"),
+            }
+            for check in payload.get("layer_checks", [])
+            if not check.get("ok")
+        ],
+        "graph_counts": (payload.get("system_state") or {}).get("graph_counts") or {},
+        "graph_api_projection": {
+            "nodes": int(graph_api_projection.get("nodes") or 0),
+            "edges": int(graph_api_projection.get("edges") or 0),
+        },
+        "physical_graph_projection": {
+            "graph_nodes": int((((payload.get("system_state") or {}).get("metrics") or {}).get("index") or {}).get("graph_nodes") or 0),
+            "graph_edges": int((((payload.get("system_state") or {}).get("metrics") or {}).get("index") or {}).get("graph_edges") or 0),
+        },
+        "qa": None
+        if payload.get("qa_eval") is None
+        else {
+            "ok": payload["qa_eval"].get("ok"),
+            "mode": payload["qa_eval"].get("mode"),
+            "question_count": payload["qa_eval"].get("question_count"),
+            "passed": payload["qa_eval"].get("passed"),
+            "failed": payload["qa_eval"].get("failed"),
+            "aggregate": payload["qa_eval"].get("aggregate"),
+        },
+        "next_actions": payload.get("next_actions") or [],
+    }
+
+
+def _product_gate_layer_metrics(payload: dict[str, Any], check_id: str) -> dict[str, Any]:
+    for check in payload.get("layer_checks", []):
+        if isinstance(check, dict) and check.get("id") == check_id and isinstance(check.get("metrics"), dict):
+            return check["metrics"]
+    return {}
+
+
+def _safe_store_list(loader) -> list[Any]:
+    try:
+        value = loader()
+    except Exception:
+        return []
+    return list(value or [])
+
+
+def _failed_ready_checks(ready: dict[str, Any]) -> list[str]:
+    checks = ready.get("checks") if isinstance(ready, dict) else {}
+    if not isinstance(checks, dict):
+        return []
+    return [name for name, payload in checks.items() if not isinstance(payload, dict) or payload.get("ok") is not True]
+
+
+def _review_item_readable(item: Any) -> bool:
+    proposal = getattr(item, "proposal", None)
+    if not isinstance(proposal, dict):
+        return False
+    if str(proposal.get("plain_text_summary") or proposal.get("summary") or "").strip():
+        return True
+    value = proposal.get("value")
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _review_plain_text_summary(item: Any) -> str:
+    proposal = getattr(item, "proposal", {}) if isinstance(getattr(item, "proposal", {}), dict) else {}
+    for value in (
+        proposal.get("plain_text_summary"),
+        proposal.get("summary"),
+        proposal.get("statement"),
+        proposal.get("memory_candidate"),
+        proposal.get("text"),
+        proposal.get("message"),
+        proposal.get("evidence_text"),
+        proposal.get("reason"),
+        proposal.get("value"),
+        getattr(item, "title", ""),
+        getattr(item, "review_type", ""),
+    ):
+        text = str(value or "").strip()
+        if text:
+            return text[:500]
+    return "Review candidate requires human confirmation."
+
+
+def _product_gate_next_actions(checks: list[dict[str, Any]]) -> list[str]:
+    actions: list[str] = []
+    for check in checks:
+        if check.get("ok"):
+            continue
+        actions.extend(str(action) for action in check.get("next_actions") or [])
+    if not actions:
+        actions.append("./scripts/pska product-gate --run-qa --summary")
+    return list(dict.fromkeys(actions))
+
+
 def fastreact_digest_worker_command(args: argparse.Namespace, config: PSKAConfig) -> int:
     payload = _fastreact_digest_worker_command_payload(args, config)
     print(dumps(payload))
@@ -1533,6 +2316,7 @@ def _digest_now_fallback_review(
                     "message": "FastReact processed the digest job but did not call pska_write_candidates. Review these sources manually or rerun digest after fixing the agent/tool path.",
                     "source_item_ids": source_ids,
                     "diagnostics": diagnostics,
+                    "plain_text_summary": "FastReAct digest completed but did not write any candidates; review these sources or rerun digest after fixing the agent/tool path.",
                 },
             }
         ],
@@ -1840,6 +2624,19 @@ def review_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def review_backfill_summaries(args: argparse.Namespace) -> int:
+    store = PostgresKnowledgeStore(args.database_url)
+    payload = _review_backfill_summaries_payload(
+        store,
+        owner_user_id=args.owner_user_id,
+        status=args.status,
+        limit=args.limit,
+        execute=bool(args.execute),
+    )
+    print(dumps(payload))
+    return 0 if payload["ok"] else 1
+
+
 def review_batch(args: argparse.Namespace) -> int:
     store = PostgresKnowledgeStore(args.database_url)
     payload = _review_batch_payload(
@@ -1859,6 +2656,52 @@ def review_batch(args: argparse.Namespace) -> int:
 
 
 BATCH_APPLY_SAFE_REVIEW_TYPES = {"profile_update", "relationship_candidate", "memory_candidate", "low_confidence"}
+
+
+def _review_backfill_summaries_payload(
+    store,
+    *,
+    owner_user_id: str | None = None,
+    status: str | None = None,
+    limit: int = 500,
+    execute: bool = False,
+) -> dict[str, Any]:
+    candidates = []
+    for item in store.list_review_items():
+        if owner_user_id and item.owner_user_id != owner_user_id:
+            continue
+        if status and item.status != status:
+            continue
+        proposal = dict(item.proposal or {})
+        if str(proposal.get("plain_text_summary") or proposal.get("summary") or "").strip():
+            continue
+        candidates.append((item, proposal, _review_plain_text_summary(item)))
+        if len(candidates) >= max(0, limit):
+            break
+
+    items = []
+    for item, proposal, summary in candidates:
+        next_proposal = {**proposal, "plain_text_summary": summary}
+        if execute:
+            store.update_review_item_proposal(item.review_item_id, next_proposal)
+        items.append(
+            {
+                "review_item_id": item.review_item_id,
+                "owner_user_id": item.owner_user_id,
+                "review_type": item.review_type.value if isinstance(item.review_type, ReviewType) else item.review_type,
+                "status": item.status,
+                "title": item.title,
+                "plain_text_summary": summary,
+            }
+        )
+    return {
+        "ok": True,
+        "dry_run": not execute,
+        "matched": len(candidates),
+        "updated": len(items) if execute else 0,
+        "would_update": 0 if execute else len(items),
+        "items": items,
+    }
 
 
 def _review_batch_payload(
