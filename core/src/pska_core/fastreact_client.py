@@ -26,6 +26,10 @@ class FastreactClient(Protocol):
         job_id: str | None = None,
         scope: dict[str, Any] | None = None,
         session_id: str | None = None,
+        model: str | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        max_tokens: int | None = None,
     ) -> dict[str, Any]: ...
 
     def create_run(
@@ -37,6 +41,10 @@ class FastreactClient(Protocol):
         job_id: str | None = None,
         scope: dict[str, Any] | None = None,
         session_id: str | None = None,
+        model: str | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        max_tokens: int | None = None,
     ) -> dict[str, Any]: ...
 
     def wait_for_run(self, run_id: str) -> dict[str, Any]: ...
@@ -49,6 +57,10 @@ class FastreactConfig:
     url: str = "http://127.0.0.1:8000"
     service_token: str | None = None
     timeout_seconds: float = 30.0
+    model: str | None = None
+    temperature: float | None = None
+    top_p: float | None = None
+    max_tokens: int | None = None
 
     @classmethod
     def from_env(cls) -> "FastreactConfig":
@@ -56,6 +68,10 @@ class FastreactConfig:
             url=os.getenv("PSKA_FASTREACT_URL", "http://127.0.0.1:8000").rstrip("/"),
             service_token=os.getenv("PSKA_FASTREACT_SERVICE_TOKEN") or None,
             timeout_seconds=float(os.getenv("PSKA_FASTREACT_TIMEOUT_SECONDS", "30")),
+            model=os.getenv("PSKA_FASTREACT_MODEL") or None,
+            temperature=_optional_float_env("PSKA_FASTREACT_TEMPERATURE"),
+            top_p=_optional_float_env("PSKA_FASTREACT_TOP_P"),
+            max_tokens=_optional_int_env("PSKA_FASTREACT_MAX_TOKENS"),
         )
 
 
@@ -97,6 +113,10 @@ class HttpFastreactClient:
         job_id: str | None = None,
         scope: dict[str, Any] | None = None,
         session_id: str | None = None,
+        model: str | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        max_tokens: int | None = None,
     ) -> dict[str, Any]:
         payload = {
             "messages": messages,
@@ -110,6 +130,15 @@ class HttpFastreactClient:
                 "scope": scope or {},
             },
         }
+        payload.update(
+            _generation_options_payload(
+                self.config,
+                model=model,
+                temperature=temperature,
+                top_p=top_p,
+                max_tokens=max_tokens,
+            )
+        )
         if session_id:
             payload["session_id"] = session_id
         return self._request_json("POST", "/v1/chat/completions", payload)
@@ -123,6 +152,10 @@ class HttpFastreactClient:
         job_id: str | None = None,
         scope: dict[str, Any] | None = None,
         session_id: str | None = None,
+        model: str | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        max_tokens: int | None = None,
     ) -> dict[str, Any]:
         payload = {
             "messages": messages,
@@ -136,6 +169,15 @@ class HttpFastreactClient:
                 "scope": scope or {},
             },
         }
+        payload.update(
+            _generation_options_payload(
+                self.config,
+                model=model,
+                temperature=temperature,
+                top_p=top_p,
+                max_tokens=max_tokens,
+            )
+        )
         if session_id:
             payload["session_id"] = session_id
         return self._request_json("POST", "/v1/runs", payload)
@@ -216,3 +258,51 @@ def _normalized_pska_tool_names(tool_names: set[str]) -> set[str]:
         if name.startswith("pska_pska_"):
             normalized.add(name.removeprefix("pska_"))
     return normalized
+
+
+def _optional_float_env(name: str) -> float | None:
+    value = os.getenv(name)
+    return float(value) if value not in {None, ""} else None
+
+
+def _optional_int_env(name: str) -> int | None:
+    value = os.getenv(name)
+    return int(value) if value not in {None, ""} else None
+
+
+def _generation_options_payload(
+    config: FastreactConfig,
+    *,
+    model: str | None = None,
+    temperature: float | None = None,
+    top_p: float | None = None,
+    max_tokens: int | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    effective_model = model if model is not None else config.model
+    effective_temperature = temperature if temperature is not None else config.temperature
+    effective_top_p = top_p if top_p is not None else config.top_p
+    effective_max_tokens = max_tokens if max_tokens is not None else config.max_tokens
+    if effective_model is not None:
+        model_value = str(effective_model).strip()
+        if not model_value:
+            raise ValueError("Fastreact model must not be blank")
+        payload["model"] = model_value
+    if effective_temperature is not None:
+        temperature_value = float(effective_temperature)
+        if temperature_value < 0 or temperature_value > 2:
+            raise ValueError("Fastreact temperature must be between 0 and 2")
+        payload["temperature"] = temperature_value
+    if effective_top_p is not None:
+        top_p_value = float(effective_top_p)
+        if top_p_value < 0 or top_p_value > 1:
+            raise ValueError("Fastreact top_p must be between 0 and 1")
+        payload["top_p"] = top_p_value
+    if effective_max_tokens is not None:
+        if isinstance(effective_max_tokens, bool):
+            raise ValueError("Fastreact max_tokens must be greater than 0")
+        max_tokens_value = int(effective_max_tokens)
+        if max_tokens_value <= 0:
+            raise ValueError("Fastreact max_tokens must be greater than 0")
+        payload["max_tokens"] = max_tokens_value
+    return payload

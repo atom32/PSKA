@@ -29,7 +29,11 @@
   "fastreact": {
     "url": "http://127.0.0.1:8000",
     "service_token": null,
-    "timeout_seconds": 30
+    "timeout_seconds": 30,
+    "model": "deepseek-v4-flash",
+    "temperature": 0.3,
+    "top_p": 0.9,
+    "max_tokens": 4096
   },
   "embedding": {
     "provider": "disabled",

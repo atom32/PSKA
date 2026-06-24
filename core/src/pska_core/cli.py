@@ -2918,6 +2918,9 @@ def _daily_briefing_narrative(
             purpose="pska_narrative_briefing",
             stream=False,
             scope={"source_refs": source_refs},
+            temperature=0.3,
+            top_p=0.9,
+            max_tokens=4096,
         )
         answer = _fastreact_response_text(response)
         if not answer:
@@ -3030,10 +3033,16 @@ def _briefing_source_refs(briefing: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _fastreact_response_text(response: dict[str, Any]) -> str:
-    for key in ["content", "answer", "text", "message"]:
+    for key in ["content", "final_content", "answer", "text", "message"]:
         value = response.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()
+    trace = response.get("trace")
+    if isinstance(trace, dict):
+        for key in ["final_content", "content", "answer"]:
+            value = trace.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
     choices = response.get("choices")
     if isinstance(choices, list) and choices:
         first = choices[0]

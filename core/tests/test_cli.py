@@ -1519,6 +1519,9 @@ def test_daily_briefing_narrative_saves_fastreact_answer(monkeypatch) -> None:
         def chat_completion(self, **kwargs):
             assert kwargs["purpose"] == "pska_narrative_briefing"
             assert kwargs["scope"] == {"source_refs": [{"source_item_id": "src_1"}]}
+            assert kwargs["temperature"] == 0.3
+            assert kwargs["top_p"] == 0.9
+            assert kwargs["max_tokens"] == 4096
             prompt = kwargs["messages"][1]["content"]
             assert "source_items=1" in prompt
             assert "recommended_commands" not in prompt

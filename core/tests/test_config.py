@@ -136,7 +136,15 @@ def test_pska_config_loads_startup_config(tmp_path: Path) -> None:
 def test_pska_config_builds_runtime_configs(tmp_path: Path) -> None:
     config = PSKAConfig.from_dict(
         {
-            "fastreact": {"url": "http://127.0.0.1:9000", "service_token": "fast-token", "timeout_seconds": 9},
+            "fastreact": {
+                "url": "http://127.0.0.1:9000",
+                "service_token": "fast-token",
+                "timeout_seconds": 9,
+                "model": "deepseek-v4-flash",
+                "temperature": 0.3,
+                "top_p": 0.9,
+                "max_tokens": 4096,
+            },
             "agentic_service": {"url": "http://127.0.0.1:9010", "service_token": "agent-token", "timeout_seconds": 12},
             "embedding": {"provider": "bge-m3", "model": "custom-bge", "dimensions": 768, "batch_size": 8},
             "ingest": {"chunk_size": 512, "chunk_overlap": 32},
@@ -150,9 +158,17 @@ def test_pska_config_builds_runtime_configs(tmp_path: Path) -> None:
     assert fastreact.url == "http://127.0.0.1:9000"
     assert fastreact.service_token == "fast-token"
     assert fastreact.timeout_seconds == 9
+    assert fastreact.model == "deepseek-v4-flash"
+    assert fastreact.temperature == 0.3
+    assert fastreact.top_p == 0.9
+    assert fastreact.max_tokens == 4096
     assert agentic.url == "http://127.0.0.1:9010"
     assert agentic.service_token == "agent-token"
     assert agentic.timeout_seconds == 12
+    assert agentic.model == "deepseek-v4-flash"
+    assert agentic.temperature == 0.3
+    assert agentic.top_p == 0.9
+    assert agentic.max_tokens == 4096
     assert embedding.provider == "bge-m3"
     assert embedding.model == "custom-bge"
     assert embedding.dimensions == 768

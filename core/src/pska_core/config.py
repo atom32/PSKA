@@ -75,6 +75,10 @@ class FastreactConfig:
     url: str = "http://127.0.0.1:8000"
     service_token: str | None = None
     timeout_seconds: float | None = None
+    model: str | None = None
+    temperature: float | None = None
+    top_p: float | None = None
+    max_tokens: int | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None, *, api_key_file: Path | None = None) -> "FastreactConfig":
@@ -84,6 +88,10 @@ class FastreactConfig:
             url=str(data.get("url") or "http://127.0.0.1:8000").rstrip("/"),
             service_token=str(token).strip() if token else None,
             timeout_seconds=float(data["timeout_seconds"]) if data.get("timeout_seconds") else None,
+            model=str(data["model"]).strip() if data.get("model") else None,
+            temperature=float(data["temperature"]) if data.get("temperature") is not None else None,
+            top_p=float(data["top_p"]) if data.get("top_p") is not None else None,
+            max_tokens=int(data["max_tokens"]) if data.get("max_tokens") is not None else None,
         )
 
 
@@ -93,6 +101,10 @@ class AgenticServiceConfigFile:
     url: str = "http://127.0.0.1:8000"
     service_token: str | None = None
     timeout_seconds: float | None = None
+    model: str | None = None
+    temperature: float | None = None
+    top_p: float | None = None
+    max_tokens: int | None = None
 
     @classmethod
     def from_dict(
@@ -109,6 +121,10 @@ class AgenticServiceConfigFile:
             url=str(data.get("url") or fallback.url or "http://127.0.0.1:8000").rstrip("/"),
             service_token=str(token).strip() if token else None,
             timeout_seconds=float(data["timeout_seconds"]) if data.get("timeout_seconds") else fallback.timeout_seconds,
+            model=str(data["model"]).strip() if data.get("model") else fallback.model,
+            temperature=float(data["temperature"]) if data.get("temperature") is not None else fallback.temperature,
+            top_p=float(data["top_p"]) if data.get("top_p") is not None else fallback.top_p,
+            max_tokens=int(data["max_tokens"]) if data.get("max_tokens") is not None else fallback.max_tokens,
         )
 
 
@@ -289,6 +305,18 @@ class PSKAConfig:
         agentic_timeout = os.getenv("PSKA_AGENTIC_SERVICE_TIMEOUT_SECONDS")
         if not agentic_timeout and base.agentic_service.timeout_seconds == default_agentic.timeout_seconds:
             agentic_timeout = os.getenv("PSKA_FASTREACT_TIMEOUT_SECONDS")
+        agentic_model = os.getenv("PSKA_AGENTIC_SERVICE_MODEL")
+        if not agentic_model and base.agentic_service.model == default_agentic.model:
+            agentic_model = os.getenv("PSKA_FASTREACT_MODEL")
+        agentic_temperature = os.getenv("PSKA_AGENTIC_SERVICE_TEMPERATURE")
+        if not agentic_temperature and base.agentic_service.temperature == default_agentic.temperature:
+            agentic_temperature = os.getenv("PSKA_FASTREACT_TEMPERATURE")
+        agentic_top_p = os.getenv("PSKA_AGENTIC_SERVICE_TOP_P")
+        if not agentic_top_p and base.agentic_service.top_p == default_agentic.top_p:
+            agentic_top_p = os.getenv("PSKA_FASTREACT_TOP_P")
+        agentic_max_tokens = os.getenv("PSKA_AGENTIC_SERVICE_MAX_TOKENS")
+        if not agentic_max_tokens and base.agentic_service.max_tokens == default_agentic.max_tokens:
+            agentic_max_tokens = os.getenv("PSKA_FASTREACT_MAX_TOKENS")
         return cls(
             database=DatabaseConfig(url=os.getenv("PSKA_DATABASE_URL", base.database.url)),
             service=ServiceConfig(
@@ -306,6 +334,10 @@ class PSKAConfig:
                 url=os.getenv("PSKA_FASTREACT_URL", base.fastreact.url).rstrip("/"),
                 service_token=os.getenv("PSKA_FASTREACT_SERVICE_TOKEN") or base.fastreact.service_token,
                 timeout_seconds=float(os.getenv("PSKA_FASTREACT_TIMEOUT_SECONDS")) if os.getenv("PSKA_FASTREACT_TIMEOUT_SECONDS") else base.fastreact.timeout_seconds,
+                model=os.getenv("PSKA_FASTREACT_MODEL") or base.fastreact.model,
+                temperature=float(os.getenv("PSKA_FASTREACT_TEMPERATURE")) if os.getenv("PSKA_FASTREACT_TEMPERATURE") else base.fastreact.temperature,
+                top_p=float(os.getenv("PSKA_FASTREACT_TOP_P")) if os.getenv("PSKA_FASTREACT_TOP_P") else base.fastreact.top_p,
+                max_tokens=int(os.getenv("PSKA_FASTREACT_MAX_TOKENS")) if os.getenv("PSKA_FASTREACT_MAX_TOKENS") else base.fastreact.max_tokens,
             ),
             agentic_service=AgenticServiceConfigFile(
                 provider=os.getenv("PSKA_AGENTIC_SERVICE_PROVIDER") or os.getenv("PSKA_AGENTIC_PROVIDER") or base.agentic_service.provider,
@@ -314,6 +346,10 @@ class PSKAConfig:
                 timeout_seconds=float(agentic_timeout)
                 if agentic_timeout
                 else base.agentic_service.timeout_seconds,
+                model=agentic_model or base.agentic_service.model,
+                temperature=float(agentic_temperature) if agentic_temperature else base.agentic_service.temperature,
+                top_p=float(agentic_top_p) if agentic_top_p else base.agentic_service.top_p,
+                max_tokens=int(agentic_max_tokens) if agentic_max_tokens else base.agentic_service.max_tokens,
             ),
             embedding=EmbeddingConfigFile(
                 provider=os.getenv("PSKA_EMBEDDING_PROVIDER", base.embedding.provider),
@@ -357,6 +393,10 @@ class PSKAConfig:
             url=self.fastreact.url.rstrip("/"),
             service_token=self.fastreact.service_token,
             timeout_seconds=float(self.fastreact.timeout_seconds or 30.0),
+            model=self.fastreact.model,
+            temperature=self.fastreact.temperature,
+            top_p=self.fastreact.top_p,
+            max_tokens=self.fastreact.max_tokens,
         )
 
     def agentic_service_runtime_config(self) -> "AgenticServiceConfig":
@@ -367,6 +407,10 @@ class PSKAConfig:
             url=self.agentic_service.url.rstrip("/"),
             service_token=self.agentic_service.service_token,
             timeout_seconds=float(self.agentic_service.timeout_seconds or 30.0),
+            model=self.agentic_service.model,
+            temperature=self.agentic_service.temperature,
+            top_p=self.agentic_service.top_p,
+            max_tokens=self.agentic_service.max_tokens,
         )
 
     def ingest_kwargs(self) -> dict[str, int]:

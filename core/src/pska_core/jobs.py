@@ -285,6 +285,7 @@ class JobService:
             stream=False,
             job_id=job.job_id,
             scope=scope,
+            **_fastreact_generation_options(job.payload, purpose=purpose),
         )
         run_id = response.get("run_id")
         self.store.add_job_event(
@@ -462,6 +463,32 @@ def _fastreact_candidate_tool_errors(response: dict[str, Any]) -> list[str]:
     return errors
 
 
+FASTREACT_PURPOSE_GENERATION_DEFAULTS: dict[str, dict[str, Any]] = {
+    "digest": {
+        "temperature": 0.3,
+        "top_p": 0.9,
+        "max_tokens": 4096,
+    },
+}
+
+
+def _fastreact_generation_options(payload: dict[str, Any], *, purpose: str) -> dict[str, Any]:
+    options = dict(FASTREACT_PURPOSE_GENERATION_DEFAULTS.get(purpose) or {})
+    configured = payload.get("generation_options")
+    if isinstance(configured, dict):
+        options.update(
+            {
+                key: configured.get(key)
+                for key in ["model", "temperature", "top_p", "max_tokens"]
+                if configured.get(key) is not None
+            }
+        )
+    for key in ["model", "temperature", "top_p", "max_tokens"]:
+        if payload.get(key) is not None:
+            options[key] = payload[key]
+    return {key: value for key, value in options.items() if value is not None}
+
+
 def _fastreact_trace_summary(response: dict[str, Any]) -> dict[str, Any]:
     events = [event for event in response.get("events") or [] if isinstance(event, dict)]
     tool_events = []
@@ -481,6 +508,7 @@ def _fastreact_trace_summary(response: dict[str, Any]) -> dict[str, Any]:
     return {
         "run_id": response.get("run_id"),
         "event_count": len(events),
+        "generation_options": response.get("generation_options") if isinstance(response.get("generation_options"), dict) else {},
         "tool_events": tool_events[-30:],
         "candidate_tool_errors": _fastreact_candidate_tool_errors(response),
     }

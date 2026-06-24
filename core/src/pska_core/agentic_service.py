@@ -33,6 +33,10 @@ class AgenticServiceConfig:
     url: str = "http://127.0.0.1:8000"
     service_token: str | None = None
     timeout_seconds: float = 30.0
+    model: str | None = None
+    temperature: float | None = None
+    top_p: float | None = None
+    max_tokens: int | None = None
 
     @classmethod
     def from_env(cls) -> "AgenticServiceConfig":
@@ -42,6 +46,10 @@ class AgenticServiceConfig:
             url=(os.getenv("PSKA_AGENTIC_SERVICE_URL") or os.getenv("PSKA_FASTREACT_URL") or "http://127.0.0.1:8000").rstrip("/"),
             service_token=os.getenv("PSKA_AGENTIC_SERVICE_TOKEN") or os.getenv("PSKA_FASTREACT_SERVICE_TOKEN") or None,
             timeout_seconds=float(os.getenv("PSKA_AGENTIC_SERVICE_TIMEOUT_SECONDS") or os.getenv("PSKA_FASTREACT_TIMEOUT_SECONDS") or "30"),
+            model=os.getenv("PSKA_AGENTIC_SERVICE_MODEL") or os.getenv("PSKA_FASTREACT_MODEL") or None,
+            temperature=_optional_float_env("PSKA_AGENTIC_SERVICE_TEMPERATURE", fallback_name="PSKA_FASTREACT_TEMPERATURE"),
+            top_p=_optional_float_env("PSKA_AGENTIC_SERVICE_TOP_P", fallback_name="PSKA_FASTREACT_TOP_P"),
+            max_tokens=_optional_int_env("PSKA_AGENTIC_SERVICE_MAX_TOKENS", fallback_name="PSKA_FASTREACT_MAX_TOKENS"),
         )
 
 
@@ -134,6 +142,7 @@ class FastreactAgenticServiceAdapter:
                 user_id=user_id,
                 purpose="agentic_search",
                 scope=scope,
+                **self._generation_options(),
             )
             run_id = str(created.get("run_id") or "")
             if not run_id:
@@ -163,6 +172,7 @@ class FastreactAgenticServiceAdapter:
                     purpose="agentic_search",
                     stream=False,
                     scope=scope,
+                    **self._generation_options(),
                 )
             detail = str(exc)
             if "POST /v1/runs failed with HTTP 404" not in detail and "POST /v1/runs failed with HTTP 405" not in detail:
@@ -173,6 +183,7 @@ class FastreactAgenticServiceAdapter:
             purpose="agentic_search",
             stream=False,
             scope=scope,
+            **self._generation_options(),
         )
 
     def _client(self) -> HttpFastreactClient:
@@ -183,8 +194,24 @@ class FastreactAgenticServiceAdapter:
                 url=self.config.url,
                 service_token=self.config.service_token,
                 timeout_seconds=self.config.timeout_seconds,
+                model=self.config.model,
+                temperature=self.config.temperature,
+                top_p=self.config.top_p,
+                max_tokens=self.config.max_tokens,
             )
         )
+
+    def _generation_options(self) -> dict[str, Any]:
+        return {
+            key: value
+            for key, value in {
+                "model": self.config.model,
+                "temperature": self.config.temperature,
+                "top_p": self.config.top_p,
+                "max_tokens": self.config.max_tokens,
+            }.items()
+            if value is not None
+        }
 
 
 def _agentic_messages(query: str) -> list[dict[str, str]]:
@@ -255,10 +282,16 @@ def _response_payload(response: dict[str, Any]) -> dict[str, Any]:
 
 
 def _response_text(response: dict[str, Any]) -> str:
-    for key in ["answer", "content", "text", "message", "final_answer"]:
+    for key in ["answer", "content", "final_content", "text", "message", "final_answer"]:
         value = response.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()
+    trace = response.get("trace")
+    if isinstance(trace, dict):
+        for key in ["final_content", "content", "answer"]:
+            value = trace.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
     choices = response.get("choices")
     if isinstance(choices, list) and choices:
         first = choices[0]
@@ -274,9 +307,10 @@ def _response_text(response: dict[str, Any]) -> str:
 def _final_answer_from_events(events: list[Any]) -> str:
     for event in reversed(events):
         if isinstance(event, dict) and event.get("type") == "session_end":
-            content = event.get("content")
-            if isinstance(content, str) and content.strip():
-                return content.strip()
+            for key in ["content", "final_content", "answer"]:
+                value = event.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
             metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
             for key in ["final", "final_content", "answer"]:
                 value = metadata.get(key)
@@ -346,3 +380,17 @@ def _dict_value(value: Any) -> dict[str, Any]:
 
 def _list_value(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
+
+
+def _optional_float_env(name: str, *, fallback_name: str | None = None) -> float | None:
+    value = os.getenv(name)
+    if value in {None, ""} and fallback_name:
+        value = os.getenv(fallback_name)
+    return float(value) if value not in {None, ""} else None
+
+
+def _optional_int_env(name: str, *, fallback_name: str | None = None) -> int | None:
+    value = os.getenv(name)
+    if value in {None, ""} and fallback_name:
+        value = os.getenv(fallback_name)
+    return int(value) if value not in {None, ""} else None

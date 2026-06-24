@@ -324,6 +324,37 @@ def test_fastreact_job_prompt_restricts_host_tools() -> None:
     assert "read_file" in prompt
     assert "entity_type" in prompt
     assert "label" in prompt
+    assert fastreact.kwargs["temperature"] == 0.3
+    assert fastreact.kwargs["top_p"] == 0.9
+    assert fastreact.kwargs["max_tokens"] == 4096
+    assert "metadata" not in fastreact.kwargs
+
+
+def test_fastreact_digest_generation_options_can_be_overridden() -> None:
+    store = _store_with_source()
+    fastreact = CapturingFastreact({"run_id": "run_generation_options", "content": "ok"})
+    service = JobService(store, fastreact=fastreact)
+    service.submit(
+        DIGEST_VIA_FASTREACT,
+        {
+            "owner_user_id": "user_primary",
+            "generation_options": {
+                "model": "deepseek-v4-flash",
+                "temperature": 0.7,
+                "top_p": 0.95,
+                "max_tokens": 8192,
+            },
+        },
+        max_attempts=1,
+    )
+
+    completed = service.run_next()
+
+    assert completed.status == "succeeded"
+    assert fastreact.kwargs["model"] == "deepseek-v4-flash"
+    assert fastreact.kwargs["temperature"] == 0.7
+    assert fastreact.kwargs["top_p"] == 0.95
+    assert fastreact.kwargs["max_tokens"] == 8192
 
 
 def test_write_candidates_persists_claims_digest_notes_and_derives_triple_hyperedge() -> None:

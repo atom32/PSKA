@@ -851,7 +851,15 @@ def test_external_agentic_adapter_returns_trace_and_citations() -> None:
             }
 
     service = FastreactAgenticServiceAdapter(
-        AgenticServiceConfig(provider="fastreact", url="http://agentic.test", service_token="token"),
+        AgenticServiceConfig(
+            provider="fastreact",
+            url="http://agentic.test",
+            service_token="token",
+            model="deepseek-v4-flash",
+            temperature=0.3,
+            top_p=0.9,
+            max_tokens=4096,
+        ),
         client=FakeFastreactClient(),
     )
 
@@ -870,6 +878,10 @@ def test_external_agentic_adapter_returns_trace_and_citations() -> None:
     assert "HippoRAG-style loop" in prompt
     assert "previous/next passage window" in prompt
     assert "connected entity/fact/claim neighbors" in prompt
+    assert service.client.captured_kwargs["model"] == "deepseek-v4-flash"
+    assert service.client.captured_kwargs["temperature"] == 0.3
+    assert service.client.captured_kwargs["top_p"] == 0.9
+    assert service.client.captured_kwargs["max_tokens"] == 4096
 
 
 def test_external_agentic_adapter_prefers_background_run_events() -> None:
@@ -909,6 +921,70 @@ def test_external_agentic_adapter_prefers_background_run_events() -> None:
     assert response["trace"]["events"][-1]["type"] == "session_end"
     assert response["trace"]["tool_calls"][0]["tool_name"] == "exec"
     assert response["agentic_service"]["run_id"] == "run_background"
+
+
+def test_external_agentic_adapter_reads_final_content_not_preview() -> None:
+    store = make_store()
+    full_answer = "完整最终答案" * 200
+
+    class FakeFastreactClient:
+        def create_run(self, **kwargs):
+            return {"run_id": "run_full_content"}
+
+        def wait_for_run(self, run_id):
+            return {"run_id": run_id, "status": "completed"}
+
+        def run_events(self, run_id):
+            return {
+                "run_id": run_id,
+                "events": [
+                    {
+                        "type": "session_end",
+                        "final_content": full_answer,
+                        "content_preview": "完整最终答案\n[... truncated ...]",
+                        "content_truncated": True,
+                    }
+                ],
+            }
+
+        def chat_completion(self, **kwargs):
+            raise AssertionError("background run protocol should be used first")
+
+    service = FastreactAgenticServiceAdapter(
+        AgenticServiceConfig(provider="fastreact", url="http://agentic.test"),
+        client=FakeFastreactClient(),
+    )
+
+    response = service.search("保存完整答案", store.get_user("user_primary"))
+
+    assert response["answer"] == full_answer
+    assert "[... truncated ...]" not in response["answer"]
+
+
+def test_external_agentic_adapter_reads_trace_final_content() -> None:
+    store = make_store()
+    full_answer = "trace final content " * 100
+
+    class FakeFastreactClient:
+        def chat_completion(self, **kwargs):
+            return {
+                "run_id": "run_trace_final",
+                "trace": {
+                    "final_content": full_answer,
+                    "final_content_preview": "trace final content\n[... truncated ...]",
+                    "final_content_truncated": True,
+                },
+            }
+
+    service = FastreactAgenticServiceAdapter(
+        AgenticServiceConfig(provider="fastreact", url="http://agentic.test"),
+        client=FakeFastreactClient(),
+    )
+
+    response = service.search("读取 trace final", store.get_user("user_primary"))
+
+    assert response["answer"] == full_answer.strip()
+    assert "[... truncated ...]" not in response["answer"]
 
 
 def test_external_agentic_adapter_extracts_fenced_json_payload() -> None:

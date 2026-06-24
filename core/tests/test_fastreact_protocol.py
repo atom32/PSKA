@@ -60,6 +60,22 @@ def test_normalize_event_classifies_tool_and_answer_events() -> None:
     assert answer["summary"] == "final"
 
 
+def test_final_answer_uses_full_content_not_preview() -> None:
+    events = [
+        {
+            "type": "session_end",
+            "final_content": "完整最终答案",
+            "content_preview": "完整\n[... truncated ...]",
+            "content_truncated": True,
+        }
+    ]
+
+    answer = normalize_event(events[0])
+
+    assert agent_answer_from_events(events) == "完整最终答案"
+    assert answer["summary"] == "完整最终答案"
+
+
 def test_normalize_event_stream_adds_final_answer_fallback() -> None:
     stream = normalize_event_stream(
         {

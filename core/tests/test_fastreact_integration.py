@@ -63,6 +63,10 @@ def test_fastreact_client_builds_pska_metadata(monkeypatch) -> None:
         purpose="extract",
         job_id="job_123",
         scope={"source_item_ids": ["src_1"]},
+        model="deepseek-v4-flash",
+        temperature=0.3,
+        top_p=0.9,
+        max_tokens=4096,
     )
 
     assert response["run_id"] == "run_123"
@@ -70,6 +74,10 @@ def test_fastreact_client_builds_pska_metadata(monkeypatch) -> None:
     assert captured["timeout"] == 7
     assert captured["headers"]["X-fastreact-service-token"] == "token"
     assert captured["payload"]["user_key"] == "pska:user_primary"
+    assert captured["payload"]["model"] == "deepseek-v4-flash"
+    assert captured["payload"]["temperature"] == 0.3
+    assert captured["payload"]["top_p"] == 0.9
+    assert captured["payload"]["max_tokens"] == 4096
     assert captured["payload"]["metadata"] == {
         "caller": "pska",
         "purpose": "extract",
@@ -77,6 +85,43 @@ def test_fastreact_client_builds_pska_metadata(monkeypatch) -> None:
         "pska_job_id": "job_123",
         "scope": {"source_item_ids": ["src_1"]},
     }
+    assert "max_tokens" not in captured["payload"]["metadata"]
+    assert "temperature" not in captured["payload"]["metadata"]
+    assert "top_p" not in captured["payload"]["metadata"]
+
+
+def test_fastreact_client_applies_config_generation_options_to_runs(monkeypatch) -> None:
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse({"run_id": "run_456"})
+
+    monkeypatch.setattr(fastreact_module, "urlopen", fake_urlopen)
+    client = HttpFastreactClient(
+        FastreactConfig(
+            url="http://fastreact.test",
+            model="deepseek-v4-flash",
+            temperature=0.2,
+            top_p=0.8,
+            max_tokens=2048,
+        )
+    )
+
+    response = client.create_run(
+        messages=[{"role": "user", "content": "hello"}],
+        user_id="user_primary",
+        purpose="agentic_search",
+    )
+
+    assert response["run_id"] == "run_456"
+    assert captured["url"] == "http://fastreact.test/v1/runs"
+    assert captured["payload"]["model"] == "deepseek-v4-flash"
+    assert captured["payload"]["temperature"] == 0.2
+    assert captured["payload"]["top_p"] == 0.8
+    assert captured["payload"]["max_tokens"] == 2048
+    assert captured["payload"]["metadata"]["purpose"] == "agentic_search"
 
 
 def test_fastreact_ready_reports_missing_pska_tools(monkeypatch) -> None:

@@ -4640,7 +4640,7 @@ const finalAnswerFromEvents = (payload) => {
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index];
     if (event?.type === "session_end") {
-      return event.content || event.metadata?.final_content || event.metadata?.final || "";
+      return event.content || event.final_content || event.answer || event.metadata?.final_content || event.metadata?.final || event.metadata?.answer || "";
     }
   }
   return "";

@@ -46,14 +46,14 @@ def agent_answer_from_events(events: list[dict[str, Any]]) -> str:
     for event in reversed(events):
         event_type = str(event.get("type") or "").lower()
         if event_type in {"session_end", "final_answer"}:
-            return str(event.get("content") or "").strip()
+            return _event_final_content(event)
     return ""
 
 
 def normalize_event(event: dict[str, Any]) -> dict[str, Any]:
     event_type = str(event.get("type") or "agent_event")
     event_type_lower = event_type.lower()
-    content = str(event.get("content") or "")
+    content = _event_final_content(event) if event_type_lower in {"session_end", "final_answer"} else str(event.get("content") or "")
     tool_name = event.get("tool_name")
 
     if "tool_call" in event_type_lower:
@@ -149,3 +149,16 @@ def compact(text: str, limit: int) -> str:
     if limit <= 3:
         return "." * max(0, limit)
     return f"{text[: limit - 3]}..."
+
+
+def _event_final_content(event: dict[str, Any]) -> str:
+    for key in ["content", "final_content", "answer"]:
+        value = event.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+    for key in ["final_content", "final", "answer"]:
+        value = metadata.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
