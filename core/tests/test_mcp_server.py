@@ -54,6 +54,42 @@ def test_mcp_calls_pska_search() -> None:
     payload = json.loads(text)
     assert payload["citations"]
     assert payload["results"][0]["source_item_id"]
+    assert "score_debug" not in payload["results"][0]
+
+
+def test_mcp_search_compacts_long_results_for_fastreact() -> None:
+    store = InMemoryKnowledgeStore()
+    store.add_user(User("user_primary", "primary"))
+    IngestService(store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "mcp-long-search-note",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "content": {"text": "searchable " + ("very long evidence " * 300)},
+        }
+    )
+    response = MCPServer("postgresql:///unused", store=store).handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 20,
+            "method": "tools/call",
+            "params": {
+                "name": "pska_search",
+                "arguments": {"query": "searchable", "user_id": "user_primary", "max_snippet_chars": 180},
+            },
+        }
+    )
+
+    text = response["result"]["content"][0]["text"]
+    payload = json.loads(text)
+
+    assert len(text) < 4000
+    assert payload["results"][0]["snippet"].endswith("...[truncated]")
+    assert payload["omitted"]["reason"] == "MCP compact output keeps FastReAct tool results parser-safe."
 
 
 def test_mcp_job_context_defaults_to_compact_output() -> None:

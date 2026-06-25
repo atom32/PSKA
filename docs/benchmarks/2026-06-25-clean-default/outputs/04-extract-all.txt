@@ -1,0 +1,28 @@
+$ ./scripts/pska --config .pska/config.json extract-all --owner-user-id user_primary
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/Users/xudawei/Documents/personal archive/core/src/pska_core/cli.py", line 4157, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "/Users/xudawei/Documents/personal archive/core/src/pska_core/cli.py", line 509, in main
+    return extract_all(args)
+           ^^^^^^^^^^^^^^^^^
+  File "/Users/xudawei/Documents/personal archive/core/src/pska_core/cli.py", line 1067, in extract_all
+    reports = ExtractionService(store).extract_all_visible(owner_user_id=args.owner_user_id)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/xudawei/Documents/personal archive/core/src/pska_core/extraction.py", line 141, in extract_all_visible
+    reports.append(self.extract_source_item(item))
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/xudawei/Documents/personal archive/core/src/pska_core/extraction.py", line 45, in extract_source_item
+    extraction = self._extract_with_llm(item)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/xudawei/Documents/personal archive/core/src/pska_core/extraction.py", line 186, in _extract_with_llm
+    llm = self.llm or (OpenAILLMClient.from_config(self.llm_config) if self.llm_config else OpenAILLMClient.from_env())
+                                                                                            ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/xudawei/Documents/personal archive/core/src/pska_core/llm.py", line 58, in from_env
+    return cls.from_config(
+           ^^^^^^^^^^^^^^^^
+  File "/Users/xudawei/Documents/personal archive/core/src/pska_core/llm.py", line 82, in from_config
+    raise LLMConfigurationError(
+pska_core.llm.LLMConfigurationError: LLM is required. Set PSKA_LLM_API_KEY, OPENAI_API_KEY, FASTRACT_API_KEY, or PSKA_LLM_API_KEY_FILE.

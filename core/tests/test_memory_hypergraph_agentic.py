@@ -1012,3 +1012,48 @@ def test_external_agentic_adapter_extracts_fenced_json_payload() -> None:
 
     assert response["answer"] == "你好啊！很高兴见到你。"
     assert response["trace"]["status"] == "ok"
+
+
+def test_external_agentic_adapter_extracts_jsonish_background_answer() -> None:
+    store = make_store()
+
+    class FakeFastreactClient:
+        def create_run(self, **kwargs):
+            return {"run_id": "run_jsonish", "session_id": "session_jsonish"}
+
+        def wait_for_run(self, run_id):
+            return {"run_id": run_id, "status": "completed"}
+
+        def run_events(self, run_id):
+            return {
+                "events": [
+                    {
+                        "type": "session_end",
+                        "content": (
+                            "Now I have all the information.\n"
+                            "```json\n"
+                            '{\n'
+                            '  "answer": "大模型"0幻觉"要求包括边界约束、RAG证据链和人工兜底。",\n'
+                            '  "retrieval": {"citations": []},\n'
+                            '  "trace": {"status": "ok"},\n'
+                            '  "source_refs": []\n'
+                            "}\n"
+                            "```"
+                        ),
+                    }
+                ],
+            }
+
+        def chat_completion(self, **kwargs):
+            raise AssertionError("background run protocol should be used first")
+
+    service = FastreactAgenticServiceAdapter(
+        AgenticServiceConfig(provider="fastreact", url="http://agentic.test"),
+        client=FakeFastreactClient(),
+    )
+
+    response = service.search("0幻觉", store.get_user("user_primary"))
+
+    assert response["answer"] == '大模型"0幻觉"要求包括边界约束、RAG证据链和人工兜底。'
+    assert "```json" not in response["answer"]
+    assert response["agentic_service"]["run_id"] == "run_jsonish"

@@ -1,0 +1,24 @@
+$ psql postgresql:///pska -X -A -F "|" -c <xlsx extraction sample query>
+title|extraction|content_sample
+portfolio-pipeline.xlsx|{"sheets": [{"name": "Pipeline", "rows": 4, "columns": 5, "truncated_rows": false, "truncated_columns": false}, {"name": "Actions", "rows": 4, "columns": 4, "truncated_rows": false, "truncated_columns": false}], "extractor": "xlsx-zip-xml", "sheet_count": 2, "column_limit": 40, "row_limit_per_sheet": 200}|# Workbook: portfolio-pipeline.xlsx
+
+
+## Sheet: Pipeline
+
+
+| Company | Lead | Status | ARR | Next Step |
+| --- | --- | --- | --- | --- |
+| Acme Example | Alice Example | active | 1200000 | Prepare partner meeting brief |
+| Widget Co | Charlie Example | watch | 450000 | Review COO transition risk |
+| Fund A | Bob Example | fundraising | 0 | Follow up on seed allocation |
+
+
+## Sheet: Actions
+
+
+| Owner | Action | Due | Source |
+| --- | --- | --- | --- |
+| Alice Example | Send Acme Example cohort metrics | 2026-07-01 | fundraise meeting |
+| Charlie Example | Draft 90-day COO trial plan | 2026-07-03 | hiring note |
+| PSKA | Compare Excel extraction against markdown notes | 2026-06-25 | benchmark |
+(1 row)

@@ -3,11 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
 import hashlib
+import io
 import json
 import mimetypes
 from pathlib import Path
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
+import zipfile
+from xml.etree import ElementTree
 
 from pska_core.connectors import connector_state_from_mapping, connector_record_to_payload
 from pska_core.enums import Visibility
@@ -39,9 +42,15 @@ DOCUMENT_SUFFIXES = {
     ".docx",
     ".pdf",
 }
-SUPPORTED_SUFFIXES = TEXT_SUFFIXES | DOCUMENT_SUFFIXES
+SPREADSHEET_SUFFIXES = {
+    ".xls",
+    ".xlsx",
+}
+SUPPORTED_SUFFIXES = TEXT_SUFFIXES | DOCUMENT_SUFFIXES | SPREADSHEET_SUFFIXES
 DEFAULT_IGNORE = [".git/**", "**/.git/**", "__pycache__/**", "**/__pycache__/**", ".DS_Store", "**/.DS_Store"]
 COLLECTION_MARKERS = (".pska-source.json", "pska-source.json")
+MAX_SPREADSHEET_ROWS_PER_SHEET = 200
+MAX_SPREADSHEET_COLUMNS = 40
 
 
 @dataclass(slots=True)
@@ -211,6 +220,7 @@ def scan_files(
                 visible_team_ids=visible_team_ids or [],
                 stat=stat,
                 content_hash=file_content_hash,
+                extraction=extracted,
             )
             report.ingested += 1
             report.source_item_ids.append(item.source_item_id)
@@ -284,7 +294,222 @@ def _extract_text(path: Path, raw: bytes) -> dict[str, Any]:
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "reason": "extract_failed", "detail": f"{type(exc).__name__}: {exc}"}
         return {"ok": True, "text": text, "extractor": "python-docx"}
+    if suffix == ".xlsx":
+        return _extract_xlsx_text(path, raw)
+    if suffix == ".xls":
+        return _extract_xls_text(path)
     return {"ok": False, "reason": "unsupported_suffix"}
+
+
+def _extract_xlsx_text(path: Path, raw: bytes) -> dict[str, Any]:
+    try:
+        with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+            shared_strings = _xlsx_shared_strings(archive)
+            sheets = _xlsx_sheet_paths(archive)
+            rendered: list[str] = [f"# Workbook: {path.name}"]
+            sheet_metadata: list[dict[str, Any]] = []
+            for sheet_name, sheet_path in sheets:
+                rows = _xlsx_sheet_rows(archive, sheet_path, shared_strings)
+                rows = _trim_empty_rows(rows)
+                max_columns = max((len(row) for row in rows), default=0)
+                truncated_rows = len(rows) > MAX_SPREADSHEET_ROWS_PER_SHEET
+                truncated_columns = max_columns > MAX_SPREADSHEET_COLUMNS
+                rows = [row[:MAX_SPREADSHEET_COLUMNS] for row in rows[:MAX_SPREADSHEET_ROWS_PER_SHEET]]
+                rendered.append(f"\n## Sheet: {sheet_name}\n")
+                rendered.append(_rows_to_markdown_table(rows) if rows else "_Empty sheet._")
+                sheet_metadata.append(
+                    {
+                        "name": sheet_name,
+                        "rows": len(rows),
+                        "columns": min(max_columns, MAX_SPREADSHEET_COLUMNS),
+                        "truncated_rows": truncated_rows,
+                        "truncated_columns": truncated_columns,
+                    }
+                )
+    except zipfile.BadZipFile as exc:
+        return {"ok": False, "reason": "extract_failed", "detail": f"invalid xlsx zip: {exc}"}
+    except Exception as exc:  # noqa: BLE001 - per-file failure should not abort scan.
+        return {"ok": False, "reason": "extract_failed", "detail": f"{type(exc).__name__}: {exc}"}
+    text = "\n\n".join(rendered)
+    return {
+        "ok": True,
+        "text": text,
+        "extractor": "xlsx-zip-xml",
+        "metadata": {
+            "sheet_count": len(sheet_metadata),
+            "sheets": sheet_metadata,
+            "row_limit_per_sheet": MAX_SPREADSHEET_ROWS_PER_SHEET,
+            "column_limit": MAX_SPREADSHEET_COLUMNS,
+        },
+    }
+
+
+def _extract_xls_text(path: Path) -> dict[str, Any]:
+    try:
+        import xlrd  # type: ignore[import-not-found]
+    except Exception as exc:  # noqa: BLE001 - optional dependency.
+        return {"ok": False, "reason": "missing_dependency", "detail": f"xlrd required for XLS extraction: {type(exc).__name__}"}
+    try:
+        workbook = xlrd.open_workbook(str(path))
+        rendered: list[str] = [f"# Workbook: {path.name}"]
+        sheet_metadata: list[dict[str, Any]] = []
+        for sheet in workbook.sheets():
+            row_count = min(sheet.nrows, MAX_SPREADSHEET_ROWS_PER_SHEET)
+            col_count = min(sheet.ncols, MAX_SPREADSHEET_COLUMNS)
+            rows = [
+                [_cell_to_text(sheet.cell_value(row_index, col_index)) for col_index in range(col_count)]
+                for row_index in range(row_count)
+            ]
+            rows = _trim_empty_rows(rows)
+            rendered.append(f"\n## Sheet: {sheet.name}\n")
+            rendered.append(_rows_to_markdown_table(rows) if rows else "_Empty sheet._")
+            sheet_metadata.append(
+                {
+                    "name": sheet.name,
+                    "rows": len(rows),
+                    "columns": col_count,
+                    "truncated_rows": sheet.nrows > MAX_SPREADSHEET_ROWS_PER_SHEET,
+                    "truncated_columns": sheet.ncols > MAX_SPREADSHEET_COLUMNS,
+                }
+            )
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "reason": "extract_failed", "detail": f"{type(exc).__name__}: {exc}"}
+    return {
+        "ok": True,
+        "text": "\n\n".join(rendered),
+        "extractor": "xlrd",
+        "metadata": {"sheet_count": len(sheet_metadata), "sheets": sheet_metadata},
+    }
+
+
+def _xlsx_shared_strings(archive: zipfile.ZipFile) -> list[str]:
+    try:
+        xml = archive.read("xl/sharedStrings.xml")
+    except KeyError:
+        return []
+    root = ElementTree.fromstring(xml)
+    values: list[str] = []
+    for item in root:
+        parts = [
+            text_node.text or ""
+            for text_node in item.iter()
+            if text_node.tag.endswith("}t") or text_node.tag == "t"
+        ]
+        values.append("".join(parts))
+    return values
+
+
+def _xlsx_sheet_paths(archive: zipfile.ZipFile) -> list[tuple[str, str]]:
+    workbook = ElementTree.fromstring(archive.read("xl/workbook.xml"))
+    relationships = ElementTree.fromstring(archive.read("xl/_rels/workbook.xml.rels"))
+    rel_paths: dict[str, str] = {}
+    for rel in relationships:
+        rel_id = str(rel.attrib.get("Id") or "")
+        target = str(rel.attrib.get("Target") or "")
+        if not rel_id or not target:
+            continue
+        rel_paths[rel_id] = _xlsx_target_to_path(target)
+    sheets: list[tuple[str, str]] = []
+    for sheet in workbook.iter():
+        if not sheet.tag.endswith("}sheet") and sheet.tag != "sheet":
+            continue
+        name = str(sheet.attrib.get("name") or f"Sheet {len(sheets) + 1}")
+        rel_id = str(sheet.attrib.get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id") or "")
+        sheet_path = rel_paths.get(rel_id)
+        if sheet_path:
+            sheets.append((name, sheet_path))
+    return sheets
+
+
+def _xlsx_target_to_path(target: str) -> str:
+    if target.startswith("/"):
+        return target.lstrip("/")
+    if target.startswith("xl/"):
+        return target
+    return f"xl/{target}"
+
+
+def _xlsx_sheet_rows(archive: zipfile.ZipFile, sheet_path: str, shared_strings: list[str]) -> list[list[str]]:
+    sheet = ElementTree.fromstring(archive.read(sheet_path))
+    rows: list[list[str]] = []
+    for row in sheet.iter():
+        if not row.tag.endswith("}row") and row.tag != "row":
+            continue
+        values: dict[int, str] = {}
+        next_column = 1
+        for cell in row:
+            if not cell.tag.endswith("}c") and cell.tag != "c":
+                continue
+            cell_ref = str(cell.attrib.get("r") or "")
+            column_index = _column_index_from_cell_ref(cell_ref) or next_column
+            values[column_index] = _xlsx_cell_text(cell, shared_strings)
+            next_column = column_index + 1
+        max_column = max(values, default=0)
+        rows.append([values.get(index, "") for index in range(1, max_column + 1)])
+    return rows
+
+
+def _xlsx_cell_text(cell: ElementTree.Element, shared_strings: list[str]) -> str:
+    cell_type = cell.attrib.get("t")
+    if cell_type == "inlineStr":
+        return "".join(
+            text_node.text or ""
+            for text_node in cell.iter()
+            if text_node.tag.endswith("}t") or text_node.tag == "t"
+        )
+    value_node = next((node for node in cell if node.tag.endswith("}v") or node.tag == "v"), None)
+    raw_value = value_node.text if value_node is not None else ""
+    if cell_type == "s":
+        try:
+            return shared_strings[int(raw_value or "0")]
+        except Exception:  # noqa: BLE001
+            return raw_value or ""
+    if cell_type == "b":
+        return "TRUE" if raw_value == "1" else "FALSE"
+    return raw_value or ""
+
+
+def _column_index_from_cell_ref(cell_ref: str) -> int | None:
+    letters = "".join(char for char in cell_ref if char.isalpha())
+    if not letters:
+        return None
+    index = 0
+    for char in letters.upper():
+        index = index * 26 + (ord(char) - ord("A") + 1)
+    return index
+
+
+def _trim_empty_rows(rows: list[list[str]]) -> list[list[str]]:
+    return [row for row in rows if any(str(cell).strip() for cell in row)]
+
+
+def _rows_to_markdown_table(rows: list[list[str]]) -> str:
+    if not rows:
+        return ""
+    column_count = max(len(row) for row in rows)
+    padded = [row + [""] * (column_count - len(row)) for row in rows]
+    header = padded[0]
+    body = padded[1:]
+    if not any(str(cell).strip() for cell in header):
+        header = [f"Column {index}" for index in range(1, column_count + 1)]
+    lines = [
+        "| " + " | ".join(_escape_table_cell(cell) for cell in header) + " |",
+        "| " + " | ".join("---" for _ in range(column_count)) + " |",
+    ]
+    lines.extend("| " + " | ".join(_escape_table_cell(cell) for cell in row) + " |" for row in body)
+    return "\n".join(lines)
+
+
+def _escape_table_cell(value: Any) -> str:
+    return str(value).replace("\n", " ").replace("\r", " ").replace("|", "\\|").strip()
+
+
+def _cell_to_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
 
 
 def _connector_state(store: KnowledgeStore, *, root: Path, owner_user_id: str) -> ConnectorState:
@@ -517,8 +742,13 @@ def _ingest_file(
     visible_team_ids: list[str],
     stat,
     content_hash: str,
+    extraction: dict[str, Any],
 ) -> SourceItem:
     mime_type = mimetypes.guess_type(path.name)[0] or "text/plain"
+    extraction_metadata = {
+        "extractor": extraction.get("extractor"),
+        **dict(extraction.get("metadata") or {}),
+    }
     payload = connector_record_to_payload(
         {
             "connector_id": "files",
@@ -537,7 +767,7 @@ def _ingest_file(
             "permission_metadata": {"root": str(root), "relative_path": relative, "read_scope": "explicit_directory"},
             "scan_cursor": str(int(stat.st_mtime_ns)),
             "content_hash": content_hash,
-            "metadata": {"mime_type": mime_type, "size_bytes": stat.st_size},
+            "metadata": {"mime_type": mime_type, "size_bytes": stat.st_size, "extraction": extraction_metadata},
         }
     )
     return ingest.ingest_channel_payload(payload)

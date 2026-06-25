@@ -127,3 +127,137 @@ def test_conversation_review_item_preserves_message_provenance() -> None:
     assert review.proposal["profile_delta"] == {"answer_style": "short"}
     assert any(ref["message_id"] == "msg_pref" for ref in review.proposal["source_refs"])
     assert "proposal.message_ids" in llm.prompts[0]["prompt"]
+
+
+def test_extraction_prompt_and_claim_dedupe_key_are_stable_across_retries() -> None:
+    store = InMemoryKnowledgeStore()
+    store.add_user(User("user_primary", "primary"))
+    item = IngestService(store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "claim-dedupe-note",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "content": {"text": "PSKA depends on FastReAct for digest jobs."},
+        }
+    )
+    llm = FakeLLM(
+        [
+            {
+                "knowledge_claims": [
+                    {
+                        "claim_type": "fact",
+                        "dedupe_key": "pska:depends_on:fastreact",
+                        "statement": "PSKA 依赖 FastReAct 执行 digest。",
+                        "subject": "PSKA",
+                        "predicate": "depends_on",
+                        "object": "FastReAct",
+                        "qualifiers": {"notability": "medium"},
+                        "evidence_text": "PSKA depends on FastReAct for digest jobs.",
+                        "confidence": 0.82,
+                    }
+                ],
+                "entities": [],
+                "hyperedges": [],
+                "review_items": [],
+            },
+            {
+                "knowledge_claims": [
+                    {
+                        "claim_type": "fact",
+                        "dedupe_key": "PSKA:DEPENDS_ON:FASTREACT",
+                        "statement": "FastReAct 是 PSKA digest 的执行层。",
+                        "subject": "PSKA",
+                        "predicate": "depends_on",
+                        "object": "FastReAct",
+                        "qualifiers": {"notability": "medium"},
+                        "evidence_text": "PSKA depends on FastReAct for digest jobs.",
+                        "confidence": 0.9,
+                    }
+                ],
+                "entities": [],
+                "hyperedges": [],
+                "review_items": [],
+            },
+        ]
+    )
+    service = ExtractionService(store, llm=llm)
+
+    first = service.extract_source_item(item)
+    second = service.extract_source_item(item)
+
+    assert first.knowledge_claims_created == second.knowledge_claims_created
+    claims = store.list_knowledge_claims(owner_user_id="user_primary")
+    assert len(claims) == 1
+    assert claims[0].statement == "FastReAct 是 PSKA digest 的执行层。"
+    assert claims[0].metadata["dedupe_key"] == "pska:depends_on:fastreact"
+    assert claims[0].metadata["prompt_version"] == "pska.extraction.v2"
+    assert "Prompt version: pska.extraction.v2" in llm.prompts[0]["prompt"]
+    assert "<source_text>" in llm.prompts[0]["prompt"]
+
+
+def test_extraction_tolerates_common_llm_schema_drift() -> None:
+    store = InMemoryKnowledgeStore()
+    store.add_user(User("user_primary", "primary"))
+    item = IngestService(store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "schema-drift-note",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "content": {"text": "Alice shipped the Acme MVP quickly."},
+        }
+    )
+    llm = FakeLLM(
+        [
+            {
+                "knowledge_claims": [
+                    {
+                        "claim_type": "fact",
+                        "statement": "Alice shipped the Acme MVP quickly.",
+                        "evidence_text": "Alice shipped the Acme MVP quickly.",
+                        "confidence": "high",
+                    }
+                ],
+                "entities": [
+                    {"entity_type": "person", "label": "Alice"},
+                    {"entity_type": "company", "label": "Acme"},
+                ],
+                "hyperedges": [
+                    {
+                        "relation_type": "shipped",
+                        "directionality": "directed",
+                        "evidence_text": "Alice shipped the Acme MVP quickly.",
+                        "confidence": "high",
+                        "members": [
+                            {"entity_type": "person", "label": "Alice", "role": "shipper"},
+                            {"entity_type": "company", "label": "Acme", "role": "product"},
+                        ],
+                    }
+                ],
+                "review_items": [
+                    {
+                        "review_type": "memory_candidate",
+                        "title": "Remember Acme shipping note",
+                        "proposal": "Alice shipped the Acme MVP quickly.",
+                    }
+                ],
+            }
+        ]
+    )
+
+    report = ExtractionService(store, llm=llm).extract_source_item(item)
+
+    assert report.knowledge_claims_created
+    assert report.hyperedges_created
+    assert report.review_items_created
+    claim = store.list_knowledge_claims(owner_user_id="user_primary")[0]
+    review = store.review_items[report.review_items_created[0]]
+    assert claim.confidence == 0.9
+    assert review.proposal["summary"] == "Alice shipped the Acme MVP quickly."

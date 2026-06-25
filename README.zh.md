@@ -25,7 +25,7 @@ digest、HTTP API 和 MCP，并在配置后把复杂 agentic digest 交给 FastR
 
 `./start.sh` 读取 `.pska/config.json`，按配置准备知识来源、启动后端 supervisor，并在启用时启动前端 Workspace。
 
-`digest-now` 会先跑 file sync。sync 路径覆盖 folder sources、可选 PDF/DOCX 文本抽取、workspace 的 Twitter/X archive inbox，以及基于内容 hash 的增量处理。随后它会调度并处理一次 digest。
+`digest-now` 会先跑 file sync。sync 路径覆盖 folder sources、PDF/DOCX/XLSX 文本抽取、可选 legacy XLS 抽取、workspace 的 Twitter/X archive inbox，以及基于内容 hash 的增量处理。随后它会调度并处理一次 digest。
 
 ## 日常使用
 

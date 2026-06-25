@@ -1,0 +1,2414 @@
+$ ./scripts/pska --config .pska/config.json search --query "Which companies are connected to Acme Example?" --top-k 8
+{
+  "query": "Which companies are connected to Acme Example?",
+  "request_user_id": "user_primary",
+  "visible_spaces": [
+    "private_primary"
+  ],
+  "visible_team_ids": [],
+  "results": [
+    {
+      "result_id": "chk_c8e8b52cc6de59aaa47ab526532ce055_0",
+      "source_item_id": "src_c8e8b52cc6de59aaa47ab526532ce055",
+      "source": "lexical",
+      "title": "meeting-2026-04-17-hiring-charlie-example.md",
+      "snippet": "--- title: \"Hiring conversation — charlie-example for acme-example COO role\" type: meeting slug: meetings/2026-04-17-hiring-charlie-example date: 2026-04-17 attendees: [you, alice-example, charlie-example] --- # Hiring OH — charlie-example ",
+      "score": 0.026150019062981186,
+      "citation": {
+        "source_item_id": "src_c8e8b52cc6de59aaa47ab526532ce055",
+        "chunk_id": "chk_c8e8b52cc6de59aaa47ab526532ce055_0",
+        "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
+        "title": "meeting-2026-04-17-hiring-charlie-example.md"
+      },
+      "score_debug": {
+        "lexical": 1.90805991538333,
+        "vector": 0.0,
+        "lexical_rank": 1.0,
+        "graph_ppr": 0.01502630576012145,
+        "graph_boost": 0.0037565764400303626,
+        "pre_graph_score": 0.01639344262295082,
+        "base_score": 0.020150019062981184,
+        "recency": 1.0,
+        "source_authority": 0.5,
+        "quality_boost": 0.006
+      }
+    },
+    {
+      "result_id": "chk_384b289efc9356d0b9e4814e51529ed7_0",
+      "source_item_id": "src_384b289efc9356d0b9e4814e51529ed7",
+      "source": "lexical",
+      "title": "portfolio-pipeline.xlsx",
+      "snippet": "# Workbook: portfolio-pipeline.xlsx ## Sheet: Pipeline | Company | Lead | Status | ARR | Next Step | | --- | --- | --- | --- | --- | | Acme Example | Alice Example | active | 1200000 | Prepare partner meeting brief | | Widget Co | Charlie E",
+      "score": 0.025899081922893752,
+      "citation": {
+        "source_item_id": "src_384b289efc9356d0b9e4814e51529ed7",
+        "chunk_id": "chk_384b289efc9356d0b9e4814e51529ed7_0",
+        "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx",
+        "title": "portfolio-pipeline.xlsx"
+      },
+      "score_debug": {
+        "lexical": 0.8911327886790069,
+        "vector": 0.0,
+        "lexical_rank": 5.0,
+        "graph_ppr": 0.01805786615311347,
+        "graph_boost": 0.004514466538278367,
+        "pre_graph_score": 0.015384615384615385,
+        "base_score": 0.019899081922893753,
+        "recency": 1.0,
+        "source_authority": 0.5,
+        "quality_boost": 0.006
+      }
+    },
+    {
+      "result_id": "chk_4880b40b309058d7b473444141f9dd9f_0",
+      "source_item_id": "src_4880b40b309058d7b473444141f9dd9f",
+      "source": "lexical",
+      "title": "companies-acme-example.md",
+      "snippet": "--- title: acme-example type: companies slug: companies/acme-example --- # acme-example Founded 2024 by alice-example. Originally a developer-tools company; pivoted to vertical-AI in late 2024. ## State - Founded: 2024-Q2 - Funding: seed fr",
+      "score": 0.02508427094887354,
+      "citation": {
+        "source_item_id": "src_4880b40b309058d7b473444141f9dd9f",
+        "chunk_id": "chk_4880b40b309058d7b473444141f9dd9f_0",
+        "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/companies-acme-example.md",
+        "title": "companies-acme-example.md"
+      },
+      "score_debug": {
+        "lexical": 1.2365680446706235,
+        "vector": 0.0,
+        "lexical_rank": 2.0,
+        "graph_ppr": 0.011820954763236089,
+        "graph_boost": 0.002955238690809022,
+        "pre_graph_score": 0.016129032258064516,
+        "base_score": 0.01908427094887354,
+        "recency": 1.0,
+        "source_authority": 0.5,
+        "quality_boost": 0.006
+      }
+    },
+    {
+      "result_id": "chk_abb33363e8f050c89287a6c0a3e7d6b9_0",
+      "source_item_id": "src_abb33363e8f050c89287a6c0a3e7d6b9",
+      "source": "lexical",
+      "title": "people-alice-example.md",
+      "snippet": "--- title: alice-example type: people slug: people/alice-example --- # Alice Example CEO of acme-example. Met at a YC dinner in 2024. Background: ex-distributed- systems engineer at widget-co before founding acme-example. ## Track record Sh",
+      "score": 0.024348656558973197,
+      "citation": {
+        "source_item_id": "src_abb33363e8f050c89287a6c0a3e7d6b9",
+        "chunk_id": "chk_abb33363e8f050c89287a6c0a3e7d6b9_0",
+        "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/people-alice-example.md",
+        "title": "people-alice-example.md"
+      },
+      "score_debug": {
+        "lexical": 1.0,
+        "vector": 0.0,
+        "lexical_rank": 3.0,
+        "graph_ppr": 0.009902562743829299,
+        "graph_boost": 0.0024756406859573247,
+        "pre_graph_score": 0.015873015873015872,
+        "base_score": 0.018348656558973196,
+        "recency": 1.0,
+        "source_authority": 0.5,
+        "quality_boost": 0.006
+      }
+    },
+    {
+      "result_id": "chk_c93645a224085289b69c14313ecdabe9_0",
+      "source_item_id": "src_c93645a224085289b69c14313ecdabe9",
+      "source": "lexical",
+      "title": "meeting-2026-04-10-fundraise-fund-a.md",
+      "snippet": "--- title: \"Fundraise office hours — fund-a + alice-example\" type: meeting slug: meetings/2026-04-10-fundraise-fund-a date: 2026-04-10 attendees: [you, alice-example, fund-a] --- # Fundraise OH — fund-a / alice-example Office hours session ",
+      "score": 0.02433187586337114,
+      "citation": {
+        "source_item_id": "src_c93645a224085289b69c14313ecdabe9",
+        "chunk_id": "chk_c93645a224085289b69c14313ecdabe9_0",
+        "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md",
+        "title": "meeting-2026-04-10-fundraise-fund-a.md"
+      },
+      "score_debug": {
+        "lexical": 0.9191450300180578,
+        "vector": 0.0,
+        "lexical_rank": 4.0,
+        "graph_ppr": 0.01082750345348457,
+        "graph_boost": 0.0027068758633711425,
+        "pre_graph_score": 0.015625,
+        "base_score": 0.018331875863371143,
+        "recency": 1.0,
+        "source_authority": 0.5,
+        "quality_boost": 0.006
+      }
+    },
+    {
+      "result_id": "chk_c8e8b52cc6de59aaa47ab526532ce055_1",
+      "source_item_id": "src_c8e8b52cc6de59aaa47ab526532ce055",
+      "source": "lexical",
+      "title": "meeting-2026-04-17-hiring-charlie-example.md",
+      "snippet": "hs in the COO role at acme-example's velocity. Moderate conviction, 0.6. - alice-example will hire him anyway despite my concern. Strong, 0.85. - I predict charlie-example's first 90 days will look strong before the velocity gap shows up ar",
+      "score": 0.02421140212625325,
+      "citation": {
+        "source_item_id": "src_c8e8b52cc6de59aaa47ab526532ce055",
+        "chunk_id": "chk_c8e8b52cc6de59aaa47ab526532ce055_1",
+        "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
+        "title": "meeting-2026-04-17-hiring-charlie-example.md"
+      },
+      "score_debug": {
+        "lexical": 0.6837634587578276,
+        "vector": 0.0,
+        "lexical_rank": 8.0,
+        "graph_ppr": 0.014022079093248293,
+        "graph_boost": 0.003505519773312073,
+        "pre_graph_score": 0.014705882352941176,
+        "base_score": 0.01821140212625325,
+        "recency": 1.0,
+        "source_authority": 0.5,
+        "quality_boost": 0.006
+      }
+    },
+    {
+      "result_id": "chk_0d88e2d74eb5564daa5996459618cb9f_0",
+      "source_item_id": "src_0d88e2d74eb5564daa5996459618cb9f",
+      "source": "lexical",
+      "title": "daily-2026-04-15.md",
+      "snippet": "--- title: \"2026-04-15\" type: daily slug: daily/2026-04-15 date: 2026-04-15 --- # Wednesday 2026-04-15 Coffee with alice-example this morning. She's pushing hard on the acme-example pricing change — wants to move enterprise tier 40% by end ",
+      "score": 0.023732149321445385,
+      "citation": {
+        "source_item_id": "src_0d88e2d74eb5564daa5996459618cb9f",
+        "chunk_id": "chk_0d88e2d74eb5564daa5996459618cb9f_0",
+        "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/daily-2026-04-15.md",
+        "title": "daily-2026-04-15.md"
+      },
+      "score_debug": {
+        "lexical": 0.7027642214999339,
+        "vector": 0.0,
+        "lexical_rank": 6.0,
+        "graph_ppr": 0.010322536679720927,
+        "graph_boost": 0.002580634169930232,
+        "pre_graph_score": 0.015151515151515152,
+        "base_score": 0.017732149321445383,
+        "recency": 1.0,
+        "source_authority": 0.5,
+        "quality_boost": 0.006
+      }
+    },
+    {
+      "result_id": "chk_abb33363e8f050c89287a6c0a3e7d6b9_1",
+      "source_item_id": "src_abb33363e8f050c89287a6c0a3e7d6b9",
+      "source": "lexical",
+      "title": "people-alice-example.md",
+      "snippet": "closer to 0.25 than to my overall 0.18.",
+      "score": 0.02261641966076508,
+      "citation": {
+        "source_item_id": "src_abb33363e8f050c89287a6c0a3e7d6b9",
+        "chunk_id": "chk_abb33363e8f050c89287a6c0a3e7d6b9_1",
+        "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/people-alice-example.md",
+        "title": "people-alice-example.md"
+      },
+      "score_debug": {
+        "lexical": 0.6963106238227914,
+        "vector": 0.0,
+        "lexical_rank": 7.0,
+        "graph_ppr": 0.006764186105746891,
+        "graph_boost": 0.0016910465264367226,
+        "pre_graph_score": 0.014925373134328358,
+        "base_score": 0.016616419660765082,
+        "recency": 1.0,
+        "source_authority": 0.5,
+        "quality_boost": 0.006
+      }
+    }
+  ],
+  "citations": [
+    {
+      "source_item_id": "src_c8e8b52cc6de59aaa47ab526532ce055",
+      "chunk_id": "chk_c8e8b52cc6de59aaa47ab526532ce055_0",
+      "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
+      "title": "meeting-2026-04-17-hiring-charlie-example.md"
+    },
+    {
+      "source_item_id": "src_384b289efc9356d0b9e4814e51529ed7",
+      "chunk_id": "chk_384b289efc9356d0b9e4814e51529ed7_0",
+      "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx",
+      "title": "portfolio-pipeline.xlsx"
+    },
+    {
+      "source_item_id": "src_4880b40b309058d7b473444141f9dd9f",
+      "chunk_id": "chk_4880b40b309058d7b473444141f9dd9f_0",
+      "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/companies-acme-example.md",
+      "title": "companies-acme-example.md"
+    },
+    {
+      "source_item_id": "src_abb33363e8f050c89287a6c0a3e7d6b9",
+      "chunk_id": "chk_abb33363e8f050c89287a6c0a3e7d6b9_0",
+      "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/people-alice-example.md",
+      "title": "people-alice-example.md"
+    },
+    {
+      "source_item_id": "src_c93645a224085289b69c14313ecdabe9",
+      "chunk_id": "chk_c93645a224085289b69c14313ecdabe9_0",
+      "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md",
+      "title": "meeting-2026-04-10-fundraise-fund-a.md"
+    },
+    {
+      "source_item_id": "src_c8e8b52cc6de59aaa47ab526532ce055",
+      "chunk_id": "chk_c8e8b52cc6de59aaa47ab526532ce055_1",
+      "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
+      "title": "meeting-2026-04-17-hiring-charlie-example.md"
+    },
+    {
+      "source_item_id": "src_0d88e2d74eb5564daa5996459618cb9f",
+      "chunk_id": "chk_0d88e2d74eb5564daa5996459618cb9f_0",
+      "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/daily-2026-04-15.md",
+      "title": "daily-2026-04-15.md"
+    },
+    {
+      "source_item_id": "src_abb33363e8f050c89287a6c0a3e7d6b9",
+      "chunk_id": "chk_abb33363e8f050c89287a6c0a3e7d6b9_1",
+      "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/people-alice-example.md",
+      "title": "people-alice-example.md"
+    }
+  ],
+  "hypergraph_context": [
+    {
+      "hyperedge_id": "hed_076241348b935393b7cdf6f042fd763b",
+      "relation_type": "holds_position",
+      "directionality": "directed",
+      "evidence_text": "Alice's position: raise now because the market for vertical-AI is still hot and the new positioning is fresh enough to attract attention.",
+      "confidence": 0.9,
+      "source_refs": [
+        {
+          "source_item_id": "src_1bfa0f5e9f05553db0cd98041e0b8b15",
+          "document_id": null,
+          "chunk_id": null,
+          "passage_window_id": null,
+          "message_id": null,
+          "path": null,
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-03.md"
+        }
+      ],
+      "evidence_citations": [
+        {
+          "source_item_id": "src_1bfa0f5e9f05553db0cd98041e0b8b15",
+          "chunk_id": "chk_1bfa0f5e9f05553db0cd98041e0b8b15_0",
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-03.md",
+          "title": "meeting-2026-04-03.md",
+          "snippet": "--- title: Meeting 2026-04-03 — alice-example office hours type: meetings date: 2026-04-03 attendees: [you, people/alice-example] --- # Office hours — alice-example, 2026-04-03 ## Notes Alice walked through current acme-example metrics. Ret"
+        },
+        {
+          "source_item_id": "src_1bfa0f5e9f05553db0cd98041e0b8b15",
+          "chunk_id": "chk_1bfa0f5e9f05553db0cd98041e0b8b15_1",
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-03.md",
+          "title": "meeting-2026-04-03.md",
+          "snippet": "e to think through the timing tradeoff - follow up in 2 weeks"
+        }
+      ],
+      "members": [
+        {
+          "entity_id": "ent_23ba013899f652559796c7c890c8bfed",
+          "role": "holder",
+          "label": "alice-example",
+          "entity_type": "person"
+        },
+        {
+          "entity_id": "ent_cdb7d09200105707afa669babe6aacef",
+          "role": "position",
+          "label": "raise now",
+          "entity_type": "preference"
+        }
+      ]
+    },
+    {
+      "hyperedge_id": "hed_1ca27fa0f2b057aaba8e9d8b4a034d92",
+      "relation_type": "discusses",
+      "directionality": "undirected",
+      "evidence_text": "We talked about whether to raise a Series A now or push for another 6 months of metrics.",
+      "confidence": 1.0,
+      "source_refs": [
+        {
+          "source_item_id": "src_1bfa0f5e9f05553db0cd98041e0b8b15",
+          "document_id": null,
+          "chunk_id": null,
+          "passage_window_id": null,
+          "message_id": null,
+          "path": null,
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-03.md"
+        }
+      ],
+      "evidence_citations": [
+        {
+          "source_item_id": "src_1bfa0f5e9f05553db0cd98041e0b8b15",
+          "chunk_id": "chk_1bfa0f5e9f05553db0cd98041e0b8b15_0",
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-03.md",
+          "title": "meeting-2026-04-03.md",
+          "snippet": "--- title: Meeting 2026-04-03 — alice-example office hours type: meetings date: 2026-04-03 attendees: [you, people/alice-example] --- # Office hours — alice-example, 2026-04-03 ## Notes Alice walked through current acme-example metrics. Ret"
+        },
+        {
+          "source_item_id": "src_1bfa0f5e9f05553db0cd98041e0b8b15",
+          "chunk_id": "chk_1bfa0f5e9f05553db0cd98041e0b8b15_1",
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-03.md",
+          "title": "meeting-2026-04-03.md",
+          "snippet": "e to think through the timing tradeoff - follow up in 2 weeks"
+        }
+      ],
+      "members": [
+        {
+          "entity_id": "ent_23ba013899f652559796c7c890c8bfed",
+          "role": "participant",
+          "label": "alice-example",
+          "entity_type": "person"
+        },
+        {
+          "entity_id": "ent_72baeedcf2325154a54732d6202623f2",
+          "role": "participant",
+          "label": "讲述者",
+          "entity_type": "person"
+        },
+        {
+          "entity_id": "ent_66cc06ba920c562997d440ae6fb5e777",
+          "role": "topic",
+          "label": "A轮融资时机",
+          "entity_type": "concept"
+        }
+      ]
+    },
+    {
+      "hyperedge_id": "hed_349d198ea3b65c5da647003cb0de0fe4",
+      "relation_type": "candidate_for",
+      "directionality": "directed",
+      "evidence_text": "alice-example brought charlie-example by to discuss the COO role at acme-example.",
+      "confidence": 1.0,
+      "source_refs": [
+        {
+          "source_item_id": "src_c8e8b52cc6de59aaa47ab526532ce055",
+          "document_id": null,
+          "chunk_id": null,
+          "passage_window_id": null,
+          "message_id": null,
+          "path": null,
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md"
+        }
+      ],
+      "evidence_citations": [
+        {
+          "source_item_id": "src_c8e8b52cc6de59aaa47ab526532ce055",
+          "chunk_id": "chk_c8e8b52cc6de59aaa47ab526532ce055_0",
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
+          "title": "meeting-2026-04-17-hiring-charlie-example.md",
+          "snippet": "--- title: \"Hiring conversation — charlie-example for acme-example COO role\" type: meeting slug: meetings/2026-04-17-hiring-charlie-example date: 2026-04-17 attendees: [you, alice-example, charlie-example] --- # Hiring OH — charlie-example "
+        },
+        {
+          "source_item_id": "src_c8e8b52cc6de59aaa47ab526532ce055",
+          "chunk_id": "chk_c8e8b52cc6de59aaa47ab526532ce055_1",
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
+          "title": "meeting-2026-04-17-hiring-charlie-example.md",
+          "snippet": "hs in the COO role at acme-example's velocity. Moderate conviction, 0.6. - alice-example will hire him anyway despite my concern. Strong, 0.85. - I predict charlie-example's first 90 days will look strong before the velocity gap shows up ar"
+        }
+      ],
+      "members": [
+        {
+          "entity_id": "ent_c4b31b8b856854c9bf69f783a22711ee",
+          "role": "candidate",
+          "label": "charlie-example",
+          "entity_type": "person"
+        },
+        {
+          "entity_id": "ent_63b78b6148045b37bc005cde7a8e49c5",
+          "role": "company",
+          "label": "acme-example",
+          "entity_type": "organization"
+        },
+        {
+          "entity_id": "ent_107a9cea3b785f32808509894e0e7958",
+          "role": "position",
+          "label": "COO",
+          "entity_type": "role"
+        }
+      ]
+    },
+    {
+      "hyperedge_id": "hed_496cf168d7f35fcbafbef26413d37719",
+      "relation_type": "represents",
+      "directionality": "directed",
+      "evidence_text": "alice-example (acme-example)",
+      "confidence": 0.9,
+      "source_refs": [
+        {
+          "source_item_id": "src_c93645a224085289b69c14313ecdabe9",
+          "document_id": null,
+          "chunk_id": null,
+          "passage_window_id": null,
+          "message_id": null,
+          "path": null,
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md"
+        }
+      ],
+      "evidence_citations": [
+        {
+          "source_item_id": "src_c93645a224085289b69c14313ecdabe9",
+          "chunk_id": "chk_c93645a224085289b69c14313ecdabe9_0",
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md",
+          "title": "meeting-2026-04-10-fundraise-fund-a.md",
+          "snippet": "--- title: \"Fundraise office hours — fund-a + alice-example\" type: meeting slug: meetings/2026-04-10-fundraise-fund-a date: 2026-04-10 attendees: [you, alice-example, fund-a] --- # Fundraise OH — fund-a / alice-example Office hours session "
+        },
+        {
+          "source_item_id": "src_c93645a224085289b69c14313ecdabe9",
+          "chunk_id": "chk_c93645a224085289b69c14313ecdabe9_1",
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md",
+          "title": "meeting-2026-04-10-fundraise-fund-a.md",
+          "snippet": "alice-example pushed back — she wants to grow into the pricing rather than annoy early adopters. Probably the right call for now, but I'd want to revisit by end of year. ## Takes - I bet acme-example closes the Series A on the timeline she'"
+        }
+      ],
+      "members": [
+        {
+          "entity_id": "ent_23ba013899f652559796c7c890c8bfed",
+          "role": "representative",
+          "label": "alice-example",
+          "entity_type": "person"
+        },
+        {
+          "entity_id": "ent_63b78b6148045b37bc005cde7a8e49c5",
+          "role": "represented",
+          "label": "acme-example",
+          "entity_type": "organization"
+        }
+      ]
+    },
+    {
+      "hyperedge_id": "hed_50d16133c0f558b295bdc5be01808404",
+      "relation_type": "predicted_struggle",
+      "directionality": "directed",
+      "evidence_text": "charlie-example is going to struggle with the widget-co rebuild",
+      "confidence": 0.6,
+      "source_refs": [
+        {
+          "source_item_id": "src_62aa58d5cf875ebc8533e101f9ec9f60",
+          "document_id": null,
+          "chunk_id": null,
+          "passage_window_id": null,
+          "message_id": null,
+          "path": null,
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/concept-founder-execution.md"
+        }
+      ],
+      "evidence_citations": [
+        {
+          "source_item_id": "src_62aa58d5cf875ebc8533e101f9ec9f60",
+          "chunk_id": "chk_62aa58d5cf875ebc8533e101f9ec9f60_0",
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/concept-founder-execution.md",
+          "title": "concept-founder-execution.md",
+          "snippet": "--- title: \"Founder Execution\" type: concept tweet_count: 8 created: 2026-04-01 updated: 2026-04-22 tags: [concept, calibration-fixture, holdout] --- # Founder Execution ## Summary Patterns in how high-performing founders ship versus how st"
+        },
+        {
+          "source_item_id": "src_62aa58d5cf875ebc8533e101f9ec9f60",
+          "chunk_id": "chk_62aa58d5cf875ebc8533e101f9ec9f60_1",
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/concept-founder-execution.md",
+          "title": "concept-founder-execution.md",
+          "snippet": "k alice-example outperforms her seed projections by year 2. - I bet at least one fund-c company hits a meaningful revenue milestone by mid-2026 despite the slow start."
+        }
+      ],
+      "members": [
+        {
+          "entity_id": "ent_c4b31b8b856854c9bf69f783a22711ee",
+          "role": "subject",
+          "label": "charlie-example",
+          "entity_type": "person"
+        },
+        {
+          "entity_id": "ent_5eae1df3fe9f5a7f98d479c6172f631f",
+          "role": "object",
+          "label": "widget-co",
+          "entity_type": "product"
+        }
+      ]
+    },
+    {
+      "hyperedge_id": "hed_5a9825172e1b535ca69e0d94a45cffc8",
+      "relation_type": "pivot",
+      "directionality": "directed",
+      "evidence_text": "The acme-example pivot from devtools to vertical-AI was the right call.",
+      "confidence": 0.8,
+      "source_refs": [
+        {
+          "source_item_id": "src_d4fd21da5f23540db318c05705961c69",
+          "document_id": null,
+          "chunk_id": null,
+          "passage_window_id": null,
+          "message_id": null,
+          "path": null,
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/concept-startup-market-dynamics.md"
+        }
+      ],
+      "evidence_citations": [
+        {
+          "source_item_id": "src_d4fd21da5f23540db318c05705961c69",
+          "chunk_id": "chk_d4fd21da5f23540db318c05705961c69_0",
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/concept-startup-market-dynamics.md",
+          "title": "concept-startup-market-dynamics.md",
+          "snippet": "--- title: \"Startup Market Dynamics\" type: concept tweet_count: 12 created: 2026-04-01 updated: 2026-04-24 tags: [concept, calibration-fixture] --- # Startup Market Dynamics ## Summary How early-stage market structure affects which startups"
+        },
+        {
+          "source_item_id": "src_d4fd21da5f23540db318c05705961c69",
+          "chunk_id": "chk_d4fd21da5f23540db318c05705961c69_1",
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/concept-startup-market-dynamics.md",
+          "title": "concept-startup-market-dynamics.md",
+          "snippet": " actually positioning problems — the founder hasn't picked a side of the marketplace narrow enough to bootstrap from. fund-a's recent losses fit this pattern. (Modest conviction, ~0.6.) - **2024-06-22** | widget-co's plateau is a marketing "
+        }
+      ],
+      "members": [
+        {
+          "entity_id": "ent_81e452b5e0eb57d18c6a3395040a8eb2",
+          "role": "subject",
+          "label": "acme-example",
+          "entity_type": "company"
+        },
+        {
+          "entity_id": "ent_c45a43cadf2f52a8b360c7c842815b92",
+          "role": "from",
+          "label": "devtools",
+          "entity_type": "market_category"
+        },
+        {
+          "entity_id": "ent_31c798ab3fcb5cc8ad82697ba89edc4b",
+          "role": "to",
+          "label": "vertical-AI",
+          "entity_type": "market_category"
+        }
+      ]
+    },
+    {
+      "hyperedge_id": "hed_5df4fbc015cd50ab8703477bccb64452",
+      "relation_type": "owns_action",
+      "directionality": "directed",
+      "evidence_text": "| Alice Example | Send Acme Example cohort metrics | 2026-07-01 | fundraise meeting |",
+      "confidence": 1.0,
+      "source_refs": [
+        {
+          "source_item_id": "src_384b289efc9356d0b9e4814e51529ed7",
+          "document_id": null,
+          "chunk_id": null,
+          "passage_window_id": null,
+          "message_id": null,
+          "path": null,
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx"
+        }
+      ],
+      "evidence_citations": [
+        {
+          "source_item_id": "src_384b289efc9356d0b9e4814e51529ed7",
+          "chunk_id": "chk_384b289efc9356d0b9e4814e51529ed7_0",
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx",
+          "title": "portfolio-pipeline.xlsx",
+          "snippet": "# Workbook: portfolio-pipeline.xlsx ## Sheet: Pipeline | Company | Lead | Status | ARR | Next Step | | --- | --- | --- | --- | --- | | Acme Example | Alice Example | active | 1200000 | Prepare partner meeting brief | | Widget Co | Charlie E"
+        }
+      ],
+      "members": [
+        {
+          "entity_id": "ent_09005778725e5b1b8d90c34d3fcb146d",
+          "role": "owner",
+          "label": "Alice Example",
+          "entity_type": "person"
+        },
+        {
+          "entity_id": "ent_fc0aa467ce725a72a3b66ab81f3627f3",
+          "role": "action",
+          "label": "Send Acme Example cohort metrics",
+          "entity_type": "action"
+        }
+      ]
+    },
+    {
+      "hyperedge_id": "hed_61a5cb5c0a2b5418b532a6ecefed0907",
+      "relation_type": "portfolio_member",
+      "directionality": "directed",
+      "evidence_text": "fund-a portfolio companies",
+      "confidence": 0.9,
+      "source_refs": [
+        {
+          "source_item_id": "src_d4fd21da5f23540db318c05705961c69",
+          "document_id": null,
+          "chunk_id": null,
+          "passage_window_id": null,
+          "message_id": null,
+          "path": null,
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/concept-startup-market-dynamics.md"
+        }
+      ],
+      "evidence_citations": [
+        {
+          "source_item_id": "src_d4fd21da5f23540db318c05705961c69",
+          "chunk_id": "chk_d4fd21da5f23540db318c05705961c69_0",
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/concept-startup-market-dynamics.md",
+          "title": "concept-startup-market-dynamics.md",
+          "snippet": "--- title: \"Startup Market Dynamics\" type: concept tweet_count: 12 created: 2026-04-01 updated: 2026-04-24 tags: [concept, calibration-fixture] --- # Startup Market Dynamics ## Summary How early-stage market structure affects which startups"
+        },
+        {
+          "source_item_id": "src_d4fd21da5f23540db318c05705961c69",
+          "chunk_id": "chk_d4fd21da5f23540db318c05705961c69_1",
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/concept-startup-market-dynamics.md",
+          "title": "concept-startup-market-dynamics.md",
+          "snippet": " actually positioning problems — the founder hasn't picked a side of the marketplace narrow enough to bootstrap from. fund-a's recent losses fit this pattern. (Modest conviction, ~0.6.) - **2024-06-22** | widget-co's plateau is a marketing "
+        }
+      ],
+      "members": [
+        {
+          "entity_id": "ent_3c4d1ab6322f5c92a6cfa432dda459ac",
+          "role": "fund",
+          "label": "fund-a",
+          "entity_type": "fund"
+        },
+        {
+          "entity_id": "ent_862ec886f4c25fde9fc560caf2da8cca",
+          "role": "portfolio_company",
+          "label": "alice-example's company",
+          "entity_type": "company"
+        }
+      ]
+    },
+    {
+      "hyperedge_id": "hed_669f1d4ea6715ae680f980561d24f756",
+      "relation_type": "pushing_for",
+      "directionality": "directed",
+      "evidence_text": "She's pushing hard on the acme-example pricing change — wants to move enterprise tier 40% by end of quarter.",
+      "confidence": 1.0,
+      "source_refs": [
+        {
+          "source_item_id": "src_0d88e2d74eb5564daa5996459618cb9f",
+          "document_id": null,
+          "chunk_id": null,
+          "passage_window_id": null,
+          "message_id": null,
+          "path": null,
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/daily-2026-04-15.md"
+        }
+      ],
+      "evidence_citations": [
+        {
+          "source_item_id": "src_0d88e2d74eb5564daa5996459618cb9f",
+          "chunk_id": "chk_0d88e2d74eb5564daa5996459618cb9f_0",
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/daily-2026-04-15.md",
+          "title": "daily-2026-04-15.md",
+          "snippet": "--- title: \"2026-04-15\" type: daily slug: daily/2026-04-15 date: 2026-04-15 --- # Wednesday 2026-04-15 Coffee with alice-example this morning. She's pushing hard on the acme-example pricing change — wants to move enterprise tier 40% by end "
+        },
+        {
+          "source_item_id": "src_0d88e2d74eb5564daa5996459618cb9f",
+          "chunk_id": "chk_0d88e2d74eb5564daa5996459618cb9f_1",
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/daily-2026-04-15.md",
+          "title": "daily-2026-04-15.md",
+          "snippet": "he AI conference circuit will quiet down by late 2026 as the actual revenue numbers start coming in. People are going to start asking hard questions about retention."
+        }
+      ],
+      "members": [
+        {
+          "entity_id": "ent_23ba013899f652559796c7c890c8bfed",
+          "role": "agent",
+          "label": "alice-example",
+          "entity_type": "person"
+        },
+        {
+          "entity_id": "ent_978f55700a0a5700b9929bef4a2d3f80",
+          "role": "target",
+          "label": "acme-example pricing change",
+          "entity_type": "project"
+        }
+      ]
+    },
+    {
+      "hyperedge_id": "hed_822f6b52c5615d0e88d50ac33fe6c1d2",
+      "relation_type": "proved_wrong",
+      "directionality": "directed",
+      "evidence_text": "charlie-example proved me wrong on widget-co. The rebuild shipped faster",
+      "confidence": 0.9,
+      "source_refs": [
+        {
+          "source_item_id": "src_62aa58d5cf875ebc8533e101f9ec9f60",
+          "document_id": null,
+          "chunk_id": null,
+          "passage_window_id": null,
+          "message_id": null,
+          "path": null,
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/concept-founder-execution.md"
+        }
+      ],
+      "evidence_citations": [
+        {
+          "source_item_id": "src_62aa58d5cf875ebc8533e101f9ec9f60",
+          "chunk_id": "chk_62aa58d5cf875ebc8533e101f9ec9f60_0",
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/concept-founder-execution.md",
+          "title": "concept-founder-execution.md",
+          "snippet": "--- title: \"Founder Execution\" type: concept tweet_count: 8 created: 2026-04-01 updated: 2026-04-22 tags: [concept, calibration-fixture, holdout] --- # Founder Execution ## Summary Patterns in how high-performing founders ship versus how st"
+        },
+        {
+          "source_item_id": "src_62aa58d5cf875ebc8533e101f9ec9f60",
+          "chunk_id": "chk_62aa58d5cf875ebc8533e101f9ec9f60_1",
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/concept-founder-execution.md",
+          "title": "concept-founder-execution.md",
+          "snippet": "k alice-example outperforms her seed projections by year 2. - I bet at least one fund-c company hits a meaningful revenue milestone by mid-2026 despite the slow start."
+        }
+      ],
+      "members": [
+        {
+          "entity_id": "ent_c4b31b8b856854c9bf69f783a22711ee",
+          "role": "subject",
+          "label": "charlie-example",
+          "entity_type": "person"
+        },
+        {
+          "entity_id": "ent_5eae1df3fe9f5a7f98d479c6172f631f",
+          "role": "object",
+          "label": "widget-co",
+          "entity_type": "product"
+        }
+      ]
+    },
+    {
+      "hyperedge_id": "hed_8e055af8b31859b5be0602b5e89f3d66",
+      "relation_type": "worked_at",
+      "directionality": "directed",
+      "evidence_text": "charlie-example previously ran ops at widget-co before leaving in late 2025.",
+      "confidence": 1.0,
+      "source_refs": [
+        {
+          "source_item_id": "src_c8e8b52cc6de59aaa47ab526532ce055",
+          "document_id": null,
+          "chunk_id": null,
+          "passage_window_id": null,
+          "message_id": null,
+          "path": null,
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md"
+        }
+      ],
+      "evidence_citations": [
+        {
+          "source_item_id": "src_c8e8b52cc6de59aaa47ab526532ce055",
+          "chunk_id": "chk_c8e8b52cc6de59aaa47ab526532ce055_0",
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
+          "title": "meeting-2026-04-17-hiring-charlie-example.md",
+          "snippet": "--- title: \"Hiring conversation — charlie-example for acme-example COO role\" type: meeting slug: meetings/2026-04-17-hiring-charlie-example date: 2026-04-17 attendees: [you, alice-example, charlie-example] --- # Hiring OH — charlie-example "
+        },
+        {
+          "source_item_id": "src_c8e8b52cc6de59aaa47ab526532ce055",
+          "chunk_id": "chk_c8e8b52cc6de59aaa47ab526532ce055_1",
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
+          "title": "meeting-2026-04-17-hiring-charlie-example.md",
+          "snippet": "hs in the COO role at acme-example's velocity. Moderate conviction, 0.6. - alice-example will hire him anyway despite my concern. Strong, 0.85. - I predict charlie-example's first 90 days will look strong before the velocity gap shows up ar"
+        }
+      ],
+      "members": [
+        {
+          "entity_id": "ent_c4b31b8b856854c9bf69f783a22711ee",
+          "role": "employee",
+          "label": "charlie-example",
+          "entity_type": "person"
+        },
+        {
+          "entity_id": "ent_6dc75b11b2c150709af9f2e4e6ac8a8e",
+          "role": "employer",
+          "label": "widget-co",
+          "entity_type": "organization"
+        }
+      ]
+    },
+    {
+      "hyperedge_id": "hed_8fdf9b5584df51c893d6c3818d788507",
+      "relation_type": "leads",
+      "directionality": "directed",
+      "evidence_text": "| Fund A | Bob Example | fundraising | 0 | Follow up on seed allocation |",
+      "confidence": 1.0,
+      "source_refs": [
+        {
+          "source_item_id": "src_384b289efc9356d0b9e4814e51529ed7",
+          "document_id": null,
+          "chunk_id": null,
+          "passage_window_id": null,
+          "message_id": null,
+          "path": null,
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx"
+        }
+      ],
+      "evidence_citations": [
+        {
+          "source_item_id": "src_384b289efc9356d0b9e4814e51529ed7",
+          "chunk_id": "chk_384b289efc9356d0b9e4814e51529ed7_0",
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx",
+          "title": "portfolio-pipeline.xlsx",
+          "snippet": "# Workbook: portfolio-pipeline.xlsx ## Sheet: Pipeline | Company | Lead | Status | ARR | Next Step | | --- | --- | --- | --- | --- | | Acme Example | Alice Example | active | 1200000 | Prepare partner meeting brief | | Widget Co | Charlie E"
+        }
+      ],
+      "members": [
+        {
+          "entity_id": "ent_83fbd0dd2e0f5136bdc13bbdcead3030",
+          "role": "lead",
+          "label": "Bob Example",
+          "entity_type": "person"
+        },
+        {
+          "entity_id": "ent_0689cacbb1bb5f11aad652f8bcb1072c",
+          "role": "company",
+          "label": "Fund A",
+          "entity_type": "company"
+        }
+      ]
+    },
+    {
+      "hyperedge_id": "hed_a7320087a36e5d0ea17b293dc0c570fc",
+      "relation_type": "meeting_attendance",
+      "directionality": "undirected",
+      "evidence_text": "Office hours session with alice-example (acme-example) and fund-a partner.",
+      "confidence": 1.0,
+      "source_refs": [
+        {
+          "source_item_id": "src_c93645a224085289b69c14313ecdabe9",
+          "document_id": null,
+          "chunk_id": null,
+          "passage_window_id": null,
+          "message_id": null,
+          "path": null,
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md"
+        }
+      ],
+      "evidence_citations": [
+        {
+          "source_item_id": "src_c93645a224085289b69c14313ecdabe9",
+          "chunk_id": "chk_c93645a224085289b69c14313ecdabe9_0",
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md",
+          "title": "meeting-2026-04-10-fundraise-fund-a.md",
+          "snippet": "--- title: \"Fundraise office hours — fund-a + alice-example\" type: meeting slug: meetings/2026-04-10-fundraise-fund-a date: 2026-04-10 attendees: [you, alice-example, fund-a] --- # Fundraise OH — fund-a / alice-example Office hours session "
+        },
+        {
+          "source_item_id": "src_c93645a224085289b69c14313ecdabe9",
+          "chunk_id": "chk_c93645a224085289b69c14313ecdabe9_1",
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md",
+          "title": "meeting-2026-04-10-fundraise-fund-a.md",
+          "snippet": "alice-example pushed back — she wants to grow into the pricing rather than annoy early adopters. Probably the right call for now, but I'd want to revisit by end of year. ## Takes - I bet acme-example closes the Series A on the timeline she'"
+        }
+      ],
+      "members": [
+        {
+          "entity_id": "ent_5cd5d08d823051a4aa67201674cd30f6",
+          "role": "participant",
+          "label": "you",
+          "entity_type": "person"
+        },
+        {
+          "entity_id": "ent_23ba013899f652559796c7c890c8bfed",
+          "role": "participant",
+          "label": "alice-example",
+          "entity_type": "person"
+        },
+        {
+          "entity_id": "ent_872d712560b850b2b164b2bd2ff2cdb8",
+          "role": "participant",
+          "label": "fund-a",
+          "entity_type": "organization"
+        }
+      ]
+    },
+    {
+      "hyperedge_id": "hed_a9dac83d41b75b65b2237a05ef393e43",
+      "relation_type": "coffee_meeting",
+      "directionality": "undirected",
+      "evidence_text": "Coffee with alice-example this morning.",
+      "confidence": 1.0,
+      "source_refs": [
+        {
+          "source_item_id": "src_0d88e2d74eb5564daa5996459618cb9f",
+          "document_id": null,
+          "chunk_id": null,
+          "passage_window_id": null,
+          "message_id": null,
+          "path": null,
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/daily-2026-04-15.md"
+        }
+      ],
+      "evidence_citations": [
+        {
+          "source_item_id": "src_0d88e2d74eb5564daa5996459618cb9f",
+          "chunk_id": "chk_0d88e2d74eb5564daa5996459618cb9f_0",
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/daily-2026-04-15.md",
+          "title": "daily-2026-04-15.md",
+          "snippet": "--- title: \"2026-04-15\" type: daily slug: daily/2026-04-15 date: 2026-04-15 --- # Wednesday 2026-04-15 Coffee with alice-example this morning. She's pushing hard on the acme-example pricing change — wants to move enterprise tier 40% by end "
+        },
+        {
+          "source_item_id": "src_0d88e2d74eb5564daa5996459618cb9f",
+          "chunk_id": "chk_0d88e2d74eb5564daa5996459618cb9f_1",
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/daily-2026-04-15.md",
+          "title": "daily-2026-04-15.md",
+          "snippet": "he AI conference circuit will quiet down by late 2026 as the actual revenue numbers start coming in. People are going to start asking hard questions about retention."
+        }
+      ],
+      "members": [
+        {
+          "entity_id": "ent_01a2a2c0f3b259758b15077c5397fc2c",
+          "role": "participant",
+          "label": "speaker",
+          "entity_type": "person"
+        },
+        {
+          "entity_id": "ent_23ba013899f652559796c7c890c8bfed",
+          "role": "participant",
+          "label": "alice-example",
+          "entity_type": "person"
+        }
+      ]
+    },
+    {
+      "hyperedge_id": "hed_c006194c5b9858bb9dc2c3e11782a4d4",
+      "relation_type": "valuation_discrepancy",
+      "directionality": "directed",
+      "evidence_text": "Vertical-AI valuations are running ahead of their actual retention data.",
+      "confidence": 0.7,
+      "source_refs": [
+        {
+          "source_item_id": "src_d4fd21da5f23540db318c05705961c69",
+          "document_id": null,
+          "chunk_id": null,
+          "passage_window_id": null,
+          "message_id": null,
+          "path": null,
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/concept-startup-market-dynamics.md"
+        }
+      ],
+      "evidence_citations": [
+        {
+          "source_item_id": "src_d4fd21da5f23540db318c05705961c69",
+          "chunk_id": "chk_d4fd21da5f23540db318c05705961c69_0",
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/concept-startup-market-dynamics.md",
+          "title": "concept-startup-market-dynamics.md",
+          "snippet": "--- title: \"Startup Market Dynamics\" type: concept tweet_count: 12 created: 2026-04-01 updated: 2026-04-24 tags: [concept, calibration-fixture] --- # Startup Market Dynamics ## Summary How early-stage market structure affects which startups"
+        },
+        {
+          "source_item_id": "src_d4fd21da5f23540db318c05705961c69",
+          "chunk_id": "chk_d4fd21da5f23540db318c05705961c69_1",
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/concept-startup-market-dynamics.md",
+          "title": "concept-startup-market-dynamics.md",
+          "snippet": " actually positioning problems — the founder hasn't picked a side of the marketplace narrow enough to bootstrap from. fund-a's recent losses fit this pattern. (Modest conviction, ~0.6.) - **2024-06-22** | widget-co's plateau is a marketing "
+        }
+      ],
+      "members": [
+        {
+          "entity_id": "ent_31c798ab3fcb5cc8ad82697ba89edc4b",
+          "role": "sector",
+          "label": "vertical-AI",
+          "entity_type": "market_category"
+        },
+        {
+          "entity_id": "ent_d37e27f66389594091b48cc3074707a0",
+          "role": "overvalued",
+          "label": "valuations",
+          "entity_type": "metric"
+        },
+        {
+          "entity_id": "ent_615ab7f4cce25e98b83ebd0e27e7fd3a",
+          "role": "undervalued",
+          "label": "retention data",
+          "entity_type": "metric"
+        }
+      ]
+    },
+    {
+      "hyperedge_id": "hed_c332767a07e45d4486759adb57271dec",
+      "relation_type": "shipped",
+      "directionality": "directed",
+      "evidence_text": "alice-example shipped the acme-example MVP in 11 days",
+      "confidence": 0.9,
+      "source_refs": [
+        {
+          "source_item_id": "src_62aa58d5cf875ebc8533e101f9ec9f60",
+          "document_id": null,
+          "chunk_id": null,
+          "passage_window_id": null,
+          "message_id": null,
+          "path": null,
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/concept-founder-execution.md"
+        }
+      ],
+      "evidence_citations": [
+        {
+          "source_item_id": "src_62aa58d5cf875ebc8533e101f9ec9f60",
+          "chunk_id": "chk_62aa58d5cf875ebc8533e101f9ec9f60_0",
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/concept-founder-execution.md",
+          "title": "concept-founder-execution.md",
+          "snippet": "--- title: \"Founder Execution\" type: concept tweet_count: 8 created: 2026-04-01 updated: 2026-04-22 tags: [concept, calibration-fixture, holdout] --- # Founder Execution ## Summary Patterns in how high-performing founders ship versus how st"
+        },
+        {
+          "source_item_id": "src_62aa58d5cf875ebc8533e101f9ec9f60",
+          "chunk_id": "chk_62aa58d5cf875ebc8533e101f9ec9f60_1",
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/concept-founder-execution.md",
+          "title": "concept-founder-execution.md",
+          "snippet": "k alice-example outperforms her seed projections by year 2. - I bet at least one fund-c company hits a meaningful revenue milestone by mid-2026 despite the slow start."
+        }
+      ],
+      "members": [
+        {
+          "entity_id": "ent_23ba013899f652559796c7c890c8bfed",
+          "role": "shipper",
+          "label": "alice-example",
+          "entity_type": "person"
+        },
+        {
+          "entity_id": "ent_8cda86cb9f0f53b18a473244ec3790aa",
+          "role": "product",
+          "label": "acme-example",
+          "entity_type": "product"
+        }
+      ]
+    },
+    {
+      "hyperedge_id": "hed_cda5380eb74254acb9afdefd4711dd66",
+      "relation_type": "wants_to_hire",
+      "directionality": "directed",
+      "evidence_text": "alice-example wants to move forward.",
+      "confidence": 1.0,
+      "source_refs": [
+        {
+          "source_item_id": "src_c8e8b52cc6de59aaa47ab526532ce055",
+          "document_id": null,
+          "chunk_id": null,
+          "passage_window_id": null,
+          "message_id": null,
+          "path": null,
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md"
+        }
+      ],
+      "evidence_citations": [
+        {
+          "source_item_id": "src_c8e8b52cc6de59aaa47ab526532ce055",
+          "chunk_id": "chk_c8e8b52cc6de59aaa47ab526532ce055_0",
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
+          "title": "meeting-2026-04-17-hiring-charlie-example.md",
+          "snippet": "--- title: \"Hiring conversation — charlie-example for acme-example COO role\" type: meeting slug: meetings/2026-04-17-hiring-charlie-example date: 2026-04-17 attendees: [you, alice-example, charlie-example] --- # Hiring OH — charlie-example "
+        },
+        {
+          "source_item_id": "src_c8e8b52cc6de59aaa47ab526532ce055",
+          "chunk_id": "chk_c8e8b52cc6de59aaa47ab526532ce055_1",
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
+          "title": "meeting-2026-04-17-hiring-charlie-example.md",
+          "snippet": "hs in the COO role at acme-example's velocity. Moderate conviction, 0.6. - alice-example will hire him anyway despite my concern. Strong, 0.85. - I predict charlie-example's first 90 days will look strong before the velocity gap shows up ar"
+        }
+      ],
+      "members": [
+        {
+          "entity_id": "ent_23ba013899f652559796c7c890c8bfed",
+          "role": "hirer",
+          "label": "alice-example",
+          "entity_type": "person"
+        },
+        {
+          "entity_id": "ent_c4b31b8b856854c9bf69f783a22711ee",
+          "role": "candidate",
+          "label": "charlie-example",
+          "entity_type": "person"
+        }
+      ]
+    },
+    {
+      "hyperedge_id": "hed_d1392d5780275d56b18b103bba022fe7",
+      "relation_type": "owns_action",
+      "directionality": "directed",
+      "evidence_text": "| Charlie Example | Draft 90-day COO trial plan | 2026-07-03 | hiring note |",
+      "confidence": 1.0,
+      "source_refs": [
+        {
+          "source_item_id": "src_384b289efc9356d0b9e4814e51529ed7",
+          "document_id": null,
+          "chunk_id": null,
+          "passage_window_id": null,
+          "message_id": null,
+          "path": null,
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx"
+        }
+      ],
+      "evidence_citations": [
+        {
+          "source_item_id": "src_384b289efc9356d0b9e4814e51529ed7",
+          "chunk_id": "chk_384b289efc9356d0b9e4814e51529ed7_0",
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx",
+          "title": "portfolio-pipeline.xlsx",
+          "snippet": "# Workbook: portfolio-pipeline.xlsx ## Sheet: Pipeline | Company | Lead | Status | ARR | Next Step | | --- | --- | --- | --- | --- | | Acme Example | Alice Example | active | 1200000 | Prepare partner meeting brief | | Widget Co | Charlie E"
+        }
+      ],
+      "members": [
+        {
+          "entity_id": "ent_f93a2b9952bd5bbe91793866f541d6f8",
+          "role": "owner",
+          "label": "Charlie Example",
+          "entity_type": "person"
+        },
+        {
+          "entity_id": "ent_ad641882ab2a54408418fc5cc03275c3",
+          "role": "action",
+          "label": "Draft 90-day COO trial plan",
+          "entity_type": "action"
+        }
+      ]
+    },
+    {
+      "hyperedge_id": "hed_d38c579bb2b0530c9095c8eaae87d840",
+      "relation_type": "has_problem",
+      "directionality": "directed",
+      "evidence_text": "widget-co's plateau is a marketing problem, not a product problem.",
+      "confidence": 0.9,
+      "source_refs": [
+        {
+          "source_item_id": "src_d4fd21da5f23540db318c05705961c69",
+          "document_id": null,
+          "chunk_id": null,
+          "passage_window_id": null,
+          "message_id": null,
+          "path": null,
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/concept-startup-market-dynamics.md"
+        }
+      ],
+      "evidence_citations": [
+        {
+          "source_item_id": "src_d4fd21da5f23540db318c05705961c69",
+          "chunk_id": "chk_d4fd21da5f23540db318c05705961c69_0",
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/concept-startup-market-dynamics.md",
+          "title": "concept-startup-market-dynamics.md",
+          "snippet": "--- title: \"Startup Market Dynamics\" type: concept tweet_count: 12 created: 2026-04-01 updated: 2026-04-24 tags: [concept, calibration-fixture] --- # Startup Market Dynamics ## Summary How early-stage market structure affects which startups"
+        },
+        {
+          "source_item_id": "src_d4fd21da5f23540db318c05705961c69",
+          "chunk_id": "chk_d4fd21da5f23540db318c05705961c69_1",
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/concept-startup-market-dynamics.md",
+          "title": "concept-startup-market-dynamics.md",
+          "snippet": " actually positioning problems — the founder hasn't picked a side of the marketplace narrow enough to bootstrap from. fund-a's recent losses fit this pattern. (Modest conviction, ~0.6.) - **2024-06-22** | widget-co's plateau is a marketing "
+        }
+      ],
+      "members": [
+        {
+          "entity_id": "ent_e689c5d547cc5f0abaa12af50b8865f1",
+          "role": "subject",
+          "label": "widget-co",
+          "entity_type": "company"
+        },
+        {
+          "entity_id": "ent_c08760d387c85aabbcae3bbc0fcb79c0",
+          "role": "problem",
+          "label": "marketing",
+          "entity_type": "problem_type"
+        }
+      ]
+    },
+    {
+      "hyperedge_id": "hed_eb06098ad6fc5efdb07645ed709e513c",
+      "relation_type": "leads",
+      "directionality": "directed",
+      "evidence_text": "| Widget Co | Charlie Example | watch | 450000 | Review COO transition risk |",
+      "confidence": 1.0,
+      "source_refs": [
+        {
+          "source_item_id": "src_384b289efc9356d0b9e4814e51529ed7",
+          "document_id": null,
+          "chunk_id": null,
+          "passage_window_id": null,
+          "message_id": null,
+          "path": null,
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx"
+        }
+      ],
+      "evidence_citations": [
+        {
+          "source_item_id": "src_384b289efc9356d0b9e4814e51529ed7",
+          "chunk_id": "chk_384b289efc9356d0b9e4814e51529ed7_0",
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx",
+          "title": "portfolio-pipeline.xlsx",
+          "snippet": "# Workbook: portfolio-pipeline.xlsx ## Sheet: Pipeline | Company | Lead | Status | ARR | Next Step | | --- | --- | --- | --- | --- | | Acme Example | Alice Example | active | 1200000 | Prepare partner meeting brief | | Widget Co | Charlie E"
+        }
+      ],
+      "members": [
+        {
+          "entity_id": "ent_f93a2b9952bd5bbe91793866f541d6f8",
+          "role": "lead",
+          "label": "Charlie Example",
+          "entity_type": "person"
+        },
+        {
+          "entity_id": "ent_4c72c583104b5d2290de1d4dbbdd1ec5",
+          "role": "company",
+          "label": "Widget Co",
+          "entity_type": "company"
+        }
+      ]
+    },
+    {
+      "hyperedge_id": "hed_ec8746c917e754a5a9759f81bac3d70a",
+      "relation_type": "leads",
+      "directionality": "directed",
+      "evidence_text": "| Acme Example | Alice Example | active | 1200000 | Prepare partner meeting brief |",
+      "confidence": 1.0,
+      "source_refs": [
+        {
+          "source_item_id": "src_384b289efc9356d0b9e4814e51529ed7",
+          "document_id": null,
+          "chunk_id": null,
+          "passage_window_id": null,
+          "message_id": null,
+          "path": null,
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx"
+        }
+      ],
+      "evidence_citations": [
+        {
+          "source_item_id": "src_384b289efc9356d0b9e4814e51529ed7",
+          "chunk_id": "chk_384b289efc9356d0b9e4814e51529ed7_0",
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx",
+          "title": "portfolio-pipeline.xlsx",
+          "snippet": "# Workbook: portfolio-pipeline.xlsx ## Sheet: Pipeline | Company | Lead | Status | ARR | Next Step | | --- | --- | --- | --- | --- | | Acme Example | Alice Example | active | 1200000 | Prepare partner meeting brief | | Widget Co | Charlie E"
+        }
+      ],
+      "members": [
+        {
+          "entity_id": "ent_09005778725e5b1b8d90c34d3fcb146d",
+          "role": "lead",
+          "label": "Alice Example",
+          "entity_type": "person"
+        },
+        {
+          "entity_id": "ent_f6983a7c91d9521987477d9713fa1390",
+          "role": "company",
+          "label": "Acme Example",
+          "entity_type": "company"
+        }
+      ]
+    },
+    {
+      "hyperedge_id": "hed_edc14c0defde5850a16f677d97c340af",
+      "relation_type": "works_at",
+      "directionality": "directed",
+      "evidence_text": "CEO of widget-co.",
+      "confidence": 1.0,
+      "source_refs": [
+        {
+          "source_item_id": "src_52a3d89297295673b30728fada7495ba",
+          "document_id": null,
+          "chunk_id": null,
+          "passage_window_id": null,
+          "message_id": null,
+          "path": null,
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/people-bob-example.md"
+        }
+      ],
+      "evidence_citations": [
+        {
+          "source_item_id": "src_52a3d89297295673b30728fada7495ba",
+          "chunk_id": "chk_52a3d89297295673b30728fada7495ba_0",
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/people-bob-example.md",
+          "title": "people-bob-example.md",
+          "snippet": "--- title: bob-example type: people slug: people/bob-example --- # Bob Example CEO of widget-co. Met him through fund-b in early 2024. Background: operator at a horizontal-SaaS company before founding widget-co. Strong sales background, wea"
+        },
+        {
+          "source_item_id": "src_52a3d89297295673b30728fada7495ba",
+          "chunk_id": "chk_52a3d89297295673b30728fada7495ba_1",
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/people-bob-example.md",
+          "title": "people-bob-example.md",
+          "snippet": " take a meeting with him for a different kind of company. The bet I want to record: widget-co either pivots hard in the next 12 months or wraps up. The middle path doesn't exist for them given where they are. Conviction ~0.65."
+        }
+      ],
+      "members": [
+        {
+          "entity_id": "ent_83fbd0dd2e0f5136bdc13bbdcead3030",
+          "role": "employee",
+          "label": "Bob Example",
+          "entity_type": "person"
+        },
+        {
+          "entity_id": "ent_6dc75b11b2c150709af9f2e4e6ac8a8e",
+          "role": "employer",
+          "label": "widget-co",
+          "entity_type": "organization"
+        }
+      ]
+    },
+    {
+      "hyperedge_id": "hed_f6dd5c88d8c45695a8158f70edff55c2",
+      "relation_type": "slower_cadence_than",
+      "directionality": "undirected",
+      "evidence_text": "widget-co's operating cadence was much slower than what alice-example runs.",
+      "confidence": 1.0,
+      "source_refs": [
+        {
+          "source_item_id": "src_c8e8b52cc6de59aaa47ab526532ce055",
+          "document_id": null,
+          "chunk_id": null,
+          "passage_window_id": null,
+          "message_id": null,
+          "path": null,
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md"
+        }
+      ],
+      "evidence_citations": [
+        {
+          "source_item_id": "src_c8e8b52cc6de59aaa47ab526532ce055",
+          "chunk_id": "chk_c8e8b52cc6de59aaa47ab526532ce055_0",
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
+          "title": "meeting-2026-04-17-hiring-charlie-example.md",
+          "snippet": "--- title: \"Hiring conversation — charlie-example for acme-example COO role\" type: meeting slug: meetings/2026-04-17-hiring-charlie-example date: 2026-04-17 attendees: [you, alice-example, charlie-example] --- # Hiring OH — charlie-example "
+        },
+        {
+          "source_item_id": "src_c8e8b52cc6de59aaa47ab526532ce055",
+          "chunk_id": "chk_c8e8b52cc6de59aaa47ab526532ce055_1",
+          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
+          "title": "meeting-2026-04-17-hiring-charlie-example.md",
+          "snippet": "hs in the COO role at acme-example's velocity. Moderate conviction, 0.6. - alice-example will hire him anyway despite my concern. Strong, 0.85. - I predict charlie-example's first 90 days will look strong before the velocity gap shows up ar"
+        }
+      ],
+      "members": [
+        {
+          "entity_id": "ent_6dc75b11b2c150709af9f2e4e6ac8a8e",
+          "role": "slower",
+          "label": "widget-co",
+          "entity_type": "organization"
+        },
+        {
+          "entity_id": "ent_63b78b6148045b37bc005cde7a8e49c5",
+          "role": "faster",
+          "label": "acme-example",
+          "entity_type": "organization"
+        }
+      ]
+    }
+  ],
+  "graph_paths": [
+    {
+      "path_id": "ent_63b78b6148045b37bc005cde7a8e49c5:hed_f6dd5c88d8c45695a8158f70edff55c2:ent_6dc75b11b2c150709af9f2e4e6ac8a8e",
+      "depth": 1,
+      "seed": {
+        "entity_id": "ent_63b78b6148045b37bc005cde7a8e49c5",
+        "label": "acme-example",
+        "entity_type": "organization"
+      },
+      "entities": [
+        {
+          "entity_id": "ent_63b78b6148045b37bc005cde7a8e49c5",
+          "label": "acme-example",
+          "entity_type": "organization"
+        },
+        {
+          "entity_id": "ent_6dc75b11b2c150709af9f2e4e6ac8a8e",
+          "label": "widget-co",
+          "entity_type": "organization"
+        }
+      ],
+      "edges": [
+        {
+          "hyperedge_id": "hed_f6dd5c88d8c45695a8158f70edff55c2",
+          "relation_type": "slower_cadence_than",
+          "directionality": "undirected",
+          "evidence_text": "widget-co's operating cadence was much slower than what alice-example runs.",
+          "confidence": 1.0,
+          "source_refs": [
+            {
+              "source_item_id": "src_c8e8b52cc6de59aaa47ab526532ce055",
+              "document_id": null,
+              "chunk_id": null,
+              "passage_window_id": null,
+              "message_id": null,
+              "path": null,
+              "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md"
+            }
+          ],
+          "evidence_citations": [
+            {
+              "source_item_id": "src_c8e8b52cc6de59aaa47ab526532ce055",
+              "chunk_id": "chk_c8e8b52cc6de59aaa47ab526532ce055_0",
+              "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
+              "title": "meeting-2026-04-17-hiring-charlie-example.md",
+              "snippet": "--- title: \"Hiring conversation — charlie-example for acme-example COO role\" type: meeting slug: meetings/2026-04-17-hiring-charlie-example date: 2026-04-17 attendees: [you, alice-example, charlie-example] --- # Hiring OH — charlie-example "
+            },
+            {
+              "source_item_id": "src_c8e8b52cc6de59aaa47ab526532ce055",
+              "chunk_id": "chk_c8e8b52cc6de59aaa47ab526532ce055_1",
+              "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
+              "title": "meeting-2026-04-17-hiring-charlie-example.md",
+              "snippet": "hs in the COO role at acme-example's velocity. Moderate conviction, 0.6. - alice-example will hire him anyway despite my concern. Strong, 0.85. - I predict charlie-example's first 90 days will look strong before the velocity gap shows up ar"
+            }
+          ],
+          "members": [
+            {
+              "entity_id": "ent_6dc75b11b2c150709af9f2e4e6ac8a8e",
+              "role": "slower",
+              "label": "widget-co",
+              "entity_type": "organization"
+            },
+            {
+              "entity_id": "ent_63b78b6148045b37bc005cde7a8e49c5",
+              "role": "faster",
+              "label": "acme-example",
+              "entity_type": "organization"
+            }
+          ]
+        }
+      ],
+      "explanation": "acme-example -[slower_cadence_than]-> widget-co",
+      "score": 0.925,
+      "score_debug": {
+        "path_length": 1,
+        "mean_confidence": 1.0,
+        "evidence_coverage": 1.0,
+        "query_mention_coverage": 0.5,
+        "query_mentioned_entity_ids": [
+          "ent_63b78b6148045b37bc005cde7a8e49c5"
+        ],
+        "length_penalty": 0.0
+      }
+    },
+    {
+      "path_id": "ent_63b78b6148045b37bc005cde7a8e49c5:hed_349d198ea3b65c5da647003cb0de0fe4:ent_c4b31b8b856854c9bf69f783a22711ee",
+      "depth": 1,
+      "seed": {
+        "entity_id": "ent_63b78b6148045b37bc005cde7a8e49c5",
+        "label": "acme-example",
+        "entity_type": "organization"
+      },
+      "entities": [
+        {
+          "entity_id": "ent_63b78b6148045b37bc005cde7a8e49c5",
+          "label": "acme-example",
+          "entity_type": "organization"
+        },
+        {
+          "entity_id": "ent_c4b31b8b856854c9bf69f783a22711ee",
+          "label": "charlie-example",
+          "entity_type": "person"
+        }
+      ],
+      "edges": [
+        {
+          "hyperedge_id": "hed_349d198ea3b65c5da647003cb0de0fe4",
+          "relation_type": "candidate_for",
+          "directionality": "directed",
+          "evidence_text": "alice-example brought charlie-example by to discuss the COO role at acme-example.",
+          "confidence": 1.0,
+          "source_refs": [
+            {
+              "source_item_id": "src_c8e8b52cc6de59aaa47ab526532ce055",
+              "document_id": null,
+              "chunk_id": null,
+              "passage_window_id": null,
+              "message_id": null,
+              "path": null,
+              "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md"
+            }
+          ],
+          "evidence_citations": [
+            {
+              "source_item_id": "src_c8e8b52cc6de59aaa47ab526532ce055",
+              "chunk_id": "chk_c8e8b52cc6de59aaa47ab526532ce055_0",
+              "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
+              "title": "meeting-2026-04-17-hiring-charlie-example.md",
+              "snippet": "--- title: \"Hiring conversation — charlie-example for acme-example COO role\" type: meeting slug: meetings/2026-04-17-hiring-charlie-example date: 2026-04-17 attendees: [you, alice-example, charlie-example] --- # Hiring OH — charlie-example "
+            },
+            {
+              "source_item_id": "src_c8e8b52cc6de59aaa47ab526532ce055",
+              "chunk_id": "chk_c8e8b52cc6de59aaa47ab526532ce055_1",
+              "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
+              "title": "meeting-2026-04-17-hiring-charlie-example.md",
+              "snippet": "hs in the COO role at acme-example's velocity. Moderate conviction, 0.6. - alice-example will hire him anyway despite my concern. Strong, 0.85. - I predict charlie-example's first 90 days will look strong before the velocity gap shows up ar"
+            }
+          ],
+          "members": [
+            {
+              "entity_id": "ent_c4b31b8b856854c9bf69f783a22711ee",
+              "role": "candidate",
+              "label": "charlie-example",
+              "entity_type": "person"
+            },
+            {
+              "entity_id": "ent_63b78b6148045b37bc005cde7a8e49c5",
+              "role": "company",
+              "label": "acme-example",
+              "entity_type": "organization"
+            },
+            {
+              "entity_id": "ent_107a9cea3b785f32808509894e0e7958",
+              "role": "position",
+              "label": "COO",
+              "entity_type": "role"
+            }
+          ]
+        }
+      ],
+      "explanation": "acme-example -[candidate_for]-> charlie-example",
+      "score": 0.925,
+      "score_debug": {
+        "path_length": 1,
+        "mean_confidence": 1.0,
+        "evidence_coverage": 1.0,
+        "query_mention_coverage": 0.5,
+        "query_mentioned_entity_ids": [
+          "ent_63b78b6148045b37bc005cde7a8e49c5"
+        ],
+        "length_penalty": 0.0
+      }
+    },
+    {
+      "path_id": "ent_63b78b6148045b37bc005cde7a8e49c5:hed_349d198ea3b65c5da647003cb0de0fe4:ent_107a9cea3b785f32808509894e0e7958",
+      "depth": 1,
+      "seed": {
+        "entity_id": "ent_63b78b6148045b37bc005cde7a8e49c5",
+        "label": "acme-example",
+        "entity_type": "organization"
+      },
+      "entities": [
+        {
+          "entity_id": "ent_63b78b6148045b37bc005cde7a8e49c5",
+          "label": "acme-example",
+          "entity_type": "organization"
+        },
+        {
+          "entity_id": "ent_107a9cea3b785f32808509894e0e7958",
+          "label": "COO",
+          "entity_type": "role"
+        }
+      ],
+      "edges": [
+        {
+          "hyperedge_id": "hed_349d198ea3b65c5da647003cb0de0fe4",
+          "relation_type": "candidate_for",
+          "directionality": "directed",
+          "evidence_text": "alice-example brought charlie-example by to discuss the COO role at acme-example.",
+          "confidence": 1.0,
+          "source_refs": [
+            {
+              "source_item_id": "src_c8e8b52cc6de59aaa47ab526532ce055",
+              "document_id": null,
+              "chunk_id": null,
+              "passage_window_id": null,
+              "message_id": null,
+              "path": null,
+              "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md"
+            }
+          ],
+          "evidence_citations": [
+            {
+              "source_item_id": "src_c8e8b52cc6de59aaa47ab526532ce055",
+              "chunk_id": "chk_c8e8b52cc6de59aaa47ab526532ce055_0",
+              "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
+              "title": "meeting-2026-04-17-hiring-charlie-example.md",
+              "snippet": "--- title: \"Hiring conversation — charlie-example for acme-example COO role\" type: meeting slug: meetings/2026-04-17-hiring-charlie-example date: 2026-04-17 attendees: [you, alice-example, charlie-example] --- # Hiring OH — charlie-example "
+            },
+            {
+              "source_item_id": "src_c8e8b52cc6de59aaa47ab526532ce055",
+              "chunk_id": "chk_c8e8b52cc6de59aaa47ab526532ce055_1",
+              "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
+              "title": "meeting-2026-04-17-hiring-charlie-example.md",
+              "snippet": "hs in the COO role at acme-example's velocity. Moderate conviction, 0.6. - alice-example will hire him anyway despite my concern. Strong, 0.85. - I predict charlie-example's first 90 days will look strong before the velocity gap shows up ar"
+            }
+          ],
+          "members": [
+            {
+              "entity_id": "ent_c4b31b8b856854c9bf69f783a22711ee",
+              "role": "candidate",
+              "label": "charlie-example",
+              "entity_type": "person"
+            },
+            {
+              "entity_id": "ent_63b78b6148045b37bc005cde7a8e49c5",
+              "role": "company",
+              "label": "acme-example",
+              "entity_type": "organization"
+            },
+            {
+              "entity_id": "ent_107a9cea3b785f32808509894e0e7958",
+              "role": "position",
+              "label": "COO",
+              "entity_type": "role"
+            }
+          ]
+        }
+      ],
+      "explanation": "acme-example -[candidate_for]-> COO",
+      "score": 0.925,
+      "score_debug": {
+        "path_length": 1,
+        "mean_confidence": 1.0,
+        "evidence_coverage": 1.0,
+        "query_mention_coverage": 0.5,
+        "query_mentioned_entity_ids": [
+          "ent_63b78b6148045b37bc005cde7a8e49c5"
+        ],
+        "length_penalty": 0.0
+      }
+    },
+    {
+      "path_id": "ent_8cda86cb9f0f53b18a473244ec3790aa:hed_c332767a07e45d4486759adb57271dec:ent_23ba013899f652559796c7c890c8bfed",
+      "depth": 1,
+      "seed": {
+        "entity_id": "ent_8cda86cb9f0f53b18a473244ec3790aa",
+        "label": "acme-example",
+        "entity_type": "product"
+      },
+      "entities": [
+        {
+          "entity_id": "ent_8cda86cb9f0f53b18a473244ec3790aa",
+          "label": "acme-example",
+          "entity_type": "product"
+        },
+        {
+          "entity_id": "ent_23ba013899f652559796c7c890c8bfed",
+          "label": "alice-example",
+          "entity_type": "person"
+        }
+      ],
+      "edges": [
+        {
+          "hyperedge_id": "hed_c332767a07e45d4486759adb57271dec",
+          "relation_type": "shipped",
+          "directionality": "directed",
+          "evidence_text": "alice-example shipped the acme-example MVP in 11 days",
+          "confidence": 0.9,
+          "source_refs": [
+            {
+              "source_item_id": "src_62aa58d5cf875ebc8533e101f9ec9f60",
+              "document_id": null,
+              "chunk_id": null,
+              "passage_window_id": null,
+              "message_id": null,
+              "path": null,
+              "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/concept-founder-execution.md"
+            }
+          ],
+          "evidence_citations": [
+            {
+              "source_item_id": "src_62aa58d5cf875ebc8533e101f9ec9f60",
+              "chunk_id": "chk_62aa58d5cf875ebc8533e101f9ec9f60_0",
+              "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/concept-founder-execution.md",
+              "title": "concept-founder-execution.md",
+              "snippet": "--- title: \"Founder Execution\" type: concept tweet_count: 8 created: 2026-04-01 updated: 2026-04-22 tags: [concept, calibration-fixture, holdout] --- # Founder Execution ## Summary Patterns in how high-performing founders ship versus how st"
+            },
+            {
+              "source_item_id": "src_62aa58d5cf875ebc8533e101f9ec9f60",
+              "chunk_id": "chk_62aa58d5cf875ebc8533e101f9ec9f60_1",
+              "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/concept-founder-execution.md",
+              "title": "concept-founder-execution.md",
+              "snippet": "k alice-example outperforms her seed projections by year 2. - I bet at least one fund-c company hits a meaningful revenue milestone by mid-2026 despite the slow start."
+            }
+          ],
+          "members": [
+            {
+              "entity_id": "ent_23ba013899f652559796c7c890c8bfed",
+              "role": "shipper",
+              "label": "alice-example",
+              "entity_type": "person"
+            },
+            {
+              "entity_id": "ent_8cda86cb9f0f53b18a473244ec3790aa",
+              "role": "product",
+              "label": "acme-example",
+              "entity_type": "product"
+            }
+          ]
+        }
+      ],
+      "explanation": "acme-example -[shipped]-> alice-example",
+      "score": 0.88,
+      "score_debug": {
+        "path_length": 1,
+        "mean_confidence": 0.9,
+        "evidence_coverage": 1.0,
+        "query_mention_coverage": 0.5,
+        "query_mentioned_entity_ids": [
+          "ent_8cda86cb9f0f53b18a473244ec3790aa"
+        ],
+        "length_penalty": 0.0
+      }
+    },
+    {
+      "path_id": "ent_63b78b6148045b37bc005cde7a8e49c5:hed_496cf168d7f35fcbafbef26413d37719:ent_23ba013899f652559796c7c890c8bfed",
+      "depth": 1,
+      "seed": {
+        "entity_id": "ent_63b78b6148045b37bc005cde7a8e49c5",
+        "label": "acme-example",
+        "entity_type": "organization"
+      },
+      "entities": [
+        {
+          "entity_id": "ent_63b78b6148045b37bc005cde7a8e49c5",
+          "label": "acme-example",
+          "entity_type": "organization"
+        },
+        {
+          "entity_id": "ent_23ba013899f652559796c7c890c8bfed",
+          "label": "alice-example",
+          "entity_type": "person"
+        }
+      ],
+      "edges": [
+        {
+          "hyperedge_id": "hed_496cf168d7f35fcbafbef26413d37719",
+          "relation_type": "represents",
+          "directionality": "directed",
+          "evidence_text": "alice-example (acme-example)",
+          "confidence": 0.9,
+          "source_refs": [
+            {
+              "source_item_id": "src_c93645a224085289b69c14313ecdabe9",
+              "document_id": null,
+              "chunk_id": null,
+              "passage_window_id": null,
+              "message_id": null,
+              "path": null,
+              "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md"
+            }
+          ],
+          "evidence_citations": [
+            {
+              "source_item_id": "src_c93645a224085289b69c14313ecdabe9",
+              "chunk_id": "chk_c93645a224085289b69c14313ecdabe9_0",
+              "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md",
+              "title": "meeting-2026-04-10-fundraise-fund-a.md",
+              "snippet": "--- title: \"Fundraise office hours — fund-a + alice-example\" type: meeting slug: meetings/2026-04-10-fundraise-fund-a date: 2026-04-10 attendees: [you, alice-example, fund-a] --- # Fundraise OH — fund-a / alice-example Office hours session "
+            },
+            {
+              "source_item_id": "src_c93645a224085289b69c14313ecdabe9",
+              "chunk_id": "chk_c93645a224085289b69c14313ecdabe9_1",
+              "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md",
+              "title": "meeting-2026-04-10-fundraise-fund-a.md",
+              "snippet": "alice-example pushed back — she wants to grow into the pricing rather than annoy early adopters. Probably the right call for now, but I'd want to revisit by end of year. ## Takes - I bet acme-example closes the Series A on the timeline she'"
+            }
+          ],
+          "members": [
+            {
+              "entity_id": "ent_23ba013899f652559796c7c890c8bfed",
+              "role": "representative",
+              "label": "alice-example",
+              "entity_type": "person"
+            },
+            {
+              "entity_id": "ent_63b78b6148045b37bc005cde7a8e49c5",
+              "role": "represented",
+              "label": "acme-example",
+              "entity_type": "organization"
+            }
+          ]
+        }
+      ],
+      "explanation": "acme-example -[represents]-> alice-example",
+      "score": 0.88,
+      "score_debug": {
+        "path_length": 1,
+        "mean_confidence": 0.9,
+        "evidence_coverage": 1.0,
+        "query_mention_coverage": 0.5,
+        "query_mentioned_entity_ids": [
+          "ent_63b78b6148045b37bc005cde7a8e49c5"
+        ],
+        "length_penalty": 0.0
+      }
+    },
+    {
+      "path_id": "ent_8cda86cb9f0f53b18a473244ec3790aa:hed_c332767a07e45d4486759adb57271dec|hed_496cf168d7f35fcbafbef26413d37719:ent_63b78b6148045b37bc005cde7a8e49c5",
+      "depth": 2,
+      "seed": {
+        "entity_id": "ent_8cda86cb9f0f53b18a473244ec3790aa",
+        "label": "acme-example",
+        "entity_type": "product"
+      },
+      "entities": [
+        {
+          "entity_id": "ent_8cda86cb9f0f53b18a473244ec3790aa",
+          "label": "acme-example",
+          "entity_type": "product"
+        },
+        {
+          "entity_id": "ent_23ba013899f652559796c7c890c8bfed",
+          "label": "alice-example",
+          "entity_type": "person"
+        },
+        {
+          "entity_id": "ent_63b78b6148045b37bc005cde7a8e49c5",
+          "label": "acme-example",
+          "entity_type": "organization"
+        }
+      ],
+      "edges": [
+        {
+          "hyperedge_id": "hed_c332767a07e45d4486759adb57271dec",
+          "relation_type": "shipped",
+          "directionality": "directed",
+          "evidence_text": "alice-example shipped the acme-example MVP in 11 days",
+          "confidence": 0.9,
+          "source_refs": [
+            {
+              "source_item_id": "src_62aa58d5cf875ebc8533e101f9ec9f60",
+              "document_id": null,
+              "chunk_id": null,
+              "passage_window_id": null,
+              "message_id": null,
+              "path": null,
+              "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/concept-founder-execution.md"
+            }
+          ],
+          "evidence_citations": [
+            {
+              "source_item_id": "src_62aa58d5cf875ebc8533e101f9ec9f60",
+              "chunk_id": "chk_62aa58d5cf875ebc8533e101f9ec9f60_0",
+              "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/concept-founder-execution.md",
+              "title": "concept-founder-execution.md",
+              "snippet": "--- title: \"Founder Execution\" type: concept tweet_count: 8 created: 2026-04-01 updated: 2026-04-22 tags: [concept, calibration-fixture, holdout] --- # Founder Execution ## Summary Patterns in how high-performing founders ship versus how st"
+            },
+            {
+              "source_item_id": "src_62aa58d5cf875ebc8533e101f9ec9f60",
+              "chunk_id": "chk_62aa58d5cf875ebc8533e101f9ec9f60_1",
+              "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/concept-founder-execution.md",
+              "title": "concept-founder-execution.md",
+              "snippet": "k alice-example outperforms her seed projections by year 2. - I bet at least one fund-c company hits a meaningful revenue milestone by mid-2026 despite the slow start."
+            }
+          ],
+          "members": [
+            {
+              "entity_id": "ent_23ba013899f652559796c7c890c8bfed",
+              "role": "shipper",
+              "label": "alice-example",
+              "entity_type": "person"
+            },
+            {
+              "entity_id": "ent_8cda86cb9f0f53b18a473244ec3790aa",
+              "role": "product",
+              "label": "acme-example",
+              "entity_type": "product"
+            }
+          ]
+        },
+        {
+          "hyperedge_id": "hed_496cf168d7f35fcbafbef26413d37719",
+          "relation_type": "represents",
+          "directionality": "directed",
+          "evidence_text": "alice-example (acme-example)",
+          "confidence": 0.9,
+          "source_refs": [
+            {
+              "source_item_id": "src_c93645a224085289b69c14313ecdabe9",
+              "document_id": null,
+              "chunk_id": null,
+              "passage_window_id": null,
+              "message_id": null,
+              "path": null,
+              "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md"
+            }
+          ],
+          "evidence_citations": [
+            {
+              "source_item_id": "src_c93645a224085289b69c14313ecdabe9",
+              "chunk_id": "chk_c93645a224085289b69c14313ecdabe9_0",
+              "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md",
+              "title": "meeting-2026-04-10-fundraise-fund-a.md",
+              "snippet": "--- title: \"Fundraise office hours — fund-a + alice-example\" type: meeting slug: meetings/2026-04-10-fundraise-fund-a date: 2026-04-10 attendees: [you, alice-example, fund-a] --- # Fundraise OH — fund-a / alice-example Office hours session "
+            },
+            {
+              "source_item_id": "src_c93645a224085289b69c14313ecdabe9",
+              "chunk_id": "chk_c93645a224085289b69c14313ecdabe9_1",
+              "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md",
+              "title": "meeting-2026-04-10-fundraise-fund-a.md",
+              "snippet": "alice-example pushed back — she wants to grow into the pricing rather than annoy early adopters. Probably the right call for now, but I'd want to revisit by end of year. ## Takes - I bet acme-example closes the Series A on the timeline she'"
+            }
+          ],
+          "members": [
+            {
+              "entity_id": "ent_23ba013899f652559796c7c890c8bfed",
+              "role": "representative",
+              "label": "alice-example",
+              "entity_type": "person"
+            },
+            {
+              "entity_id": "ent_63b78b6148045b37bc005cde7a8e49c5",
+              "role": "represented",
+              "label": "acme-example",
+              "entity_type": "organization"
+            }
+          ]
+        }
+      ],
+      "explanation": "acme-example -[shipped]-> alice-example -[represents]-> acme-example",
+      "score": 0.841667,
+      "score_debug": {
+        "path_length": 2,
+        "mean_confidence": 0.9,
+        "evidence_coverage": 1.0,
+        "query_mention_coverage": 0.6666666666666666,
+        "query_mentioned_entity_ids": [
+          "ent_8cda86cb9f0f53b18a473244ec3790aa",
+          "ent_63b78b6148045b37bc005cde7a8e49c5"
+        ],
+        "length_penalty": 0.08
+      }
+    },
+    {
+      "path_id": "ent_63b78b6148045b37bc005cde7a8e49c5:hed_496cf168d7f35fcbafbef26413d37719|hed_c332767a07e45d4486759adb57271dec:ent_8cda86cb9f0f53b18a473244ec3790aa",
+      "depth": 2,
+      "seed": {
+        "entity_id": "ent_63b78b6148045b37bc005cde7a8e49c5",
+        "label": "acme-example",
+        "entity_type": "organization"
+      },
+      "entities": [
+        {
+          "entity_id": "ent_63b78b6148045b37bc005cde7a8e49c5",
+          "label": "acme-example",
+          "entity_type": "organization"
+        },
+        {
+          "entity_id": "ent_23ba013899f652559796c7c890c8bfed",
+          "label": "alice-example",
+          "entity_type": "person"
+        },
+        {
+          "entity_id": "ent_8cda86cb9f0f53b18a473244ec3790aa",
+          "label": "acme-example",
+          "entity_type": "product"
+        }
+      ],
+      "edges": [
+        {
+          "hyperedge_id": "hed_496cf168d7f35fcbafbef26413d37719",
+          "relation_type": "represents",
+          "directionality": "directed",
+          "evidence_text": "alice-example (acme-example)",
+          "confidence": 0.9,
+          "source_refs": [
+            {
+              "source_item_id": "src_c93645a224085289b69c14313ecdabe9",
+              "document_id": null,
+              "chunk_id": null,
+              "passage_window_id": null,
+              "message_id": null,
+              "path": null,
+              "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md"
+            }
+          ],
+          "evidence_citations": [
+            {
+              "source_item_id": "src_c93645a224085289b69c14313ecdabe9",
+              "chunk_id": "chk_c93645a224085289b69c14313ecdabe9_0",
+              "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md",
+              "title": "meeting-2026-04-10-fundraise-fund-a.md",
+              "snippet": "--- title: \"Fundraise office hours — fund-a + alice-example\" type: meeting slug: meetings/2026-04-10-fundraise-fund-a date: 2026-04-10 attendees: [you, alice-example, fund-a] --- # Fundraise OH — fund-a / alice-example Office hours session "
+            },
+            {
+              "source_item_id": "src_c93645a224085289b69c14313ecdabe9",
+              "chunk_id": "chk_c93645a224085289b69c14313ecdabe9_1",
+              "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md",
+              "title": "meeting-2026-04-10-fundraise-fund-a.md",
+              "snippet": "alice-example pushed back — she wants to grow into the pricing rather than annoy early adopters. Probably the right call for now, but I'd want to revisit by end of year. ## Takes - I bet acme-example closes the Series A on the timeline she'"
+            }
+          ],
+          "members": [
+            {
+              "entity_id": "ent_23ba013899f652559796c7c890c8bfed",
+              "role": "representative",
+              "label": "alice-example",
+              "entity_type": "person"
+            },
+            {
+              "entity_id": "ent_63b78b6148045b37bc005cde7a8e49c5",
+              "role": "represented",
+              "label": "acme-example",
+              "entity_type": "organization"
+            }
+          ]
+        },
+        {
+          "hyperedge_id": "hed_c332767a07e45d4486759adb57271dec",
+          "relation_type": "shipped",
+          "directionality": "directed",
+          "evidence_text": "alice-example shipped the acme-example MVP in 11 days",
+          "confidence": 0.9,
+          "source_refs": [
+            {
+              "source_item_id": "src_62aa58d5cf875ebc8533e101f9ec9f60",
+              "document_id": null,
+              "chunk_id": null,
+              "passage_window_id": null,
+              "message_id": null,
+              "path": null,
+              "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/concept-founder-execution.md"
+            }
+          ],
+          "evidence_citations": [
+            {
+              "source_item_id": "src_62aa58d5cf875ebc8533e101f9ec9f60",
+              "chunk_id": "chk_62aa58d5cf875ebc8533e101f9ec9f60_0",
+              "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/concept-founder-execution.md",
+              "title": "concept-founder-execution.md",
+              "snippet": "--- title: \"Founder Execution\" type: concept tweet_count: 8 created: 2026-04-01 updated: 2026-04-22 tags: [concept, calibration-fixture, holdout] --- # Founder Execution ## Summary Patterns in how high-performing founders ship versus how st"
+            },
+            {
+              "source_item_id": "src_62aa58d5cf875ebc8533e101f9ec9f60",
+              "chunk_id": "chk_62aa58d5cf875ebc8533e101f9ec9f60_1",
+              "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/concept-founder-execution.md",
+              "title": "concept-founder-execution.md",
+              "snippet": "k alice-example outperforms her seed projections by year 2. - I bet at least one fund-c company hits a meaningful revenue milestone by mid-2026 despite the slow start."
+            }
+          ],
+          "members": [
+            {
+              "entity_id": "ent_23ba013899f652559796c7c890c8bfed",
+              "role": "shipper",
+              "label": "alice-example",
+              "entity_type": "person"
+            },
+            {
+              "entity_id": "ent_8cda86cb9f0f53b18a473244ec3790aa",
+              "role": "product",
+              "label": "acme-example",
+              "entity_type": "product"
+            }
+          ]
+        }
+      ],
+      "explanation": "acme-example -[represents]-> alice-example -[shipped]-> acme-example",
+      "score": 0.841667,
+      "score_debug": {
+        "path_length": 2,
+        "mean_confidence": 0.9,
+        "evidence_coverage": 1.0,
+        "query_mention_coverage": 0.6666666666666666,
+        "query_mentioned_entity_ids": [
+          "ent_63b78b6148045b37bc005cde7a8e49c5",
+          "ent_8cda86cb9f0f53b18a473244ec3790aa"
+        ],
+        "length_penalty": 0.08
+      }
+    },
+    {
+      "path_id": "ent_81e452b5e0eb57d18c6a3395040a8eb2:hed_5a9825172e1b535ca69e0d94a45cffc8:ent_c45a43cadf2f52a8b360c7c842815b92",
+      "depth": 1,
+      "seed": {
+        "entity_id": "ent_81e452b5e0eb57d18c6a3395040a8eb2",
+        "label": "acme-example",
+        "entity_type": "company"
+      },
+      "entities": [
+        {
+          "entity_id": "ent_81e452b5e0eb57d18c6a3395040a8eb2",
+          "label": "acme-example",
+          "entity_type": "company"
+        },
+        {
+          "entity_id": "ent_c45a43cadf2f52a8b360c7c842815b92",
+          "label": "devtools",
+          "entity_type": "market_category"
+        }
+      ],
+      "edges": [
+        {
+          "hyperedge_id": "hed_5a9825172e1b535ca69e0d94a45cffc8",
+          "relation_type": "pivot",
+          "directionality": "directed",
+          "evidence_text": "The acme-example pivot from devtools to vertical-AI was the right call.",
+          "confidence": 0.8,
+          "source_refs": [
+            {
+              "source_item_id": "src_d4fd21da5f23540db318c05705961c69",
+              "document_id": null,
+              "chunk_id": null,
+              "passage_window_id": null,
+              "message_id": null,
+              "path": null,
+              "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/concept-startup-market-dynamics.md"
+            }
+          ],
+          "evidence_citations": [
+            {
+              "source_item_id": "src_d4fd21da5f23540db318c05705961c69",
+              "chunk_id": "chk_d4fd21da5f23540db318c05705961c69_0",
+              "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/concept-startup-market-dynamics.md",
+              "title": "concept-startup-market-dynamics.md",
+              "snippet": "--- title: \"Startup Market Dynamics\" type: concept tweet_count: 12 created: 2026-04-01 updated: 2026-04-24 tags: [concept, calibration-fixture] --- # Startup Market Dynamics ## Summary How early-stage market structure affects which startups"
+            },
+            {
+              "source_item_id": "src_d4fd21da5f23540db318c05705961c69",
+              "chunk_id": "chk_d4fd21da5f23540db318c05705961c69_1",
+              "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/concept-startup-market-dynamics.md",
+              "title": "concept-startup-market-dynamics.md",
+              "snippet": " actually positioning problems — the founder hasn't picked a side of the marketplace narrow enough to bootstrap from. fund-a's recent losses fit this pattern. (Modest conviction, ~0.6.) - **2024-06-22** | widget-co's plateau is a marketing "
+            }
+          ],
+          "members": [
+            {
+              "entity_id": "ent_81e452b5e0eb57d18c6a3395040a8eb2",
+              "role": "subject",
+              "label": "acme-example",
+              "entity_type": "company"
+            },
+            {
+              "entity_id": "ent_c45a43cadf2f52a8b360c7c842815b92",
+              "role": "from",
+              "label": "devtools",
+              "entity_type": "market_category"
+            },
+            {
+              "entity_id": "ent_31c798ab3fcb5cc8ad82697ba89edc4b",
+              "role": "to",
+              "label": "vertical-AI",
+              "entity_type": "market_category"
+            }
+          ]
+        }
+      ],
+      "explanation": "acme-example -[pivot]-> devtools",
+      "score": 0.835,
+      "score_debug": {
+        "path_length": 1,
+        "mean_confidence": 0.8,
+        "evidence_coverage": 1.0,
+        "query_mention_coverage": 0.5,
+        "query_mentioned_entity_ids": [
+          "ent_81e452b5e0eb57d18c6a3395040a8eb2"
+        ],
+        "length_penalty": 0.0
+      }
+    }
+  ],
+  "profile_context": [],
+  "memory_context": [],
+  "profile_context_used": false,
+  "memory_context_used": false,
+  "gaps": [],
+  "conflicts": [],
+  "sensitivity": [],
+  "score_debug": {
+    "ranker": "hybrid_rrf",
+    "top_k": 8,
+    "graph_context_used": true,
+    "graph_paths_used": true,
+    "diagnostics": {
+      "ungrounded_graph_edges": 0,
+      "conflict_count": 0,
+      "sensitivity_count": 0,
+      "profile_context_count": 0,
+      "memory_context_count": 0
+    },
+    "offline_index_freshness": {
+      "index_version": "hipporag_offline.v1",
+      "total": 44,
+      "dirty": 44,
+      "indexed": 0,
+      "tombstoned": 0,
+      "by_status": {
+        "dirty": 44
+      },
+      "by_object_type": {
+        "chunk": 28,
+        "source_item": 16
+      },
+      "last_indexed_at": null,
+      "fallback": "request_scoped_rebuild"
+    },
+    "exact_candidates": 0,
+    "lexical_candidates": 24,
+    "lexical_ranker": "term_frequency",
+    "vector_enabled": false,
+    "vector_candidates": 0,
+    "vector_error": null,
+    "embedding_model": null,
+    "graph_ranker": "ppr_chunk_entity_fusion",
+    "graph_ppr_enabled": true,
+    "graph_ppr_nodes": 323,
+    "graph_ppr_edges": 1155,
+    "graph_ppr_seed_count": 32,
+    "graph_fact_seed_count": 8,
+    "graph_query_entity_seed_count": 8,
+    "hipporag_offline_graph": {
+      "num_phrase_nodes": 90,
+      "num_passage_nodes": 28,
+      "num_fact_nodes": 205,
+      "num_total_nodes": 323,
+      "num_total_edges": 1155,
+      "num_fact_to_entity_edges": 429,
+      "num_fact_to_passage_edges": 377
+    },
+    "hipporag_embedding_linking": {
+      "enabled": false,
+      "error": null,
+      "fact_embeddings": 0,
+      "entity_embeddings": 0,
+      "linked_entities": [
+        {
+          "entity_id": "ent_f6983a7c91d9521987477d9713fa1390",
+          "label": "Acme Example",
+          "score": 1.07566378,
+          "score_debug": {
+            "lexical": 1.075663779375452,
+            "embedding": 0.0
+          }
+        },
+        {
+          "entity_id": "ent_8cda86cb9f0f53b18a473244ec3790aa",
+          "label": "acme-example",
+          "score": 1.07566378,
+          "score_debug": {
+            "lexical": 1.075663779375452,
+            "embedding": 0.0
+          }
+        },
+        {
+          "entity_id": "ent_81e452b5e0eb57d18c6a3395040a8eb2",
+          "label": "acme-example",
+          "score": 1.07566378,
+          "score_debug": {
+            "lexical": 1.075663779375452,
+            "embedding": 0.0
+          }
+        },
+        {
+          "entity_id": "ent_63b78b6148045b37bc005cde7a8e49c5",
+          "label": "acme-example",
+          "score": 1.07566378,
+          "score_debug": {
+            "lexical": 1.075663779375452,
+            "embedding": 0.0
+          }
+        },
+        {
+          "entity_id": "ent_978f55700a0a5700b9929bef4a2d3f80",
+          "label": "acme-example pricing change",
+          "score": 0.78571429,
+          "score_debug": {
+            "lexical": 0.7857142857142857,
+            "embedding": 0.0
+          }
+        }
+      ]
+    },
+    "graph_expanded_candidates": 20,
+    "graph_top_facts": [
+      {
+        "hyperedge_id": "hed_496cf168d7f35fcbafbef26413d37719",
+        "fact_kind": "hyperedge",
+        "object_id": "hed_496cf168d7f35fcbafbef26413d37719",
+        "relation_type": "represents",
+        "score": 0.77,
+        "members": [
+          "alice-example",
+          "acme-example"
+        ],
+        "source_refs": [
+          {
+            "source_item_id": "src_c93645a224085289b69c14313ecdabe9",
+            "document_id": null,
+            "chunk_id": null,
+            "passage_window_id": null,
+            "message_id": null,
+            "path": null,
+            "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md"
+          }
+        ]
+      },
+      {
+        "hyperedge_id": "",
+        "fact_kind": "knowledge_claim",
+        "object_id": "claim_3a894318a0c35589811d59a36bd9f678",
+        "relation_type": "pivoted_to",
+        "score": 0.73478921,
+        "members": [
+          "acme-example",
+          "vertical-AI",
+          "acme-example",
+          "acme-example",
+          "Acme Example"
+        ],
+        "source_refs": [
+          {
+            "source_item_id": "src_4880b40b309058d7b473444141f9dd9f",
+            "document_id": null,
+            "chunk_id": null,
+            "passage_window_id": null,
+            "message_id": null,
+            "path": null,
+            "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/companies-acme-example.md"
+          }
+        ]
+      },
+      {
+        "hyperedge_id": "hed_349d198ea3b65c5da647003cb0de0fe4",
+        "fact_kind": "hyperedge",
+        "object_id": "hed_349d198ea3b65c5da647003cb0de0fe4",
+        "relation_type": "candidate_for",
+        "score": 0.71100663,
+        "members": [
+          "charlie-example",
+          "acme-example",
+          "COO"
+        ],
+        "source_refs": [
+          {
+            "source_item_id": "src_c8e8b52cc6de59aaa47ab526532ce055",
+            "document_id": null,
+            "chunk_id": null,
+            "passage_window_id": null,
+            "message_id": null,
+            "path": null,
+            "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md"
+          }
+        ]
+      },
+      {
+        "hyperedge_id": "hed_5a9825172e1b535ca69e0d94a45cffc8",
+        "fact_kind": "hyperedge",
+        "object_id": "hed_5a9825172e1b535ca69e0d94a45cffc8",
+        "relation_type": "pivot",
+        "score": 0.70539764,
+        "members": [
+          "acme-example",
+          "devtools",
+          "vertical-AI"
+        ],
+        "source_refs": [
+          {
+            "source_item_id": "src_d4fd21da5f23540db318c05705961c69",
+            "document_id": null,
+            "chunk_id": null,
+            "passage_window_id": null,
+            "message_id": null,
+            "path": null,
+            "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/concept-startup-market-dynamics.md"
+          }
+        ]
+      },
+      {
+        "hyperedge_id": "",
+        "fact_kind": "knowledge_claim",
+        "object_id": "claim_b20700af8b455b1681a6b13fdd64398b",
+        "relation_type": "are getting stronger",
+        "score": 0.67602364,
+        "members": [],
+        "source_refs": [
+          {
+            "source_item_id": "src_3b648e33bafc599fad84828c5c51447c",
+            "document_id": null,
+            "chunk_id": null,
+            "passage_window_id": null,
+            "message_id": null,
+            "path": null,
+            "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/daily-2026-04-18.md"
+          }
+        ]
+      }
+    ],
+    "graph_top_entities": [
+      {
+        "entity_id": "ent_63b78b6148045b37bc005cde7a8e49c5",
+        "score": 0.04139955
+      },
+      {
+        "entity_id": "ent_81e452b5e0eb57d18c6a3395040a8eb2",
+        "score": 0.03743012
+      },
+      {
+        "entity_id": "ent_8cda86cb9f0f53b18a473244ec3790aa",
+        "score": 0.03415158
+      },
+      {
+        "entity_id": "ent_f6983a7c91d9521987477d9713fa1390",
+        "score": 0.03392431
+      },
+      {
+        "entity_id": "ent_23ba013899f652559796c7c890c8bfed",
+        "score": 0.03390458
+      }
+    ]
+  }
+}
+real 1.92
+user 0.37
+sys 0.04

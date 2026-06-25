@@ -1,0 +1,50 @@
+$ PSKA_LLM_API_KEY_FILE=~/api_key.txt ./scripts/pska --config .pska/config.json extract-all --owner-user-id user_primary
+Traceback (most recent call last):
+  File "/Users/xudawei/Documents/personal archive/core/src/pska_core/extraction.py", line 275, in _validate_extraction
+    "confidence": float(edge.get("confidence", 0.75)),
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ValueError: could not convert string to float: 'high'
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/xudawei/Documents/personal archive/core/src/pska_core/extraction.py", line 189, in _extract_with_llm
+    return self._validate_extraction(raw)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/xudawei/Documents/personal archive/core/src/pska_core/extraction.py", line 279, in _validate_extraction
+    raise LLMResponseError(f"Invalid hyperedge schema: {edge}") from exc
+pska_core.llm.LLMResponseError: Invalid hyperedge schema: {'relation_type': 'shipped', 'directionality': 'directed', 'evidence_text': 'alice-example shipped the acme-example MVP in 11 days from idea-clarity.', 'confidence': 'high', 'members': [{'entity_type': 'person', 'label': 'alice-example', 'role': 'shipper'}, {'entity_type': 'company', 'label': 'acme-example', 'role': 'product'}]}
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/xudawei/Documents/personal archive/core/src/pska_core/extraction.py", line 285, in _validate_extraction
+    raise TypeError("review_items[].proposal must be an object")
+TypeError: review_items[].proposal must be an object
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/Users/xudawei/Documents/personal archive/core/src/pska_core/cli.py", line 4157, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "/Users/xudawei/Documents/personal archive/core/src/pska_core/cli.py", line 509, in main
+    return extract_all(args)
+           ^^^^^^^^^^^^^^^^^
+  File "/Users/xudawei/Documents/personal archive/core/src/pska_core/cli.py", line 1067, in extract_all
+    reports = ExtractionService(store).extract_all_visible(owner_user_id=args.owner_user_id)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/xudawei/Documents/personal archive/core/src/pska_core/extraction.py", line 141, in extract_all_visible
+    reports.append(self.extract_source_item(item))
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/xudawei/Documents/personal archive/core/src/pska_core/extraction.py", line 45, in extract_source_item
+    extraction = self._extract_with_llm(item)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/xudawei/Documents/personal archive/core/src/pska_core/extraction.py", line 193, in _extract_with_llm
+    return self._validate_extraction(repaired)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/xudawei/Documents/personal archive/core/src/pska_core/extraction.py", line 292, in _validate_extraction
+    raise LLMResponseError(f"Invalid review item schema: {review}") from exc
+pska_core.llm.LLMResponseError: Invalid review item schema: {'review_type': 'memory_candidate', 'title': 'charlie-example 在 widget-co 重建上的结果更新', 'proposal': '将 charlie-example 在 widget-co 重建上证明预测错误的结果存储为记忆。原始预测置信度0.6，实际结果更好。'}

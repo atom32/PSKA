@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import asdict
 from typing import Any
 from uuid import NAMESPACE_URL, uuid4, uuid5
@@ -297,7 +298,7 @@ class CandidateWriteService:
                 request_id=request_id,
             )
         claim = KnowledgeClaim(
-            knowledge_claim_id=str(spec.get("knowledge_claim_id") or _stable_id("claim", defaults.owner_user_id, statement, str(job_id or request_id or ""))),
+            knowledge_claim_id=str(spec.get("knowledge_claim_id") or _candidate_content_id("claim", defaults.owner_user_id, [statement], source_refs, spec)),
             owner_user_id=defaults.owner_user_id,
             claim_type=str(spec.get("claim_type") or "fact"),
             statement=statement,
@@ -313,6 +314,7 @@ class CandidateWriteService:
             request_id=str(request_id) if request_id else None,
             metadata={
                 **_dict_or_empty(spec.get("metadata"), "knowledge_claim.metadata"),
+                **_dedupe_metadata(spec),
                 "plain_text_summary": str(spec.get("plain_text_summary") or statement),
             },
         )
@@ -366,7 +368,7 @@ class CandidateWriteService:
         if not source_refs:
             raise CandidateWriteError("digest_note requires source_refs")
         note = DigestNote(
-            digest_note_id=str(spec.get("digest_note_id") or _stable_id("dig", defaults.owner_user_id, title, synopsis, str(job_id or request_id or ""))),
+            digest_note_id=str(spec.get("digest_note_id") or _candidate_content_id("dig", defaults.owner_user_id, [title, synopsis], source_refs, spec)),
             owner_user_id=defaults.owner_user_id,
             title=title,
             synopsis=synopsis,
@@ -381,7 +383,7 @@ class CandidateWriteService:
             producer=producer,
             job_id=str(job_id) if job_id else None,
             request_id=str(request_id) if request_id else None,
-            metadata=_dict_or_empty(spec.get("metadata"), "digest_note.metadata"),
+            metadata={**_dict_or_empty(spec.get("metadata"), "digest_note.metadata"), **_dedupe_metadata(spec)},
         )
         _assert_digest_note_items_are_grounded(note)
         return self.store.add_digest_note(note)
@@ -577,3 +579,55 @@ def _entity_key(entity_type: str, label: str) -> str:
 
 def _stable_id(prefix: str, *parts: str) -> str:
     return f"{prefix}_{uuid5(NAMESPACE_URL, '|'.join(parts)).hex}"
+
+
+def _content_stable_id(prefix: str, owner_user_id: str, text_parts: list[str], source_refs: list[SourceRef]) -> str:
+    return _stable_id(prefix, owner_user_id, *[_normalized_identity_text(part) for part in text_parts], *_source_ref_identity_parts(source_refs))
+
+
+def _candidate_content_id(prefix: str, owner_user_id: str, text_parts: list[str], source_refs: list[SourceRef], spec: dict[str, Any]) -> str:
+    dedupe_key = _candidate_dedupe_key(spec)
+    if dedupe_key:
+        return _content_stable_id(prefix, owner_user_id, [f"dedupe:{dedupe_key}"], source_refs)
+    return _content_stable_id(prefix, owner_user_id, text_parts, source_refs)
+
+
+def _candidate_dedupe_key(spec: dict[str, Any]) -> str:
+    metadata = spec.get("metadata") if isinstance(spec.get("metadata"), dict) else {}
+    for key in ("dedupe_key", "identity_key", "semantic_key", "canonical_key"):
+        value = spec.get(key)
+        if value is None:
+            value = metadata.get(key)
+        text = _normalized_identity_text(str(value or ""))
+        if text:
+            return text
+    return ""
+
+
+def _dedupe_metadata(spec: dict[str, Any]) -> dict[str, str]:
+    dedupe_key = _candidate_dedupe_key(spec)
+    return {"dedupe_key": dedupe_key} if dedupe_key else {}
+
+
+def _normalized_identity_text(value: str) -> str:
+    return re.sub(r"\s+", " ", value).strip().casefold()
+
+
+def _source_ref_identity_parts(source_refs: list[SourceRef]) -> list[str]:
+    parts: set[str] = set()
+    for ref in source_refs:
+        if ref.source_item_id:
+            parts.add(f"source:{ref.source_item_id}")
+        elif ref.document_id:
+            parts.add(f"document:{ref.document_id}")
+        elif ref.passage_window_id:
+            parts.add(f"passage:{ref.passage_window_id}")
+        elif ref.chunk_id:
+            parts.add(f"chunk:{ref.chunk_id}")
+        elif ref.url:
+            parts.add(f"url:{ref.url}")
+        elif ref.path:
+            parts.add(f"path:{ref.path}")
+        elif ref.message_id:
+            parts.add(f"message:{ref.message_id}")
+    return sorted(parts) or ["source:unknown"]

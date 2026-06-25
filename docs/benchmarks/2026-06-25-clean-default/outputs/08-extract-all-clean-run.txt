@@ -1,0 +1,536 @@
+$ PSKA_LLM_API_KEY_FILE=~/api_key.txt ./scripts/pska --config .pska/config.json extract-all --owner-user-id user_primary
+{
+  "reports": [
+    {
+      "source_item_id": "src_4880b40b309058d7b473444141f9dd9f",
+      "entities_created": [
+        "ent_81e452b5e0eb57d18c6a3395040a8eb2",
+        "ent_23ba013899f652559796c7c890c8bfed",
+        "ent_3c4d1ab6322f5c92a6cfa432dda459ac",
+        "ent_54d6fd56240350bb9e814407390d421f",
+        "ent_a1083672a5575ee8b14ef52dfc16f058",
+        "ent_9d0834be05945c0cb971178a62879efa"
+      ],
+      "hyperedges_created": [],
+      "knowledge_claims_created": [
+        "claim_0c862724f2a15401a28a3793bb9c7296",
+        "claim_c4c28ad50bbe54499ce8b9ac1edae502",
+        "claim_b403ff5670085d96a4e1c861093682c4",
+        "claim_3a894318a0c35589811d59a36bd9f678",
+        "claim_9edf1f764a5b51469fc7aa63bddf3b81",
+        "claim_ec68e7f311a95e4e9bb90dbc28b01a7f",
+        "claim_766b5226b75e541b9bf15ae712289e1d",
+        "claim_c8b5e00529b259e9bc7d25e49669b092",
+        "claim_b7d010e4ab8e5dd6b3e60ed59483a08e",
+        "claim_aee7d9b88bb05604a7e47c996816cfa0",
+        "claim_7179a8fc2e8b5ee3a6d2d414da0452c2",
+        "claim_aa8682556aa8524291018de467669eeb"
+      ],
+      "review_items_created": [
+        "review_75afab9b0be4547aa0b060b1eae422c6"
+      ],
+      "warnings": []
+    },
+    {
+      "source_item_id": "src_d4fd21da5f23540db318c05705961c69",
+      "entities_created": [
+        "ent_81e452b5e0eb57d18c6a3395040a8eb2",
+        "ent_e689c5d547cc5f0abaa12af50b8865f1",
+        "ent_3c4d1ab6322f5c92a6cfa432dda459ac",
+        "ent_293584bff84c5b9aabe303b12ac14a84",
+        "ent_23ba013899f652559796c7c890c8bfed",
+        "ent_31c798ab3fcb5cc8ad82697ba89edc4b",
+        "ent_023af97cd6de5083a8bbcb56b22c57aa",
+        "ent_862ec886f4c25fde9fc560caf2da8cca",
+        "ent_c45a43cadf2f52a8b360c7c842815b92",
+        "ent_c08760d387c85aabbcae3bbc0fcb79c0",
+        "ent_d37e27f66389594091b48cc3074707a0",
+        "ent_615ab7f4cce25e98b83ebd0e27e7fd3a"
+      ],
+      "hyperedges_created": [
+        "hed_61a5cb5c0a2b5418b532a6ecefed0907",
+        "hed_5a9825172e1b535ca69e0d94a45cffc8",
+        "hed_d38c579bb2b0530c9095c8eaae87d840",
+        "hed_c006194c5b9858bb9dc2c3e11782a4d4"
+      ],
+      "knowledge_claims_created": [
+        "claim_297335b584e856f3969b4b50e74bd0e7",
+        "claim_0ddad2ed7e615865afdab0c17d4cfaa1",
+        "claim_79bf77bab184565998edabbcbdf7b4bc",
+        "claim_0393af2c116c5cafabc3fa33a04b6646",
+        "claim_936a182b62a35c40bcbe6de125d1244d",
+        "claim_a86c2557e78450388ae87ee724c7b5f4",
+        "claim_e681f7bacf7150ff937078d74275396b",
+        "claim_f353a172b5e2581ca42965b6397d0cc7",
+        "claim_0cd1902ba2ee5baeaf15b5249ad32c5b",
+        "claim_203302517274571aaeec9969023db3e8"
+      ],
+      "review_items_created": [
+        "review_00974d6d95695fe0a83a21e65f5ef9a8",
+        "review_1300838c4864589db16f7bb63d8979b5",
+        "review_f015980e60e355a1b706173b500f9d54"
+      ],
+      "warnings": []
+    },
+    {
+      "source_item_id": "src_0d88e2d74eb5564daa5996459618cb9f",
+      "entities_created": [
+        "ent_23ba013899f652559796c7c890c8bfed",
+        "ent_978f55700a0a5700b9929bef4a2d3f80",
+        "ent_01a2a2c0f3b259758b15077c5397fc2c",
+        "ent_26d4199af5b157618019a1abec899ca2",
+        "ent_6dc75b11b2c150709af9f2e4e6ac8a8e",
+        "ent_e34f6767b6dc5d02b25b45c5c441f3b5",
+        "ent_b4b767fa683f51268d935f5d847e8c18"
+      ],
+      "hyperedges_created": [
+        "hed_a9dac83d41b75b65b2237a05ef393e43",
+        "hed_669f1d4ea6715ae680f980561d24f756",
+        "hed_fbc983b1799d56e5b48bc5ab08f35d4d",
+        "hed_37694cc84cd05affb20c4eaddb7f3d5d",
+        "hed_2f0422f2a27552ea9b2e30de1a7d0188"
+      ],
+      "knowledge_claims_created": [
+        "claim_d7871becfdb45c2dbbfb4b0875ad1001",
+        "claim_7dbba988700058b6b21e5aef415f6c7a",
+        "claim_7236beac6fb951e3afbcc1f297f634ec",
+        "claim_538c6a79621a5d78b6f4b330fbcde3fa",
+        "claim_80db1d1c300f5caea204cf27742a7bb2",
+        "claim_5268c9b090235499849771670e11d49d",
+        "claim_b68d5befc85d535184efd0cfd8332d45",
+        "claim_3891527f83d05528a20f2e7ba93760fb",
+        "claim_0b580a4842555045b1ff5e171a08e8db",
+        "claim_169a6920cd345cba8ef537cb5fc6ec70",
+        "claim_a01e05f61e55550bac181bf274bb7bcc",
+        "claim_ab234507e169520c9f1521927267ad8b"
+      ],
+      "review_items_created": [
+        "review_43268495a60b5e64bef1129cfda1860b",
+        "review_1d022d448a035630be2fa6c232f51cfe"
+      ],
+      "warnings": []
+    },
+    {
+      "source_item_id": "src_60425f2d57f4525494a9baf8e7478474",
+      "entities_created": [
+        "ent_81e452b5e0eb57d18c6a3395040a8eb2",
+        "ent_23ba013899f652559796c7c890c8bfed",
+        "ent_e689c5d547cc5f0abaa12af50b8865f1",
+        "ent_54d6fd56240350bb9e814407390d421f"
+      ],
+      "hyperedges_created": [],
+      "knowledge_claims_created": [
+        "claim_92ab9abb732d537e989efccbb05e8a2c",
+        "claim_e76a241e16135a25beab75a57b9c60de",
+        "claim_4a4cbd19a9a0541b827f2169e859af47",
+        "claim_7e9b27135e5658328148affabfa2b557",
+        "claim_dae6dcba89f55f3a9a7dbc7875f127da",
+        "claim_ef93dd7708d25c988f45c32b1fbd2dfe",
+        "claim_acc0df2b77cb5fbc85bf55e866bc54ae",
+        "claim_91017def62ed502fabf1150c58a8b3cc",
+        "claim_1565b8564342522fa78dddf992da0adf",
+        "claim_76604a9fc57f596c8003af408516c618",
+        "claim_4a8824cd9d3451ff957c7d81ae28e93f",
+        "claim_63975a47c1ba5a9bb7b62d5b1b06ccb2",
+        "claim_a696e982c3785c74a85e4d80cd3136c9",
+        "claim_5327528b224658a99733df35bbf66504",
+        "claim_fda8bd410b06582193f221b66ae8df15",
+        "claim_2dd40b31c7b557f0884372b67f3f1c8c",
+        "claim_37a4e477ee4b5ee19008a26124d57c0b",
+        "claim_0cdf6d386a005b829bd60586251fed85",
+        "claim_ea19bcd07c965dc5b5c35c1c7706fd2b",
+        "claim_a84d2b8366fe573f880b0677fedf6145"
+      ],
+      "review_items_created": [
+        "review_1eee8841ced75629962324a9038925ea",
+        "review_cbd5c67c547b5a0ab1be2fe5165c0422",
+        "review_22bccfe1817f557099de530fba096b24"
+      ],
+      "warnings": []
+    },
+    {
+      "source_item_id": "src_63b7676bf37854d7a3a39e8db981c74e",
+      "entities_created": [
+        "ent_fd7ec59d80725d4f89668663e3137dd3",
+        "ent_fafe217f7e4e581888e807ca3b03c257",
+        "ent_47fda342ffaa53b9a6e6653ecd6e71c0",
+        "ent_98c055839f7c547aad311959ce0774fd",
+        "ent_7f0e1ba0531a5cecb49532ab99bfcddc",
+        "ent_53bf4b8463095cb29220ef2b5e032dc2",
+        "ent_1a8a3d084cb85e5b9828bbbda83e071f",
+        "ent_c13e596b434a566c9d5fd3f873e81854",
+        "ent_8a593d6fc1bc59bab72107012849ec41",
+        "ent_2e57eb751f255a94815ccc705632d223",
+        "ent_0909c624113a5fd59cc1576df0a5d29a",
+        "ent_03e79af7c04354d8a8070fbb4b529508",
+        "ent_81cc7cac9bb65fe0969a10658b20ea8d",
+        "ent_1fefb507627d5172a0efd31989388638"
+      ],
+      "hyperedges_created": [
+        "hed_f6d54d35be5652c7b78eaab63f6c2d3a",
+        "hed_9b5bfac83be75210bff291541dafe604",
+        "hed_4e6c4cf1542951a6b88876b9611453a9",
+        "hed_3bd13f3231de52cfaa17077ed22a8c3a",
+        "hed_172a1f372e325a6b913a9f30efafd1ef"
+      ],
+      "knowledge_claims_created": [
+        "claim_7ecfe74d9c0956a6958346db905a28e0",
+        "claim_3fbcda03f3fc507c9618c3007d75e965",
+        "claim_86925b68e5125ca389753311d927d035",
+        "claim_c830d8c35c7e52bfbc36b37cffac89a8",
+        "claim_732d050efdbd5a5fbc655e46382ae821",
+        "claim_aa97647fe1dd526780688f0f8544c1a7",
+        "claim_a63352d9ae3e593ab7ed2ac1d9df425b",
+        "claim_42b930aae71b57efa2594cd49d9124bf",
+        "claim_562ec808585d57c69661ab029d7f13d9",
+        "claim_6623b15ab025546f8f36cc7b5eef3fee",
+        "claim_8e632570257255e688e639ec3ab8c1eb",
+        "claim_df821060a6a65fb6adae06b2c691d88b",
+        "claim_4f5bae6a7a235896a32d0f2871dd781d"
+      ],
+      "review_items_created": [
+        "review_908111d7e3f351198c5422824382973f",
+        "review_300d2490ff455eb8b66f3d437ebd3da5"
+      ],
+      "warnings": []
+    },
+    {
+      "source_item_id": "src_1bfa0f5e9f05553db0cd98041e0b8b15",
+      "entities_created": [
+        "ent_23ba013899f652559796c7c890c8bfed",
+        "ent_72baeedcf2325154a54732d6202623f2",
+        "ent_a916e7c904dc5f09aa6ffb78fb3d32a3",
+        "ent_8653331da4625d018aa95a502fc7e9ab",
+        "ent_5348b2e5cf45500288bf94c5a1fa9be3",
+        "ent_4f15b6634dfc5baf9d6a38a07fe385f2",
+        "ent_3b2c89e3ec635f91b0d7fab356fc51f8",
+        "ent_66cc06ba920c562997d440ae6fb5e777",
+        "ent_cdb7d09200105707afa669babe6aacef",
+        "ent_26b0f598b14550e289c7836cf7fa93a8"
+      ],
+      "hyperedges_created": [
+        "hed_1ca27fa0f2b057aaba8e9d8b4a034d92",
+        "hed_076241348b935393b7cdf6f042fd763b",
+        "hed_d1b737b535785b15a8666a1edf7f4bce"
+      ],
+      "knowledge_claims_created": [
+        "claim_04405688930950539b3dcc5502612d82",
+        "claim_7880a8b7d4c054758892caafb97c347d",
+        "claim_4ace6d9bf5e657a69c0b332d2b5875cd",
+        "claim_8642430471515510b06d2a0711cdf39d",
+        "claim_cfb3e32cee6f5c88b7312d1e37a9a3e9",
+        "claim_f81f534bf56c5b33867be48aaa99fcef",
+        "claim_fc52b5fbfddb5c5da02b87b3a5fe5799",
+        "claim_83add99cb116554c9f39c4d97138d4f1",
+        "claim_20df5229cc3f5ba8a895d1fce20978dd"
+      ],
+      "review_items_created": [
+        "review_4635070f45075d07bbf5de16591bbfd5"
+      ],
+      "warnings": []
+    },
+    {
+      "source_item_id": "src_c93645a224085289b69c14313ecdabe9",
+      "entities_created": [
+        "ent_23ba013899f652559796c7c890c8bfed",
+        "ent_872d712560b850b2b164b2bd2ff2cdb8",
+        "ent_63b78b6148045b37bc005cde7a8e49c5",
+        "ent_5cd5d08d823051a4aa67201674cd30f6",
+        "ent_4c71c9c3cb985853a926c31a5b7971e7"
+      ],
+      "hyperedges_created": [
+        "hed_a7320087a36e5d0ea17b293dc0c570fc",
+        "hed_496cf168d7f35fcbafbef26413d37719"
+      ],
+      "knowledge_claims_created": [
+        "claim_559b1642b9c45e85a27d07bcc43c1dac",
+        "claim_299ea7313f745c47b9fe2c1267a9f57b",
+        "claim_524faebabef05243a8d7554318529c62",
+        "claim_f9fdd670aea8581786a054567d272e59",
+        "claim_e573f2416f3a5a6fa781c3a8875af896",
+        "claim_55b1482d48ae5e2295f33e37342c3417",
+        "claim_8cb9bd0705f25a89ab0663655a3a972e",
+        "claim_775895d446435b1fa13e5096c93842c3",
+        "claim_3d5c7a86e5b05c13902fe57c1e2ece35",
+        "claim_76073605cd31592cbd6ad13167c7ee2c",
+        "claim_f0791330026d57ef9b178750c6381bec",
+        "claim_2610da02cc2b510cb62ed60f90872ab6",
+        "claim_a5ab76c5c52b5a96805ab5632605f00f",
+        "claim_e2615965323a53b3b7ed7ec506644b15",
+        "claim_7f9a3f9ce4c9544995212adcd7d07f69",
+        "claim_b8c84ad6b8ae5c69a79fa38fa195c0d6"
+      ],
+      "review_items_created": [
+        "review_1fb297351587518a8772345fe923c588",
+        "review_28531c98effa5e7bbc245651311ec475",
+        "review_dc244ff4a5b45c568a0622dc8151f2a4",
+        "review_ec1d03a0064c5b479be55d511a42d01f",
+        "review_00a5bf22351c5a8993d4979145078f9b"
+      ],
+      "warnings": []
+    },
+    {
+      "source_item_id": "src_abb33363e8f050c89287a6c0a3e7d6b9",
+      "entities_created": [
+        "ent_09005778725e5b1b8d90c34d3fcb146d",
+        "ent_63b78b6148045b37bc005cde7a8e49c5",
+        "ent_6dc75b11b2c150709af9f2e4e6ac8a8e",
+        "ent_72bbe85aecfc52b882e19c91a48d4b23"
+      ],
+      "hyperedges_created": [],
+      "knowledge_claims_created": [
+        "claim_20f0e061c4a75004889c331a7d16e77e",
+        "claim_3af78f6c794851f5aaebaefc99ed1796",
+        "claim_41b20cc8b8e25fa39c0107ba5b30a78b",
+        "claim_21b1730b5bb059f38ab2da3cdabfae33",
+        "claim_af36c1e389dc5c4f87ee2410361aa3ef",
+        "claim_9a768d90e32e5f358e05275d43f7aabd",
+        "claim_d19912dcb6655e11a1ccc790e46a24a0",
+        "claim_7f960734ea2852c49b4535eb50fd9f23",
+        "claim_71c5dc915c6e5952be28900ed562bfcc",
+        "claim_feff8f5b4f485f5e9c34d2ad4821f9f7",
+        "claim_a49de341e50f57cb96ec9b71fbe75343",
+        "claim_78307bef362853b0b8f9880982912f43"
+      ],
+      "review_items_created": [],
+      "warnings": []
+    },
+    {
+      "source_item_id": "src_62aa58d5cf875ebc8533e101f9ec9f60",
+      "entities_created": [
+        "ent_23ba013899f652559796c7c890c8bfed",
+        "ent_c4b31b8b856854c9bf69f783a22711ee",
+        "ent_cc97581d8cf558adbe314646796a261a",
+        "ent_8cda86cb9f0f53b18a473244ec3790aa",
+        "ent_5eae1df3fe9f5a7f98d479c6172f631f",
+        "ent_8a1bb15c8d87531096f940d38f933cc6"
+      ],
+      "hyperedges_created": [
+        "hed_c332767a07e45d4486759adb57271dec",
+        "hed_50d16133c0f558b295bdc5be01808404",
+        "hed_822f6b52c5615d0e88d50ac33fe6c1d2"
+      ],
+      "knowledge_claims_created": [
+        "claim_a9f26fbe01685f1299d7ff2c500c6458",
+        "claim_608f3ecdd14e583eaca62546d630733e",
+        "claim_b68c89c62e915426823d64442d659a43",
+        "claim_7817729447c650c5940e92823fa440ce",
+        "claim_53afef9035985909b6af4c6cc8e0abff",
+        "claim_3d4bea7f482d5d7bb71fd1370e78a855",
+        "claim_c38cb4563b685844929c90edf445435b"
+      ],
+      "review_items_created": [
+        "review_24b263b993cf57879627d25385e0f84b",
+        "review_ea7805866a4052e0bd2c6122af9b4bb2"
+      ],
+      "warnings": []
+    },
+    {
+      "source_item_id": "src_3b648e33bafc599fad84828c5c51447c",
+      "entities_created": [
+        "ent_81e452b5e0eb57d18c6a3395040a8eb2",
+        "ent_19343207094e511d99607e90123709e8",
+        "ent_e689c5d547cc5f0abaa12af50b8865f1",
+        "ent_e2a55ce546405e3c9d4a5ecd71ce3c42",
+        "ent_54d6fd56240350bb9e814407390d421f",
+        "ent_ebc01d602fca5938bc160dc398a614c0",
+        "ent_567b93d88cfd56858369fb39697fdcc9",
+        "ent_7b754115669b5657a568ef13c7d0cfe3"
+      ],
+      "hyperedges_created": [],
+      "knowledge_claims_created": [
+        "claim_b20700af8b455b1681a6b13fdd64398b",
+        "claim_928f955af9395fa399f08fb3f87155b1",
+        "claim_ddb9544f2e7b53f080b5ba227cec3bf8",
+        "claim_b6b20c8c94a653a6a62a68fa74f8baf1",
+        "claim_0d2a1e60abb55439896de117c81814f8",
+        "claim_b6643323e2dc5776b93d4284edde4ce3",
+        "claim_7199b40a71f85cfa988de00867b9bc1e",
+        "claim_70b198cfd30356cbb9ba45d5eee65ac6",
+        "claim_f309764b2a655b97892e0dd997bac26c",
+        "claim_fb25a4a074a45f41aab040adbbb97c32"
+      ],
+      "review_items_created": [
+        "review_fcdbdf29ae4a5a52972ac333299fa9f5",
+        "review_51669964072c50d38d871c228f701ec5",
+        "review_07c6651eef7c533cafbbec300d983978",
+        "review_28beecd2a36654ad9412c893eab3cc1b",
+        "review_6cdfee67f57c5c99bef7a98690732892"
+      ],
+      "warnings": []
+    },
+    {
+      "source_item_id": "src_55ca416c8eb3505cb1fb5d1fe99bb788",
+      "entities_created": [
+        "ent_4ed5ac8469495d1c8f2e64847cc61e35",
+        "ent_335d7a70ab5950adbbe355888b64d044",
+        "ent_0f0d5f783b1b555ba198f0333e6022fd",
+        "ent_eaf7321201fb592087a95a855bbd285d",
+        "ent_d9fcb24c2893582dad3e37567555524b",
+        "ent_ebf49f8140805e1cb0d1d6c13ed53d27",
+        "ent_5050bce9ec0d5ede91b9a3a572896f42",
+        "ent_a11404ecf24b5be2b700338f2a10a4a0",
+        "ent_aa6409b6268652cfb6cdc8f9ed190236"
+      ],
+      "hyperedges_created": [],
+      "knowledge_claims_created": [
+        "claim_bd944f0793b058019af95fe1f746ebdf",
+        "claim_b5f3f7a5cd0553f3863ed9f2e57bb22b",
+        "claim_7405d7814880503782813d072e95471c",
+        "claim_3fd0a267ffe65843b1839ddf6fc27104",
+        "claim_77a802e82c9e50f693474ba5b147b2c3",
+        "claim_da1931bd1d225e06b98902d0cc51ce18",
+        "claim_690c43c3b1ba5f3db0d749209cede4ef",
+        "claim_f5f7d1acaefc5acb986d9009eb1d077f"
+      ],
+      "review_items_created": [
+        "review_e53a434bcee85a16bf78bf1c5a5d6c55",
+        "review_561d086a4a28519390fedbf40c65e6c1"
+      ],
+      "warnings": []
+    },
+    {
+      "source_item_id": "src_c8e8b52cc6de59aaa47ab526532ce055",
+      "entities_created": [
+        "ent_23ba013899f652559796c7c890c8bfed",
+        "ent_c4b31b8b856854c9bf69f783a22711ee",
+        "ent_63b78b6148045b37bc005cde7a8e49c5",
+        "ent_6dc75b11b2c150709af9f2e4e6ac8a8e",
+        "ent_107a9cea3b785f32808509894e0e7958"
+      ],
+      "hyperedges_created": [
+        "hed_8e055af8b31859b5be0602b5e89f3d66",
+        "hed_349d198ea3b65c5da647003cb0de0fe4",
+        "hed_cda5380eb74254acb9afdefd4711dd66",
+        "hed_f6dd5c88d8c45695a8158f70edff55c2"
+      ],
+      "knowledge_claims_created": [
+        "claim_1eccae06597b57c3ac989325737045a6",
+        "claim_f23105eccef65cd7a650fdd604931169",
+        "claim_d3a4fbbb6b0a5dff8d3664e2b42fc81c",
+        "claim_5f8fb7bf31fb5f41b54555b50ad26030",
+        "claim_40e9c904f19e57808901ab442cdc66a3",
+        "claim_3d258f2ccbaa5feaa9c5310b5110ee9b",
+        "claim_36be0cd58d17548d93425f8708f80314",
+        "claim_df46dda432835b0bbdf29d9d03661797",
+        "claim_be7130580b095861b60e1ade58ba2a6c",
+        "claim_b8d17b9298155a83840f92f065bdcecb"
+      ],
+      "review_items_created": [
+        "review_2e3ff145dfd15d50a6c0303aa034315e"
+      ],
+      "warnings": []
+    },
+    {
+      "source_item_id": "src_52a3d89297295673b30728fada7495ba",
+      "entities_created": [
+        "ent_83fbd0dd2e0f5136bdc13bbdcead3030",
+        "ent_6dc75b11b2c150709af9f2e4e6ac8a8e",
+        "ent_e34f6767b6dc5d02b25b45c5c441f3b5",
+        "ent_6750043a0491530c84d8d37da6df2087"
+      ],
+      "hyperedges_created": [
+        "hed_edc14c0defde5850a16f677d97c340af",
+        "hed_7ee6bdccf154581d937225f0f9a00b3b",
+        "hed_0f2f9394d3b95338aee56e5957240a08"
+      ],
+      "knowledge_claims_created": [
+        "claim_e65ef453137453b7a7a4589707ee72c7",
+        "claim_21bf8fee480c5131aa17bfdd624b0443",
+        "claim_ff2eee0b9bb85409a22228becceb4e6e",
+        "claim_8be77b43d8b958c8bf505aba6140e39e",
+        "claim_a6b30c2f7fb85b93abd5d16938ad90c4",
+        "claim_a1320d53ef3a54649f8ab821c2569f4a",
+        "claim_172d4e0d2d655139a167088e69957575",
+        "claim_1a1eb5ecc1cd51828a772c8b5ea7d3a4",
+        "claim_97590bf572d959488f8896af211cafd7",
+        "claim_9e7ad35d7c725c9fa5fb9625c7ec4f64",
+        "claim_f82799b66aac5a53815c4612f85a3d45",
+        "claim_c008b6c61eda5021b8c49d870b68d6ce"
+      ],
+      "review_items_created": [
+        "review_1f0286d43fa758718455fe0d20259090",
+        "review_8db23d6a779d5a9489ff9c992bb17e5d",
+        "review_a21ac77198095c7083a00abecd618ff1",
+        "review_f5d18edf7ff65c3e8b6f58a7057e3c47"
+      ],
+      "warnings": []
+    },
+    {
+      "source_item_id": "src_dae5f2bff6f854c28da2d0dc521344ca",
+      "entities_created": [
+        "ent_df8089bf71c356d2ba16288ff7232cec",
+        "ent_0b89897ed8f85cb897f88b52baa78302"
+      ],
+      "hyperedges_created": [],
+      "knowledge_claims_created": [
+        "claim_1f5b03f6d867526487998da1cfbfbe3a",
+        "claim_607942da82485710a1f5fbc8fac4f843"
+      ],
+      "review_items_created": [],
+      "warnings": []
+    },
+    {
+      "source_item_id": "src_67350bcc25f25bc097c3cff13a425e1d",
+      "entities_created": [
+        "ent_a8dea59753d258ffa37edea87974ca3c",
+        "ent_fdefbafc6a4158a198aa9d9ac38fac66"
+      ],
+      "hyperedges_created": [],
+      "knowledge_claims_created": [
+        "claim_067dda0f24be5db4bae4fbc0eff9e7cf",
+        "claim_ad65ab5c38b156638f923a65575bb3d2"
+      ],
+      "review_items_created": [],
+      "warnings": []
+    },
+    {
+      "source_item_id": "src_384b289efc9356d0b9e4814e51529ed7",
+      "entities_created": [
+        "ent_f6983a7c91d9521987477d9713fa1390",
+        "ent_4c72c583104b5d2290de1d4dbbdd1ec5",
+        "ent_0689cacbb1bb5f11aad652f8bcb1072c",
+        "ent_09005778725e5b1b8d90c34d3fcb146d",
+        "ent_f93a2b9952bd5bbe91793866f541d6f8",
+        "ent_83fbd0dd2e0f5136bdc13bbdcead3030",
+        "ent_634d646d1000569c95c2276806d18769",
+        "ent_a1295feaa2485ef9851cafcba349da0a",
+        "ent_63561fb1a7605935901008c7811ca31f",
+        "ent_4049793ef6695f8d91fb04bb5e68f4d0",
+        "ent_fc0aa467ce725a72a3b66ab81f3627f3",
+        "ent_ad641882ab2a54408418fc5cc03275c3",
+        "ent_305337a68a195dd0a5cf6c8c6d82ab7a",
+        "ent_99c931b820a356bca1f1bd9a267e74b1",
+        "ent_1b38e38bb3f950ee98504e159b2e9788",
+        "ent_cb7f4ceeeae2538da59685095ad514df"
+      ],
+      "hyperedges_created": [
+        "hed_ec8746c917e754a5a9759f81bac3d70a",
+        "hed_eb06098ad6fc5efdb07645ed709e513c",
+        "hed_8fdf9b5584df51c893d6c3818d788507",
+        "hed_5df4fbc015cd50ab8703477bccb64452",
+        "hed_d1392d5780275d56b18b103bba022fe7",
+        "hed_ba61d1df0e1e50ceac4edb351e5c353d"
+      ],
+      "knowledge_claims_created": [
+        "claim_033a82fddc4155cbb323a1d71dd2d452",
+        "claim_63d8642450ca59999b7be5a3a39ba2be",
+        "claim_f1dde4698ede5463bb63e201e1cfb1c9",
+        "claim_fdccf237f6a15e83b64eeb35e39edb27",
+        "claim_7b052b93de755f7eb58d4776080a301f",
+        "claim_f382bb7549bc5508b6ae95e750236892",
+        "claim_3603d5d0dce4541e86e1c020b9d680ca",
+        "claim_5a7e58940b845ac2bba74febb182669b",
+        "claim_84478311bd3852a7b4e35e9d3ac76d32",
+        "claim_e952552d58145ac89b37d24ba8480fbf",
+        "claim_f51613fbd9af51d19017a7686ea165c4",
+        "claim_0f4120cb1f6b57beb63d203c5eb7025d",
+        "claim_17aa76abda8052beb0edc86dc5da821f",
+        "claim_f6c0459f4bd65490ba617ac87336183a",
+        "claim_8fc7ca8474845b29b04a89ebee9dba08"
+      ],
+      "review_items_created": [],
+      "warnings": []
+    }
+  ]
+}

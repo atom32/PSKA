@@ -241,7 +241,7 @@ export async function cleanupKnowledgeSource(
 export async function searchWorkspace(
   query: string,
   serviceToken: string,
-  mode: "agentic" | "direct" = "agentic"
+  mode: "agentic" | "direct" = "direct"
 ): Promise<WorkspaceSearchResponse> {
   const response = await fetch("/workspace/search/query", {
     method: "POST",
@@ -413,15 +413,7 @@ function mapSearchToBrain(data: WorkspaceSearchResponse, trigger: BrainState["la
   const memory = evidence?.memory_context || [];
   const graphPaths = evidence?.graph_paths || [];
 
-  const items = [...results, ...citations, ...memory]
-    .map((item) => ({
-      title: "title" in item ? item.title : undefined,
-      snippet: "snippet" in item ? item.snippet : undefined,
-      text: "text" in item ? item.text : undefined,
-      score: "score" in item ? item.score : undefined,
-      confidence: "confidence" in item ? item.confidence : undefined
-    }))
-    .filter((item) => item.title || item.snippet || item.text);
+  const items = dedupeSearchItems([...results, ...citations, ...memory]);
 
   return {
     status: "synced",
@@ -444,6 +436,77 @@ function mapSearchToBrain(data: WorkspaceSearchResponse, trigger: BrainState["la
       relation: path.explanation || "通过证据连接"
     }))
   };
+}
+
+type SearchBrainItem = {
+  title?: string;
+  snippet?: string;
+  text?: string;
+  source_item_id?: string;
+  score?: number;
+  confidence?: number;
+};
+
+function dedupeSearchItems(values: unknown[]): SearchBrainItem[] {
+  const merged = new Map<string, SearchBrainItem>();
+  const order: string[] = [];
+  values
+    .map((value) => {
+      const item = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+      return {
+        title: typeof item.title === "string" ? item.title : undefined,
+        snippet: typeof item.snippet === "string" ? item.snippet : undefined,
+        text: typeof item.text === "string" ? item.text : undefined,
+        source_item_id: typeof item.source_item_id === "string" ? item.source_item_id : undefined,
+        score: typeof item.score === "number" ? item.score : undefined,
+        confidence: typeof item.confidence === "number" ? item.confidence : undefined
+      };
+    })
+    .filter((item) => item.title || item.snippet || item.text || item.source_item_id)
+    .forEach((item) => {
+      const key = searchItemKey(item);
+      if (!key) {
+        return;
+      }
+      const current = merged.get(key);
+      if (!current) {
+        merged.set(key, item);
+        order.push(key);
+        return;
+      }
+      current.title ||= item.title;
+      current.source_item_id ||= item.source_item_id;
+      if (item.snippet && (!current.snippet || item.snippet.length > current.snippet.length)) {
+        current.snippet = item.snippet;
+      }
+      if (item.text && (!current.text || item.text.length > current.text.length)) {
+        current.text = item.text;
+      }
+      if (typeof item.score === "number" && (typeof current.score !== "number" || item.score > current.score)) {
+        current.score = item.score;
+      }
+      if (typeof item.confidence === "number" && (typeof current.confidence !== "number" || item.confidence > current.confidence)) {
+        current.confidence = item.confidence;
+      }
+    });
+  return order.map((key) => merged.get(key)).filter((item): item is SearchBrainItem => Boolean(item));
+}
+
+function searchItemKey(item: SearchBrainItem) {
+  const sourceId = normalizeSearchIdentity(item.source_item_id);
+  if (sourceId) {
+    return `source:${sourceId}`;
+  }
+  const title = normalizeSearchIdentity(item.title);
+  if (title) {
+    return `title:${title}`;
+  }
+  const text = normalizeSearchIdentity(item.text || item.snippet);
+  return text ? `text:${text.slice(0, 160)}` : "";
+}
+
+function normalizeSearchIdentity(value?: string) {
+  return (value || "").replace(/\s+/g, " ").trim().toLocaleLowerCase();
 }
 
 function unique(values: string[]) {

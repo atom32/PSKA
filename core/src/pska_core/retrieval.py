@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import json
 import math
+import os
 import re
 from typing import Any
 
@@ -44,6 +45,29 @@ _SENSITIVE_TERMS = {
 }
 
 
+def _default_graph_embedding_linking(embedding_provider: EmbeddingProvider | None) -> bool:
+    configured = _env_bool("PSKA_RETRIEVAL_GRAPH_EMBEDDING_LINKING")
+    if configured is not None:
+        return configured
+    if embedding_provider is None:
+        return False
+    provider_name = str(getattr(embedding_provider, "provider_name", "")).strip().lower()
+    model_name = str(getattr(embedding_provider, "model_name", "")).strip().lower()
+    return provider_name not in {"bge-m3", "bge_m3", "bge"} and model_name not in {"baai/bge-m3", "bge-m3"}
+
+
+def _env_bool(name: str) -> bool | None:
+    value = os.getenv(name)
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return None
+
+
 @dataclass(slots=True)
 class RetrievalResult:
     result_id: str
@@ -79,10 +103,22 @@ class RetrievalResponse:
 class RetrievalService:
     """Hybrid retrieval: ACL, lexical/vector RRF, and request-scoped graph-aware expansion."""
 
-    def __init__(self, store: KnowledgeStore, acl: ACLService, *, embedding_provider: EmbeddingProvider | None = None) -> None:
+    def __init__(
+        self,
+        store: KnowledgeStore,
+        acl: ACLService,
+        *,
+        embedding_provider: EmbeddingProvider | None = None,
+        graph_embedding_linking: bool | None = None,
+    ) -> None:
         self.store = store
         self.acl = acl
         self.embedding_provider = embedding_provider
+        self.graph_embedding_linking = (
+            _default_graph_embedding_linking(embedding_provider)
+            if graph_embedding_linking is None
+            else graph_embedding_linking
+        )
 
     def search(
         self,
@@ -184,15 +220,24 @@ class RetrievalService:
 
         vector_ranked: list[RetrievalResult] = []
         vector_enabled = self.embedding_provider is not None
+        vector_error = None
+        query_embedding: list[float] | None = None
         if self.embedding_provider:
-            query_embedding = self.embedding_provider.embed_texts([query])[0]
-            for chunk, vector_score in self.store.vector_search_chunks(source_ids, query_embedding, top_k=max(top_k * 4, 20)):
-                item = item_by_id.get(chunk.source_item_id)
-                if not item:
-                    continue
-                vector_ranked.append(self._result_for_chunk(chunk, item, vector_score, {"lexical": 0.0, "vector": vector_score}))
+            try:
+                query_embedding = self.embedding_provider.embed_texts([query])[0]
+                for chunk, vector_score in self.store.vector_search_chunks(source_ids, query_embedding, top_k=max(top_k * 4, 20)):
+                    item = item_by_id.get(chunk.source_item_id)
+                    if not item:
+                        continue
+                    vector_ranked.append(self._result_for_chunk(chunk, item, vector_score, {"lexical": 0.0, "vector": vector_score}))
+            except Exception as exc:  # noqa: BLE001 - retrieval should keep lexical fallback alive.
+                query_embedding = None
+                vector_error = f"{type(exc).__name__}: {exc}"
 
         combined = self._merge_exact_then_rrf(exact_ranked, lexical_ranked, vector_ranked, top_k=top_k)
+        combined = self._add_query_intent_candidates(query, combined, lexical_ranked, item_by_id, top_k=top_k)
+        self._apply_query_intent_boosts(query, combined, item_by_id)
+        combined = sorted(combined, key=lambda result: result.score, reverse=True)[:top_k]
         combined, graph_rank_debug = self._graph_augmented_rank(
             query,
             combined=combined,
@@ -203,7 +248,9 @@ class RetrievalService:
             user=user,
             represented_user_id=represented_user_id,
             top_k=top_k,
+            query_embedding=query_embedding,
         )
+        self._apply_query_intent_boosts(query, combined, item_by_id)
         self._annotate_result_sources(combined)
         self._apply_rank_quality_boosts(combined, item_by_id, reference_time=_latest_source_time(items))
         return combined, {
@@ -212,6 +259,7 @@ class RetrievalService:
             "lexical_ranker": lexical_ranker,
             "vector_enabled": vector_enabled,
             "vector_candidates": len(vector_ranked),
+            "vector_error": vector_error,
             "embedding_model": self.embedding_provider.model_name if self.embedding_provider else None,
             **graph_rank_debug,
         }
@@ -357,6 +405,50 @@ class RetrievalService:
         )
         return [*exact_ranked, *remainder][:top_k]
 
+    def _add_query_intent_candidates(
+        self,
+        query: str,
+        combined: list[RetrievalResult],
+        lexical_ranked: list[RetrievalResult],
+        item_by_id: dict[str, SourceItem],
+        *,
+        top_k: int,
+    ) -> list[RetrievalResult]:
+        if not _spreadsheet_query_intent(query):
+            return combined
+        seen = {result.result_id for result in combined}
+        additions: list[RetrievalResult] = []
+        for result in lexical_ranked:
+            if result.result_id in seen:
+                continue
+            item = item_by_id.get(result.source_item_id)
+            if item is None or not _is_spreadsheet_source(item):
+                continue
+            additions.append(result)
+            seen.add(result.result_id)
+            if len(additions) >= max(1, min(2, top_k)):
+                break
+        return [*combined, *additions]
+
+    def _apply_query_intent_boosts(
+        self,
+        query: str,
+        results: list[RetrievalResult],
+        item_by_id: dict[str, SourceItem],
+    ) -> None:
+        if not _spreadsheet_query_intent(query):
+            return
+        for result in results:
+            item = item_by_id.get(result.source_item_id)
+            if item is None or not _is_spreadsheet_source(item):
+                continue
+            if result.score_debug.get("query_intent_boost"):
+                continue
+            boost = 0.035
+            result.score += boost
+            result.score_debug["query_intent_boost"] = boost
+            result.score_debug["spreadsheet_intent_match"] = 1.0
+
     def _apply_rank_quality_boosts(
         self,
         results: list[RetrievalResult],
@@ -389,6 +481,7 @@ class RetrievalService:
         user: User,
         represented_user_id: str | None,
         top_k: int,
+        query_embedding: list[float] | None,
     ) -> tuple[list[RetrievalResult], dict[str, Any]]:
         graph = self._build_retrieval_graph(
             query=query,
@@ -399,6 +492,7 @@ class RetrievalService:
             item_by_id=item_by_id,
             user=user,
             represented_user_id=represented_user_id,
+            query_embedding=query_embedding,
         )
         if (
             not graph["seeds"]
@@ -512,6 +606,7 @@ class RetrievalService:
         item_by_id: dict[str, SourceItem],
         user: User,
         represented_user_id: str | None,
+        query_embedding: list[float] | None,
     ) -> dict[str, Any]:
         all_entities = self.store.list_entities()
         visible_entities = self._visible_entities(all_entities, user=user, represented_user_id=represented_user_id)
@@ -539,12 +634,13 @@ class RetrievalService:
             chunks=chunks,
             item_by_id=item_by_id,
         )
-        query_embedding = None
         embedding_error = None
-        if self.embedding_provider:
+        graph_embedding_linking_enabled = self.graph_embedding_linking and self.embedding_provider is not None
+        if graph_embedding_linking_enabled:
             try:
                 offline_index.with_embeddings(self.embedding_provider)
-                query_embedding = self.embedding_provider.embed_texts([query])[0]
+                if query_embedding is None:
+                    query_embedding = self.embedding_provider.embed_texts([query])[0]
             except Exception as exc:  # noqa: BLE001 - retrieval should keep lexical fallback alive.
                 query_embedding = None
                 embedding_error = f"{type(exc).__name__}: {exc}"
@@ -614,7 +710,7 @@ class RetrievalService:
             "edge_count": _adjacency_edge_count(adjacency),
             "offline_graph": offline_index.graph_info,
             "embedding_linking": {
-                "enabled": query_embedding is not None,
+                "enabled": graph_embedding_linking_enabled and query_embedding is not None,
                 "error": embedding_error,
                 "fact_embeddings": len(offline_index.fact_embeddings),
                 "entity_embeddings": len(offline_index.entity_embeddings),
@@ -1079,6 +1175,40 @@ def _context_owner_user_id(user: User, represented_user_id: str | None) -> str:
 
 def _normalize_exact(value: str) -> str:
     return value.strip().lower()
+
+
+def _spreadsheet_query_intent(query: str) -> bool:
+    terms = {term.casefold() for term in re.findall(r"[\w\u4e00-\u9fff]+", query)}
+    return bool(
+        terms.intersection(
+            {
+                "excel",
+                "xlsx",
+                "xls",
+                "spreadsheet",
+                "spreadsheets",
+                "workbook",
+                "workbooks",
+                "sheet",
+                "sheets",
+                "表格",
+                "电子表格",
+                "工作簿",
+            }
+        )
+    )
+
+
+def _is_spreadsheet_source(item: SourceItem) -> bool:
+    fields = [item.title, item.url, item.source_id]
+    raw_paths = item.metadata.get("raw_paths") if isinstance(item.metadata, dict) else None
+    if isinstance(raw_paths, dict):
+        fields.extend(str(value) for value in raw_paths.values())
+    extraction = item.metadata.get("extraction") if isinstance(item.metadata, dict) else None
+    if isinstance(extraction, dict):
+        fields.append(str(extraction.get("extractor") or ""))
+    haystack = " ".join(str(value or "") for value in fields).casefold()
+    return any(token in haystack for token in (".xlsx", ".xls", "xlsx-", "spreadsheet", "workbook"))
 
 
 def _bm25_scores(documents: list[list[str]], query_terms: list[str]) -> list[float] | None:

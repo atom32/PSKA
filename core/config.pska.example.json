@@ -11,12 +11,12 @@
     "backend": true,
     "frontend": {
       "enabled": true,
-      "host": "127.0.0.1",
+      "host": "0.0.0.0",
       "port": 5173
     }
   },
   "service": {
-    "host": "127.0.0.1",
+    "host": "0.0.0.0",
     "port": 8765,
     "service_token": null
   },

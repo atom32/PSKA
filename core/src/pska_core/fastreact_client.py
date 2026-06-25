@@ -26,6 +26,7 @@ class FastreactClient(Protocol):
         job_id: str | None = None,
         scope: dict[str, Any] | None = None,
         session_id: str | None = None,
+        skills: list[str] | None = None,
         model: str | None = None,
         temperature: float | None = None,
         top_p: float | None = None,
@@ -41,6 +42,7 @@ class FastreactClient(Protocol):
         job_id: str | None = None,
         scope: dict[str, Any] | None = None,
         session_id: str | None = None,
+        skills: list[str] | None = None,
         model: str | None = None,
         temperature: float | None = None,
         top_p: float | None = None,
@@ -113,6 +115,7 @@ class HttpFastreactClient:
         job_id: str | None = None,
         scope: dict[str, Any] | None = None,
         session_id: str | None = None,
+        skills: list[str] | None = None,
         model: str | None = None,
         temperature: float | None = None,
         top_p: float | None = None,
@@ -141,6 +144,8 @@ class HttpFastreactClient:
         )
         if session_id:
             payload["session_id"] = session_id
+        if skills:
+            payload["skills"] = skills
         return self._request_json("POST", "/v1/chat/completions", payload)
 
     def create_run(
@@ -152,6 +157,7 @@ class HttpFastreactClient:
         job_id: str | None = None,
         scope: dict[str, Any] | None = None,
         session_id: str | None = None,
+        skills: list[str] | None = None,
         model: str | None = None,
         temperature: float | None = None,
         top_p: float | None = None,
@@ -180,6 +186,8 @@ class HttpFastreactClient:
         )
         if session_id:
             payload["session_id"] = session_id
+        if skills:
+            payload["skills"] = skills
         return self._request_json("POST", "/v1/runs", payload)
 
     def wait_for_run(self, run_id: str) -> dict[str, Any]:

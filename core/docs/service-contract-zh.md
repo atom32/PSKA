@@ -352,7 +352,8 @@ optional `watchdog` support from `pska-core[watch]` to run the same sync path
 whenever authorized roots change. `files-scan` is the explicit one-off form.
 The current slice supports UTF-8 text-like files such as Markdown, text, JSON,
 YAML, CSV/TSV, logs, and Python files. With optional `pska-core[documents]`, it
-also uses mature extractors `pypdf` and `python-docx` for PDF/DOCX text
+also uses mature extractors `pypdf` and `python-docx` for PDF/DOCX text,
+the built-in XLSX parser for workbook tables, and optional `xlrd` for legacy XLS
 extraction. Sync records file path, file URI, mime type, size, scan cursor,
 content hash, authorized root, and lightweight manifests so reports can
 distinguish new, changed, unchanged, moved, and missing files without deleting

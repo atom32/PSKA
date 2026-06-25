@@ -41,8 +41,8 @@ future adapter that PSKA is allowed to observe. Connectors are implementation
 details behind source adapters.
 
 Config is only a startup/default seed. Runtime source and sync state live in
-the database. `files-sync` reads active folder sources, optional PDF/DOCX
-extractors, and the workspace Twitter/X archive inbox. It uses content hashes
+the database. `files-sync` reads active folder sources, PDF/DOCX/XLSX
+extractors, optional legacy XLS extractors, and the workspace Twitter/X archive inbox. It uses content hashes
 to avoid repeated work and to detect changed source material.
 
 ## Discovery Invariants

@@ -163,11 +163,12 @@ def test_retrieval_uses_vector_results_when_lexical_has_no_match() -> None:
         _payload("graph-note", "CodeGraph builds a code knowledge graph.")
     )
     user = store.get_user("user_primary")
+    retrieval_provider = FakeEmbeddingProvider()
 
     response = RetrievalService(
         store,
         ACLService(store),
-        embedding_provider=FakeEmbeddingProvider(),
+        embedding_provider=retrieval_provider,
     ).search("图谱", user, top_k=1)
 
     assert response.results
@@ -176,6 +177,8 @@ def test_retrieval_uses_vector_results_when_lexical_has_no_match() -> None:
     assert response.score_debug["lexical_candidates"] == 0
     assert response.score_debug["vector_enabled"] is True
     assert response.score_debug["vector_candidates"] == 1
+    assert response.score_debug["vector_error"] is None
+    assert retrieval_provider.calls == [["图谱"]]
     assert response.results[0].source == "vector"
     assert response.results[0].score_debug["vector_rank"] == 1.0
 
@@ -209,6 +212,32 @@ def test_retrieval_prefers_exact_url_and_title_matches() -> None:
     assert title_response.results[0].score_debug["exact_source"] == 1.0
     assert url_response.results[0].title == "Exact Target"
     assert url_response.score_debug["ranker"] == "exact_source"
+
+
+def test_retrieval_boosts_spreadsheet_sources_for_spreadsheet_queries() -> None:
+    store = _store()
+    ingest = IngestService(store)
+    ingest.ingest_channel_payload(
+        _payload(
+            "decision-log",
+            "Acme Example pipeline decisions mention Alice Example several times. Acme Example needs review.",
+            title="decision-log-2025-q3.md",
+        )
+    )
+    ingest.ingest_channel_payload(
+        _payload(
+            "portfolio-pipeline.xlsx",
+            "Company Lead Status ARR Next Step Acme Example Alice Example active 1200000 Prepare partner meeting brief",
+            title="portfolio-pipeline.xlsx",
+            extra={"extraction": {"extractor": "xlsx-zip-xml", "sheet_count": 1}},
+        )
+    )
+    user = store.get_user("user_primary")
+
+    response = RetrievalService(store, ACLService(store)).search("What is in the Excel pipeline for Acme Example?", user, top_k=1)
+
+    assert response.results[0].title == "portfolio-pipeline.xlsx"
+    assert response.results[0].score_debug["spreadsheet_intent_match"] == 1.0
 
 
 def test_retrieval_falls_back_to_term_frequency_when_bm25_is_unavailable(monkeypatch) -> None:

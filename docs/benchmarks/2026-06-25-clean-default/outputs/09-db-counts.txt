@@ -1,0 +1,10 @@
+$ psql postgresql:///pska -X -A -F "|" -c <counts query>
+table_name|count
+chunks|28
+documents|16
+entities|90
+hyperedges|35
+knowledge_claims|170
+review_items|31
+source_items|16
+(7 rows)

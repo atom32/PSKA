@@ -458,7 +458,7 @@ function TodayWorkspace({
     setSearching(true);
     setSearchError(null);
     try {
-      const result = await searchWorkspace(query, serviceToken, "agentic");
+      const result = await searchWorkspace(query, serviceToken, "direct");
       setSearchResult(result);
       setBrain(searchToBrain(result, query));
       if (result.error) {
@@ -576,7 +576,7 @@ function TodayWorkspace({
       ) : (
       <div className="today-grid">
         <section className="today-section today-search">
-          <SectionTitle icon={<Search size={18} />} title="Ask PSKA" subtitle="走 FastReAct agentic 检索" />
+          <SectionTitle icon={<Search size={18} />} title="Ask PSKA" subtitle="快速 direct 检索" />
           <form className="today-search-form" onSubmit={runTodaySearch}>
             <textarea value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="问 PSKA" />
             <button className="primary" type="submit" disabled={searching}>
@@ -902,20 +902,16 @@ function TodaySearchResult({ result }: { result: WorkspaceSearchResponse }) {
   const answer = cleanAgenticAnswer(parsed?.answer || result.answer || eventAnswer || "");
   const events = agenticTraceEvents(result);
   const streamItems = summarizeAgenticEvents(result).slice(0, 8);
-  const refs = [
+  const refs = normalizeSearchRefs([
     ...(parsed?.source_refs || []),
     ...(parsed?.citations || []),
     ...(result.source_refs || []),
     ...(result.citations || []),
     ...(result.workspace?.evidence?.citations || []),
-    ...(result.retrieval?.results || [])
-  ]
-    .map((ref) => ({
-      title: displayText(ref.title, ""),
-      snippet: displayText(ref.snippet, ""),
-      source_item_id: "source_item_id" in ref ? ref.source_item_id : undefined
-    }))
-    .filter((ref) => ref.title || ref.snippet || ref.source_item_id);
+    ...(result.retrieval?.results || []),
+    ...(result.fallback?.retrieval?.citations || []),
+    ...(result.fallback?.retrieval?.results || [])
+  ]);
 
   if (!answer && refs.length === 0 && !result.error) {
     return <div className="review-empty compact">PSKA 没有为这个问题找到可展示的真实证据。</div>;
@@ -963,6 +959,71 @@ type AgenticEventSummary = {
   type: string;
   message: string;
 };
+
+type SearchEvidenceRef = {
+  title: string;
+  snippet: string;
+  source_item_id?: string;
+  score?: number;
+};
+
+function normalizeSearchRefs(values: unknown[]): SearchEvidenceRef[] {
+  const merged = new Map<string, SearchEvidenceRef>();
+  const order: string[] = [];
+  values
+    .map((value) => {
+      const ref = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+      return {
+        title: displayText(ref.title, ""),
+        snippet: displayText(ref.snippet, ""),
+        source_item_id: displayText(ref.source_item_id, "") || undefined,
+        score: typeof ref.score === "number" ? ref.score : undefined
+      };
+    })
+    .filter((ref) => ref.title || ref.snippet || ref.source_item_id)
+    .forEach((ref) => {
+      const key = searchRefKey(ref);
+      if (!key) {
+        return;
+      }
+      const current = merged.get(key);
+      if (!current) {
+        merged.set(key, ref);
+        order.push(key);
+        return;
+      }
+      if (!current.title && ref.title) {
+        current.title = ref.title;
+      }
+      if (!current.source_item_id && ref.source_item_id) {
+        current.source_item_id = ref.source_item_id;
+      }
+      if (ref.snippet && (!current.snippet || ref.snippet.length > current.snippet.length)) {
+        current.snippet = ref.snippet;
+      }
+      if (typeof ref.score === "number" && (typeof current.score !== "number" || ref.score > current.score)) {
+        current.score = ref.score;
+      }
+    });
+  return order.map((key) => merged.get(key)).filter((ref): ref is SearchEvidenceRef => Boolean(ref));
+}
+
+function searchRefKey(ref: SearchEvidenceRef) {
+  const sourceId = normalizeSearchRefIdentity(ref.source_item_id);
+  if (sourceId) {
+    return `source:${sourceId}`;
+  }
+  const title = normalizeSearchRefIdentity(ref.title);
+  if (title) {
+    return `title:${title}`;
+  }
+  const snippet = normalizeSearchRefIdentity(ref.snippet);
+  return snippet ? `snippet:${snippet.slice(0, 160)}` : "";
+}
+
+function normalizeSearchRefIdentity(value?: string) {
+  return displayText(value, "").replace(/\s+/g, " ").trim().toLocaleLowerCase();
+}
 
 function agenticTraceEvents(result: WorkspaceSearchResponse): Array<Record<string, unknown>> {
   return Array.isArray(result.trace?.events) ? result.trace.events : [];
@@ -1069,18 +1130,20 @@ function searchToBrain(result: WorkspaceSearchResponse, query: string): Partial<
   const parsed = parseAgenticAnswer(result.answer);
   const eventAnswer = finalAnswerFromTraceEvents(result);
   const answer = cleanAgenticAnswer(parsed?.answer || result.answer || eventAnswer || "");
-  const refs = [
+  const refs = normalizeSearchRefs([
     ...(parsed?.source_refs || []),
     ...(parsed?.citations || []),
     ...(result.source_refs || []),
     ...(result.citations || []),
     ...(result.workspace?.evidence?.citations || []),
-    ...(result.retrieval?.results || [])
-  ]
+    ...(result.retrieval?.results || []),
+    ...(result.fallback?.retrieval?.citations || []),
+    ...(result.fallback?.retrieval?.results || [])
+  ])
     .map((ref, index) => ({
       id: `today-search-${index}`,
-      title: displayText(ref.title || ("source_item_id" in ref ? ref.source_item_id : undefined), query),
-      score: "score" in ref && typeof ref.score === "number" ? Math.round(ref.score * 100) : undefined,
+      title: displayText(ref.title || ref.source_item_id, query),
+      score: typeof ref.score === "number" ? Math.round(ref.score * 100) : undefined,
       snippet: displayText(ref.snippet || answer, "PSKA 返回了相关证据。"),
       source: "PSKA Agentic"
     }))
@@ -2406,8 +2469,8 @@ function GraphInsightsPanel({
                 <b>{trimText(step.title || `Step ${index + 1}`, 86)}</b>
                 <small>{trimText(step.reason || "", 145)}</small>
                 <div>
-                  {(step.node_ids || []).slice(0, 4).map((nodeId) => (
-                    <button key={nodeId} type="button" onClick={() => onSelectNode(nodeId)}>
+                  {(step.node_ids || []).slice(0, 4).map((nodeId, nodeIndex) => (
+                    <button key={`${nodeId}-${nodeIndex}`} type="button" onClick={() => onSelectNode(nodeId)}>
                       {trimText(graphNodeLabel(graph, nodeId), 34)}
                     </button>
                   ))}
@@ -2427,8 +2490,8 @@ function GraphInsightsPanel({
                 <small>{trimText(cluster.summary || "", 150)}</small>
                 <span>{cluster.node_count ?? 0} nodes · {cluster.edge_count ?? 0} edges</span>
                 <div>
-                  {(cluster.anchor_nodes || []).slice(0, 3).map((node) => (
-                    <button key={node.id} type="button" onClick={() => node.id && onSelectNode(node.id)}>
+                  {(cluster.anchor_nodes || []).slice(0, 3).map((node, nodeIndex) => (
+                    <button key={`${node.id || "anchor"}-${nodeIndex}`} type="button" onClick={() => node.id && onSelectNode(node.id)}>
                       {graphTypeLabel(node.type || "node")} · {trimText(node.label || node.id || "", 28)}
                     </button>
                   ))}
@@ -2442,8 +2505,8 @@ function GraphInsightsPanel({
         <div className="graph-insight-section">
           <strong>Central Nodes</strong>
           <div className="graph-central-list">
-            {centralNodes.slice(0, 6).map((node) => (
-              <button key={node.id} type="button" onClick={() => node.id && onSelectNode(node.id)}>
+            {centralNodes.slice(0, 6).map((node, nodeIndex) => (
+              <button key={`${node.id || "central"}-${nodeIndex}`} type="button" onClick={() => node.id && onSelectNode(node.id)}>
                 <span>{graphTypeLabel(node.type || "node")}</span>
                 <b>{trimText(node.label || node.id || "", 42)}</b>
                 <small>{node.degree ?? 0} links</small>

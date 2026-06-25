@@ -424,6 +424,15 @@ export type WorkspaceSearchResponse = {
   mode?: string;
   display_mode?: string;
   fallback_reason?: string;
+  fallback?: {
+    mode?: string;
+    display_mode?: string;
+    retrieval?: {
+      results?: Array<{ title?: string; snippet?: string; score?: number; source_item_id?: string }>;
+      citations?: Array<{ title?: string; snippet?: string; source_item_id?: string; url?: string }>;
+      graph_paths?: Array<{ explanation?: string; entities?: string[] }>;
+    };
+  };
   source_refs?: Array<{ title?: string; snippet?: string; source_item_id?: string; url?: string }>;
   citations?: Array<{ title?: string; snippet?: string; source_item_id?: string; url?: string }>;
   trace?: {

@@ -30,7 +30,7 @@ when bootstrap is enabled, starts the backend supervisor, and starts the
 frontend workspace when enabled.
 
 `digest-now` runs file sync first. The sync path covers folder sources,
-PDF/DOCX text extraction when optional extractors are installed, the workspace
+PDF/DOCX/XLSX text extraction, optional legacy XLS extraction, the workspace
 Twitter/X archive inbox, and content-hash based incremental handling. It then
 schedules and processes one digest pass.
 

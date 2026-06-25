@@ -31,6 +31,8 @@ TOOLS = [
                 "user_id": {"type": "string", "default": "user_primary"},
                 "represented_user_id": {"type": "string"},
                 "top_k": {"type": "integer", "default": 5},
+                "max_results": {"type": "integer", "default": 3},
+                "max_snippet_chars": {"type": "integer", "default": 700},
             },
             "required": ["query"],
         },
@@ -129,6 +131,7 @@ TOOLS = [
                         "type": "object",
                         "properties": {
                             "claim_type": {"type": "string"},
+                            "dedupe_key": {"type": "string"},
                             "statement": {"type": "string"},
                             "subject": {"type": "string"},
                             "predicate": {"type": "string"},
@@ -147,6 +150,7 @@ TOOLS = [
                         "type": "object",
                         "properties": {
                             "title": {"type": "string"},
+                            "dedupe_key": {"type": "string"},
                             "synopsis": {"type": "string"},
                             "key_points": {"type": "array", "items": {"type": "object"}},
                             "actions": {"type": "array", "items": {"type": "object"}},
@@ -294,15 +298,21 @@ class MCPServer:
 
     def pska_search(self, arguments: dict[str, Any]) -> Any:
         user = self.store.get_user(arguments.get("user_id") or "user_primary")
-        return self.retrieval.search(
+        response = self.retrieval.search(
             arguments["query"],
             user,
             represented_user_id=arguments.get("represented_user_id"),
             top_k=int(arguments.get("top_k") or 5),
         )
+        return _compact_search_response(
+            to_jsonable(response),
+            max_results=_bounded_int(arguments.get("max_results"), default=3, minimum=1, maximum=5),
+            max_snippet_chars=_bounded_int(arguments.get("max_snippet_chars"), default=700, minimum=120, maximum=1600),
+        )
 
-    def pska_index_status(self) -> dict[str, int]:
+    def pska_index_status(self) -> dict[str, int | bool]:
         return {
+            "ok": True,
             "source_items": self.store.count_table("source_items"),
             "documents": self.store.count_table("documents"),
             "chunks": self.store.count_table("chunks"),
@@ -397,6 +407,11 @@ class MCPServer:
                 "input_strategy": "document_first",
                 "passage_window_policy": "full_document_until_budget_then_paragraph_window",
                 "chunks_role": "retrieval_slices_compatibility",
+                "candidate_write_guidance": (
+                    "Inspect existing knowledge_claims and digest_notes before writing. "
+                    "Use stable dedupe_key values for the same semantic claim or digest across retries; "
+                    "write low-confidence or conflict-prone items as review_items."
+                ),
                 "target_window_chars": max_passage_chars,
                 "token_estimate": sum(window["token_estimate"] for window in passage_windows),
             },
@@ -411,6 +426,84 @@ class MCPServer:
     def write(self, response: dict[str, Any]) -> None:
         sys.stdout.write(json.dumps(response, ensure_ascii=False) + "\n")
         sys.stdout.flush()
+
+
+def _compact_search_response(payload: dict[str, Any], *, max_results: int, max_snippet_chars: int) -> dict[str, Any]:
+    results = payload.get("results") if isinstance(payload.get("results"), list) else []
+    citations = payload.get("citations") if isinstance(payload.get("citations"), list) else []
+    graph_paths = payload.get("graph_paths") if isinstance(payload.get("graph_paths"), list) else []
+    return {
+        "query": payload.get("query"),
+        "request_user_id": payload.get("request_user_id"),
+        "visible_spaces": payload.get("visible_spaces") if isinstance(payload.get("visible_spaces"), list) else [],
+        "results": [_compact_search_result(item, max_snippet_chars=max_snippet_chars) for item in results[:max_results] if isinstance(item, dict)],
+        "citations": [_compact_citation(item, max_snippet_chars=max_snippet_chars) for item in citations[:max_results] if isinstance(item, dict)],
+        "graph_paths": [_compact_graph_path(item, max_snippet_chars=max_snippet_chars) for item in graph_paths[:5] if isinstance(item, dict)],
+        "diagnostics": _compact_diagnostics(payload.get("diagnostics")),
+        "omitted": {
+            "results": max(0, len(results) - max_results),
+            "citations": max(0, len(citations) - max_results),
+            "graph_paths": max(0, len(graph_paths) - 5),
+            "reason": "MCP compact output keeps FastReAct tool results parser-safe.",
+        },
+    }
+
+
+def _compact_search_result(item: dict[str, Any], *, max_snippet_chars: int) -> dict[str, Any]:
+    return {
+        "result_id": item.get("result_id"),
+        "source_item_id": item.get("source_item_id"),
+        "source": item.get("source"),
+        "title": item.get("title"),
+        "snippet": _truncate(str(item.get("snippet") or ""), max_snippet_chars),
+        "score": item.get("score"),
+        "citation": _compact_citation(item.get("citation"), max_snippet_chars=max_snippet_chars),
+    }
+
+
+def _compact_citation(item: Any, *, max_snippet_chars: int) -> dict[str, Any]:
+    if not isinstance(item, dict):
+        return {}
+    compact = {
+        key: item.get(key)
+        for key in ["source_item_id", "document_id", "chunk_id", "passage_window_id", "url", "title"]
+        if item.get(key) is not None
+    }
+    if item.get("snippet"):
+        compact["snippet"] = _truncate(str(item.get("snippet") or ""), max_snippet_chars)
+    return compact
+
+
+def _compact_graph_path(item: dict[str, Any], *, max_snippet_chars: int) -> dict[str, Any]:
+    edges = item.get("edges") if isinstance(item.get("edges"), list) else []
+    entities = item.get("entities") if isinstance(item.get("entities"), list) else []
+    return {
+        "path_id": item.get("path_id"),
+        "depth": item.get("depth"),
+        "seed": item.get("seed"),
+        "entities": entities[:6],
+        "edges": [_compact_graph_edge(edge, max_snippet_chars=max_snippet_chars) for edge in edges[:4] if isinstance(edge, dict)],
+    }
+
+
+def _compact_graph_edge(edge: dict[str, Any], *, max_snippet_chars: int) -> dict[str, Any]:
+    return {
+        "hyperedge_id": edge.get("hyperedge_id"),
+        "relation_type": edge.get("relation_type"),
+        "confidence": edge.get("confidence"),
+        "evidence_text": _truncate(str(edge.get("evidence_text") or ""), max_snippet_chars),
+        "source_refs": edge.get("source_refs") if isinstance(edge.get("source_refs"), list) else [],
+    }
+
+
+def _compact_diagnostics(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        "gaps": value.get("gaps") if isinstance(value.get("gaps"), list) else [],
+        "conflicts": value.get("conflicts") if isinstance(value.get("conflicts"), list) else [],
+        "sensitivity": value.get("sensitivity") if isinstance(value.get("sensitivity"), list) else [],
+    }
 
 
 def _job_source_item_ids(job) -> set[str]:

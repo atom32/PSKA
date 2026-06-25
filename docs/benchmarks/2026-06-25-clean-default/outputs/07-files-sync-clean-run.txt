@@ -1,0 +1,962 @@
+$ ./scripts/pska --config .pska/config.json files-sync
+{
+  "ok": true,
+  "database_url": "postgresql:///pska",
+  "seeded_knowledge_sources": [
+    {
+      "knowledge_source_id": "ks_22f84cac9b4a52dda10cce7b67198826",
+      "owner_user_id": "user_primary",
+      "name": "notes",
+      "source_type": "folder",
+      "uri": "file:///Users/xudawei/PSKA_workspaces/default/notes",
+      "mode": "manual",
+      "status": "authorized",
+      "connector_id": "files",
+      "space_id": "private_primary",
+      "visibility": "private",
+      "visible_team_ids": [],
+      "permission_scope": {
+        "path": "/Users/xudawei/PSKA_workspaces/default/notes",
+        "read_scope": "explicit_directory"
+      },
+      "config": {
+        "path": "/Users/xudawei/PSKA_workspaces/default/notes",
+        "ignore": [
+          "*.tmp",
+          "*.bak"
+        ],
+        "max_bytes": 5000000
+      },
+      "last_sync_at": null,
+      "last_error": null,
+      "created_at": "2026-06-25T10:09:31.333452+08:00",
+      "updated_at": "2026-06-25T10:09:31.333452+08:00"
+    }
+  ],
+  "knowledge_sources": [
+    {
+      "knowledge_source_id": "ks_22f84cac9b4a52dda10cce7b67198826",
+      "owner_user_id": "user_primary",
+      "name": "notes",
+      "source_type": "folder",
+      "uri": "file:///Users/xudawei/PSKA_workspaces/default/notes",
+      "mode": "manual",
+      "status": "authorized",
+      "connector_id": "files",
+      "space_id": "private_primary",
+      "visibility": "private",
+      "visible_team_ids": [],
+      "permission_scope": {
+        "path": "/Users/xudawei/PSKA_workspaces/default/notes",
+        "read_scope": "explicit_directory"
+      },
+      "config": {
+        "path": "/Users/xudawei/PSKA_workspaces/default/notes",
+        "ignore": [
+          "*.tmp",
+          "*.bak"
+        ],
+        "max_bytes": 5000000
+      },
+      "last_sync_at": null,
+      "last_error": null,
+      "created_at": "2026-06-25T10:09:31.333452+08:00",
+      "updated_at": "2026-06-25T10:09:31.333452+08:00"
+    }
+  ],
+  "roots": [
+    "/Users/xudawei/PSKA_workspaces/default/notes"
+  ],
+  "reports": [
+    {
+      "root": "/Users/xudawei/PSKA_workspaces/default/notes",
+      "connector_state": {
+        "connector_state_id": "conn_user_primary_files",
+        "connector_id": "files",
+        "owner_user_id": "user_primary",
+        "enabled": true,
+        "scan_cursor": "1782352894643619475",
+        "sync_status": "succeeded",
+        "last_success_at": null,
+        "last_error_at": null,
+        "last_error": null,
+        "permission_scope": {
+          "roots": [
+            "/Users/xudawei/PSKA_workspaces/default/notes"
+          ]
+        },
+        "config": {
+          "files_missing": [],
+          "default_ignore": [
+            ".git/**",
+            "**/.git/**",
+            "__pycache__/**",
+            "**/__pycache__/**",
+            ".DS_Store",
+            "**/.DS_Store"
+          ],
+          "files_manifest": {
+            "benchmark-2026-06-25/manual/fastreact-digest-claim-a.md": {
+              "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/manual/fastreact-digest-claim-a.md",
+              "mtime_ns": "1782352894643362930",
+              "size_bytes": 241,
+              "content_hash": "sha256:1ff997a69408bbfde0c002c220e40154ddc0c193dbfab062893b711d61f231bd",
+              "relative_path": "benchmark-2026-06-25/manual/fastreact-digest-claim-a.md",
+              "source_item_id": "src_dae5f2bff6f854c28da2d0dc521344ca"
+            },
+            "benchmark-2026-06-25/manual/fastreact-digest-claim-b.md": {
+              "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/manual/fastreact-digest-claim-b.md",
+              "mtime_ns": "1782352894643415680",
+              "size_bytes": 248,
+              "content_hash": "sha256:5044a8ee4805e257ae42c6a2b80344cedf88e409638e306b670c85192a2ed222",
+              "relative_path": "benchmark-2026-06-25/manual/fastreact-digest-claim-b.md",
+              "source_item_id": "src_67350bcc25f25bc097c3cff13a425e1d"
+            },
+            "benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx": {
+              "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx",
+              "mtime_ns": "1782352894643619475",
+              "size_bytes": 4966,
+              "content_hash": "sha256:d443fd68a12303fada5bdf0ac47a1ffee3d34aab217bb494a22d809548894b65",
+              "relative_path": "benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx",
+              "source_item_id": "src_384b289efc9356d0b9e4814e51529ed7"
+            },
+            "benchmark-2026-06-25/gbrain-calibration/holdout/daily-2026-04-18.md": {
+              "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/daily-2026-04-18.md",
+              "mtime_ns": "1782306397490585445",
+              "size_bytes": 1113,
+              "content_hash": "sha256:1580781b7de21dcd495d2d13c4c0b7362e0043d2bc6f54b293fead932a97cce3",
+              "relative_path": "benchmark-2026-06-25/gbrain-calibration/holdout/daily-2026-04-18.md",
+              "source_item_id": "src_3b648e33bafc599fad84828c5c51447c"
+            },
+            "benchmark-2026-06-25/gbrain-calibration/holdout/people-bob-example.md": {
+              "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/people-bob-example.md",
+              "mtime_ns": "1782306397491035735",
+              "size_bytes": 1438,
+              "content_hash": "sha256:2a4f633904751635f29c0c6fe61729eeca4fe4b18bc84377c0b8b9dfd0bd38fc",
+              "relative_path": "benchmark-2026-06-25/gbrain-calibration/holdout/people-bob-example.md",
+              "source_item_id": "src_52a3d89297295673b30728fada7495ba"
+            },
+            "benchmark-2026-06-25/gbrain-calibration/holdout/essay-on-conviction.md": {
+              "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/essay-on-conviction.md",
+              "mtime_ns": "1782306397490679986",
+              "size_bytes": 1626,
+              "content_hash": "sha256:486ec20b1baab0b3ede9892f2193bc04fbddf80dfa682dd4a3014522d212b2cf",
+              "relative_path": "benchmark-2026-06-25/gbrain-calibration/holdout/essay-on-conviction.md",
+              "source_item_id": "src_55ca416c8eb3505cb1fb5d1fe99bb788"
+            },
+            "benchmark-2026-06-25/gbrain-calibration/holdout/concept-founder-execution.md": {
+              "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/concept-founder-execution.md",
+              "mtime_ns": "1782306397490477070",
+              "size_bytes": 1400,
+              "content_hash": "sha256:23090ddb50d6fa236d61e0d1ed2424ea7bd5b0885fa02fe19f1e7144e55def17",
+              "relative_path": "benchmark-2026-06-25/gbrain-calibration/holdout/concept-founder-execution.md",
+              "source_item_id": "src_62aa58d5cf875ebc8533e101f9ec9f60"
+            },
+            "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/daily-2026-04-15.md": {
+              "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/daily-2026-04-15.md",
+              "mtime_ns": "1782306397490063363",
+              "size_bytes": 1378,
+              "content_hash": "sha256:b87441573b253ae76a7d2b4dc5b4d4d2e78ffed350144b99c6d6fc7c077821b6",
+              "relative_path": "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/daily-2026-04-15.md",
+              "source_item_id": "src_0d88e2d74eb5564daa5996459618cb9f"
+            },
+            "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-03.md": {
+              "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-03.md",
+              "mtime_ns": "1782306397490206696",
+              "size_bytes": 1279,
+              "content_hash": "sha256:3a95137c136961c4c4cca341e82e994c3d56b6fa37d2ad91c484bed051216ef3",
+              "relative_path": "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-03.md",
+              "source_item_id": "src_1bfa0f5e9f05553db0cd98041e0b8b15"
+            },
+            "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/decision-log-2025-q3.md": {
+              "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/decision-log-2025-q3.md",
+              "mtime_ns": "1782306397490109529",
+              "size_bytes": 1541,
+              "content_hash": "sha256:8f4b09a94013110e354fa480c784d507d3cd2fde5ec9b7091ecf537d43f03ff9",
+              "relative_path": "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/decision-log-2025-q3.md",
+              "source_item_id": "src_60425f2d57f4525494a9baf8e7478474"
+            },
+            "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/people-alice-example.md": {
+              "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/people-alice-example.md",
+              "mtime_ns": "1782306397490346737",
+              "size_bytes": 1252,
+              "content_hash": "sha256:376bfd1b01f3ed5ad741129755223344dbd44311ec583dd8ff49a0c311872a67",
+              "relative_path": "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/people-alice-example.md",
+              "source_item_id": "src_abb33363e8f050c89287a6c0a3e7d6b9"
+            },
+            "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/companies-acme-example.md": {
+              "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/companies-acme-example.md",
+              "mtime_ns": "1782306397489874988",
+              "size_bytes": 1027,
+              "content_hash": "sha256:d5138dd00cca9cba8ebd9cf3bc986cc300c0d2dd68892f13d61270005b27e378",
+              "relative_path": "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/companies-acme-example.md",
+              "source_item_id": "src_4880b40b309058d7b473444141f9dd9f"
+            },
+            "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/essay-cities-and-ambition.md": {
+              "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/essay-cities-and-ambition.md",
+              "mtime_ns": "1782306397490158154",
+              "size_bytes": 1314,
+              "content_hash": "sha256:7fdc2a92e78f6c552448ea9cb1ad443cc38de7dc359e9a507d10d188b3b46c10",
+              "relative_path": "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/essay-cities-and-ambition.md",
+              "source_item_id": "src_63b7676bf37854d7a3a39e8db981c74e"
+            },
+            "benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md": {
+              "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
+              "mtime_ns": "1782306397490939985",
+              "size_bytes": 1479,
+              "content_hash": "sha256:1012c08c0da3d1dd2a99ebb01ab4dc55c20c6daeffbd4ec7c0352c8b8c12595e",
+              "relative_path": "benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
+              "source_item_id": "src_c8e8b52cc6de59aaa47ab526532ce055"
+            },
+            "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/concept-startup-market-dynamics.md": {
+              "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/concept-startup-market-dynamics.md",
+              "mtime_ns": "1782306397489974405",
+              "size_bytes": 2501,
+              "content_hash": "sha256:709a7b8a0c349fd036b2a0977509deab2bd742ce860768ac4a1676e0888ccd8d",
+              "relative_path": "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/concept-startup-market-dynamics.md",
+              "source_item_id": "src_d4fd21da5f23540db318c05705961c69"
+            },
+            "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md": {
+              "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md",
+              "mtime_ns": "1782306397490302654",
+              "size_bytes": 2094,
+              "content_hash": "sha256:4c4aa173d16c9be4b44fe5a9190837d3a094d66812f6d00cd953923d906fa3fc",
+              "relative_path": "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md",
+              "source_item_id": "src_c93645a224085289b69c14313ecdabe9"
+            }
+          },
+          "files_missing_by_root": {
+            "/Users/xudawei/PSKA_workspaces/default/notes": []
+          },
+          "files_manifests_by_root": {
+            "/Users/xudawei/PSKA_workspaces/default/notes": {
+              "benchmark-2026-06-25/manual/fastreact-digest-claim-a.md": {
+                "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/manual/fastreact-digest-claim-a.md",
+                "mtime_ns": "1782352894643362930",
+                "size_bytes": 241,
+                "content_hash": "sha256:1ff997a69408bbfde0c002c220e40154ddc0c193dbfab062893b711d61f231bd",
+                "relative_path": "benchmark-2026-06-25/manual/fastreact-digest-claim-a.md",
+                "source_item_id": "src_dae5f2bff6f854c28da2d0dc521344ca"
+              },
+              "benchmark-2026-06-25/manual/fastreact-digest-claim-b.md": {
+                "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/manual/fastreact-digest-claim-b.md",
+                "mtime_ns": "1782352894643415680",
+                "size_bytes": 248,
+                "content_hash": "sha256:5044a8ee4805e257ae42c6a2b80344cedf88e409638e306b670c85192a2ed222",
+                "relative_path": "benchmark-2026-06-25/manual/fastreact-digest-claim-b.md",
+                "source_item_id": "src_67350bcc25f25bc097c3cff13a425e1d"
+              },
+              "benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx": {
+                "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx",
+                "mtime_ns": "1782352894643619475",
+                "size_bytes": 4966,
+                "content_hash": "sha256:d443fd68a12303fada5bdf0ac47a1ffee3d34aab217bb494a22d809548894b65",
+                "relative_path": "benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx",
+                "source_item_id": "src_384b289efc9356d0b9e4814e51529ed7"
+              },
+              "benchmark-2026-06-25/gbrain-calibration/holdout/daily-2026-04-18.md": {
+                "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/daily-2026-04-18.md",
+                "mtime_ns": "1782306397490585445",
+                "size_bytes": 1113,
+                "content_hash": "sha256:1580781b7de21dcd495d2d13c4c0b7362e0043d2bc6f54b293fead932a97cce3",
+                "relative_path": "benchmark-2026-06-25/gbrain-calibration/holdout/daily-2026-04-18.md",
+                "source_item_id": "src_3b648e33bafc599fad84828c5c51447c"
+              },
+              "benchmark-2026-06-25/gbrain-calibration/holdout/people-bob-example.md": {
+                "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/people-bob-example.md",
+                "mtime_ns": "1782306397491035735",
+                "size_bytes": 1438,
+                "content_hash": "sha256:2a4f633904751635f29c0c6fe61729eeca4fe4b18bc84377c0b8b9dfd0bd38fc",
+                "relative_path": "benchmark-2026-06-25/gbrain-calibration/holdout/people-bob-example.md",
+                "source_item_id": "src_52a3d89297295673b30728fada7495ba"
+              },
+              "benchmark-2026-06-25/gbrain-calibration/holdout/essay-on-conviction.md": {
+                "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/essay-on-conviction.md",
+                "mtime_ns": "1782306397490679986",
+                "size_bytes": 1626,
+                "content_hash": "sha256:486ec20b1baab0b3ede9892f2193bc04fbddf80dfa682dd4a3014522d212b2cf",
+                "relative_path": "benchmark-2026-06-25/gbrain-calibration/holdout/essay-on-conviction.md",
+                "source_item_id": "src_55ca416c8eb3505cb1fb5d1fe99bb788"
+              },
+              "benchmark-2026-06-25/gbrain-calibration/holdout/concept-founder-execution.md": {
+                "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/concept-founder-execution.md",
+                "mtime_ns": "1782306397490477070",
+                "size_bytes": 1400,
+                "content_hash": "sha256:23090ddb50d6fa236d61e0d1ed2424ea7bd5b0885fa02fe19f1e7144e55def17",
+                "relative_path": "benchmark-2026-06-25/gbrain-calibration/holdout/concept-founder-execution.md",
+                "source_item_id": "src_62aa58d5cf875ebc8533e101f9ec9f60"
+              },
+              "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/daily-2026-04-15.md": {
+                "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/daily-2026-04-15.md",
+                "mtime_ns": "1782306397490063363",
+                "size_bytes": 1378,
+                "content_hash": "sha256:b87441573b253ae76a7d2b4dc5b4d4d2e78ffed350144b99c6d6fc7c077821b6",
+                "relative_path": "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/daily-2026-04-15.md",
+                "source_item_id": "src_0d88e2d74eb5564daa5996459618cb9f"
+              },
+              "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-03.md": {
+                "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-03.md",
+                "mtime_ns": "1782306397490206696",
+                "size_bytes": 1279,
+                "content_hash": "sha256:3a95137c136961c4c4cca341e82e994c3d56b6fa37d2ad91c484bed051216ef3",
+                "relative_path": "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-03.md",
+                "source_item_id": "src_1bfa0f5e9f05553db0cd98041e0b8b15"
+              },
+              "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/decision-log-2025-q3.md": {
+                "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/decision-log-2025-q3.md",
+                "mtime_ns": "1782306397490109529",
+                "size_bytes": 1541,
+                "content_hash": "sha256:8f4b09a94013110e354fa480c784d507d3cd2fde5ec9b7091ecf537d43f03ff9",
+                "relative_path": "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/decision-log-2025-q3.md",
+                "source_item_id": "src_60425f2d57f4525494a9baf8e7478474"
+              },
+              "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/people-alice-example.md": {
+                "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/people-alice-example.md",
+                "mtime_ns": "1782306397490346737",
+                "size_bytes": 1252,
+                "content_hash": "sha256:376bfd1b01f3ed5ad741129755223344dbd44311ec583dd8ff49a0c311872a67",
+                "relative_path": "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/people-alice-example.md",
+                "source_item_id": "src_abb33363e8f050c89287a6c0a3e7d6b9"
+              },
+              "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/companies-acme-example.md": {
+                "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/companies-acme-example.md",
+                "mtime_ns": "1782306397489874988",
+                "size_bytes": 1027,
+                "content_hash": "sha256:d5138dd00cca9cba8ebd9cf3bc986cc300c0d2dd68892f13d61270005b27e378",
+                "relative_path": "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/companies-acme-example.md",
+                "source_item_id": "src_4880b40b309058d7b473444141f9dd9f"
+              },
+              "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/essay-cities-and-ambition.md": {
+                "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/essay-cities-and-ambition.md",
+                "mtime_ns": "1782306397490158154",
+                "size_bytes": 1314,
+                "content_hash": "sha256:7fdc2a92e78f6c552448ea9cb1ad443cc38de7dc359e9a507d10d188b3b46c10",
+                "relative_path": "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/essay-cities-and-ambition.md",
+                "source_item_id": "src_63b7676bf37854d7a3a39e8db981c74e"
+              },
+              "benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md": {
+                "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
+                "mtime_ns": "1782306397490939985",
+                "size_bytes": 1479,
+                "content_hash": "sha256:1012c08c0da3d1dd2a99ebb01ab4dc55c20c6daeffbd4ec7c0352c8b8c12595e",
+                "relative_path": "benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
+                "source_item_id": "src_c8e8b52cc6de59aaa47ab526532ce055"
+              },
+              "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/concept-startup-market-dynamics.md": {
+                "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/concept-startup-market-dynamics.md",
+                "mtime_ns": "1782306397489974405",
+                "size_bytes": 2501,
+                "content_hash": "sha256:709a7b8a0c349fd036b2a0977509deab2bd742ce860768ac4a1676e0888ccd8d",
+                "relative_path": "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/concept-startup-market-dynamics.md",
+                "source_item_id": "src_d4fd21da5f23540db318c05705961c69"
+              },
+              "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md": {
+                "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md",
+                "mtime_ns": "1782306397490302654",
+                "size_bytes": 2094,
+                "content_hash": "sha256:4c4aa173d16c9be4b44fe5a9190837d3a094d66812f6d00cd953923d906fa3fc",
+                "relative_path": "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md",
+                "source_item_id": "src_c93645a224085289b69c14313ecdabe9"
+              }
+            }
+          }
+        },
+        "created_at": "2026-06-25T10:09:31.373079+08:00",
+        "updated_at": "2026-06-25T10:09:32.860000+08:00"
+      },
+      "scanned": 16,
+      "ingested": 16,
+      "new_files": 16,
+      "changed_files": 0,
+      "unchanged_files": 0,
+      "moved_files": 0,
+      "missing_files": 0,
+      "skipped": [],
+      "failed": [],
+      "source_item_ids": [
+        "src_4880b40b309058d7b473444141f9dd9f",
+        "src_d4fd21da5f23540db318c05705961c69",
+        "src_0d88e2d74eb5564daa5996459618cb9f",
+        "src_60425f2d57f4525494a9baf8e7478474",
+        "src_63b7676bf37854d7a3a39e8db981c74e",
+        "src_1bfa0f5e9f05553db0cd98041e0b8b15",
+        "src_c93645a224085289b69c14313ecdabe9",
+        "src_abb33363e8f050c89287a6c0a3e7d6b9",
+        "src_62aa58d5cf875ebc8533e101f9ec9f60",
+        "src_3b648e33bafc599fad84828c5c51447c",
+        "src_55ca416c8eb3505cb1fb5d1fe99bb788",
+        "src_c8e8b52cc6de59aaa47ab526532ce055",
+        "src_52a3d89297295673b30728fada7495ba",
+        "src_dae5f2bff6f854c28da2d0dc521344ca",
+        "src_67350bcc25f25bc097c3cff13a425e1d",
+        "src_384b289efc9356d0b9e4814e51529ed7"
+      ],
+      "changes": [
+        {
+          "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/companies-acme-example.md",
+          "status": "new",
+          "source_item_id": "src_4880b40b309058d7b473444141f9dd9f",
+          "content_hash": "sha256:d5138dd00cca9cba8ebd9cf3bc986cc300c0d2dd68892f13d61270005b27e378"
+        },
+        {
+          "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/concept-startup-market-dynamics.md",
+          "status": "new",
+          "source_item_id": "src_d4fd21da5f23540db318c05705961c69",
+          "content_hash": "sha256:709a7b8a0c349fd036b2a0977509deab2bd742ce860768ac4a1676e0888ccd8d"
+        },
+        {
+          "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/daily-2026-04-15.md",
+          "status": "new",
+          "source_item_id": "src_0d88e2d74eb5564daa5996459618cb9f",
+          "content_hash": "sha256:b87441573b253ae76a7d2b4dc5b4d4d2e78ffed350144b99c6d6fc7c077821b6"
+        },
+        {
+          "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/decision-log-2025-q3.md",
+          "status": "new",
+          "source_item_id": "src_60425f2d57f4525494a9baf8e7478474",
+          "content_hash": "sha256:8f4b09a94013110e354fa480c784d507d3cd2fde5ec9b7091ecf537d43f03ff9"
+        },
+        {
+          "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/essay-cities-and-ambition.md",
+          "status": "new",
+          "source_item_id": "src_63b7676bf37854d7a3a39e8db981c74e",
+          "content_hash": "sha256:7fdc2a92e78f6c552448ea9cb1ad443cc38de7dc359e9a507d10d188b3b46c10"
+        },
+        {
+          "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-03.md",
+          "status": "new",
+          "source_item_id": "src_1bfa0f5e9f05553db0cd98041e0b8b15",
+          "content_hash": "sha256:3a95137c136961c4c4cca341e82e994c3d56b6fa37d2ad91c484bed051216ef3"
+        },
+        {
+          "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md",
+          "status": "new",
+          "source_item_id": "src_c93645a224085289b69c14313ecdabe9",
+          "content_hash": "sha256:4c4aa173d16c9be4b44fe5a9190837d3a094d66812f6d00cd953923d906fa3fc"
+        },
+        {
+          "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/people-alice-example.md",
+          "status": "new",
+          "source_item_id": "src_abb33363e8f050c89287a6c0a3e7d6b9",
+          "content_hash": "sha256:376bfd1b01f3ed5ad741129755223344dbd44311ec583dd8ff49a0c311872a67"
+        },
+        {
+          "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/concept-founder-execution.md",
+          "status": "new",
+          "source_item_id": "src_62aa58d5cf875ebc8533e101f9ec9f60",
+          "content_hash": "sha256:23090ddb50d6fa236d61e0d1ed2424ea7bd5b0885fa02fe19f1e7144e55def17"
+        },
+        {
+          "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/daily-2026-04-18.md",
+          "status": "new",
+          "source_item_id": "src_3b648e33bafc599fad84828c5c51447c",
+          "content_hash": "sha256:1580781b7de21dcd495d2d13c4c0b7362e0043d2bc6f54b293fead932a97cce3"
+        },
+        {
+          "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/essay-on-conviction.md",
+          "status": "new",
+          "source_item_id": "src_55ca416c8eb3505cb1fb5d1fe99bb788",
+          "content_hash": "sha256:486ec20b1baab0b3ede9892f2193bc04fbddf80dfa682dd4a3014522d212b2cf"
+        },
+        {
+          "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
+          "status": "new",
+          "source_item_id": "src_c8e8b52cc6de59aaa47ab526532ce055",
+          "content_hash": "sha256:1012c08c0da3d1dd2a99ebb01ab4dc55c20c6daeffbd4ec7c0352c8b8c12595e"
+        },
+        {
+          "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/people-bob-example.md",
+          "status": "new",
+          "source_item_id": "src_52a3d89297295673b30728fada7495ba",
+          "content_hash": "sha256:2a4f633904751635f29c0c6fe61729eeca4fe4b18bc84377c0b8b9dfd0bd38fc"
+        },
+        {
+          "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/manual/fastreact-digest-claim-a.md",
+          "status": "new",
+          "source_item_id": "src_dae5f2bff6f854c28da2d0dc521344ca",
+          "content_hash": "sha256:1ff997a69408bbfde0c002c220e40154ddc0c193dbfab062893b711d61f231bd"
+        },
+        {
+          "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/manual/fastreact-digest-claim-b.md",
+          "status": "new",
+          "source_item_id": "src_67350bcc25f25bc097c3cff13a425e1d",
+          "content_hash": "sha256:5044a8ee4805e257ae42c6a2b80344cedf88e409638e306b670c85192a2ed222"
+        },
+        {
+          "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx",
+          "status": "new",
+          "source_item_id": "src_384b289efc9356d0b9e4814e51529ed7",
+          "content_hash": "sha256:d443fd68a12303fada5bdf0ac47a1ffee3d34aab217bb494a22d809548894b65"
+        }
+      ]
+    }
+  ],
+  "sync_runs": [
+    {
+      "sync_run_id": "sync_4030998fb23d4a049a0f2533f2291f97",
+      "knowledge_source_id": "ks_22f84cac9b4a52dda10cce7b67198826",
+      "owner_user_id": "user_primary",
+      "connector_id": "files",
+      "status": "succeeded",
+      "started_at": "2026-06-25T10:09:32.865036+08:00",
+      "finished_at": "2026-06-25T10:09:32.865037+08:00",
+      "scanned": 16,
+      "ingested": 16,
+      "new_files": 16,
+      "changed_files": 0,
+      "unchanged_files": 0,
+      "moved_files": 0,
+      "missing_files": 0,
+      "skipped": 0,
+      "failed": 0,
+      "error": null,
+      "report": {
+        "root": "/Users/xudawei/PSKA_workspaces/default/notes",
+        "failed": [],
+        "changes": [
+          {
+            "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/companies-acme-example.md",
+            "status": "new",
+            "content_hash": "sha256:d5138dd00cca9cba8ebd9cf3bc986cc300c0d2dd68892f13d61270005b27e378",
+            "source_item_id": "src_4880b40b309058d7b473444141f9dd9f"
+          },
+          {
+            "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/concept-startup-market-dynamics.md",
+            "status": "new",
+            "content_hash": "sha256:709a7b8a0c349fd036b2a0977509deab2bd742ce860768ac4a1676e0888ccd8d",
+            "source_item_id": "src_d4fd21da5f23540db318c05705961c69"
+          },
+          {
+            "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/daily-2026-04-15.md",
+            "status": "new",
+            "content_hash": "sha256:b87441573b253ae76a7d2b4dc5b4d4d2e78ffed350144b99c6d6fc7c077821b6",
+            "source_item_id": "src_0d88e2d74eb5564daa5996459618cb9f"
+          },
+          {
+            "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/decision-log-2025-q3.md",
+            "status": "new",
+            "content_hash": "sha256:8f4b09a94013110e354fa480c784d507d3cd2fde5ec9b7091ecf537d43f03ff9",
+            "source_item_id": "src_60425f2d57f4525494a9baf8e7478474"
+          },
+          {
+            "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/essay-cities-and-ambition.md",
+            "status": "new",
+            "content_hash": "sha256:7fdc2a92e78f6c552448ea9cb1ad443cc38de7dc359e9a507d10d188b3b46c10",
+            "source_item_id": "src_63b7676bf37854d7a3a39e8db981c74e"
+          },
+          {
+            "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-03.md",
+            "status": "new",
+            "content_hash": "sha256:3a95137c136961c4c4cca341e82e994c3d56b6fa37d2ad91c484bed051216ef3",
+            "source_item_id": "src_1bfa0f5e9f05553db0cd98041e0b8b15"
+          },
+          {
+            "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md",
+            "status": "new",
+            "content_hash": "sha256:4c4aa173d16c9be4b44fe5a9190837d3a094d66812f6d00cd953923d906fa3fc",
+            "source_item_id": "src_c93645a224085289b69c14313ecdabe9"
+          },
+          {
+            "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/people-alice-example.md",
+            "status": "new",
+            "content_hash": "sha256:376bfd1b01f3ed5ad741129755223344dbd44311ec583dd8ff49a0c311872a67",
+            "source_item_id": "src_abb33363e8f050c89287a6c0a3e7d6b9"
+          },
+          {
+            "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/concept-founder-execution.md",
+            "status": "new",
+            "content_hash": "sha256:23090ddb50d6fa236d61e0d1ed2424ea7bd5b0885fa02fe19f1e7144e55def17",
+            "source_item_id": "src_62aa58d5cf875ebc8533e101f9ec9f60"
+          },
+          {
+            "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/daily-2026-04-18.md",
+            "status": "new",
+            "content_hash": "sha256:1580781b7de21dcd495d2d13c4c0b7362e0043d2bc6f54b293fead932a97cce3",
+            "source_item_id": "src_3b648e33bafc599fad84828c5c51447c"
+          },
+          {
+            "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/essay-on-conviction.md",
+            "status": "new",
+            "content_hash": "sha256:486ec20b1baab0b3ede9892f2193bc04fbddf80dfa682dd4a3014522d212b2cf",
+            "source_item_id": "src_55ca416c8eb3505cb1fb5d1fe99bb788"
+          },
+          {
+            "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
+            "status": "new",
+            "content_hash": "sha256:1012c08c0da3d1dd2a99ebb01ab4dc55c20c6daeffbd4ec7c0352c8b8c12595e",
+            "source_item_id": "src_c8e8b52cc6de59aaa47ab526532ce055"
+          },
+          {
+            "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/people-bob-example.md",
+            "status": "new",
+            "content_hash": "sha256:2a4f633904751635f29c0c6fe61729eeca4fe4b18bc84377c0b8b9dfd0bd38fc",
+            "source_item_id": "src_52a3d89297295673b30728fada7495ba"
+          },
+          {
+            "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/manual/fastreact-digest-claim-a.md",
+            "status": "new",
+            "content_hash": "sha256:1ff997a69408bbfde0c002c220e40154ddc0c193dbfab062893b711d61f231bd",
+            "source_item_id": "src_dae5f2bff6f854c28da2d0dc521344ca"
+          },
+          {
+            "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/manual/fastreact-digest-claim-b.md",
+            "status": "new",
+            "content_hash": "sha256:5044a8ee4805e257ae42c6a2b80344cedf88e409638e306b670c85192a2ed222",
+            "source_item_id": "src_67350bcc25f25bc097c3cff13a425e1d"
+          },
+          {
+            "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx",
+            "status": "new",
+            "content_hash": "sha256:d443fd68a12303fada5bdf0ac47a1ffee3d34aab217bb494a22d809548894b65",
+            "source_item_id": "src_384b289efc9356d0b9e4814e51529ed7"
+          }
+        ],
+        "scanned": 16,
+        "skipped": [],
+        "ingested": 16,
+        "new_files": 16,
+        "moved_files": 0,
+        "changed_files": 0,
+        "missing_files": 0,
+        "connector_state": {
+          "config": {
+            "files_missing": [],
+            "default_ignore": [
+              ".git/**",
+              "**/.git/**",
+              "__pycache__/**",
+              "**/__pycache__/**",
+              ".DS_Store",
+              "**/.DS_Store"
+            ],
+            "files_manifest": {
+              "benchmark-2026-06-25/manual/fastreact-digest-claim-a.md": {
+                "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/manual/fastreact-digest-claim-a.md",
+                "mtime_ns": "1782352894643362930",
+                "size_bytes": 241,
+                "content_hash": "sha256:1ff997a69408bbfde0c002c220e40154ddc0c193dbfab062893b711d61f231bd",
+                "relative_path": "benchmark-2026-06-25/manual/fastreact-digest-claim-a.md",
+                "source_item_id": "src_dae5f2bff6f854c28da2d0dc521344ca"
+              },
+              "benchmark-2026-06-25/manual/fastreact-digest-claim-b.md": {
+                "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/manual/fastreact-digest-claim-b.md",
+                "mtime_ns": "1782352894643415680",
+                "size_bytes": 248,
+                "content_hash": "sha256:5044a8ee4805e257ae42c6a2b80344cedf88e409638e306b670c85192a2ed222",
+                "relative_path": "benchmark-2026-06-25/manual/fastreact-digest-claim-b.md",
+                "source_item_id": "src_67350bcc25f25bc097c3cff13a425e1d"
+              },
+              "benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx": {
+                "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx",
+                "mtime_ns": "1782352894643619475",
+                "size_bytes": 4966,
+                "content_hash": "sha256:d443fd68a12303fada5bdf0ac47a1ffee3d34aab217bb494a22d809548894b65",
+                "relative_path": "benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx",
+                "source_item_id": "src_384b289efc9356d0b9e4814e51529ed7"
+              },
+              "benchmark-2026-06-25/gbrain-calibration/holdout/daily-2026-04-18.md": {
+                "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/daily-2026-04-18.md",
+                "mtime_ns": "1782306397490585445",
+                "size_bytes": 1113,
+                "content_hash": "sha256:1580781b7de21dcd495d2d13c4c0b7362e0043d2bc6f54b293fead932a97cce3",
+                "relative_path": "benchmark-2026-06-25/gbrain-calibration/holdout/daily-2026-04-18.md",
+                "source_item_id": "src_3b648e33bafc599fad84828c5c51447c"
+              },
+              "benchmark-2026-06-25/gbrain-calibration/holdout/people-bob-example.md": {
+                "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/people-bob-example.md",
+                "mtime_ns": "1782306397491035735",
+                "size_bytes": 1438,
+                "content_hash": "sha256:2a4f633904751635f29c0c6fe61729eeca4fe4b18bc84377c0b8b9dfd0bd38fc",
+                "relative_path": "benchmark-2026-06-25/gbrain-calibration/holdout/people-bob-example.md",
+                "source_item_id": "src_52a3d89297295673b30728fada7495ba"
+              },
+              "benchmark-2026-06-25/gbrain-calibration/holdout/essay-on-conviction.md": {
+                "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/essay-on-conviction.md",
+                "mtime_ns": "1782306397490679986",
+                "size_bytes": 1626,
+                "content_hash": "sha256:486ec20b1baab0b3ede9892f2193bc04fbddf80dfa682dd4a3014522d212b2cf",
+                "relative_path": "benchmark-2026-06-25/gbrain-calibration/holdout/essay-on-conviction.md",
+                "source_item_id": "src_55ca416c8eb3505cb1fb5d1fe99bb788"
+              },
+              "benchmark-2026-06-25/gbrain-calibration/holdout/concept-founder-execution.md": {
+                "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/concept-founder-execution.md",
+                "mtime_ns": "1782306397490477070",
+                "size_bytes": 1400,
+                "content_hash": "sha256:23090ddb50d6fa236d61e0d1ed2424ea7bd5b0885fa02fe19f1e7144e55def17",
+                "relative_path": "benchmark-2026-06-25/gbrain-calibration/holdout/concept-founder-execution.md",
+                "source_item_id": "src_62aa58d5cf875ebc8533e101f9ec9f60"
+              },
+              "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/daily-2026-04-15.md": {
+                "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/daily-2026-04-15.md",
+                "mtime_ns": "1782306397490063363",
+                "size_bytes": 1378,
+                "content_hash": "sha256:b87441573b253ae76a7d2b4dc5b4d4d2e78ffed350144b99c6d6fc7c077821b6",
+                "relative_path": "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/daily-2026-04-15.md",
+                "source_item_id": "src_0d88e2d74eb5564daa5996459618cb9f"
+              },
+              "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-03.md": {
+                "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-03.md",
+                "mtime_ns": "1782306397490206696",
+                "size_bytes": 1279,
+                "content_hash": "sha256:3a95137c136961c4c4cca341e82e994c3d56b6fa37d2ad91c484bed051216ef3",
+                "relative_path": "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-03.md",
+                "source_item_id": "src_1bfa0f5e9f05553db0cd98041e0b8b15"
+              },
+              "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/decision-log-2025-q3.md": {
+                "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/decision-log-2025-q3.md",
+                "mtime_ns": "1782306397490109529",
+                "size_bytes": 1541,
+                "content_hash": "sha256:8f4b09a94013110e354fa480c784d507d3cd2fde5ec9b7091ecf537d43f03ff9",
+                "relative_path": "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/decision-log-2025-q3.md",
+                "source_item_id": "src_60425f2d57f4525494a9baf8e7478474"
+              },
+              "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/people-alice-example.md": {
+                "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/people-alice-example.md",
+                "mtime_ns": "1782306397490346737",
+                "size_bytes": 1252,
+                "content_hash": "sha256:376bfd1b01f3ed5ad741129755223344dbd44311ec583dd8ff49a0c311872a67",
+                "relative_path": "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/people-alice-example.md",
+                "source_item_id": "src_abb33363e8f050c89287a6c0a3e7d6b9"
+              },
+              "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/companies-acme-example.md": {
+                "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/companies-acme-example.md",
+                "mtime_ns": "1782306397489874988",
+                "size_bytes": 1027,
+                "content_hash": "sha256:d5138dd00cca9cba8ebd9cf3bc986cc300c0d2dd68892f13d61270005b27e378",
+                "relative_path": "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/companies-acme-example.md",
+                "source_item_id": "src_4880b40b309058d7b473444141f9dd9f"
+              },
+              "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/essay-cities-and-ambition.md": {
+                "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/essay-cities-and-ambition.md",
+                "mtime_ns": "1782306397490158154",
+                "size_bytes": 1314,
+                "content_hash": "sha256:7fdc2a92e78f6c552448ea9cb1ad443cc38de7dc359e9a507d10d188b3b46c10",
+                "relative_path": "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/essay-cities-and-ambition.md",
+                "source_item_id": "src_63b7676bf37854d7a3a39e8db981c74e"
+              },
+              "benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md": {
+                "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
+                "mtime_ns": "1782306397490939985",
+                "size_bytes": 1479,
+                "content_hash": "sha256:1012c08c0da3d1dd2a99ebb01ab4dc55c20c6daeffbd4ec7c0352c8b8c12595e",
+                "relative_path": "benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
+                "source_item_id": "src_c8e8b52cc6de59aaa47ab526532ce055"
+              },
+              "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/concept-startup-market-dynamics.md": {
+                "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/concept-startup-market-dynamics.md",
+                "mtime_ns": "1782306397489974405",
+                "size_bytes": 2501,
+                "content_hash": "sha256:709a7b8a0c349fd036b2a0977509deab2bd742ce860768ac4a1676e0888ccd8d",
+                "relative_path": "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/concept-startup-market-dynamics.md",
+                "source_item_id": "src_d4fd21da5f23540db318c05705961c69"
+              },
+              "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md": {
+                "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md",
+                "mtime_ns": "1782306397490302654",
+                "size_bytes": 2094,
+                "content_hash": "sha256:4c4aa173d16c9be4b44fe5a9190837d3a094d66812f6d00cd953923d906fa3fc",
+                "relative_path": "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md",
+                "source_item_id": "src_c93645a224085289b69c14313ecdabe9"
+              }
+            },
+            "files_missing_by_root": {
+              "/Users/xudawei/PSKA_workspaces/default/notes": []
+            },
+            "files_manifests_by_root": {
+              "/Users/xudawei/PSKA_workspaces/default/notes": {
+                "benchmark-2026-06-25/manual/fastreact-digest-claim-a.md": {
+                  "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/manual/fastreact-digest-claim-a.md",
+                  "mtime_ns": "1782352894643362930",
+                  "size_bytes": 241,
+                  "content_hash": "sha256:1ff997a69408bbfde0c002c220e40154ddc0c193dbfab062893b711d61f231bd",
+                  "relative_path": "benchmark-2026-06-25/manual/fastreact-digest-claim-a.md",
+                  "source_item_id": "src_dae5f2bff6f854c28da2d0dc521344ca"
+                },
+                "benchmark-2026-06-25/manual/fastreact-digest-claim-b.md": {
+                  "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/manual/fastreact-digest-claim-b.md",
+                  "mtime_ns": "1782352894643415680",
+                  "size_bytes": 248,
+                  "content_hash": "sha256:5044a8ee4805e257ae42c6a2b80344cedf88e409638e306b670c85192a2ed222",
+                  "relative_path": "benchmark-2026-06-25/manual/fastreact-digest-claim-b.md",
+                  "source_item_id": "src_67350bcc25f25bc097c3cff13a425e1d"
+                },
+                "benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx": {
+                  "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx",
+                  "mtime_ns": "1782352894643619475",
+                  "size_bytes": 4966,
+                  "content_hash": "sha256:d443fd68a12303fada5bdf0ac47a1ffee3d34aab217bb494a22d809548894b65",
+                  "relative_path": "benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx",
+                  "source_item_id": "src_384b289efc9356d0b9e4814e51529ed7"
+                },
+                "benchmark-2026-06-25/gbrain-calibration/holdout/daily-2026-04-18.md": {
+                  "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/daily-2026-04-18.md",
+                  "mtime_ns": "1782306397490585445",
+                  "size_bytes": 1113,
+                  "content_hash": "sha256:1580781b7de21dcd495d2d13c4c0b7362e0043d2bc6f54b293fead932a97cce3",
+                  "relative_path": "benchmark-2026-06-25/gbrain-calibration/holdout/daily-2026-04-18.md",
+                  "source_item_id": "src_3b648e33bafc599fad84828c5c51447c"
+                },
+                "benchmark-2026-06-25/gbrain-calibration/holdout/people-bob-example.md": {
+                  "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/people-bob-example.md",
+                  "mtime_ns": "1782306397491035735",
+                  "size_bytes": 1438,
+                  "content_hash": "sha256:2a4f633904751635f29c0c6fe61729eeca4fe4b18bc84377c0b8b9dfd0bd38fc",
+                  "relative_path": "benchmark-2026-06-25/gbrain-calibration/holdout/people-bob-example.md",
+                  "source_item_id": "src_52a3d89297295673b30728fada7495ba"
+                },
+                "benchmark-2026-06-25/gbrain-calibration/holdout/essay-on-conviction.md": {
+                  "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/essay-on-conviction.md",
+                  "mtime_ns": "1782306397490679986",
+                  "size_bytes": 1626,
+                  "content_hash": "sha256:486ec20b1baab0b3ede9892f2193bc04fbddf80dfa682dd4a3014522d212b2cf",
+                  "relative_path": "benchmark-2026-06-25/gbrain-calibration/holdout/essay-on-conviction.md",
+                  "source_item_id": "src_55ca416c8eb3505cb1fb5d1fe99bb788"
+                },
+                "benchmark-2026-06-25/gbrain-calibration/holdout/concept-founder-execution.md": {
+                  "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/concept-founder-execution.md",
+                  "mtime_ns": "1782306397490477070",
+                  "size_bytes": 1400,
+                  "content_hash": "sha256:23090ddb50d6fa236d61e0d1ed2424ea7bd5b0885fa02fe19f1e7144e55def17",
+                  "relative_path": "benchmark-2026-06-25/gbrain-calibration/holdout/concept-founder-execution.md",
+                  "source_item_id": "src_62aa58d5cf875ebc8533e101f9ec9f60"
+                },
+                "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/daily-2026-04-15.md": {
+                  "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/daily-2026-04-15.md",
+                  "mtime_ns": "1782306397490063363",
+                  "size_bytes": 1378,
+                  "content_hash": "sha256:b87441573b253ae76a7d2b4dc5b4d4d2e78ffed350144b99c6d6fc7c077821b6",
+                  "relative_path": "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/daily-2026-04-15.md",
+                  "source_item_id": "src_0d88e2d74eb5564daa5996459618cb9f"
+                },
+                "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-03.md": {
+                  "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-03.md",
+                  "mtime_ns": "1782306397490206696",
+                  "size_bytes": 1279,
+                  "content_hash": "sha256:3a95137c136961c4c4cca341e82e994c3d56b6fa37d2ad91c484bed051216ef3",
+                  "relative_path": "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-03.md",
+                  "source_item_id": "src_1bfa0f5e9f05553db0cd98041e0b8b15"
+                },
+                "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/decision-log-2025-q3.md": {
+                  "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/decision-log-2025-q3.md",
+                  "mtime_ns": "1782306397490109529",
+                  "size_bytes": 1541,
+                  "content_hash": "sha256:8f4b09a94013110e354fa480c784d507d3cd2fde5ec9b7091ecf537d43f03ff9",
+                  "relative_path": "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/decision-log-2025-q3.md",
+                  "source_item_id": "src_60425f2d57f4525494a9baf8e7478474"
+                },
+                "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/people-alice-example.md": {
+                  "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/people-alice-example.md",
+                  "mtime_ns": "1782306397490346737",
+                  "size_bytes": 1252,
+                  "content_hash": "sha256:376bfd1b01f3ed5ad741129755223344dbd44311ec583dd8ff49a0c311872a67",
+                  "relative_path": "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/people-alice-example.md",
+                  "source_item_id": "src_abb33363e8f050c89287a6c0a3e7d6b9"
+                },
+                "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/companies-acme-example.md": {
+                  "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/companies-acme-example.md",
+                  "mtime_ns": "1782306397489874988",
+                  "size_bytes": 1027,
+                  "content_hash": "sha256:d5138dd00cca9cba8ebd9cf3bc986cc300c0d2dd68892f13d61270005b27e378",
+                  "relative_path": "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/companies-acme-example.md",
+                  "source_item_id": "src_4880b40b309058d7b473444141f9dd9f"
+                },
+                "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/essay-cities-and-ambition.md": {
+                  "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/essay-cities-and-ambition.md",
+                  "mtime_ns": "1782306397490158154",
+                  "size_bytes": 1314,
+                  "content_hash": "sha256:7fdc2a92e78f6c552448ea9cb1ad443cc38de7dc359e9a507d10d188b3b46c10",
+                  "relative_path": "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/essay-cities-and-ambition.md",
+                  "source_item_id": "src_63b7676bf37854d7a3a39e8db981c74e"
+                },
+                "benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md": {
+                  "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
+                  "mtime_ns": "1782306397490939985",
+                  "size_bytes": 1479,
+                  "content_hash": "sha256:1012c08c0da3d1dd2a99ebb01ab4dc55c20c6daeffbd4ec7c0352c8b8c12595e",
+                  "relative_path": "benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
+                  "source_item_id": "src_c8e8b52cc6de59aaa47ab526532ce055"
+                },
+                "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/concept-startup-market-dynamics.md": {
+                  "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/concept-startup-market-dynamics.md",
+                  "mtime_ns": "1782306397489974405",
+                  "size_bytes": 2501,
+                  "content_hash": "sha256:709a7b8a0c349fd036b2a0977509deab2bd742ce860768ac4a1676e0888ccd8d",
+                  "relative_path": "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/concept-startup-market-dynamics.md",
+                  "source_item_id": "src_d4fd21da5f23540db318c05705961c69"
+                },
+                "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md": {
+                  "path": "/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md",
+                  "mtime_ns": "1782306397490302654",
+                  "size_bytes": 2094,
+                  "content_hash": "sha256:4c4aa173d16c9be4b44fe5a9190837d3a094d66812f6d00cd953923d906fa3fc",
+                  "relative_path": "benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md",
+                  "source_item_id": "src_c93645a224085289b69c14313ecdabe9"
+                }
+              }
+            }
+          },
+          "enabled": true,
+          "created_at": "2026-06-25T10:09:31.373079+08:00",
+          "last_error": null,
+          "updated_at": "2026-06-25T10:09:32.860000+08:00",
+          "scan_cursor": "1782352894643619475",
+          "sync_status": "succeeded",
+          "connector_id": "files",
+          "last_error_at": null,
+          "owner_user_id": "user_primary",
+          "last_success_at": null,
+          "permission_scope": {
+            "roots": [
+              "/Users/xudawei/PSKA_workspaces/default/notes"
+            ]
+          },
+          "connector_state_id": "conn_user_primary_files"
+        },
+        "source_item_ids": [
+          "src_4880b40b309058d7b473444141f9dd9f",
+          "src_d4fd21da5f23540db318c05705961c69",
+          "src_0d88e2d74eb5564daa5996459618cb9f",
+          "src_60425f2d57f4525494a9baf8e7478474",
+          "src_63b7676bf37854d7a3a39e8db981c74e",
+          "src_1bfa0f5e9f05553db0cd98041e0b8b15",
+          "src_c93645a224085289b69c14313ecdabe9",
+          "src_abb33363e8f050c89287a6c0a3e7d6b9",
+          "src_62aa58d5cf875ebc8533e101f9ec9f60",
+          "src_3b648e33bafc599fad84828c5c51447c",
+          "src_55ca416c8eb3505cb1fb5d1fe99bb788",
+          "src_c8e8b52cc6de59aaa47ab526532ce055",
+          "src_52a3d89297295673b30728fada7495ba",
+          "src_dae5f2bff6f854c28da2d0dc521344ca",
+          "src_67350bcc25f25bc097c3cff13a425e1d",
+          "src_384b289efc9356d0b9e4814e51529ed7"
+        ],
+        "unchanged_files": 0
+      }
+    }
+  ],
+  "twitter_archives": {
+    "ok": true,
+    "enabled": true,
+    "input": "/Users/xudawei/PSKA_workspaces/default/twitter_archive",
+    "archive_root": "/Users/xudawei/PSKA_workspaces/default/imports",
+    "imported": 0,
+    "skipped": 0,
+    "failed": [],
+    "source_item_ids": []
+  },
+  "totals": {
+    "roots": 1,
+    "scanned": 16,
+    "ingested": 16,
+    "twitter_imported": 0,
+    "twitter_skipped": 0,
+    "new_files": 16,
+    "changed_files": 0,
+    "unchanged_files": 0,
+    "moved_files": 0,
+    "missing_files": 0,
+    "skipped": 0,
+    "failed": 0
+  },
+  "failed": []
+}

@@ -10,7 +10,7 @@ import threading
 from http.server import ThreadingHTTPServer
 
 from pska_core.acl import ACLService
-from pska_core.agentic_service import AgenticServiceError
+from pska_core.agentic_service import AgenticServiceError, _agentic_messages
 from pska_core.api import PSKAApi, PSKARequestHandler
 from pska_core.candidates import CandidateWriteService
 from pska_core.cli import service_check
@@ -113,6 +113,7 @@ def test_fastreact_client_applies_config_generation_options_to_runs(monkeypatch)
         messages=[{"role": "user", "content": "hello"}],
         user_id="user_primary",
         purpose="agentic_search",
+        skills=["pska_answer_with_citations"],
     )
 
     assert response["run_id"] == "run_456"
@@ -121,7 +122,19 @@ def test_fastreact_client_applies_config_generation_options_to_runs(monkeypatch)
     assert captured["payload"]["temperature"] == 0.2
     assert captured["payload"]["top_p"] == 0.8
     assert captured["payload"]["max_tokens"] == 2048
+    assert captured["payload"]["skills"] == ["pska_answer_with_citations"]
     assert captured["payload"]["metadata"]["purpose"] == "agentic_search"
+
+
+def test_agentic_search_prompt_routes_pska_queries_to_pska_skill_tools() -> None:
+    messages = _agentic_messages("徐大为的简历都说了什么？")
+    joined = "\n".join(message["content"] for message in messages)
+
+    assert "use only PSKA MCP tools" in joined
+    assert "do not call read_file" in joined
+    assert "exec" in joined
+    assert "retrieve source evidence through PSKA tools" in joined
+    assert "4-8 concrete bullets" in joined
 
 
 def test_fastreact_ready_reports_missing_pska_tools(monkeypatch) -> None:
@@ -194,8 +207,8 @@ def test_fastreact_pska_service_config_keeps_builtin_tools_under_fastreact_polic
     pska_tools = policy["tenant_rules"]["pska"]["tools"]
 
     assert "default_action" not in policy
-    assert "exec" not in pska_tools
-    assert "read_file" not in pska_tools
+    assert pska_tools["exec"] == "deny"
+    assert pska_tools["read_file"] == "deny"
     assert pska_tools["write_file"] == "require_approval"
     assert pska_tools["edit_file"] == "require_approval"
     assert pska_tools["pska_pska_search"] == "allow"
@@ -1303,7 +1316,7 @@ def test_local_console_agentic_search_planning_error_falls_back_to_direct() -> N
             "POST",
             "/console/search/query",
             {
-                "query": "你好啊",
+                "query": "fallback retrieval",
                 "mode": "agentic",
                 "user_id": "user_primary",
                 "represented_user_id": "user_primary",
@@ -1315,6 +1328,10 @@ def test_local_console_agentic_search_planning_error_falls_back_to_direct() -> N
     assert payload["error"]["type"] == "agentic_service_unavailable"
     assert "Direct retrieval fallback" in payload["error"]["message"]
     assert payload["error"]["detail"] == "Agentic service unavailable"
+    assert "direct retrieval" in payload["answer"]
+    assert "Console fallback should still run direct retrieval." in payload["answer"]
+    assert payload["retrieval"]["results"]
+    assert payload["citations"]
     assert payload["fallback"]["mode"] == "direct"
     assert "retrieval" in payload["fallback"]
 
@@ -2102,6 +2119,106 @@ def test_workspace_graph_path_rejects_unusable_agentic_answer() -> None:
     assert payload["ok"] is False
     assert payload["display_mode"] == "deterministic_fallback"
     assert payload["error"]["type"] == "agentic_graph_answer_unusable"
+
+
+def test_workspace_graph_path_rejects_agentic_query_truncation_claim() -> None:
+    api = _api()
+    IngestService(api.store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "graph-path-query-truncated",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "Graph Path Query Truncated Note",
+            "content": {"text": "GraphRAG should not show a query truncation hallucination as a finished answer."},
+        }
+    )
+
+    class QueryTruncatedAgenticService(FakeAgenticService):
+        def search(self, query, user, *, represented_user_id=None, max_iterations=3):
+            return {
+                "answer": "However, your question was truncated — the full query was not received.",
+                "trace": {"evidence_check": "insufficient_query"},
+                "agentic_service": {"provider": "test"},
+            }
+
+    api.agentic_service = QueryTruncatedAgenticService(api.retrieval)
+
+    payload = api.workspace_graph_path(query="What is in the Excel pipeline for Acme Example?", owner_user_id="user_primary")
+
+    assert payload["ok"] is False
+    assert payload["display_mode"] == "deterministic_fallback"
+    assert payload["error"]["detail"] == "question was truncated"
+
+
+def test_workspace_graph_path_rejects_generic_operational_agentic_summary() -> None:
+    api = _api()
+    IngestService(api.store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "graph-path-operational-summary",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "Graph Path Operational Summary Note",
+            "content": {"text": "GraphRAG should answer the asked question, not summarize system readiness."},
+        }
+    )
+
+    class OperationalSummaryAgenticService(FakeAgenticService):
+        def search(self, query, user, *, represented_user_id=None, max_iterations=3):
+            return {
+                "answer": "PSKA knowledge base is operational with source items, entities, hyperedges, knowledge claims, and pending review items spanning people and companies.",
+                "trace": {"evidence_check": "system_status"},
+                "agentic_service": {"provider": "test"},
+            }
+
+    api.agentic_service = OperationalSummaryAgenticService(api.retrieval)
+
+    payload = api.workspace_graph_path(query="Acme Example 当前 pipeline 里的下一步行动是什么？", owner_user_id="user_primary")
+
+    assert payload["ok"] is False
+    assert payload["display_mode"] == "deterministic_fallback"
+    assert payload["error"]["detail"] == "pska knowledge base is operational"
+
+
+def test_workspace_graph_path_answers_pipeline_next_step_from_table() -> None:
+    api = _api()
+    IngestService(api.store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "portfolio-pipeline.xlsx",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "portfolio-pipeline.xlsx",
+            "content": {
+                "text": (
+                    "# Workbook: portfolio-pipeline.xlsx\n\n"
+                    "## Sheet: Pipeline\n\n"
+                    "| Company | Lead | Status | ARR | Next Step |\n"
+                    "| --- | --- | --- | --- | --- |\n"
+                    "| Acme Example | Alice Example | active | 1200000 | Prepare partner meeting brief |\n"
+                    "| Widget Co | Charlie Example | watch | 450000 | Review COO transition risk |\n"
+                )
+            },
+            "extra": {"extraction": {"extractor": "xlsx-zip-xml"}},
+        }
+    )
+
+    payload = api.workspace_graph_path(query="Acme Example 当前 pipeline 里的下一步行动是什么？", owner_user_id="user_primary", mode="deterministic")
+
+    assert payload["ok"] is True
+    assert "Prepare partner meeting brief" in payload["answer"]
+    assert "Alice Example" in payload["answer"]
+    assert "1200000" in payload["answer"]
 
 
 def test_user_workspace_writer_suggests_with_selected_text_and_evidence() -> None:

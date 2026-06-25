@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import sys
+import zipfile
 
 from pska_core.connectors import connector_state_from_mapping
 from pska_core.files_connector import scan_files
@@ -63,6 +64,50 @@ def test_files_scan_recognizes_optional_document_extractors(tmp_path: Path, monk
     assert report.ingested == 0
     assert {item["reason"] for item in report.skipped} == {"missing_dependency"}
     assert all("required" in item["detail"] for item in report.skipped)
+
+
+def test_files_scan_extracts_xlsx_to_markdown_tables(tmp_path: Path) -> None:
+    root = tmp_path / "notes"
+    root.mkdir()
+    workbook = root / "portfolio.xlsx"
+    _write_minimal_xlsx(
+        workbook,
+        rows=[
+            ["Company", "Status", "ARR"],
+            ["Acme Example", "active", "1200000"],
+            ["Widget Co", "watch", "450000"],
+        ],
+    )
+    store = InMemoryKnowledgeStore()
+
+    report = scan_files(store, root=root)
+
+    assert report.ingested == 1
+    source = store.source_items[report.source_item_ids[0]]
+    assert "## Sheet: Pipeline" in source.content_text
+    assert "| Company | Status | ARR |" in source.content_text
+    assert "| Acme Example | active | 1200000 |" in source.content_text
+    extraction = source.metadata["extra"]["extraction"]
+    assert extraction["extractor"] == "xlsx-zip-xml"
+    assert extraction["sheet_count"] == 1
+    assert extraction["sheets"][0]["name"] == "Pipeline"
+
+    unchanged = scan_files(store, root=root)
+    assert unchanged.ingested == 0
+    assert unchanged.unchanged_files == 1
+
+
+def test_files_scan_reports_xls_optional_dependency(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setitem(sys.modules, "xlrd", None)
+    root = tmp_path / "notes"
+    root.mkdir()
+    (root / "legacy.xls").write_bytes(b"not really an xls")
+
+    report = scan_files(InMemoryKnowledgeStore(), root=root)
+
+    assert report.ingested == 0
+    assert report.skipped[0]["reason"] == "missing_dependency"
+    assert "xlrd required" in report.skipped[0]["detail"]
 
 
 def test_files_scan_respects_disabled_connector_state(tmp_path: Path) -> None:
@@ -221,3 +266,69 @@ def test_files_scan_keeps_manifests_isolated_by_root(tmp_path: Path) -> None:
     assert first_again.unchanged_files == 1
     manifests_by_root = first_again.connector_state.config["files_manifests_by_root"]
     assert set(manifests_by_root) == {str(first_root.resolve()), str(second_root.resolve())}
+
+
+def _write_minimal_xlsx(path: Path, *, rows: list[list[str]]) -> None:
+    def cell_name(row_index: int, column_index: int) -> str:
+        letters = ""
+        index = column_index
+        while index:
+            index, remainder = divmod(index - 1, 26)
+            letters = chr(ord("A") + remainder) + letters
+        return f"{letters}{row_index}"
+
+    sheet_rows = []
+    for row_index, row in enumerate(rows, start=1):
+        cells = []
+        for column_index, value in enumerate(row, start=1):
+            cells.append(
+                f'<c r="{cell_name(row_index, column_index)}" t="inlineStr">'
+                f"<is><t>{_xml_escape(value)}</t></is>"
+                "</c>"
+            )
+        sheet_rows.append(f'<row r="{row_index}">' + "".join(cells) + "</row>")
+    sheet_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        "<sheetData>"
+        + "".join(sheet_rows)
+        + "</sheetData></worksheet>"
+    )
+    files = {
+        "[Content_Types].xml": (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+            '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+            '<Default Extension="xml" ContentType="application/xml"/>'
+            '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+            '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+            "</Types>"
+        ),
+        "_rels/.rels": (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+            "</Relationships>"
+        ),
+        "xl/workbook.xml": (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+            'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+            '<sheets><sheet name="Pipeline" sheetId="1" r:id="rId1"/></sheets>'
+            "</workbook>"
+        ),
+        "xl/_rels/workbook.xml.rels": (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
+            "</Relationships>"
+        ),
+        "xl/worksheets/sheet1.xml": sheet_xml,
+    }
+    with zipfile.ZipFile(path, "w") as archive:
+        for filename, content in files.items():
+            archive.writestr(filename, content)
+
+
+def _xml_escape(value: str) -> str:
+    return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")

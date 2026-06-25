@@ -149,8 +149,8 @@ initial seed/defaults. Runtime source state is database-backed.
 ./scripts/pska --config .pska/config.json digest-schedule --owner-user-id user_primary --limit 10
 ```
 
-`files-sync` covers active folder sources, optional PDF/DOCX extraction,
-manifest reconciliation, and the workspace Twitter/X archive inbox. The manual
+`files-sync` covers active folder sources, PDF/DOCX/XLSX extraction,
+optional legacy XLS extraction, manifest reconciliation, and the workspace Twitter/X archive inbox. The manual
 shortcut is:
 
 ```bash

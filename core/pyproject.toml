@@ -12,6 +12,7 @@ dependencies = [
 documents = [
   "pypdf>=5.0.0",
   "python-docx>=1.1.0",
+  "xlrd>=2.0.1",
 ]
 watch = [
   "watchdog>=4.0.0",

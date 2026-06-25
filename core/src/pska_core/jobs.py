@@ -27,6 +27,11 @@ EMBED_BACKFILL = "embed_backfill"
 REVIEW_APPLY = "review_apply"
 FULL_REPORT = "full_report"
 
+FASTREACT_SKILLS_BY_PURPOSE = {
+    "pska_digest": ["pska_digest"],
+    "pska_extract": ["pska_extract"],
+}
+
 JOB_TYPES = {
     IMPORT_TWITTER_ZIPS,
     EXTRACT_ALL,
@@ -285,6 +290,7 @@ class JobService:
             stream=False,
             job_id=job.job_id,
             scope=scope,
+            skills=FASTREACT_SKILLS_BY_PURPOSE.get(purpose),
             **_fastreact_generation_options(job.payload, purpose=purpose),
         )
         run_id = response.get("run_id")

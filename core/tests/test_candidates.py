@@ -475,6 +475,110 @@ def test_knowledge_claim_requires_evidence_and_low_confidence_claim_requires_rev
     assert review.proposal["plain_text_summary"] == "PSKA 可能偏好长答案。"
 
 
+def test_write_candidates_deduplicates_content_across_digest_jobs() -> None:
+    store = _store_with_source()
+    source_id = next(iter(store.source_items))
+    service = CandidateWriteService(store)
+
+    def payload(job_id: str, request_id: str) -> dict:
+        return {
+            "schema_version": "pska.candidates.v1",
+            "owner_user_id": "user_primary",
+            "job_id": job_id,
+            "request_id": request_id,
+            "source_refs": [{"source_item_id": source_id}],
+            "knowledge_claims": [
+                {
+                    "claim_type": "fact",
+                    "statement": "Obsidian 可以作为第二大脑知识工作台。",
+                    "evidence_text": "Obsidian can be configured as a second-brain knowledge workspace.",
+                    "confidence": 0.82,
+                    "source_refs": [{"source_item_id": source_id}],
+                }
+            ],
+            "digest_notes": [
+                {
+                    "title": "Obsidian 第二大脑",
+                    "synopsis": "Obsidian 可以和自动化工具组合成个人知识工作台。",
+                    "source_refs": [{"source_item_id": source_id}],
+                }
+            ],
+        }
+
+    first = service.write_candidates(payload("job_digest_one", "run_one"))
+    second = service.write_candidates(payload("job_digest_two", "run_two"))
+
+    assert second["knowledge_claims"] == first["knowledge_claims"]
+    assert second["digest_notes"] == first["digest_notes"]
+    assert len(store.list_knowledge_claims(owner_user_id="user_primary")) == 1
+    assert len(store.list_digest_notes(owner_user_id="user_primary")) == 1
+
+
+def test_write_candidates_uses_dedupe_key_for_semantic_retry_identity() -> None:
+    store = _store_with_source()
+    source_id = next(iter(store.source_items))
+    service = CandidateWriteService(store)
+
+    first = service.write_candidates(
+        {
+            "schema_version": "pska.candidates.v1",
+            "owner_user_id": "user_primary",
+            "job_id": "job_one",
+            "source_refs": [{"source_item_id": source_id}],
+            "knowledge_claims": [
+                {
+                    "claim_type": "fact",
+                    "dedupe_key": "pska:depends_on:fastreact",
+                    "statement": "PSKA 依赖 FastReAct 执行 digest。",
+                    "evidence_text": "PSKA depends on FastReAct for digest jobs.",
+                    "confidence": 0.82,
+                }
+            ],
+            "digest_notes": [
+                {
+                    "dedupe_key": "digest:pska-fastreact",
+                    "title": "PSKA/FastReAct",
+                    "synopsis": "PSKA 使用 FastReAct 处理 digest。",
+                    "source_refs": [{"source_item_id": source_id}],
+                }
+            ],
+        }
+    )
+    second = service.write_candidates(
+        {
+            "schema_version": "pska.candidates.v1",
+            "owner_user_id": "user_primary",
+            "job_id": "job_two",
+            "source_refs": [{"source_item_id": source_id}],
+            "knowledge_claims": [
+                {
+                    "claim_type": "fact",
+                    "dedupe_key": "PSKA:DEPENDS_ON:FASTREACT",
+                    "statement": "FastReAct 是 PSKA digest 的执行层。",
+                    "evidence_text": "PSKA depends on FastReAct for digest jobs.",
+                    "confidence": 0.88,
+                }
+            ],
+            "digest_notes": [
+                {
+                    "dedupe_key": "Digest:PSKA-FastReAct",
+                    "title": "FastReAct digest execution",
+                    "synopsis": "FastReAct 承担 PSKA digest 执行。",
+                    "source_refs": [{"source_item_id": source_id}],
+                }
+            ],
+        }
+    )
+
+    assert second["knowledge_claims"] == first["knowledge_claims"]
+    assert second["digest_notes"] == first["digest_notes"]
+    claim = store.list_knowledge_claims(owner_user_id="user_primary")[0]
+    note = store.list_digest_notes(owner_user_id="user_primary")[0]
+    assert claim.statement == "FastReAct 是 PSKA digest 的执行层。"
+    assert claim.metadata["dedupe_key"] == "pska:depends_on:fastreact"
+    assert note.metadata["dedupe_key"] == "digest:pska-fastreact"
+
+
 def test_digest_logs_surface_events_claims_and_notes() -> None:
     api = _api()
     source_id = _ingest_source(api.store)

@@ -10,6 +10,9 @@ from pska_core.fastreact_client import FastreactConfig, FastreactError, HttpFast
 from pska_core.models import User
 
 
+PSKA_QA_SKILL = "pska_answer_with_citations"
+
+
 class AgenticServiceError(RuntimeError):
     """Raised when the configured external agentic service cannot satisfy a request."""
 
@@ -142,6 +145,7 @@ class FastreactAgenticServiceAdapter:
                 user_id=user_id,
                 purpose="agentic_search",
                 scope=scope,
+                skills=[PSKA_QA_SKILL],
                 **self._generation_options(),
             )
             run_id = str(created.get("run_id") or "")
@@ -172,6 +176,7 @@ class FastreactAgenticServiceAdapter:
                     purpose="agentic_search",
                     stream=False,
                     scope=scope,
+                    skills=[PSKA_QA_SKILL],
                     **self._generation_options(),
                 )
             detail = str(exc)
@@ -183,6 +188,7 @@ class FastreactAgenticServiceAdapter:
             purpose="agentic_search",
             stream=False,
             scope=scope,
+            skills=[PSKA_QA_SKILL],
             **self._generation_options(),
         )
 
@@ -226,7 +232,12 @@ def _agentic_messages(query: str) -> list[dict[str, str]]:
                 "HippoRAG-style loop: understand the query, retrieve lexical/vector passage seeds, inspect "
                 "entity/fact/claim graph paths, judge whether adjacent passages or graph neighbors are needed, "
                 "optionally issue follow-up PSKA searches, filter irrelevant facts, then synthesize a cited answer. "
-                "When the user explicitly asks to use bash or run a command, call the exec tool and answer from stdout/stderr."
+                "When PSKA returns relevant evidence, provide a specific answer in the user's language with "
+                "key facts, relationships, caveats, and source titles; do not collapse grounded answers into a "
+                "single generic sentence. "
+                "For PSKA personal knowledge questions, use only PSKA MCP tools such as pska_search and never "
+                "use host tools such as read_file, write_file, edit_file, exec, shell, or direct filesystem access. "
+                "Only use host tools when the user explicitly asks to inspect local files or run a command."
             ),
         },
         {
@@ -238,7 +249,11 @@ def _agentic_messages(query: str) -> list[dict[str, str]]:
                 "fact_relevance_filter, evidence_check, gaps, and conflicts when available. In each "
                 "iteration, decide whether to search the previous/next passage window, same-document "
                 "neighbors, or connected entity/fact/claim neighbors before final synthesis. If you use "
-                "tools, include tool/event details in the service response when available.\n\n"
+                "tools, include tool/event details in the service response when available. For this PSKA "
+                "request, do not call read_file, write_file, edit_file, exec, shell, Python scripts, PDF "
+                "extractors, or other host/filesystem tools; retrieve source evidence through PSKA tools instead. "
+                "If PSKA returns evidence, answer with 4-8 concrete bullets or short paragraphs and name the "
+                "main source titles. If evidence is insufficient, say what is missing.\n\n"
                 f"User request: {query}"
             ),
         },
@@ -252,8 +267,16 @@ def _normalize_agentic_response(response: dict[str, Any], *, provider: str, adap
     if citations and not retrieval.get("citations"):
         retrieval = {**retrieval, "citations": citations}
     events_answer = _final_answer_from_events(_list_value(response.get("events")))
+    raw_answer = events_answer or _response_text(response)
+    payload_answer = _answer_from_jsonish_text(raw_answer)
+    if not payload_answer and events_answer:
+        payload_answer = events_answer
+    if not payload_answer and payload is not response:
+        payload_answer = _response_text(payload)
+    if not payload_answer:
+        payload_answer = _response_text(payload)
     return {
-        "answer": events_answer or _response_text(payload) or _response_text(response),
+        "answer": payload_answer or raw_answer,
         "retrieval": retrieval,
         "trace": _trace_summary(payload, response),
         "source_refs": citations,
@@ -344,6 +367,30 @@ def _json_object_from_text(text: str) -> dict[str, Any] | None:
         if isinstance(parsed, dict):
             return parsed
     return None
+
+
+def _answer_from_jsonish_text(text: str) -> str:
+    if not text:
+        return ""
+    for candidate in _json_candidates(text):
+        answer = _jsonish_string_field(candidate, "answer")
+        if answer:
+            return answer
+    return ""
+
+
+def _jsonish_string_field(text: str, field: str) -> str:
+    pattern = rf'"{re.escape(field)}"\s*:\s*"(?P<value>.*?)"\s*,\s*"(?:retrieval|trace|source_refs|citations|service_response)"\s*:'
+    match = re.search(pattern, text, flags=re.DOTALL)
+    if not match:
+        match = re.search(rf'"{re.escape(field)}"\s*:\s*"(?P<value>.*?)"\s*[}}\n]', text, flags=re.DOTALL)
+    if not match:
+        return ""
+    value = match.group("value").strip()
+    try:
+        return json.loads(f'"{value}"')
+    except json.JSONDecodeError:
+        return value.replace("\\n", "\n").replace('\\"', '"').strip()
 
 
 def _json_candidates(text: str) -> list[str]:

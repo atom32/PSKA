@@ -1,0 +1,61 @@
+$ ./scripts/pska --config .pska/config.json graph-qa-eval --mode deterministic --limit 1 --question "What is in the Excel pipeline for Acme Example?" --summary
+{
+  "ok": true,
+  "owner_user_id": "user_primary",
+  "mode": "deterministic",
+  "question_count": 1,
+  "passed": 1,
+  "failed": 0,
+  "aggregate": {
+    "avg_score": 6.0,
+    "avg_answer_chars": 1035.0,
+    "total_citations": 8,
+    "total_source_refs": 0,
+    "total_supporting_passages": 8,
+    "total_graph_paths": 8,
+    "total_top_facts": 5,
+    "total_filtered_facts": 0,
+    "answer_modes": {
+      "deterministic_synthesis": 1
+    },
+    "fallback_counts": {
+      "none": 1
+    },
+    "deterministic_synthesis_count": 1,
+    "deterministic_synthesis_rate": 1.0,
+    "repair_attempted_count": 0,
+    "repair_accepted_count": 0,
+    "repair_attempt_rate": 0.0,
+    "repair_accept_rate": 0.0
+  },
+  "questions": [
+    {
+      "question": "What is in the Excel pipeline for Acme Example?",
+      "ok": true,
+      "score": 6,
+      "answer_chars": 1035,
+      "citation_count": 8,
+      "graph_path_count": 8,
+      "top_fact_count": 5,
+      "filter_mode": "deterministic_relevance",
+      "answer_mode": "deterministic_synthesis",
+      "answer_warning": null,
+      "fallback": null,
+      "error": null,
+      "attempts": [
+        {
+          "attempt": 1,
+          "ok": true,
+          "score": 6,
+          "error": null,
+          "fallback": null,
+          "answer_mode": "deterministic_synthesis",
+          "answer_chars": 1035
+        }
+      ]
+    }
+  ]
+}
+real 1.78
+user 0.36
+sys 0.04

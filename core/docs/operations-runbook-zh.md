@@ -78,7 +78,7 @@ MVP 推荐先用有限数据源启动：
 ./scripts/pska --config .pska/config.json digest-schedule --owner-user-id user_primary --reason "files sync"
 ```
 
-`files-sync` 会从数据库中的 Knowledge Sources 和 `.pska/config.json` 的默认 seed 解析 active folder sources，把 UTF-8 文本类文件以及可选 PDF/DOCX 文本抽取结果写入 canonical DB，同时处理 workspace 的 Twitter/X archive inbox。后续同步按内容 hash 和 manifest 报告 new、changed、unchanged、moved、missing；missing 只记录为同步状态，不会删除 canonical source history。connector state 仍用于实现层运行时 cursor/manifest，但用户视角应看 Knowledge Source 和 sync report。`files-watch` 是基于 `watchdog` 的前台监听模式，适合在 notes/docs root 变化时自动触发同一套 files scan；安装方式是 `pska-core[watch]`。`digest-schedule` 只会为还没有被当前 digest job 覆盖、或已经发生更新的 source 创建 backlog。
+`files-sync` 会从数据库中的 Knowledge Sources 和 `.pska/config.json` 的默认 seed 解析 active folder sources，把 UTF-8 文本类文件、PDF/DOCX/XLSX 文本抽取结果以及可选 legacy XLS 抽取结果写入 canonical DB，同时处理 workspace 的 Twitter/X archive inbox。后续同步按内容 hash 和 manifest 报告 new、changed、unchanged、moved、missing；missing 只记录为同步状态，不会删除 canonical source history。connector state 仍用于实现层运行时 cursor/manifest，但用户视角应看 Knowledge Source 和 sync report。`files-watch` 是基于 `watchdog` 的前台监听模式，适合在 notes/docs root 变化时自动触发同一套 files scan；安装方式是 `pska-core[watch]`。`digest-schedule` 只会为还没有被当前 digest job 覆盖、或已经发生更新的 source 创建 backlog。
 
 ### Source collection marker
 

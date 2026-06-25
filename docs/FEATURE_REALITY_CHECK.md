@@ -16,7 +16,7 @@ Status legend:
 
 PSKA's backend is source-centric. Runtime source/sync state lives in the
 database; config only seeds default roots. `files-sync` handles active folder
-sources, optional PDF/DOCX text extraction, manifest reconciliation, and the
+sources, PDF/DOCX/XLSX text extraction, optional legacy XLS extraction, manifest reconciliation, and the
 workspace Twitter/X archive inbox. `digest-now` runs sync before scheduling and
 processing one digest pass.
 

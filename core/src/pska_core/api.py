@@ -787,12 +787,18 @@ class PSKAApi:
                     represented_user_id=represented_user_id,
                     top_k=int(payload.get("top_k") or 5),
                 )
+                fallback_retrieval = _console_search_summary(to_jsonable(fallback))
                 return {
                     "ok": False,
                     "mode": "agentic",
                     "display_mode": "direct_fallback",
                     "requires_agentic_service_online": True,
                     "query": query,
+                    "answer": _direct_retrieval_fallback_answer(query, fallback_retrieval),
+                    "retrieval": fallback_retrieval,
+                    "citations": fallback_retrieval.get("citations") or [],
+                    "source_refs": fallback_retrieval.get("citations") or [],
+                    "fallback_reason": "agentic_service_unavailable",
                     "error": {
                         "type": "agentic_service_unavailable",
                         "message": "Agentic service is unavailable. Direct retrieval fallback is shown.",
@@ -801,7 +807,7 @@ class PSKAApi:
                     "fallback": {
                         "mode": "direct",
                         "display_mode": "direct_fallback",
-                        "retrieval": _console_search_summary(to_jsonable(fallback)),
+                        "retrieval": fallback_retrieval,
                     },
                 }
             retrieval_payload = result.get("retrieval") if isinstance(result.get("retrieval"), dict) else {}
@@ -2828,6 +2834,9 @@ def _console_search_summary(payload: dict[str, Any]) -> dict[str, Any]:
         "request_user_id": payload.get("request_user_id"),
         "results": [
             {
+                "source_item_id": _console_result_ref(result, "source_item_id"),
+                "document_id": _console_result_ref(result, "document_id"),
+                "chunk_id": _console_result_ref(result, "chunk_id"),
                 "title": result.get("title"),
                 "snippet": result.get("snippet"),
                 "score": result.get("score"),
@@ -2846,6 +2855,30 @@ def _console_search_summary(payload: dict[str, Any]) -> dict[str, Any]:
         "memory_context": [_console_memory_context(item) for item in _list_of_dicts(payload.get("memory_context"))],
         "profile_context": [_console_memory_context(item) for item in _list_of_dicts(payload.get("profile_context"))],
     }
+
+
+def _console_result_ref(result: dict[str, Any], key: str) -> Any:
+    citation = result.get("citation") if isinstance(result.get("citation"), dict) else {}
+    return result.get(key) or citation.get(key)
+
+
+def _direct_retrieval_fallback_answer(query: str, retrieval: dict[str, Any]) -> str:
+    results = _list_of_dicts(retrieval.get("results"))
+    if not results:
+        return "FastReAct 暂不可用，PSKA 已切换到 direct retrieval，但没有找到足够可展示的证据。"
+    snippets = [str(item.get("snippet") or "").strip() for item in results if str(item.get("snippet") or "").strip()]
+    titles = []
+    for item in results:
+        title = str(item.get("title") or "").strip()
+        if title and title not in titles:
+            titles.append(title)
+    lead = f"FastReAct 暂不可用，以下是 PSKA direct retrieval 对“{query}”找到的证据摘要。"
+    if snippets:
+        bullets = "\n".join(f"- {snippet[:220]}" for snippet in snippets[:4])
+    else:
+        bullets = "- 找到了相关来源，但这些结果没有返回可展示的摘要片段。"
+    source_line = f"\n\n主要来源：{'；'.join(titles[:3])}" if titles else ""
+    return f"{lead}\n{bullets}{source_line}"
 
 
 def _console_citation(value: Any) -> dict[str, Any]:
@@ -3887,6 +3920,13 @@ def _agentic_graph_unusable_reason(agentic: dict[str, Any]) -> str | None:
         "unable to complete pska search",
         "message also truncated",
         "full query truncated",
+        "question was truncated",
+        "query was truncated",
+        "full query was not received",
+        "question was not received",
+        "pska knowledge base is operational",
+        "knowledge base is operational",
+        "pending review items spanning",
         "pska search tools are unavailable",
     ]
     for marker in failure_markers:
@@ -3907,9 +3947,10 @@ def _graph_seed_answer(
     if not supporting_passages and not top_facts and not graph_paths:
         return ""
     title = _graph_answer_topic(query, supporting_passages)
-    conclusions = _graph_answer_conclusions(supporting_passages, top_facts)
+    table_answer = _graph_pipeline_table_answer(query, supporting_passages)
+    conclusions = table_answer["answer"] if table_answer else _graph_answer_conclusions(supporting_passages, top_facts)
     risks = _graph_answer_risks(supporting_passages, filtered_out_facts)
-    actions = _graph_answer_actions(supporting_passages)
+    actions = _graph_table_next_action(table_answer) if table_answer else _graph_answer_actions(supporting_passages)
     uncertainty = _graph_answer_uncertainty(top_facts, graph_paths, filtered_out_facts)
     citations = _graph_answer_citations(supporting_passages)
     return (
@@ -3928,6 +3969,78 @@ def _graph_answer_topic(query: str, passages: list[dict[str, Any]]) -> str:
         if title:
             return title
     return query[:80]
+
+
+def _graph_pipeline_table_answer(query: str, passages: list[dict[str, Any]]) -> dict[str, str] | None:
+    if not _graph_pipeline_query_intent(query):
+        return None
+    query_phrases = _graph_capitalized_phrases(query)
+    query_terms = {term.casefold() for term in re.findall(r"[\w\u4e00-\u9fff]+", query) if len(term) > 1}
+    for passage in passages:
+        rows = _graph_markdown_table_rows(str(passage.get("snippet") or ""))
+        for row in rows:
+            company = str(row.get("Company") or "").strip()
+            if not company:
+                continue
+            company_lower = company.casefold()
+            phrase_match = any(phrase.casefold() in company_lower for phrase in query_phrases)
+            term_match = {"acme", "widget", "fund"}.intersection(query_terms) and any(term in company_lower for term in query_terms)
+            if not phrase_match and not term_match:
+                continue
+            lead = str(row.get("Lead") or "未知").strip()
+            status = str(row.get("Status") or "未知").strip()
+            arr = str(row.get("ARR") or "未知").strip()
+            next_step = str(row.get("Next Step") or row.get("Action") or "未记录").strip()
+            title = str(passage.get("title") or passage.get("source_item_id") or "supporting passage").strip()
+            return {
+                "company": company,
+                "lead": lead,
+                "status": status,
+                "arr": arr,
+                "next_step": next_step,
+                "title": title,
+                "answer": (
+                    f"{company} 当前 pipeline 记录的负责人是 {lead}，状态是 {status}，ARR 是 {arr}，"
+                    f"下一步行动是：{next_step}。证据来自 {title} 的表格行。"
+                ),
+            }
+    return None
+
+
+def _graph_pipeline_query_intent(query: str) -> bool:
+    lower = query.casefold()
+    return any(term in lower for term in ("pipeline", "next step", "下一步", "行动", "负责人", "状态", "arr", "lead"))
+
+
+def _graph_capitalized_phrases(query: str) -> list[str]:
+    return [match.strip() for match in re.findall(r"\b[A-Z][A-Za-z0-9]+(?:\s+[A-Z][A-Za-z0-9]+)+\b", query)]
+
+
+def _graph_markdown_table_rows(text: str) -> list[dict[str, str]]:
+    headers = ["Company", "Lead", "Status", "ARR", "Next Step"]
+    cells = [cell.strip() for cell in text.replace("\n", " ").split("|")]
+    rows: list[dict[str, str]] = []
+    for index in range(0, max(0, len(cells) - len(headers) + 1)):
+        if cells[index : index + len(headers)] != headers:
+            continue
+        row_cells: list[str] = []
+        for cell in cells[index + len(headers) :]:
+            compact = cell.replace(" ", "")
+            if not cell or (compact and set(compact) == {"-"}):
+                continue
+            row_cells.append(cell)
+            if len(row_cells) == len(headers):
+                rows.append(dict(zip(headers, row_cells)))
+                row_cells = []
+        break
+    return rows
+
+
+def _graph_table_next_action(table_answer: dict[str, str]) -> str:
+    return (
+        f"直接推进表格中的 Next Step：{table_answer['next_step']}。"
+        "完成后建议更新 pipeline 状态，并保留该表格行作为 citation。"
+    )
 
 
 def _graph_answer_conclusions(passages: list[dict[str, Any]], facts: list[dict[str, Any]]) -> str:

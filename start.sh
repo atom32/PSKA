@@ -82,6 +82,46 @@ port_listening() {
   lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1
 }
 
+port_listener_hosts() {
+  local port="$1"
+  lsof -nP -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | awk 'NR > 1 {print $9}' | sed -E 's/^(.+):[0-9]+$/\1/' | sort -u
+}
+
+port_has_wildcard_listener() {
+  local port="$1"
+  port_listener_hosts "$port" | grep -Eq '^(\\*|0\\.0\\.0\\.0|\\[::\\]|::)$'
+}
+
+lan_ip() {
+  local ip=""
+  if command -v ipconfig >/dev/null 2>&1; then
+    local iface=""
+    iface="$(route -n get default 2>/dev/null | awk '/interface:/{print $2; exit}' || true)"
+    if [[ -n "$iface" ]]; then
+      ip="$(ipconfig getifaddr "$iface" 2>/dev/null || true)"
+    fi
+    if [[ -z "$ip" ]]; then
+      for iface in en0 en1; do
+        ip="$(ipconfig getifaddr "$iface" 2>/dev/null || true)"
+        [[ -n "$ip" ]] && break
+      done
+    fi
+  fi
+  if [[ -z "$ip" ]] && command -v hostname >/dev/null 2>&1; then
+    ip="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
+  fi
+  echo "${ip:-127.0.0.1}"
+}
+
+display_url() {
+  local host="$1"
+  local port="$2"
+  if [[ "$host" == "0.0.0.0" || "$host" == "::" ]]; then
+    host="$(lan_ip)"
+  fi
+  echo "http://$host:$port/"
+}
+
 if [[ "$(config_value startup_bootstrap)" == "true" ]]; then
   echo "Preparing PSKA database and Knowledge Sources..."
   DB_NAME="$(config_value database_name)"
@@ -118,7 +158,13 @@ if [[ "$(config_value startup_frontend)" == "true" ]]; then
   FRONTEND_HOST="$(config_value frontend_host)"
   FRONTEND_PORT="$(config_value frontend_port)"
   if port_listening "$FRONTEND_PORT"; then
-    echo "Frontend already appears to be running on $FRONTEND_HOST:$FRONTEND_PORT; reusing it."
+    echo "Frontend port $FRONTEND_PORT already has a listener; reusing it."
+    if [[ "$FRONTEND_HOST" == "0.0.0.0" || "$FRONTEND_HOST" == "::" ]] && ! port_has_wildcard_listener "$FRONTEND_PORT"; then
+      echo "PSKA warning: the existing frontend listener does not appear to be bound to $FRONTEND_HOST." >&2
+      echo "For LAN access, stop the old frontend process and rerun ./start.sh." >&2
+      echo "Current frontend listeners:" >&2
+      port_listener_hosts "$FRONTEND_PORT" >&2 || true
+    fi
   else
   if [[ ! -d "$ROOT/frontend/node_modules" ]]; then
     echo "Installing frontend dependencies..."
@@ -132,15 +178,26 @@ else
   echo "Skipping frontend because startup.frontend.enabled=false in $CONFIG"
 fi
 
+FRONTEND_HOST="$(config_value frontend_host)"
+FRONTEND_PORT="$(config_value frontend_port)"
+SERVICE_HOST="$(config_value service_host)"
+SERVICE_PORT="$(config_value service_port)"
+FRONTEND_URL="$(display_url "$FRONTEND_HOST" "$FRONTEND_PORT")"
+SERVICE_URL="$(display_url "$SERVICE_HOST" "$SERVICE_PORT")"
+
 cat <<EOF
 
 PSKA dev stack is starting.
 
 Frontend:
-  $(config_value frontend_url)
+  $FRONTEND_URL
 
 Backend:
-  $(config_value service_url)
+  $SERVICE_URL
+
+Listening:
+  Frontend bind: $FRONTEND_HOST:$FRONTEND_PORT
+  Backend bind:  $SERVICE_HOST:$SERVICE_PORT
 
 Useful places:
   Frontend 语料库 page: Knowledge Sources, sync reports, and source/chunk visibility
