@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import base64
 from datetime import timedelta
+import hashlib
+import hmac
 from http.client import HTTPConnection
 import json
 from pathlib import Path
@@ -14,7 +17,7 @@ from pska_core.agentic_service import AgenticServiceError, _agentic_messages
 from pska_core.api import PSKAApi, PSKARequestHandler
 from pska_core.candidates import CandidateWriteService
 from pska_core.cli import service_check
-from pska_core.config import FilesConfig, PSKAConfig, ServiceConfig, WorkspaceConfig
+from pska_core.config import AuthConfig, FilesConfig, PSKAConfig, ServiceConfig, WorkspaceConfig
 from pska_core.enums import Directionality, MemoryLayer, ReviewType, UserRole, Visibility
 from pska_core.fastreact_client import FastreactError, HttpFastreactClient, FastreactConfig
 import pska_core.fastreact_client as fastreact_module
@@ -1028,6 +1031,76 @@ def test_service_token_protects_non_health_routes() -> None:
     assert authed["ok"] is True
     assert bearer_status == 200
     assert bearer["ok"] is True
+
+
+def test_trusted_headers_auth_uses_fastreact_identity_aliases() -> None:
+    api = _api(auth=AuthConfig(mode="trusted_headers"))
+    with _http_server(api) as base_url:
+        status, payload = _http_json(
+            base_url,
+            "POST",
+            "/ingest/channel-payload",
+            _minimal_ingest_payload("trusted-alias-note"),
+            headers={
+                "X-FastReAct-User-Key": "pska:user_primary",
+                "X-FastReAct-Tenant-Key": "tenant_acme",
+                "X-FastReAct-Roles": "admin,writer",
+                "X-FastReAct-Auth-Provider": "sso",
+            },
+        )
+
+    assert status == 200
+    assert payload["tenant_id"] == "tenant_acme"
+    assert payload["owner_user_id"] == "user_primary"
+    assert api.store.list_source_items(tenant_id="tenant_acme")[0].source_id == "trusted-alias-note"
+
+
+def test_trusted_headers_auth_requires_identity_header() -> None:
+    api = _api(auth=AuthConfig(mode="trusted_headers"))
+    with _http_server(api) as base_url:
+        status, payload = _http_json(base_url, "GET", "/ready")
+
+    assert status == 401
+    assert "trusted identity" in payload["error"]
+
+
+def test_jwt_auth_maps_claims_to_request_context() -> None:
+    token = _jwt(
+        {
+            "sub": "user_primary",
+            "tenant_key": "tenant_jwt",
+            "name": "Primary User",
+            "email": "primary@example.com",
+            "groups": ["team-a"],
+            "roles": ["admin"],
+            "iss": "issuer",
+            "aud": "pska",
+        },
+        secret="jwt-secret",
+    )
+    api = _api(auth=AuthConfig(mode="jwt", jwt_secret="jwt-secret", jwt_issuer="issuer", jwt_audience="pska"))
+    with _http_server(api) as base_url:
+        status, payload = _http_json(
+            base_url,
+            "POST",
+            "/ingest/channel-payload",
+            _minimal_ingest_payload("jwt-note"),
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert status == 200
+    assert payload["tenant_id"] == "tenant_jwt"
+    assert api.store.list_source_items(tenant_id="tenant_jwt")[0].source_id == "jwt-note"
+
+
+def test_jwt_auth_rejects_invalid_signature() -> None:
+    token = _jwt({"sub": "user_primary", "tenant_id": "tenant_jwt"}, secret="wrong")
+    api = _api(auth=AuthConfig(mode="jwt", jwt_secret="jwt-secret"))
+    with _http_server(api) as base_url:
+        status, payload = _http_json(base_url, "GET", "/ready", headers={"Authorization": f"Bearer {token}"})
+
+    assert status == 401
+    assert "signature" in payload["error"]
 
 
 def test_local_console_serves_dashboard_assets_when_service_token_enabled() -> None:
@@ -2723,9 +2796,9 @@ def _store() -> InMemoryKnowledgeStore:
     return store
 
 
-def _api(*, service_token: str | None = None) -> PSKAApi:
+def _api(*, service_token: str | None = None, auth: AuthConfig | None = None) -> PSKAApi:
     api = object.__new__(PSKAApi)
-    api.config = PSKAConfig(service=ServiceConfig(service_token=service_token))
+    api.config = PSKAConfig(service=ServiceConfig(service_token=service_token), auth=auth or AuthConfig())
     api.store = _store()
     api.retrieval = RetrievalService(api.store, ACLService(api.store))
     api.agentic_service = FakeAgenticService(api.retrieval)
@@ -2735,6 +2808,34 @@ def _api(*, service_token: str | None = None) -> PSKAApi:
     api.reviews = ReviewService(api.store)
     api.candidates = CandidateWriteService(api.store)
     return api
+
+
+def _minimal_ingest_payload(source_id: str) -> dict:
+    return {
+        "schema_version": "pska.channel_ingest.v1",
+        "source_channel": "manual",
+        "record_type": "note",
+        "source_id": source_id,
+        "owner_user_id": "user_primary",
+        "space_id": "private_primary",
+        "visibility": "private",
+        "title": source_id,
+        "content": {"text": f"{source_id} searchable content"},
+    }
+
+
+def _jwt(claims: dict, *, secret: str) -> str:
+    header = {"alg": "HS256", "typ": "JWT"}
+    header_segment = _jwt_segment(header)
+    payload_segment = _jwt_segment(claims)
+    signing_input = f"{header_segment}.{payload_segment}".encode("utf-8")
+    signature = hmac.new(secret.encode("utf-8"), signing_input, hashlib.sha256).digest()
+    signature_segment = base64.urlsafe_b64encode(signature).rstrip(b"=").decode("ascii")
+    return f"{header_segment}.{payload_segment}.{signature_segment}"
+
+
+def _jwt_segment(payload: dict) -> str:
+    return base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode("utf-8")).rstrip(b"=").decode("ascii")
 
 
 def _source_item():

@@ -17,6 +17,16 @@ if TYPE_CHECKING:
 
 DEFAULT_DATABASE_URL = "postgresql:///pska"
 DEFAULT_WORKSPACE_ROOT = Path("~/PSKA_workspaces/default")
+DEFAULT_JWT_TENANT_CLAIMS = ("tenant_id", "tenant_key", "tenant", "org_id")
+DEFAULT_TRUSTED_HEADER_USER_ID = "X-PSKA-User-Id"
+DEFAULT_TRUSTED_HEADER_TENANT_ID = "X-PSKA-Tenant-Id"
+DEFAULT_TRUSTED_HEADER_REPRESENTED_USER_ID = "X-PSKA-Represented-User-Id"
+DEFAULT_TRUSTED_HEADER_SUBJECT = "X-PSKA-Subject"
+DEFAULT_TRUSTED_HEADER_DISPLAY_NAME = "X-PSKA-Display-Name"
+DEFAULT_TRUSTED_HEADER_EMAIL = "X-PSKA-Email"
+DEFAULT_TRUSTED_HEADER_GROUPS = "X-PSKA-Groups"
+DEFAULT_TRUSTED_HEADER_ROLES = "X-PSKA-Roles"
+DEFAULT_TRUSTED_HEADER_PROVIDER = "X-PSKA-Auth-Provider"
 
 
 def expand_path(value: str | Path) -> Path:
@@ -49,6 +59,91 @@ class ServiceConfig:
             host=str(data.get("host") or "127.0.0.1"),
             port=int(data.get("port") or 8765),
             service_token=str(token).strip() if token else None,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class AuthConfig:
+    mode: str = "service_token"
+    trusted_header_user_id: str = DEFAULT_TRUSTED_HEADER_USER_ID
+    trusted_header_tenant_id: str = DEFAULT_TRUSTED_HEADER_TENANT_ID
+    trusted_header_represented_user_id: str = DEFAULT_TRUSTED_HEADER_REPRESENTED_USER_ID
+    trusted_header_subject: str = DEFAULT_TRUSTED_HEADER_SUBJECT
+    trusted_header_display_name: str = DEFAULT_TRUSTED_HEADER_DISPLAY_NAME
+    trusted_header_email: str = DEFAULT_TRUSTED_HEADER_EMAIL
+    trusted_header_groups: str = DEFAULT_TRUSTED_HEADER_GROUPS
+    trusted_header_roles: str = DEFAULT_TRUSTED_HEADER_ROLES
+    trusted_header_provider: str = DEFAULT_TRUSTED_HEADER_PROVIDER
+    jwt_secret: str | None = None
+    jwt_issuer: str | None = None
+    jwt_audience: str | None = None
+    jwt_algorithm: str = "HS256"
+    jwt_tenant_claims: tuple[str, ...] = DEFAULT_JWT_TENANT_CLAIMS
+    jwt_user_claim: str = "sub"
+    jwt_represented_user_claim: str = "represented_user_id"
+    jwt_display_name_claim: str = "name"
+    jwt_email_claim: str = "email"
+    jwt_groups_claim: str = "groups"
+    jwt_roles_claim: str = "roles"
+    jwt_provider_claim: str = "iss"
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> "AuthConfig":
+        data = data or {}
+        tenant_claims = data.get("jwt_tenant_claims", DEFAULT_JWT_TENANT_CLAIMS)
+        if isinstance(tenant_claims, str):
+            tenant_claims = tuple(item.strip() for item in tenant_claims.split(",") if item.strip())
+        return cls(
+            mode=str(data.get("mode") or "service_token"),
+            trusted_header_user_id=str(data.get("trusted_header_user_id") or DEFAULT_TRUSTED_HEADER_USER_ID),
+            trusted_header_tenant_id=str(data.get("trusted_header_tenant_id") or DEFAULT_TRUSTED_HEADER_TENANT_ID),
+            trusted_header_represented_user_id=str(data.get("trusted_header_represented_user_id") or DEFAULT_TRUSTED_HEADER_REPRESENTED_USER_ID),
+            trusted_header_subject=str(data.get("trusted_header_subject") or DEFAULT_TRUSTED_HEADER_SUBJECT),
+            trusted_header_display_name=str(data.get("trusted_header_display_name") or DEFAULT_TRUSTED_HEADER_DISPLAY_NAME),
+            trusted_header_email=str(data.get("trusted_header_email") or DEFAULT_TRUSTED_HEADER_EMAIL),
+            trusted_header_groups=str(data.get("trusted_header_groups") or DEFAULT_TRUSTED_HEADER_GROUPS),
+            trusted_header_roles=str(data.get("trusted_header_roles") or DEFAULT_TRUSTED_HEADER_ROLES),
+            trusted_header_provider=str(data.get("trusted_header_provider") or DEFAULT_TRUSTED_HEADER_PROVIDER),
+            jwt_secret=str(data["jwt_secret"]) if data.get("jwt_secret") else None,
+            jwt_issuer=str(data["jwt_issuer"]) if data.get("jwt_issuer") else None,
+            jwt_audience=str(data["jwt_audience"]) if data.get("jwt_audience") else None,
+            jwt_algorithm=str(data.get("jwt_algorithm") or "HS256"),
+            jwt_tenant_claims=tuple(str(item) for item in (tenant_claims or DEFAULT_JWT_TENANT_CLAIMS)),
+            jwt_user_claim=str(data.get("jwt_user_claim") or "sub"),
+            jwt_represented_user_claim=str(data.get("jwt_represented_user_claim") or "represented_user_id"),
+            jwt_display_name_claim=str(data.get("jwt_display_name_claim") or "name"),
+            jwt_email_claim=str(data.get("jwt_email_claim") or "email"),
+            jwt_groups_claim=str(data.get("jwt_groups_claim") or "groups"),
+            jwt_roles_claim=str(data.get("jwt_roles_claim") or "roles"),
+            jwt_provider_claim=str(data.get("jwt_provider_claim") or "iss"),
+        )
+
+    @classmethod
+    def from_env(cls, base: "AuthConfig") -> "AuthConfig":
+        tenant_claims = _csv_env_tuple("PSKA_AUTH_JWT_TENANT_CLAIMS") or base.jwt_tenant_claims
+        return cls(
+            mode=os.getenv("PSKA_AUTH_MODE", base.mode),
+            trusted_header_user_id=os.getenv("PSKA_AUTH_HEADER_USER_ID", base.trusted_header_user_id),
+            trusted_header_tenant_id=os.getenv("PSKA_AUTH_HEADER_TENANT_ID", base.trusted_header_tenant_id),
+            trusted_header_represented_user_id=os.getenv("PSKA_AUTH_HEADER_REPRESENTED_USER_ID", base.trusted_header_represented_user_id),
+            trusted_header_subject=os.getenv("PSKA_AUTH_HEADER_SUBJECT", base.trusted_header_subject),
+            trusted_header_display_name=os.getenv("PSKA_AUTH_HEADER_DISPLAY_NAME", base.trusted_header_display_name),
+            trusted_header_email=os.getenv("PSKA_AUTH_HEADER_EMAIL", base.trusted_header_email),
+            trusted_header_groups=os.getenv("PSKA_AUTH_HEADER_GROUPS", base.trusted_header_groups),
+            trusted_header_roles=os.getenv("PSKA_AUTH_HEADER_ROLES", base.trusted_header_roles),
+            trusted_header_provider=os.getenv("PSKA_AUTH_HEADER_PROVIDER", base.trusted_header_provider),
+            jwt_secret=os.getenv("PSKA_AUTH_JWT_SECRET") or base.jwt_secret,
+            jwt_issuer=os.getenv("PSKA_AUTH_JWT_ISSUER") or base.jwt_issuer,
+            jwt_audience=os.getenv("PSKA_AUTH_JWT_AUDIENCE") or base.jwt_audience,
+            jwt_algorithm=os.getenv("PSKA_AUTH_JWT_ALGORITHM", base.jwt_algorithm),
+            jwt_tenant_claims=tenant_claims,
+            jwt_user_claim=os.getenv("PSKA_AUTH_JWT_USER_CLAIM", base.jwt_user_claim),
+            jwt_represented_user_claim=os.getenv("PSKA_AUTH_JWT_REPRESENTED_USER_CLAIM", base.jwt_represented_user_claim),
+            jwt_display_name_claim=os.getenv("PSKA_AUTH_JWT_DISPLAY_NAME_CLAIM", base.jwt_display_name_claim),
+            jwt_email_claim=os.getenv("PSKA_AUTH_JWT_EMAIL_CLAIM", base.jwt_email_claim),
+            jwt_groups_claim=os.getenv("PSKA_AUTH_JWT_GROUPS_CLAIM", base.jwt_groups_claim),
+            jwt_roles_claim=os.getenv("PSKA_AUTH_JWT_ROLES_CLAIM", base.jwt_roles_claim),
+            jwt_provider_claim=os.getenv("PSKA_AUTH_JWT_PROVIDER_CLAIM", base.jwt_provider_claim),
         )
 
 
@@ -259,6 +354,7 @@ class StartupConfig:
 class PSKAConfig:
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     service: ServiceConfig = field(default_factory=ServiceConfig)
+    auth: AuthConfig = field(default_factory=AuthConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
     fastreact: FastreactConfig = field(default_factory=FastreactConfig)
     agentic_service: AgenticServiceConfigFile = field(default_factory=AgenticServiceConfigFile)
@@ -285,6 +381,7 @@ class PSKAConfig:
         return cls(
             database=DatabaseConfig.from_dict(data.get("database")),
             service=ServiceConfig.from_dict(data.get("service"), api_key_file=llm.api_key_file),
+            auth=AuthConfig.from_dict(data.get("auth")),
             llm=llm,
             fastreact=fastreact,
             agentic_service=AgenticServiceConfigFile.from_dict(data.get("agentic_service"), fallback=fastreact, api_key_file=llm.api_key_file),
@@ -327,6 +424,7 @@ class PSKAConfig:
                 port=int(os.getenv("PSKA_SERVICE_PORT", str(base.service.port))),
                 service_token=os.getenv("PSKA_SERVICE_TOKEN") or base.service.service_token,
             ),
+            auth=AuthConfig.from_env(base.auth),
             llm=LLMConfig(
                 api_key_file=expand_path(os.getenv("PSKA_LLM_API_KEY_FILE")) if os.getenv("PSKA_LLM_API_KEY_FILE") else base.llm.api_key_file,
                 model=os.getenv("PSKA_LLM_MODEL") or base.llm.model,
@@ -450,3 +548,10 @@ def _fastreact_token_from_key_file(path: Path | None) -> str | None:
         return None
     key_file = read_api_key_file(path)
     return key_file.service_token or None
+
+
+def _csv_env_tuple(name: str) -> tuple[str, ...]:
+    value = os.getenv(name)
+    if not value:
+        return ()
+    return tuple(item.strip() for item in value.split(",") if item.strip())

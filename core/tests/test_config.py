@@ -133,6 +133,41 @@ def test_pska_config_loads_startup_config(tmp_path: Path) -> None:
     assert config.startup.frontend.port == 5174
 
 
+def test_pska_config_loads_auth_config(monkeypatch) -> None:
+    monkeypatch.delenv("PSKA_AUTH_MODE", raising=False)
+    config = PSKAConfig.from_dict(
+        {
+            "auth": {
+                "mode": "jwt",
+                "jwt_secret": "jwt-secret",
+                "jwt_issuer": "issuer",
+                "jwt_audience": "pska",
+                "jwt_tenant_claims": "tenant_key,org_id",
+                "trusted_header_user_id": "X-Identity-User",
+            }
+        }
+    )
+
+    assert config.auth.mode == "jwt"
+    assert config.auth.jwt_secret == "jwt-secret"
+    assert config.auth.jwt_issuer == "issuer"
+    assert config.auth.jwt_audience == "pska"
+    assert config.auth.jwt_tenant_claims == ("tenant_key", "org_id")
+    assert config.auth.trusted_header_user_id == "X-Identity-User"
+
+
+def test_pska_config_auth_env_overrides(monkeypatch) -> None:
+    monkeypatch.setenv("PSKA_AUTH_MODE", "trusted_headers")
+    monkeypatch.setenv("PSKA_AUTH_HEADER_USER_ID", "X-SSO-User")
+    monkeypatch.setenv("PSKA_AUTH_JWT_TENANT_CLAIMS", "tenant_key,tenant")
+
+    config = PSKAConfig.from_env(PSKAConfig.from_dict({}))
+
+    assert config.auth.mode == "trusted_headers"
+    assert config.auth.trusted_header_user_id == "X-SSO-User"
+    assert config.auth.jwt_tenant_claims == ("tenant_key", "tenant")
+
+
 def test_pska_config_builds_runtime_configs(tmp_path: Path) -> None:
     config = PSKAConfig.from_dict(
         {

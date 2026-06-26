@@ -2220,16 +2220,25 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
         return json.loads(self.rfile.read(length).decode("utf-8"))
 
     def _context(self, payload: dict[str, Any]) -> RequestContext | None:
-        service_token = getattr(getattr(self.api, "config", None), "service", ServiceConfig()).service_token
+        config = getattr(self.api, "config", None)
+        service_token = getattr(getattr(config, "service", ServiceConfig()), "service_token", None)
+        auth_config = getattr(config, "auth", None)
+        auth_mode = str(getattr(auth_config, "mode", "service_token") or "service_token").strip().lower()
+        authenticated = False
+        if auth_mode == "service_token":
+            try:
+                authenticated = authenticate_headers(self.headers, service_token)
+            except AuthError as exc:
+                self._json(401, {"error": str(exc)})
+                return None
+        if auth_mode == "service_token" and service_token_required(service_token) and not authenticated:
+            self._json(401, {"error": "PSKA service token required"})
+            return None
         try:
-            authenticated = authenticate_headers(self.headers, service_token)
+            context = context_from_headers(self.headers, payload, service_authenticated=authenticated, auth_config=auth_config)
         except AuthError as exc:
             self._json(401, {"error": str(exc)})
             return None
-        if service_token_required(service_token) and not authenticated:
-            self._json(401, {"error": "PSKA service token required"})
-            return None
-        context = context_from_headers(self.headers, payload, service_authenticated=authenticated)
         self._request_context = context
         return context
 
