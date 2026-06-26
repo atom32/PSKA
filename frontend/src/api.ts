@@ -17,17 +17,65 @@ import type {
   WorkspaceSearchResponse
 } from "./types";
 
-const headers = (serviceToken: string) => {
-  const result: Record<string, string> = { "Content-Type": "application/json" };
-  if (serviceToken) {
-    result.Authorization = `Bearer ${serviceToken}`;
+export type PSKAIdentity = {
+  serviceToken?: string;
+  tenantId?: string;
+  userId?: string;
+  representedUserId?: string;
+};
+
+export type PSKAAuth = string | PSKAIdentity;
+
+const DEFAULT_TENANT_ID = "tenant_default";
+const DEFAULT_USER_ID = "user_primary";
+
+const resolveIdentity = (auth: PSKAAuth): Required<PSKAIdentity> => {
+  if (typeof auth === "string") {
+    return {
+      serviceToken: auth,
+      tenantId: DEFAULT_TENANT_ID,
+      userId: DEFAULT_USER_ID,
+      representedUserId: DEFAULT_USER_ID
+    };
   }
+  const userId = clean(auth.userId) || DEFAULT_USER_ID;
+  return {
+    serviceToken: clean(auth.serviceToken),
+    tenantId: clean(auth.tenantId) || DEFAULT_TENANT_ID,
+    userId,
+    representedUserId: clean(auth.representedUserId) || userId
+  };
+};
+
+const headers = (auth: PSKAAuth) => {
+  const identity = resolveIdentity(auth);
+  const result: Record<string, string> = { "Content-Type": "application/json" };
+  if (identity.serviceToken) {
+    result.Authorization = `Bearer ${identity.serviceToken}`;
+  }
+  result["X-PSKA-Tenant-Id"] = identity.tenantId;
+  result["X-PSKA-User-Id"] = identity.userId;
+  result["X-PSKA-Represented-User-Id"] = identity.representedUserId;
+  result["X-PSKA-Subject"] = identity.userId.includes(":") ? identity.userId : `pska:${identity.userId}`;
   return result;
 };
 
+const requestUserPayload = (auth: PSKAAuth) => {
+  const identity = resolveIdentity(auth);
+  return {
+    tenant_id: identity.tenantId,
+    user_id: identity.userId,
+    represented_user_id: identity.representedUserId
+  };
+};
+
+const ownerUserId = (auth: PSKAAuth) => resolveIdentity(auth).representedUserId;
+const actorUserId = (auth: PSKAAuth) => resolveIdentity(auth).userId;
+const clean = (value?: string) => (value || "").trim();
+
 export async function analyzeWorkspaceContext(
   query: string,
-  serviceToken: string,
+  serviceToken: PSKAAuth,
   trigger: BrainState["lastTrigger"]
 ): Promise<Partial<BrainState>> {
   if (!query.trim()) {
@@ -41,8 +89,7 @@ export async function analyzeWorkspaceContext(
       query,
       mode: "direct",
       capture: false,
-      user_id: "user_primary",
-      represented_user_id: "user_primary",
+      ...requestUserPayload(serviceToken),
       top_k: 5
     })
   });
@@ -55,7 +102,7 @@ export async function analyzeWorkspaceContext(
   return mapSearchToBrain(searchData, trigger);
 }
 
-export async function loadCorpusContext(serviceToken: string): Promise<Partial<BrainState>> {
+export async function loadCorpusContext(serviceToken: PSKAAuth): Promise<Partial<BrainState>> {
   try {
     const data = await loadCorpusData(serviceToken, 12);
     return {
@@ -77,17 +124,18 @@ export async function loadCorpusContext(serviceToken: string): Promise<Partial<B
   }
 }
 
-export async function loadCorpusData(serviceToken: string, limit = 16): Promise<WorkspaceCorpusResponse> {
-  const response = await fetch(`/workspace/corpus/data?owner_user_id=user_primary&limit=${limit}`, { headers: headers(serviceToken) });
+export async function loadCorpusData(serviceToken: PSKAAuth, limit = 16): Promise<WorkspaceCorpusResponse> {
+  const params = new URLSearchParams({ owner_user_id: ownerUserId(serviceToken), limit: String(limit) });
+  const response = await fetch(`/workspace/corpus/data?${params.toString()}`, { headers: headers(serviceToken) });
   if (!response.ok) {
     throw new Error(`corpus ${response.status}`);
   }
   return (await response.json()) as WorkspaceCorpusResponse;
 }
 
-export async function loadGraphData(serviceToken: string, limit = 60, nodeTypes: string[] = []): Promise<WorkspaceGraphResponse> {
+export async function loadGraphData(serviceToken: PSKAAuth, limit = 60, nodeTypes: string[] = []): Promise<WorkspaceGraphResponse> {
   const params = new URLSearchParams({
-    owner_user_id: "user_primary",
+    owner_user_id: ownerUserId(serviceToken),
     limit: String(limit)
   });
   if (nodeTypes.length > 0) {
@@ -101,14 +149,14 @@ export async function loadGraphData(serviceToken: string, limit = 60, nodeTypes:
 }
 
 export async function loadGraphSubgraph(
-  serviceToken: string,
+  serviceToken: PSKAAuth,
   nodeId: string,
   limit = 80,
   hops = 1,
   nodeTypes: string[] = []
 ): Promise<WorkspaceGraphResponse> {
   const params = new URLSearchParams({
-    owner_user_id: "user_primary",
+    owner_user_id: ownerUserId(serviceToken),
     node_id: nodeId,
     limit: String(limit),
     hops: String(hops)
@@ -124,7 +172,7 @@ export async function loadGraphSubgraph(
 }
 
 export async function loadGraphSearchSubgraph(
-  serviceToken: string,
+  serviceToken: PSKAAuth,
   query: string,
   limit = 80,
   hops = 1,
@@ -132,7 +180,7 @@ export async function loadGraphSearchSubgraph(
   nodeTypes: string[] = []
 ): Promise<WorkspaceGraphResponse> {
   const params = new URLSearchParams({
-    owner_user_id: "user_primary",
+    owner_user_id: ownerUserId(serviceToken),
     query,
     limit: String(limit),
     hops: String(hops),
@@ -149,12 +197,12 @@ export async function loadGraphSearchSubgraph(
 }
 
 export async function loadGraphPath(
-  serviceToken: string,
+  serviceToken: PSKAAuth,
   query: string,
   mode: "deterministic" | "agentic" = "deterministic"
 ): Promise<WorkspaceGraphPathResponse> {
   const params = new URLSearchParams({
-    owner_user_id: "user_primary",
+    owner_user_id: ownerUserId(serviceToken),
     query,
     mode,
     top_k: "8"
@@ -166,20 +214,21 @@ export async function loadGraphPath(
   return (await response.json()) as WorkspaceGraphPathResponse;
 }
 
-export async function loadSourcesConsole(serviceToken: string, limit = 20): Promise<ConsoleSourcesResponse> {
-  const response = await fetch(`/console/sources/data?owner_user_id=user_primary&limit=${limit}`, { headers: headers(serviceToken) });
+export async function loadSourcesConsole(serviceToken: PSKAAuth, limit = 20): Promise<ConsoleSourcesResponse> {
+  const params = new URLSearchParams({ owner_user_id: ownerUserId(serviceToken), limit: String(limit) });
+  const response = await fetch(`/console/sources/data?${params.toString()}`, { headers: headers(serviceToken) });
   if (!response.ok) {
     throw new Error(`sources ${response.status}`);
   }
   return (await response.json()) as ConsoleSourcesResponse;
 }
 
-export async function runFileSync(serviceToken: string): Promise<FileSyncResponse> {
+export async function runFileSync(serviceToken: PSKAAuth): Promise<FileSyncResponse> {
   const response = await fetch("/files/sync", {
     method: "POST",
     headers: headers(serviceToken),
     body: JSON.stringify({
-      owner_user_id: "user_primary",
+      owner_user_id: ownerUserId(serviceToken),
       skip_twitter_archives: false
     })
   });
@@ -189,12 +238,12 @@ export async function runFileSync(serviceToken: string): Promise<FileSyncRespons
   return (await response.json()) as FileSyncResponse;
 }
 
-export async function runDigestNow(serviceToken: string): Promise<DigestNowResponse> {
+export async function runDigestNow(serviceToken: PSKAAuth): Promise<DigestNowResponse> {
   const response = await fetch("/digest/now", {
     method: "POST",
     headers: headers(serviceToken),
     body: JSON.stringify({
-      owner_user_id: "user_primary",
+      owner_user_id: ownerUserId(serviceToken),
       limit: 20,
       batch_size: 20,
       force: false,
@@ -209,8 +258,9 @@ export async function runDigestNow(serviceToken: string): Promise<DigestNowRespo
   return (await response.json()) as DigestNowResponse;
 }
 
-export async function loadDigestLogs(serviceToken: string, limit = 8): Promise<DigestLogsResponse> {
-  const response = await fetch(`/digest/logs?owner_user_id=user_primary&limit=${limit}`, { headers: headers(serviceToken) });
+export async function loadDigestLogs(serviceToken: PSKAAuth, limit = 8): Promise<DigestLogsResponse> {
+  const params = new URLSearchParams({ owner_user_id: ownerUserId(serviceToken), limit: String(limit) });
+  const response = await fetch(`/digest/logs?${params.toString()}`, { headers: headers(serviceToken) });
   if (!response.ok) {
     throw new Error(`digest logs ${response.status}`);
   }
@@ -218,7 +268,7 @@ export async function loadDigestLogs(serviceToken: string, limit = 8): Promise<D
 }
 
 export async function cleanupKnowledgeSource(
-  serviceToken: string,
+  serviceToken: PSKAAuth,
   knowledgeSourceId: string,
   execute = false
 ): Promise<KnowledgeSourceCleanupResponse> {
@@ -226,7 +276,7 @@ export async function cleanupKnowledgeSource(
     method: "POST",
     headers: headers(serviceToken),
     body: JSON.stringify({
-      owner_user_id: "user_primary",
+      owner_user_id: ownerUserId(serviceToken),
       execute,
       pause_knowledge_source: true,
       delete_knowledge_source: false
@@ -240,7 +290,7 @@ export async function cleanupKnowledgeSource(
 
 export async function searchWorkspace(
   query: string,
-  serviceToken: string,
+  serviceToken: PSKAAuth,
   mode: "agentic" | "direct" = "direct"
 ): Promise<WorkspaceSearchResponse> {
   const response = await fetch("/workspace/search/query", {
@@ -250,8 +300,7 @@ export async function searchWorkspace(
       query,
       mode,
       capture: false,
-      user_id: "user_primary",
-      represented_user_id: "user_primary",
+      ...requestUserPayload(serviceToken),
       top_k: 8
     })
   });
@@ -270,17 +319,18 @@ async function responseError(response: Response, fallback: string) {
   }
 }
 
-export async function loadToday(serviceToken: string): Promise<TodayResponse> {
-  const response = await fetch("/workspace/today/data?owner_user_id=user_primary&limit=10", { headers: headers(serviceToken) });
+export async function loadToday(serviceToken: PSKAAuth): Promise<TodayResponse> {
+  const params = new URLSearchParams({ owner_user_id: ownerUserId(serviceToken), limit: "10" });
+  const response = await fetch(`/workspace/today/data?${params.toString()}`, { headers: headers(serviceToken) });
   if (!response.ok) {
     throw new Error(`today ${response.status}`);
   }
   return (await response.json()) as TodayResponse;
 }
 
-export async function loadReviewCenter(serviceToken: string, status = "pending"): Promise<ReviewCenterResponse> {
+export async function loadReviewCenter(serviceToken: PSKAAuth, status = "pending"): Promise<ReviewCenterResponse> {
   const params = new URLSearchParams({
-    owner_user_id: "user_primary",
+    owner_user_id: ownerUserId(serviceToken),
     status,
     limit: "50"
   });
@@ -292,7 +342,7 @@ export async function loadReviewCenter(serviceToken: string, status = "pending")
 }
 
 export async function recordWorkspaceActivity(
-  serviceToken: string,
+  serviceToken: PSKAAuth,
   payload: {
     activity_type: WorkspaceActivityType;
     surface: WorkspaceMode;
@@ -307,8 +357,8 @@ export async function recordWorkspaceActivity(
     method: "POST",
     headers: headers(serviceToken),
     body: JSON.stringify({
-      owner_user_id: "user_primary",
-      actor_user_id: "user_primary",
+      owner_user_id: ownerUserId(serviceToken),
+      actor_user_id: actorUserId(serviceToken),
       ...payload
     })
   });
@@ -318,12 +368,12 @@ export async function recordWorkspaceActivity(
   return (await response.json()) as WorkspaceActivityResponse;
 }
 
-export async function acceptDiscovery(serviceToken: string, discoveryId: string): Promise<void> {
+export async function acceptDiscovery(serviceToken: PSKAAuth, discoveryId: string): Promise<void> {
   const response = await fetch(`/workspace/discoveries/${encodeURIComponent(discoveryId)}/accept`, {
     method: "POST",
     headers: headers(serviceToken),
     body: JSON.stringify({
-      actor_user_id: "user_primary",
+      actor_user_id: actorUserId(serviceToken),
       reason: "Accepted from PSKA Today"
     })
   });
@@ -332,12 +382,12 @@ export async function acceptDiscovery(serviceToken: string, discoveryId: string)
   }
 }
 
-export async function ignoreDiscovery(serviceToken: string, discoveryId: string): Promise<void> {
+export async function ignoreDiscovery(serviceToken: PSKAAuth, discoveryId: string): Promise<void> {
   const response = await fetch(`/workspace/discoveries/${encodeURIComponent(discoveryId)}/ignore`, {
     method: "POST",
     headers: headers(serviceToken),
     body: JSON.stringify({
-      actor_user_id: "user_primary",
+      actor_user_id: actorUserId(serviceToken),
       reason: "Ignored from PSKA Today"
     })
   });
@@ -346,12 +396,12 @@ export async function ignoreDiscovery(serviceToken: string, discoveryId: string)
   }
 }
 
-export async function snoozeDiscovery(serviceToken: string, discoveryId: string): Promise<void> {
+export async function snoozeDiscovery(serviceToken: PSKAAuth, discoveryId: string): Promise<void> {
   const response = await fetch(`/workspace/discoveries/${encodeURIComponent(discoveryId)}/snooze`, {
     method: "POST",
     headers: headers(serviceToken),
     body: JSON.stringify({
-      actor_user_id: "user_primary",
+      actor_user_id: actorUserId(serviceToken),
       reason: "Snoozed from PSKA Today"
     })
   });
@@ -360,12 +410,12 @@ export async function snoozeDiscovery(serviceToken: string, discoveryId: string)
   }
 }
 
-export async function approveReviewItem(serviceToken: string, reviewItemId: string, apply = false): Promise<ReviewActionResponse> {
+export async function approveReviewItem(serviceToken: PSKAAuth, reviewItemId: string, apply = false): Promise<ReviewActionResponse> {
   const response = await fetch(`/review-items/${encodeURIComponent(reviewItemId)}/approve`, {
     method: "POST",
     headers: headers(serviceToken),
     body: JSON.stringify({
-      actor_user_id: "user_primary",
+      actor_user_id: actorUserId(serviceToken),
       reason: "Approved from PSKA Review Center",
       apply
     })
@@ -376,12 +426,12 @@ export async function approveReviewItem(serviceToken: string, reviewItemId: stri
   return (await response.json()) as ReviewActionResponse;
 }
 
-export async function rejectReviewItem(serviceToken: string, reviewItemId: string): Promise<ReviewActionResponse> {
+export async function rejectReviewItem(serviceToken: PSKAAuth, reviewItemId: string): Promise<ReviewActionResponse> {
   const response = await fetch(`/review-items/${encodeURIComponent(reviewItemId)}/reject`, {
     method: "POST",
     headers: headers(serviceToken),
     body: JSON.stringify({
-      actor_user_id: "user_primary",
+      actor_user_id: actorUserId(serviceToken),
       reason: "Rejected from PSKA Review Center"
     })
   });
@@ -391,12 +441,12 @@ export async function rejectReviewItem(serviceToken: string, reviewItemId: strin
   return (await response.json()) as ReviewActionResponse;
 }
 
-export async function applyReviewItem(serviceToken: string, reviewItemId: string): Promise<ReviewActionResponse> {
+export async function applyReviewItem(serviceToken: PSKAAuth, reviewItemId: string): Promise<ReviewActionResponse> {
   const response = await fetch(`/review-items/${encodeURIComponent(reviewItemId)}/apply`, {
     method: "POST",
     headers: headers(serviceToken),
     body: JSON.stringify({
-      actor_user_id: "user_primary",
+      actor_user_id: actorUserId(serviceToken),
       reason: "Applied from PSKA Review Center"
     })
   });

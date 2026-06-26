@@ -35,3 +35,21 @@ Knowledge Sources/file management UI. Those are next-step product work.
 
 See [Backend Feature Map](BACKEND_FEATURES.md) for the current frontend/backend
 capability map.
+
+## Multi-Tenant Identity
+
+The frontend keeps a lightweight PSKA identity context in `sessionStorage`:
+
+- `tenantId`, defaulting to `tenant_default`
+- `userId`, defaulting to `user_primary`
+- optional `representedUserId`
+- optional bearer token/JWT
+
+All API calls derive `X-PSKA-Tenant-Id`, `X-PSKA-User-Id`,
+`X-PSKA-Represented-User-Id`, `owner_user_id`, `actor_user_id`, and search user
+payloads from that single context. This removes the old single-user
+`user_primary` request assumption while keeping local development simple.
+
+For SaaS deployment, run the frontend behind AuthNode or another trusted
+gateway that injects JWT/trusted headers. Do not put AuthNode admin tokens in
+the browser.

@@ -213,14 +213,26 @@ button {
   box-shadow: 0 1px 4px rgba(38, 34, 24, 0.12);
 }
 
-.token-field {
+.identity-fields {
   margin-left: auto;
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 8px;
-  min-width: 240px;
+  min-width: 0;
+}
+
+.token-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 200px;
   color: var(--muted);
   font-size: 12px;
+}
+
+.token-field.compact {
+  min-width: 132px;
 }
 
 .token-field input {
@@ -232,6 +244,10 @@ button {
   background: var(--paper);
   padding: 0 10px;
   color: var(--ink);
+}
+
+.token-field.compact input {
+  width: 112px;
 }
 
 .main-workspace {
@@ -2384,7 +2400,16 @@ button {
   }
 
   .token-field {
-    min-width: 150px;
+    min-width: 128px;
+  }
+
+  .token-field.compact {
+    min-width: 104px;
+  }
+
+  .token-field input,
+  .token-field.compact input {
+    width: 104px;
   }
 }
 
@@ -2414,7 +2439,7 @@ button {
     padding: 0 8px;
   }
 
-  .token-field {
+  .identity-fields {
     display: none;
   }
 

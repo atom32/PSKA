@@ -56,6 +56,7 @@ import {
   searchWorkspace,
   snoozeDiscovery
 } from "./api";
+import type { PSKAAuth, PSKAIdentity } from "./api";
 import { useWorkspaceStore } from "./store";
 import type {
   BrainState,
@@ -90,21 +91,36 @@ export default function App() {
     documentText,
     selectedText,
     serviceToken,
+    tenantId,
+    userId,
+    representedUserId,
     brain,
     setMode,
     toggleLeft,
     setDocumentText,
     setSelectedText,
     setServiceToken,
+    setTenantId,
+    setUserId,
+    setRepresentedUserId,
     setBrain
   } = useWorkspaceStore();
+  const pskaIdentity = useMemo<PSKAIdentity>(
+    () => ({
+      serviceToken,
+      tenantId,
+      userId,
+      representedUserId: representedUserId || userId
+    }),
+    [serviceToken, tenantId, userId, representedUserId]
+  );
   const lastAnalyzedText = useRef(documentText);
   const lastEditedActivityAt = useRef(0);
   const [pinStatus, setPinStatus] = useState<"idle" | "saved" | "failed">("idle");
 
   const corpusQuery = useQuery({
-    queryKey: ["corpus-context", serviceToken],
-    queryFn: () => loadCorpusContext(serviceToken),
+    queryKey: ["corpus-context", pskaIdentity],
+    queryFn: () => loadCorpusContext(pskaIdentity),
     enabled: mode !== "today" && mode !== "review"
   });
 
@@ -167,12 +183,12 @@ export default function App() {
       }
     }, 3000);
     return () => window.clearTimeout(handle);
-  }, [documentText, serviceToken]);
+  }, [documentText, pskaIdentity]);
 
   useEffect(() => {
     void logWorkspaceActivity("opened", mode);
     void logWorkspaceActivity("viewed", mode);
-  }, [mode, serviceToken]);
+  }, [mode, pskaIdentity]);
 
   async function runAnalysis(trigger: BrainState["lastTrigger"], text = documentText) {
     const query = selectedText || text;
@@ -182,7 +198,7 @@ export default function App() {
     }
     setBrain({ status: "analyzing", lastTrigger: trigger, error: null });
     try {
-      const payload = await analyzeWorkspaceContext(query, serviceToken, trigger);
+      const payload = await analyzeWorkspaceContext(query, pskaIdentity, trigger);
       setBrain(payload);
     } catch (error) {
       setBrain({
@@ -207,7 +223,7 @@ export default function App() {
     surface: WorkspaceMode,
     options: { summary?: string; metadata?: Record<string, unknown>; throwOnError?: boolean } = {}
   ) {
-    if (!serviceToken) {
+    if (!userId.trim()) {
       return;
     }
     if (activityType === "edited") {
@@ -219,7 +235,7 @@ export default function App() {
     }
     try {
       const target = workspaceActivityTarget(surface);
-      await recordWorkspaceActivity(serviceToken, {
+      await recordWorkspaceActivity(pskaIdentity, {
         activity_type: activityType,
         surface,
         target_type: "workspace_surface",
@@ -255,18 +271,24 @@ export default function App() {
         <TopBar
           mode={mode}
           serviceToken={serviceToken}
+          tenantId={tenantId}
+          userId={userId}
+          representedUserId={representedUserId}
           onModeChange={setMode}
           onTokenChange={setServiceToken}
+          onTenantChange={setTenantId}
+          onUserChange={setUserId}
+          onRepresentedUserChange={setRepresentedUserId}
           onRefresh={refreshCurrentSurface}
         />
         {mode === "today" ? (
-          <TodayWorkspace serviceToken={serviceToken} onOpenWorkspace={setMode} setBrain={setBrain} />
+          <TodayWorkspace serviceToken={pskaIdentity} onOpenWorkspace={setMode} setBrain={setBrain} />
         ) : mode === "review" ? (
-          <ReviewCenter serviceToken={serviceToken} onPinCurrent={pinCurrentWorkspace} pinStatus={pinStatus} />
+          <ReviewCenter serviceToken={pskaIdentity} onPinCurrent={pinCurrentWorkspace} pinStatus={pinStatus} />
         ) : mode === "graph" ? (
-          <GraphWorkspace serviceToken={serviceToken} onPinCurrent={pinCurrentWorkspace} pinStatus={pinStatus} />
+          <GraphWorkspace serviceToken={pskaIdentity} onPinCurrent={pinCurrentWorkspace} pinStatus={pinStatus} />
         ) : mode === "corpus" ? (
-          <CorpusWorkspace serviceToken={serviceToken} onPinCurrent={pinCurrentWorkspace} pinStatus={pinStatus} setBrain={setBrain} />
+          <CorpusWorkspace serviceToken={pskaIdentity} onPinCurrent={pinCurrentWorkspace} pinStatus={pinStatus} setBrain={setBrain} />
         ) : mode === "document" ? (
           <DocumentWorkspace editor={editor} selectedText={selectedText} onPinCurrent={pinCurrentWorkspace} pinStatus={pinStatus} />
         ) : (
@@ -348,14 +370,26 @@ function NavItem({
 function TopBar({
   mode,
   serviceToken,
+  tenantId,
+  userId,
+  representedUserId,
   onModeChange,
   onTokenChange,
+  onTenantChange,
+  onUserChange,
+  onRepresentedUserChange,
   onRefresh
 }: {
   mode: WorkspaceMode;
   serviceToken: string;
+  tenantId: string;
+  userId: string;
+  representedUserId: string;
   onModeChange: (mode: WorkspaceMode) => void;
   onTokenChange: (serviceToken: string) => void;
+  onTenantChange: (tenantId: string) => void;
+  onUserChange: (userId: string) => void;
+  onRepresentedUserChange: (representedUserId: string) => void;
   onRefresh: () => void;
 }) {
   return (
@@ -386,15 +420,29 @@ function TopBar({
           Review
         </button>
       </div>
-      <label className="token-field">
-        <span>服务令牌</span>
-        <input
-          type="password"
-          value={serviceToken}
-          onChange={(event) => onTokenChange(event.target.value)}
-          placeholder="可选本地令牌"
-        />
-      </label>
+      <div className="identity-fields" aria-label="PSKA 身份上下文">
+        <label className="token-field compact">
+          <span>Tenant</span>
+          <input value={tenantId} onChange={(event) => onTenantChange(event.target.value)} placeholder="tenant_default" />
+        </label>
+        <label className="token-field compact">
+          <span>User</span>
+          <input value={userId} onChange={(event) => onUserChange(event.target.value)} placeholder="user_primary" />
+        </label>
+        <label className="token-field compact">
+          <span>As</span>
+          <input value={representedUserId} onChange={(event) => onRepresentedUserChange(event.target.value)} placeholder={userId || "user_primary"} />
+        </label>
+        <label className="token-field">
+          <span>令牌/JWT</span>
+          <input
+            type="password"
+            value={serviceToken}
+            onChange={(event) => onTokenChange(event.target.value)}
+            placeholder="可选本地令牌"
+          />
+        </label>
+      </div>
       <button className="icon-button" type="button" onClick={onRefresh} title="刷新上下文">
         <RefreshCw size={18} />
       </button>
@@ -409,7 +457,7 @@ function TodayWorkspace({
   onOpenWorkspace,
   setBrain
 }: {
-  serviceToken: string;
+  serviceToken: PSKAAuth;
   onOpenWorkspace: (mode: WorkspaceMode) => void;
   setBrain: (brain: Partial<BrainState>) => void;
 }) {
@@ -719,7 +767,7 @@ function ReviewCenter({
   onPinCurrent,
   pinStatus
 }: {
-  serviceToken: string;
+  serviceToken: PSKAAuth;
   onPinCurrent: () => void;
   pinStatus: "idle" | "saved" | "failed";
 }) {
@@ -1437,7 +1485,7 @@ function CorpusWorkspace({
   pinStatus,
   setBrain
 }: {
-  serviceToken: string;
+  serviceToken: PSKAAuth;
   onPinCurrent: () => void;
   pinStatus: "idle" | "saved" | "failed";
   setBrain: (brain: Partial<BrainState>) => void;
@@ -2143,7 +2191,7 @@ function GraphWorkspace({
   onPinCurrent,
   pinStatus
 }: {
-  serviceToken: string;
+  serviceToken: PSKAAuth;
   onPinCurrent: () => void;
   pinStatus: "idle" | "saved" | "failed";
 }) {
