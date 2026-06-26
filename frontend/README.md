@@ -54,4 +54,11 @@ payloads from that single context. This removes the old single-user
 For SaaS deployment, run the built frontend behind `pska gateway`. The gateway
 exposes `/auth/session`, which returns only tenant/user metadata; the browser
 does not receive AuthNode admin tokens, PSKA service tokens, FastReAct tokens,
-or PSKA JWTs. See [Enterprise Auth Gateway](../docs/ENTERPRISE_AUTH_GATEWAY.zh.md).
+or PSKA JWTs.
+
+For local login-protected testing on the usual frontend port, set
+`startup.frontend.mode` to `gateway` in `.pska/config.json`; then `./start.sh`
+serves the built frontend through PSKA Gateway on `:5173` and redirects
+unauthenticated browsers to `/login`. Use `mode: "vite"` for hot reload.
+
+See [Enterprise Auth Gateway](../docs/ENTERPRISE_AUTH_GATEWAY.zh.md).

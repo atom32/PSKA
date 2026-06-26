@@ -343,6 +343,7 @@ class FrontendConfig:
     enabled: bool = True
     host: str = "127.0.0.1"
     port: int = 5173
+    mode: str = "vite"
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> "FrontendConfig":
@@ -351,6 +352,7 @@ class FrontendConfig:
             enabled=bool(data.get("enabled", True)),
             host=str(data.get("host") or "127.0.0.1"),
             port=int(data.get("port") or 5173),
+            mode=str(data.get("mode") or "vite").strip().lower(),
         )
 
 

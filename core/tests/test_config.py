@@ -129,7 +129,7 @@ def test_pska_config_loads_startup_config(tmp_path: Path) -> None:
             "startup": {
                 "bootstrap": False,
                 "backend": True,
-                "frontend": {"enabled": False, "host": "127.0.0.2", "port": 5174},
+                "frontend": {"enabled": False, "mode": "gateway", "host": "127.0.0.2", "port": 5174},
             }
         }
     )
@@ -137,6 +137,7 @@ def test_pska_config_loads_startup_config(tmp_path: Path) -> None:
     assert config.startup.bootstrap is False
     assert config.startup.backend is True
     assert config.startup.frontend.enabled is False
+    assert config.startup.frontend.mode == "gateway"
     assert config.startup.frontend.host == "127.0.0.2"
     assert config.startup.frontend.port == 5174
 

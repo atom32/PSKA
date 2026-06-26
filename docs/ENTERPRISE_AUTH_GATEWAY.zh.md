@@ -71,6 +71,24 @@ export PSKA_GATEWAY_SESSION_SECRET='<random-long-secret>'
 http://127.0.0.1:8080/
 ```
 
+本地也可以让 `./start.sh` 直接把常用前端端口 `5173` 交给 gateway。配置
+`.pska/config.json`：
+
+```json
+"startup": {
+  "frontend": {
+    "enabled": true,
+    "mode": "gateway",
+    "host": "0.0.0.0",
+    "port": 5173
+  }
+}
+```
+
+这样打开 `http://127.0.0.1:5173/` 或 LAN 地址上的 `:5173` 时，未登录会由
+gateway 自动跳到 `/login`。如果使用 `"mode": "vite"`，`5173` 仍是开发热更新
+服务器，不会负责登录跳转。
+
 如果后端仍运行在旧的 `service_token` 模式，gateway 可以临时使用服务端 token 代理：
 
 ```bash

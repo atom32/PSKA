@@ -66,12 +66,21 @@ elif expr == "startup_backend":
     print(str(config.startup.backend).lower())
 elif expr == "startup_frontend":
     print(str(config.startup.frontend.enabled).lower())
+elif expr == "frontend_mode":
+    print(config.startup.frontend.mode)
 elif expr == "frontend_host":
     print(config.startup.frontend.host)
 elif expr == "frontend_port":
     print(config.startup.frontend.port)
 elif expr == "frontend_url":
     print(f"http://{config.startup.frontend.host}:{config.startup.frontend.port}/")
+elif expr == "service_client_url":
+    host = config.service.host
+    if host in {"", "0.0.0.0", "::", "[::]"}:
+        host = "127.0.0.1"
+    elif ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    print(f"http://{host}:{config.service.port}")
 else:
     raise SystemExit(f"unknown config expression: {expr}")
 PY
@@ -157,6 +166,7 @@ fi
 if [[ "$(config_value startup_frontend)" == "true" ]]; then
   FRONTEND_HOST="$(config_value frontend_host)"
   FRONTEND_PORT="$(config_value frontend_port)"
+  FRONTEND_MODE="$(config_value frontend_mode)"
   if port_listening "$FRONTEND_PORT"; then
     echo "Frontend port $FRONTEND_PORT already has a listener; reusing it."
     if [[ "$FRONTEND_HOST" == "0.0.0.0" || "$FRONTEND_HOST" == "::" ]] && ! port_has_wildcard_listener "$FRONTEND_PORT"; then
@@ -166,13 +176,32 @@ if [[ "$(config_value startup_frontend)" == "true" ]]; then
       port_listener_hosts "$FRONTEND_PORT" >&2 || true
     fi
   else
-  if [[ ! -d "$ROOT/frontend/node_modules" ]]; then
-    echo "Installing frontend dependencies..."
-    (cd "$ROOT/frontend" && npm install)
-  fi
-  echo "Starting PSKA frontend..."
-  (cd "$ROOT/frontend" && npm run dev -- --host "$FRONTEND_HOST" --port "$FRONTEND_PORT") &
-  FRONTEND_PID=$!
+    if [[ "$FRONTEND_MODE" == "gateway" ]]; then
+      if [[ -z "${AUTHNODE_ADMIN_TOKEN:-}" && -z "${PSKA_GATEWAY_AUTHNODE_ADMIN_TOKEN:-}" ]]; then
+        echo "PSKA warning: gateway mode has no AUTHNODE_ADMIN_TOKEN/PSKA_GATEWAY_AUTHNODE_ADMIN_TOKEN in the environment." >&2
+        echo "If AuthNode requires an admin token, login token exchange will fail." >&2
+      fi
+      if [[ ! -d "$ROOT/frontend/node_modules" ]]; then
+        echo "Installing frontend dependencies..."
+        (cd "$ROOT/frontend" && npm install)
+      fi
+      echo "Building PSKA frontend for gateway mode..."
+      (cd "$ROOT/frontend" && npm run build)
+      echo "Starting PSKA gateway frontend..."
+      "$ROOT/scripts/pska" --config "$CONFIG" gateway \
+        --host "$FRONTEND_HOST" \
+        --port "$FRONTEND_PORT" \
+        --pska-url "$(config_value service_client_url)" &
+      FRONTEND_PID=$!
+    else
+      if [[ ! -d "$ROOT/frontend/node_modules" ]]; then
+        echo "Installing frontend dependencies..."
+        (cd "$ROOT/frontend" && npm install)
+      fi
+      echo "Starting PSKA frontend..."
+      (cd "$ROOT/frontend" && npm run dev -- --host "$FRONTEND_HOST" --port "$FRONTEND_PORT") &
+      FRONTEND_PID=$!
+    fi
   fi
 else
   echo "Skipping frontend because startup.frontend.enabled=false in $CONFIG"
@@ -196,7 +225,7 @@ Backend:
   $SERVICE_URL
 
 Listening:
-  Frontend bind: $FRONTEND_HOST:$FRONTEND_PORT
+  Frontend bind: $FRONTEND_HOST:$FRONTEND_PORT ($(config_value frontend_mode))
   Backend bind:  $SERVICE_HOST:$SERVICE_PORT
 
 Useful places:

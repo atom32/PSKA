@@ -55,6 +55,24 @@ PSKA service tokens, FastReAct tokens, and PSKA JWTs remain server-side.
 See `docs/ENTERPRISE_AUTH_GATEWAY.zh.md` for the full AuthNode/PSKA/FastReAct
 identity flow.
 
+If you want the normal `./start.sh` frontend port to be the login-protected
+entrypoint, set:
+
+```json
+"startup": {
+  "frontend": {
+    "enabled": true,
+    "mode": "gateway",
+    "host": "0.0.0.0",
+    "port": 5173
+  }
+}
+```
+
+Then `http://127.0.0.1:5173/` is served by PSKA Gateway and redirects to
+`/login` when no signed session cookie is present. Use `"mode": "vite"` when
+you want hot reload instead.
+
 ## First-Time Setup
 
 ```bash
