@@ -482,7 +482,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    config = PSKAConfig.load(args.config)
+    config = PSKAConfig.from_env(PSKAConfig.load(args.config))
     workspace_root = _resolve_workspace_root(args, config)
     args.pska_config = config
     args.database_url = args.database_url or config.database.url

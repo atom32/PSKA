@@ -27,6 +27,7 @@ class AgenticServiceClient(Protocol):
         *,
         represented_user_id: str | None = None,
         max_iterations: int = 3,
+        skills: list[str] | None = None,
     ) -> dict[str, Any]: ...
 
 
@@ -105,6 +106,7 @@ class UnsupportedAgenticService:
         *,
         represented_user_id: str | None = None,
         max_iterations: int = 3,
+        skills: list[str] | None = None,
     ) -> dict[str, Any]:
         raise AgenticServiceError(f"Unsupported agentic service provider: {self.config.provider}")
 
@@ -141,6 +143,7 @@ class FastreactAgenticServiceAdapter:
         *,
         represented_user_id: str | None = None,
         max_iterations: int = 3,
+        skills: list[str] | None = None,
     ) -> dict[str, Any]:
         messages = _agentic_messages(query, tenant_id=user.tenant_id, user_id=user.user_id)
         scope = {
@@ -150,8 +153,15 @@ class FastreactAgenticServiceAdapter:
             "max_iterations": max_iterations,
             "agentic_boundary": "external_service",
         }
+        run_skills = [PSKA_QA_SKILL] if skills is None else skills
         try:
-            response = self._run_agentic_search(messages=messages, user_id=user.user_id, tenant_id=user.tenant_id, scope=scope)
+            response = self._run_agentic_search(
+                messages=messages,
+                user_id=user.user_id,
+                tenant_id=user.tenant_id,
+                scope=scope,
+                skills=run_skills,
+            )
         except FastreactError as exc:
             raise AgenticServiceError(str(exc)) from exc
         return _normalize_agentic_response(
@@ -161,7 +171,15 @@ class FastreactAgenticServiceAdapter:
             url=self.config.url,
         )
 
-    def _run_agentic_search(self, *, messages: list[dict[str, str]], user_id: str, tenant_id: str, scope: dict[str, Any]) -> dict[str, Any]:
+    def _run_agentic_search(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        user_id: str,
+        tenant_id: str,
+        scope: dict[str, Any],
+        skills: list[str],
+    ) -> dict[str, Any]:
         client = self._client()
         try:
             created = client.create_run(
@@ -170,7 +188,7 @@ class FastreactAgenticServiceAdapter:
                 tenant_id=tenant_id,
                 purpose="agentic_search",
                 scope=scope,
-                skills=[PSKA_QA_SKILL],
+                skills=skills,
                 **self._generation_options(),
             )
             run_id = str(created.get("run_id") or "")
@@ -202,7 +220,7 @@ class FastreactAgenticServiceAdapter:
                     purpose="agentic_search",
                     stream=False,
                     scope=scope,
-                    skills=[PSKA_QA_SKILL],
+                    skills=skills,
                     **self._generation_options(),
                 )
             detail = str(exc)
@@ -215,7 +233,7 @@ class FastreactAgenticServiceAdapter:
             purpose="agentic_search",
             stream=False,
             scope=scope,
-            skills=[PSKA_QA_SKILL],
+            skills=skills,
             **self._generation_options(),
         )
 
@@ -273,6 +291,12 @@ def _agentic_messages(query: str, *, tenant_id: str | None = None, user_id: str 
                 "When PSKA returns relevant evidence, provide a specific answer in the user's language with "
                 "key facts, relationships, caveats, and source titles; do not collapse grounded answers into a "
                 "single generic sentence. "
+                "If the user request includes a JSON payload with deterministic_seeds, treat that payload's query "
+                "field as the only user question and answer from the provided supporting passages, facts, graph "
+                "paths, citations, and source refs first. Do not replace it with an unrelated query. Do not call "
+                "PSKA tools for broad discovery when those seeds already answer the question; use tools only for "
+                "a specific missing citation or evidence gap. If a PSKA tool fails or times out, still answer from "
+                "the provided deterministic seeds and record the tool issue in trace.gaps. "
                 "For PSKA personal knowledge questions, use only PSKA MCP tools such as pska_search and never "
                 "use host tools such as read_file, write_file, edit_file, exec, shell, or direct filesystem access. "
                 "Only use host tools when the user explicitly asks to inspect local files or run a command."

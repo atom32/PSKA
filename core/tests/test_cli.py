@@ -94,6 +94,47 @@ def test_mcp_server_uses_loaded_config(tmp_path: Path, monkeypatch) -> None:
     assert config.embedding.provider == "disabled"
 
 
+def test_cli_applies_env_overrides_to_served_config(tmp_path: Path, monkeypatch) -> None:
+    config_file = tmp_path / "config.json"
+    config_file.write_text(
+        json.dumps(
+            {
+                "database": {"url": "postgresql:///from_file"},
+                "agentic_service": {
+                    "provider": "fastreact",
+                    "url": "http://127.0.0.1:8000",
+                    "service_token": "file-token",
+                },
+                "workspace": {"root": str(tmp_path / "workspace")},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PSKA_AGENTIC_SERVICE_AUTHNODE_URL", "http://authnode.test/")
+    monkeypatch.setenv("PSKA_AGENTIC_SERVICE_AUTHNODE_ADMIN_TOKEN", "admin-token")
+    monkeypatch.setenv("PSKA_AGENTIC_SERVICE_AUTHNODE_AUDIENCE", "fastreact")
+    captured: dict[str, object] = {}
+
+    def fake_serve(host: str, port: int, database_url: str, *, config: PSKAConfig) -> None:
+        captured["host"] = host
+        captured["port"] = port
+        captured["database_url"] = database_url
+        captured["config"] = config
+
+    monkeypatch.setattr(cli_module, "serve", fake_serve)
+
+    assert cli_module.main(["--config", str(config_file), "serve"]) == 0
+
+    assert captured["database_url"] == "postgresql:///from_file"
+    served_config = captured["config"]
+    assert isinstance(served_config, PSKAConfig)
+    runtime = served_config.agentic_service_runtime_config()
+    assert runtime.service_token == "file-token"
+    assert runtime.authnode_url == "http://authnode.test"
+    assert runtime.authnode_admin_token == "admin-token"
+    assert runtime.authnode_audience == "fastreact"
+
+
 def test_cli_accepts_import_twitter_zips() -> None:
     args = build_parser().parse_args([
         "--database-url",

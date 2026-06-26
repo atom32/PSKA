@@ -265,13 +265,21 @@ class PSKAApi:
         *,
         represented_user_id: str | None = None,
         max_iterations: int = 3,
+        skills: list[str] | None = None,
     ) -> dict[str, Any]:
-        response = self.agentic_service.search(
-            query,
-            user,
-            represented_user_id=represented_user_id,
-            max_iterations=max_iterations,
-        )
+        kwargs: dict[str, Any] = {
+            "represented_user_id": represented_user_id,
+            "max_iterations": max_iterations,
+        }
+        if skills is not None:
+            kwargs["skills"] = skills
+        try:
+            response = self.agentic_service.search(query, user, **kwargs)
+        except TypeError as exc:
+            if skills is None or "skills" not in str(exc):
+                raise
+            kwargs.pop("skills", None)
+            response = self.agentic_service.search(query, user, **kwargs)
         retrieval = response.get("retrieval") if isinstance(response.get("retrieval"), dict) else {}
         trace = response.get("trace") if isinstance(response.get("trace"), dict) else {}
         if str(trace.get("status") or "").lower() == "error":
@@ -1384,6 +1392,7 @@ class PSKAApi:
                 user,
                 represented_user_id=owner_user_id,
                 max_iterations=max(1, min(int(max_iterations or 3), 8)),
+                skills=[],
             )
         except AgenticServiceError as exc:
             return {
@@ -1400,6 +1409,8 @@ class PSKAApi:
                 "deterministic": deterministic,
             }
         unusable = _agentic_graph_unusable_reason(agentic)
+        if not unusable and not _agentic_graph_answer_too_short(agentic, deterministic):
+            unusable = _agentic_graph_query_mismatch_reason(query, agentic, deterministic)
         if unusable:
             return {
                 **deterministic,
@@ -1423,8 +1434,11 @@ class PSKAApi:
                     user,
                     represented_user_id=owner_user_id,
                     max_iterations=max(1, min(int(max_iterations or 3), 8)),
+                    skills=[],
                 )
                 repair_unusable = _agentic_graph_unusable_reason(repair_agentic)
+                if not repair_unusable:
+                    repair_unusable = _agentic_graph_query_mismatch_reason(query, repair_agentic, deterministic)
                 if not repair_unusable and not _agentic_graph_answer_too_short(repair_agentic, deterministic):
                     agentic = _merge_graph_agentic_repair(agentic, repair_agentic)
             except AgenticServiceError as exc:
@@ -3790,16 +3804,24 @@ def _graph_agentic_query(query: str, deterministic: dict[str, Any]) -> str:
         "agentic_contract": _graph_agentic_contract(),
     }
     return (
-        "Run PSKA online GraphRAG for the user query below. First try to answer from the provided compact seeds. "
-        "Use PSKA search tools only when the seeds are clearly insufficient, and avoid redundant searches. "
-        "The included deterministic retrieval payload is only the first seed set, not the final answer. "
+        "Synthesize a PSKA GraphRAG answer from already-retrieved deterministic seeds.\n"
+        f"ACTUAL USER QUESTION: {query}\n\n"
+        "The JSON payload below is the evidence package; its query field is the only user question. "
+        "Do not substitute an unrelated query. Do not answer with a PSKA system/index/workspace overview. "
+        "First try to answer from deterministic_seeds.supporting_passages, top_facts, graph_paths, citations, "
+        "and source refs. Use PSKA search tools only when the seeds are clearly insufficient, and avoid redundant searches. "
+        "If the seeds already answer the question, synthesize from those seeds without calling PSKA tools. "
         "Think like HippoRAG: use passage/entity/fact/claim seeds, decide whether to inspect adjacent "
         "passage windows or graph neighbors, run follow-up searches if needed, filter irrelevant facts, "
         "and return a cited answer. Return valid JSON with answer, retrieval, trace, source_refs, and citations. "
         "The answer must be Chinese, substantive, about 400-800 Chinese characters when evidence is available, "
         "and organized as: key conclusions, risks, next actions, and uncertainty. "
+        "The answer must directly address the named entities and fields in ACTUAL USER QUESTION. "
+        "Start answer with the user's substantive conclusion; do not open with GraphRAG/retrieval/graph-path status. "
+        "Keep retrieval diagnostics, graph path counts, expansion decisions, and tool-status notes in trace, not in answer. "
         "Use citation/source_ref identifiers from the provided seeds wherever possible. "
-        "If a PSKA tool call fails, do not stop: synthesize the best grounded answer from the provided seeds and record "
+        "If a PSKA tool call fails or times out, do not stop and do not return a tool-failure report as the answer: "
+        "synthesize the best grounded answer from the provided seeds and record "
         "the tool failure in trace.gaps or trace.evidence_check. "
         "In trace include expansion_decisions explaining whether previous/next passage windows or graph "
         "neighbors were queried or intentionally skipped.\n\n"
@@ -3830,8 +3852,12 @@ def _graph_agentic_repair_query(query: str, deterministic: dict[str, Any], first
         "Repair the previous PSKA GraphRAG answer. The prior answer was too short for the product QA gate. "
         "Do not run broad redundant searches unless the provided seeds are insufficient. Use the deterministic seeds below "
         "as grounded evidence and produce valid JSON with answer, retrieval, trace, source_refs, and citations. "
+        "Do not substitute an unrelated query. If PSKA tools failed, answer from the deterministic seeds instead of "
+        "returning a tool-failure report. "
         "The repaired answer must be Chinese, at least 300 Chinese characters, specific to the user's question, "
         "and organized into key conclusions, risks/caveats, next actions, and uncertainty. "
+        "Start the repaired answer with the user's substantive conclusion; do not open with GraphRAG/retrieval/graph-path status. "
+        "Keep retrieval diagnostics and graph path counts in trace, not in answer. "
         "If you cannot improve the answer, explain the evidence gap in trace.evidence_check but still synthesize "
         "the richest grounded answer possible from the seeds.\n\n"
         f"{json.dumps(seed_payload, ensure_ascii=False)}"
@@ -4035,6 +4061,12 @@ def _agentic_graph_unusable_reason(agentic: dict[str, Any]) -> str | None:
     ).lower()
     failure_markers = [
         "mcp tools are unavailable",
+        "pska tools are unreachable",
+        "mcp request timeout",
+        "mcp tools timed out",
+        "tools timed out",
+        "retrieval failed",
+        "no evidence retrieved",
         "mcp transport",
         "readuntil",
         "unable to complete pska search",
@@ -4044,8 +4076,16 @@ def _agentic_graph_unusable_reason(agentic: dict[str, Any]) -> str | None:
         "query was truncated",
         "full query was not received",
         "question was not received",
+        "pska knowledge base overview",
         "pska knowledge base is operational",
         "knowledge base is operational",
+        "pska knowledge base currently contains",
+        "pska knowledge base processed",
+        "source items across benchmark workspace",
+        "source documents. key themes",
+        "extracted 151 entities",
+        "entities, 52 hyperedges",
+        "fastreact serves as pska",
         "pending review items spanning",
         "pska search tools are unavailable",
     ]
@@ -4054,6 +4094,38 @@ def _agentic_graph_unusable_reason(agentic: dict[str, Any]) -> str | None:
             return marker
     if not answer.strip() and not trace:
         return "empty_agentic_answer"
+    return None
+
+
+def _agentic_graph_query_mismatch_reason(query: str, agentic: dict[str, Any], deterministic: dict[str, Any]) -> str | None:
+    deterministic_answer = str(deterministic.get("answer") or "").strip()
+    if not deterministic_answer:
+        return None
+    answer = str(agentic.get("answer") or "").casefold()
+    query_lower = query.casefold()
+    required_phrase_groups = [
+        (("负责人", "lead"), ("负责人", "lead")),
+        (("下一步", "行动", "next step", "action"), ("下一步", "行动", "next step", "action")),
+        (("状态", "status"), ("状态", "status")),
+        (("arr",), ("arr",)),
+    ]
+    for query_terms, answer_terms in required_phrase_groups:
+        if any(term in query_lower for term in query_terms) and not any(term in answer for term in answer_terms):
+            return "agentic_answer_missed_query_fields"
+    anchors = [
+        term.casefold()
+        for term in re.findall(r"[A-Za-z][A-Za-z0-9_-]{2,}|[0-9][0-9,.]*", query)
+        if term.casefold() not in {"the", "and", "for", "with", "from", "what", "who", "why", "how", "please"}
+    ]
+    field_anchors = [
+        anchor
+        for anchor in anchors
+        if anchor in {"arr", "pipeline", "status", "next", "step", "action", "lead", "owner", "负责人"}
+    ]
+    if field_anchors and not any(anchor in answer for anchor in field_anchors):
+        return "agentic_answer_missed_query_fields"
+    if anchors and not any(anchor in answer for anchor in anchors):
+        return "agentic_answer_missed_query_anchors"
     return None
 
 
@@ -4066,16 +4138,15 @@ def _graph_seed_answer(
 ) -> str:
     if not supporting_passages and not top_facts and not graph_paths:
         return ""
-    title = _graph_answer_topic(query, supporting_passages)
     table_answer = _graph_pipeline_table_answer(query, supporting_passages)
+    title = table_answer["company"] if table_answer else _graph_answer_topic(query, supporting_passages)
     conclusions = table_answer["answer"] if table_answer else _graph_answer_conclusions(supporting_passages, top_facts)
     risks = _graph_answer_risks(supporting_passages, filtered_out_facts)
     actions = _graph_table_next_action(table_answer) if table_answer else _graph_answer_actions(supporting_passages)
     uncertainty = _graph_answer_uncertainty(top_facts, graph_paths, filtered_out_facts)
     citations = _graph_answer_citations(supporting_passages)
     return (
-        f"基于当前 PSKA 检索与图谱路径，关于“{title}”可以先形成一个有证据但仍需人工复核的回答。\n\n"
-        f"关键结论：{conclusions}\n\n"
+        f"关键结论：关于“{title}”，{conclusions}\n\n"
         f"风险与约束：{risks}\n\n"
         f"后续行动：{actions}\n\n"
         f"不确定性：{uncertainty}\n\n"
@@ -4186,7 +4257,7 @@ def _graph_answer_risks(passages: list[dict[str, Any]], filtered_facts: list[dic
     matched = [term for term in risk_terms if term in text]
     if filtered_facts:
         return f"有 {len(filtered_facts)} 条 fact 被相关性过滤或降权，说明部分图谱关系可能只提供背景，不能直接支撑结论；同时需关注证据中的{ '、'.join(matched[:4]) if matched else '置信度、追溯和人工验证' }。"
-    return f"主要风险在于证据需要持续校验，尤其是{ '、'.join(matched[:4]) if matched else '版本变化、关系置信度、引用完整性和人工复核' }；图谱路径可辅助定位，但不能替代最终判断。"
+    return f"主要风险在于证据需要持续校验，尤其是{ '、'.join(matched[:4]) if matched else '版本变化、引用完整性和人工复核' }。"
 
 
 def _graph_answer_actions(passages: list[dict[str, Any]]) -> str:
@@ -4203,12 +4274,13 @@ def _graph_answer_uncertainty(facts: list[dict[str, Any]], graph_paths: list[dic
     parts = []
     if review_facts:
         parts.append(f"{len(review_facts)} 条 fact 处于 review 相关性状态")
-    if graph_paths:
-        parts.append(f"当前使用 {len(graph_paths)} 条 graph path 作为多跳线索")
     if filtered_facts:
         parts.append(f"{len(filtered_facts)} 条 fact 被过滤")
     if not parts:
-        parts.append("当前主要依赖 lexical/vector passage seeds，图谱信号有限")
+        if graph_paths:
+            parts.append("证据来自当前命中的材料与关系线索，仍需复核原始来源是否为最新版本")
+        else:
+            parts.append("当前主要依赖命中的材料片段，仍需复核原始来源是否为最新版本")
     return "；".join(parts) + "。因此答案应被视为 grounded draft，而不是最终事实裁决。"
 
 

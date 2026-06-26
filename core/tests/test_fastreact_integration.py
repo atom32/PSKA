@@ -216,6 +216,27 @@ def test_fastreact_client_applies_config_generation_options_to_runs(monkeypatch)
     assert captured["payload"]["metadata"]["purpose"] == "agentic_search"
 
 
+def test_fastreact_client_sends_empty_skills_to_disable_autoselection(monkeypatch) -> None:
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse({"run_id": "run_no_skills"})
+
+    monkeypatch.setattr(fastreact_module, "urlopen", fake_urlopen)
+    client = HttpFastreactClient(FastreactConfig(url="http://fastreact.test"))
+
+    response = client.create_run(
+        messages=[{"role": "user", "content": "hello"}],
+        user_id="user_primary",
+        purpose="agentic_search",
+        skills=[],
+    )
+
+    assert response["run_id"] == "run_no_skills"
+    assert captured["payload"]["skills"] == []
+
+
 def test_agentic_search_prompt_routes_pska_queries_to_pska_skill_tools() -> None:
     messages = _agentic_messages("徐大为的简历都说了什么？")
     joined = "\n".join(message["content"] for message in messages)
@@ -2165,9 +2186,11 @@ def test_workspace_graph_path_defaults_to_agentic_graphrag_with_deterministic_se
         def __init__(self, retrieval):
             super().__init__(retrieval)
             self.query = ""
+            self.skills = None
 
-        def search(self, query, user, *, represented_user_id=None, max_iterations=3):
+        def search(self, query, user, *, represented_user_id=None, max_iterations=3, skills=None):
             self.query = query
+            self.skills = skills
             return {
                 "answer": "Agentic GraphRAG answer. " * 40,
                 "retrieval": {"citations": [{"source_item_id": "src_graph_path"}]},
@@ -2208,10 +2231,18 @@ def test_workspace_graph_path_defaults_to_agentic_graphrag_with_deterministic_se
     assert "deterministic_seeds" in agentic.query
     assert "supporting_passages" in agentic.query
     assert "previous/next passage windows" in agentic.query
+    assert "do not open with GraphRAG/retrieval/graph-path status" in agentic.query
+    assert "Keep retrieval diagnostics, graph path counts" in agentic.query
+    assert agentic.skills == []
     assert payload["agentic_trace"]["expansion_decisions"][0]["target"] == "previous_next_passage"
 
     deterministic = api.workspace_graph_path(query="GraphRAG online queries", owner_user_id="user_primary", mode="deterministic")
     assert deterministic["path_summary"]["filter_mode"] == "deterministic_relevance"
+    assert deterministic["answer"].startswith("关键结论：")
+    assert "基于当前 PSKA 检索与图谱路径" not in deterministic["answer"]
+    assert "条 graph path" not in deterministic["answer"].casefold()
+    assert "作为多跳线索" not in deterministic["answer"]
+    assert "图谱路径" not in deterministic["answer"]
     assert "filtered_out_facts" in deterministic
     assert "supporting_passages" in agentic.query
     assert "score_debug" not in agentic.query
@@ -2347,6 +2378,43 @@ def test_workspace_graph_path_rejects_unusable_agentic_answer() -> None:
     assert payload["error"]["type"] == "agentic_graph_answer_unusable"
 
 
+def test_workspace_graph_path_rejects_agentic_tool_timeout_report() -> None:
+    api = _api()
+    IngestService(api.store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "graph-path-tool-timeout",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "Graph Path Tool Timeout Note",
+            "content": {"text": "Acme Example pipeline next action is Prepare partner meeting brief."},
+        }
+    )
+
+    class ToolTimeoutAgenticService(FakeAgenticService):
+        def search(self, query, user, *, represented_user_id=None, max_iterations=3):
+            return {
+                "answer": "PSKA tools are unreachable (timeout). No evidence retrieved.",
+                "trace": {
+                    "events": [{"type": "tool_result", "content": "MCP request timeout (30.0s)"}],
+                    "evidence_check": "No evidence retrieved",
+                },
+                "agentic_service": {"provider": "test"},
+            }
+
+    api.agentic_service = ToolTimeoutAgenticService(api.retrieval)
+
+    payload = api.workspace_graph_path(query="Acme Example pipeline next action", owner_user_id="user_primary")
+
+    assert payload["ok"] is False
+    assert payload["display_mode"] == "deterministic_fallback"
+    assert payload["error"]["type"] == "agentic_graph_answer_unusable"
+    assert payload["error"]["detail"] in {"pska tools are unreachable", "mcp request timeout", "no evidence retrieved"}
+
+
 def test_workspace_graph_path_rejects_agentic_query_truncation_claim() -> None:
     api = _api()
     IngestService(api.store).ingest_channel_payload(
@@ -2411,6 +2479,84 @@ def test_workspace_graph_path_rejects_generic_operational_agentic_summary() -> N
     assert payload["ok"] is False
     assert payload["display_mode"] == "deterministic_fallback"
     assert payload["error"]["detail"] == "pska knowledge base is operational"
+
+
+def test_workspace_graph_path_rejects_agentic_answer_that_misses_query_anchors() -> None:
+    api = _api()
+    IngestService(api.store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "graph-path-query-anchor-miss",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "Graph Path Query Anchor Miss Note",
+            "content": {"text": "Acme Example ARR is 1200000 and next action is Prepare partner meeting brief."},
+        }
+    )
+
+    class AnchorMissAgenticService(FakeAgenticService):
+        def search(self, query, user, *, represented_user_id=None, max_iterations=3, skills=None):
+            return {
+                "answer": "PSKA knowledge base currently contains source documents about acme-example, startup market dynamics, and founder execution themes.",
+                "trace": {"evidence_check": "system_overview"},
+                "source_refs": [{"source_item_id": "src_overview"}],
+                "agentic_service": {"provider": "test"},
+            }
+
+    api.agentic_service = AnchorMissAgenticService(api.retrieval)
+
+    payload = api.workspace_graph_path(query="Acme Example ARR next action", owner_user_id="user_primary")
+
+    assert payload["ok"] is False
+    assert payload["display_mode"] == "deterministic_fallback"
+    assert payload["error"]["detail"] in {
+        "pska knowledge base currently contains",
+        "agentic_answer_missed_query_fields",
+        "agentic_answer_missed_query_anchors",
+    }
+
+
+def test_workspace_graph_path_rejects_partial_pipeline_overview_missing_fields() -> None:
+    api = _api()
+    IngestService(api.store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "graph-path-partial-pipeline-overview",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "Graph Path Partial Pipeline Overview Note",
+            "content": {"text": "Acme Example lead is Alice Example and next action is Prepare partner meeting brief."},
+        }
+    )
+
+    class PartialPipelineOverviewAgenticService(FakeAgenticService):
+        def search(self, query, user, *, represented_user_id=None, max_iterations=3, skills=None):
+            return {
+                "answer": (
+                    "Sales pipeline data includes Acme Example ($1.2M ARR, active) and Widget Co. "
+                    "This overview says the tenant has startup investment analysis, market timing notes, "
+                    "founder execution calibration, and relationship evidence across the benchmark corpus. "
+                    "It mentions Acme Example and ARR, but it is still framed as a broad pipeline overview "
+                    "rather than answering every requested field from the user question."
+                ),
+                "trace": {"evidence_check": "partial_overview"},
+                "source_refs": [{"source_item_id": "src_overview"}],
+                "agentic_service": {"provider": "test"},
+            }
+
+    api.agentic_service = PartialPipelineOverviewAgenticService(api.retrieval)
+
+    payload = api.workspace_graph_path(query="Acme Example 当前 pipeline 的 ARR、负责人、状态和下一步行动是什么？", owner_user_id="user_primary")
+
+    assert payload["ok"] is False
+    assert payload["display_mode"] == "deterministic_fallback"
+    assert payload["error"]["detail"] == "agentic_answer_missed_query_fields"
 
 
 def test_workspace_graph_path_answers_pipeline_next_step_from_table() -> None:

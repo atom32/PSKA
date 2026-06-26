@@ -151,7 +151,7 @@ class HttpFastreactClient:
         )
         if session_id:
             payload["session_id"] = session_id
-        if skills:
+        if skills is not None:
             payload["skills"] = skills
         return self._request_json("POST", "/v1/chat/completions", payload)
 
@@ -189,7 +189,7 @@ class HttpFastreactClient:
         )
         if session_id:
             payload["session_id"] = session_id
-        if skills:
+        if skills is not None:
             payload["skills"] = skills
         return self._request_json("POST", "/v1/runs", payload)
 
