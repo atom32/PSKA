@@ -6,7 +6,7 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from pska_core.config import PSKAConfig
 from pska_core.enums import Visibility
-from pska_core.models import KnowledgeSource, SyncRun, utc_now
+from pska_core.models import DEFAULT_TENANT_ID, KnowledgeSource, SyncRun, utc_now
 from pska_core.serde import to_jsonable
 from pska_core.store import KnowledgeStore
 
@@ -20,17 +20,19 @@ class KnowledgeSourceService:
     def list_sources(
         self,
         *,
+        tenant_id: str | None = None,
         owner_user_id: str | None = None,
         source_type: str | None = None,
         status: str | None = None,
     ) -> list[KnowledgeSource]:
-        return self.store.list_knowledge_sources(owner_user_id=owner_user_id, source_type=source_type, status=status)
+        return self.store.list_knowledge_sources(tenant_id=tenant_id, owner_user_id=owner_user_id, source_type=source_type, status=status)
 
     def add_folder_source(
         self,
         path: Path,
         *,
         owner_user_id: str = "user_primary",
+        tenant_id: str = DEFAULT_TENANT_ID,
         name: str | None = None,
         mode: str = "manual",
         status: str = "authorized",
@@ -42,7 +44,7 @@ class KnowledgeSourceService:
     ) -> KnowledgeSource:
         root = path.expanduser().resolve()
         source = KnowledgeSource(
-            knowledge_source_id=knowledge_source_id(owner_user_id, root.as_uri()),
+            knowledge_source_id=knowledge_source_id(owner_user_id, root.as_uri(), tenant_id=tenant_id),
             owner_user_id=owner_user_id,
             name=name or root.name or str(root),
             source_type="folder",
@@ -55,13 +57,14 @@ class KnowledgeSourceService:
             visible_team_ids=visible_team_ids or [],
             permission_scope={"path": str(root), "read_scope": "explicit_directory"},
             config={"path": str(root), "ignore": ignore or [], "max_bytes": max_bytes},
+            tenant_id=tenant_id,
         )
         return self.store.upsert_knowledge_source(source)
 
     def seed_from_config(self, config: PSKAConfig) -> list[KnowledgeSource]:
         existing_by_uri = {
             source.uri: source
-            for source in self.store.list_knowledge_sources(owner_user_id=config.files.owner_user_id)
+            for source in self.store.list_knowledge_sources(tenant_id=config.files.tenant_id, owner_user_id=config.files.owner_user_id)
         }
         seeded = []
         for root in config.files.roots:
@@ -70,6 +73,7 @@ class KnowledgeSourceService:
             source = self.add_folder_source(
                 resolved,
                 owner_user_id=config.files.owner_user_id,
+                tenant_id=config.files.tenant_id,
                 space_id=config.files.space_id,
                 visibility=Visibility(config.files.visibility),
                 ignore=list(config.files.ignore),
@@ -116,6 +120,7 @@ class KnowledgeSourceService:
             failed=failed_count,
             error=report_error,
             report=to_jsonable(report),
+            tenant_id=source.tenant_id,
         )
         return self.store.add_sync_run(run)
 
@@ -131,12 +136,13 @@ class KnowledgeSourceService:
             failed=1,
             error=error,
             report={"error": error},
+            tenant_id=source.tenant_id,
         )
         return self.store.add_sync_run(run)
 
 
-def knowledge_source_id(owner_user_id: str, uri: str) -> str:
-    return f"ks_{uuid5(NAMESPACE_URL, f'{owner_user_id}:{uri}').hex}"
+def knowledge_source_id(owner_user_id: str, uri: str, *, tenant_id: str = DEFAULT_TENANT_ID) -> str:
+    return f"ks_{uuid5(NAMESPACE_URL, f'{tenant_id}:{owner_user_id}:{uri}').hex}"
 
 
 def _folder_source_differs(existing: KnowledgeSource, desired: KnowledgeSource) -> bool:

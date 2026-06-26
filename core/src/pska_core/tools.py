@@ -4,7 +4,7 @@ from dataclasses import asdict
 
 from pska_core.ingest import IngestService
 from pska_core.memory import MemoryService
-from pska_core.models import ChannelIngestPayload, SourceRef, User
+from pska_core.models import DEFAULT_TENANT_ID, ChannelIngestPayload, SourceRef, User
 from pska_core.retrieval import RetrievalService
 
 
@@ -54,6 +54,7 @@ class PSKAToolFacade:
             source_refs=source_refs,
             created_by_user_id=payload.get("created_by_user_id"),
             decay_policy=payload.get("decay_policy", "manual"),
+            tenant_id=str(payload.get("tenant_id") or DEFAULT_TENANT_ID),
         )
         return asdict(memory)
 
@@ -64,5 +65,6 @@ class PSKAToolFacade:
             profile_delta=payload["profile_delta"],
             source_refs=source_refs,
             sensitivity=payload.get("sensitivity", "normal"),
+            tenant_id=str(payload.get("tenant_id") or DEFAULT_TENANT_ID),
         )
         return asdict(result)

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 from pska_core.keyfile import read_api_key_file
+from pska_core.models import DEFAULT_TENANT_ID
 
 if TYPE_CHECKING:
     from pska_core.agentic_service import AgenticServiceConfig
@@ -176,6 +177,7 @@ class FilesConfig:
     owner_user_id: str = "user_primary"
     space_id: str = "private_primary"
     visibility: str = "private"
+    tenant_id: str = DEFAULT_TENANT_ID
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> "FilesConfig":
@@ -187,6 +189,7 @@ class FilesConfig:
             owner_user_id=str(data.get("owner_user_id") or "user_primary"),
             space_id=str(data.get("space_id") or "private_primary"),
             visibility=str(data.get("visibility") or "private"),
+            tenant_id=str(data.get("tenant_id") or DEFAULT_TENANT_ID),
         )
 
 

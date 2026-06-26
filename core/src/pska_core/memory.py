@@ -6,7 +6,7 @@ import json
 from uuid import uuid4
 
 from pska_core.enums import MemoryLayer, ReviewType
-from pska_core.models import AgentMemory, ReviewItem, SourceRef, UserProfileCard
+from pska_core.models import DEFAULT_TENANT_ID, AgentMemory, ReviewItem, SourceRef, UserProfileCard
 from pska_core.store import KnowledgeStore
 
 
@@ -26,6 +26,7 @@ class MemoryService:
         source_refs: list[SourceRef],
         created_by_user_id: str | None = None,
         decay_policy: str = "manual",
+        tenant_id: str = DEFAULT_TENANT_ID,
     ) -> AgentMemory:
         memory, _metadata = self.promote_agent_memory(
             owner_user_id=owner_user_id,
@@ -35,6 +36,7 @@ class MemoryService:
             source_refs=source_refs,
             created_by_user_id=created_by_user_id,
             decay_policy=decay_policy,
+            tenant_id=tenant_id,
         )
         return memory
 
@@ -49,6 +51,7 @@ class MemoryService:
         created_by_user_id: str | None = None,
         decay_policy: str = "manual",
         verified_at: datetime | None = None,
+        tenant_id: str = DEFAULT_TENANT_ID,
     ) -> tuple[AgentMemory, dict]:
         confidence = _confidence(confidence)
         layer = MemoryLayer(layer)
@@ -56,7 +59,7 @@ class MemoryService:
         if not text:
             raise ValueError("agent memory text is required")
         verified_at = verified_at or datetime.now(timezone.utc)
-        existing = self._find_agent_memory(owner_user_id=owner_user_id, layer=layer, text=text)
+        existing = self._find_agent_memory(owner_user_id=owner_user_id, layer=layer, text=text, tenant_id=tenant_id)
         if existing is not None:
             existing_ref_count = len(existing.source_refs)
             merged_refs = _merge_source_refs(existing.source_refs, source_refs)
@@ -84,6 +87,7 @@ class MemoryService:
             decay_policy=decay_policy,
             last_verified_at=verified_at,
             created_by_user_id=created_by_user_id,
+            tenant_id=tenant_id,
         )
         self.store.add_agent_memory(memory)
         return memory, {
@@ -102,6 +106,7 @@ class MemoryService:
         source_refs: list[SourceRef],
         sensitivity: str = "normal",
         confidence: float = 0.8,
+        tenant_id: str = DEFAULT_TENANT_ID,
     ) -> UserProfileCard | ReviewItem:
         confidence = _confidence(confidence)
         if sensitivity in {"high", "sensitive"}:
@@ -110,6 +115,7 @@ class MemoryService:
                 owner_user_id=owner_user_id,
                 review_type=ReviewType.PROFILE_UPDATE,
                 title="Profile card update requires review",
+                tenant_id=tenant_id,
                 proposal={
                     "profile_delta": profile_delta,
                     "source_refs": [asdict(ref) for ref in source_refs],
@@ -124,6 +130,7 @@ class MemoryService:
             profile=profile_delta,
             source_refs=source_refs,
             confidence=confidence,
+            tenant_id=tenant_id,
         )
         return card
 
@@ -135,12 +142,13 @@ class MemoryService:
         source_refs: list[SourceRef],
         confidence: float = 0.8,
         verified_at: datetime | None = None,
+        tenant_id: str = DEFAULT_TENANT_ID,
     ) -> tuple[UserProfileCard, dict]:
         confidence = _confidence(confidence)
         if not isinstance(profile, dict) or not profile:
             raise ValueError("profile must be a non-empty dict")
         verified_at = verified_at or datetime.now(timezone.utc)
-        existing = self._find_profile_card(owner_user_id=owner_user_id, profile=profile)
+        existing = self._find_profile_card(owner_user_id=owner_user_id, profile=profile, tenant_id=tenant_id)
         if existing is not None:
             existing_ref_count = len(existing.source_refs)
             merged_refs = _merge_source_refs(existing.source_refs, source_refs)
@@ -164,6 +172,7 @@ class MemoryService:
             source_refs=source_refs,
             confidence=confidence,
             last_verified_at=verified_at,
+            tenant_id=tenant_id,
         )
         self.store.add_profile_card(card)
         return card, {
@@ -198,16 +207,16 @@ class MemoryService:
             last_verified_at=datetime.now(timezone.utc),
         )
 
-    def _find_agent_memory(self, *, owner_user_id: str, layer: MemoryLayer, text: str) -> AgentMemory | None:
+    def _find_agent_memory(self, *, owner_user_id: str, layer: MemoryLayer, text: str, tenant_id: str) -> AgentMemory | None:
         normalized = _normalize_text(text)
-        for memory in self.store.list_agent_memories(owner_user_id=owner_user_id):
+        for memory in self.store.list_agent_memories(owner_user_id=owner_user_id, tenant_id=tenant_id):
             if MemoryLayer(memory.layer) == layer and _normalize_text(memory.text) == normalized:
                 return memory
         return None
 
-    def _find_profile_card(self, *, owner_user_id: str, profile: dict) -> UserProfileCard | None:
+    def _find_profile_card(self, *, owner_user_id: str, profile: dict, tenant_id: str) -> UserProfileCard | None:
         key = _profile_key(profile)
-        for card in self.store.list_profile_cards(owner_user_id=owner_user_id):
+        for card in self.store.list_profile_cards(owner_user_id=owner_user_id, tenant_id=tenant_id):
             if _profile_key(card.profile) == key:
                 return card
         return None

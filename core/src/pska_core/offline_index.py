@@ -51,6 +51,7 @@ class OfflineIndexService:
             embedding_provider=provider_name,
             embedding_model=model_name,
             index_version=self.index_version,
+            tenant_id=source.tenant_id,
         )
         for chunk in chunks:
             self.store.mark_offline_index_dirty(
@@ -68,16 +69,17 @@ class OfflineIndexService:
                 embedding_provider=provider_name or chunk.metadata.get("embedding_provider"),
                 embedding_model=model_name or chunk.metadata.get("embedding_model"),
                 index_version=self.index_version,
+                tenant_id=chunk.tenant_id,
             )
 
-    def process_dirty_embeddings(self, *, limit: int | None = None) -> dict[str, Any]:
-        dirty_chunk_states = self.store.list_offline_index_states(status="dirty", object_type="chunk", limit=limit)
+    def process_dirty_embeddings(self, *, tenant_id: str | None = None, limit: int | None = None) -> dict[str, Any]:
+        dirty_chunk_states = self.store.list_offline_index_states(tenant_id=tenant_id, status="dirty", object_type="chunk", limit=limit)
         dirty_chunk_ids = {state.object_id for state in dirty_chunk_states}
         if not dirty_chunk_ids:
-            return self._empty_report("no_dirty_chunks")
+            return self._empty_report("no_dirty_chunks", tenant_id=tenant_id)
         if self.embedding_provider is None:
             return {
-                **self._empty_report("embedding_provider_disabled"),
+                **self._empty_report("embedding_provider_disabled", tenant_id=tenant_id),
                 "dirty_chunk_ids": sorted(dirty_chunk_ids),
             }
         source_ids = {state.source_item_id for state in dirty_chunk_states if state.source_item_id}
@@ -110,21 +112,22 @@ class OfflineIndexService:
             "failed": report.failed,
             "indexed_chunk_ids": indexed_chunk_ids,
             "errors": report.errors,
-            "offline_index": self.store.offline_index_status(),
+            "offline_index": self.store.offline_index_status(tenant_id=tenant_id),
         }
 
-    def tombstone_source(self, source_item_id: str, *, reason: str = "source_tombstoned") -> dict[str, Any]:
+    def tombstone_source(self, source_item_id: str, *, tenant_id: str | None = None, reason: str = "source_tombstoned") -> dict[str, Any]:
         states = self.store.tombstone_offline_index_for_source(source_item_id, reason=reason)
+        effective_tenant_id = tenant_id or (states[0].tenant_id if states else None)
         return {
             "source_item_id": source_item_id,
             "reason": reason,
             "tombstoned": len(states),
-            "offline_index": self.store.offline_index_status(),
+            "offline_index": self.store.offline_index_status(tenant_id=effective_tenant_id),
         }
 
-    def freshness(self, *, owner_user_id: str | None = None) -> dict[str, Any]:
+    def freshness(self, *, tenant_id: str | None = None, owner_user_id: str | None = None) -> dict[str, Any]:
         return {
-            **self.store.offline_index_status(owner_user_id=owner_user_id),
+            **self.store.offline_index_status(tenant_id=tenant_id, owner_user_id=owner_user_id),
             "fallback": "request_scoped_rebuild",
         }
 
@@ -143,7 +146,7 @@ class OfflineIndexService:
                     index_version=self.index_version,
                 )
 
-    def _empty_report(self, reason: str) -> dict[str, Any]:
+    def _empty_report(self, reason: str, *, tenant_id: str | None = None) -> dict[str, Any]:
         return {
             "ok": reason == "no_dirty_chunks",
             "reason": reason,
@@ -151,7 +154,7 @@ class OfflineIndexService:
             "embedded": 0,
             "skipped": 0,
             "failed": 0,
-            "offline_index": self.store.offline_index_status(),
+            "offline_index": self.store.offline_index_status(tenant_id=tenant_id),
         }
 
     @staticmethod

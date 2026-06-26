@@ -6,7 +6,7 @@ import re
 from typing import Any
 from uuid import uuid5, NAMESPACE_URL
 
-from pska_core.models import ChannelIngestPayload, Chunk, Document, SourceItem
+from pska_core.models import DEFAULT_TENANT_ID, ChannelIngestPayload, Chunk, Document, SourceItem
 from pska_core.offline_index import OfflineIndexService
 from pska_core.store import KnowledgeStore
 from pska_core.embeddings import EmbeddingProvider
@@ -39,7 +39,7 @@ class IngestService:
         text = str(payload.content.get("text") or payload.content.get("raw_text") or "")
         title = payload.title or self._default_title(payload.record_type, text)
         content_hash = self._hash_payload(payload, text)
-        source_item_id = f"src_{uuid5(NAMESPACE_URL, content_hash).hex}"
+        source_item_id = f"src_{uuid5(NAMESPACE_URL, f'{payload.tenant_id}:{content_hash}').hex}"
         item = SourceItem(
             source_item_id=source_item_id,
             source_channel=payload.source_channel,
@@ -53,6 +53,7 @@ class IngestService:
             url=payload.url,
             content_text=text,
             content_hash=content_hash,
+            tenant_id=payload.tenant_id,
             metadata={
                 "schema_version": payload.schema_version,
                 "author": payload.author,
@@ -77,6 +78,7 @@ class IngestService:
             title=stored.title,
             body=stored.content_text,
             metadata={"url": stored.url},
+            tenant_id=stored.tenant_id,
         )
         self.store.add_document(document)
         chunk_texts = self._chunk_text(stored.content_text)
@@ -100,6 +102,7 @@ class IngestService:
                     "chunk_size": self.chunk_size,
                     "chunk_overlap": self.chunk_overlap,
                 },
+                tenant_id=stored.tenant_id,
             )
             self.store.add_chunk(chunk)
             chunks.append(chunk)
@@ -153,6 +156,7 @@ class IngestService:
             media=self._postgres_safe_json(payload.media),
             raw_paths=self._postgres_safe_json(payload.raw_paths),
             extra=self._postgres_safe_json(payload.extra),
+            tenant_id=self._postgres_safe_text(payload.tenant_id or DEFAULT_TENANT_ID),
         )
 
     def _postgres_safe_json(self, value: Any) -> Any:

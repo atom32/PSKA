@@ -7,8 +7,19 @@ from typing import Any
 from pska_core.enums import Directionality, MemoryLayer, ReviewType, UserRole, UserStatus, Visibility
 
 
+DEFAULT_TENANT_ID = "tenant_default"
+
+
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+@dataclass(frozen=True, slots=True)
+class Tenant:
+    tenant_id: str
+    slug: str
+    name: str = ""
+    status: str = "active"
 
 
 @dataclass(frozen=True, slots=True)
@@ -17,6 +28,7 @@ class User:
     handle: str
     role: UserRole = UserRole.USER
     status: UserStatus = UserStatus.ACTIVE
+    tenant_id: str = DEFAULT_TENANT_ID
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,6 +36,7 @@ class Team:
     team_id: str
     slug: str
     status: str = "active"
+    tenant_id: str = DEFAULT_TENANT_ID
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +44,7 @@ class TeamMembership:
     user_id: str
     team_id: str
     role: str = "member"
+    tenant_id: str = DEFAULT_TENANT_ID
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +54,7 @@ class Space:
     kind: str
     owner_user_id: str | None = None
     team_id: str | None = None
+    tenant_id: str = DEFAULT_TENANT_ID
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,6 +87,7 @@ class ChannelIngestPayload:
     media: list[dict[str, Any]] = field(default_factory=list)
     raw_paths: dict[str, str] = field(default_factory=dict)
     extra: dict[str, Any] = field(default_factory=dict)
+    tenant_id: str = DEFAULT_TENANT_ID
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any]) -> "ChannelIngestPayload":
@@ -93,6 +109,7 @@ class ChannelIngestPayload:
             media=list(data.get("media") or []),
             raw_paths=dict(data.get("raw_paths") or {}),
             extra=dict(data.get("extra") or {}),
+            tenant_id=str(data.get("tenant_id") or DEFAULT_TENANT_ID),
         )
 
 
@@ -113,6 +130,7 @@ class SourceItem:
     metadata: dict[str, Any] = field(default_factory=dict)
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
+    tenant_id: str = DEFAULT_TENANT_ID
 
 
 @dataclass(slots=True)
@@ -130,6 +148,7 @@ class ConnectorState:
     config: dict[str, Any] = field(default_factory=dict)
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
+    tenant_id: str = DEFAULT_TENANT_ID
 
 
 @dataclass(slots=True)
@@ -151,6 +170,7 @@ class KnowledgeSource:
     last_error: str | None = None
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
+    tenant_id: str = DEFAULT_TENANT_ID
 
 
 @dataclass(slots=True)
@@ -173,6 +193,7 @@ class SyncRun:
     failed: int = 0
     error: str | None = None
     report: dict[str, Any] = field(default_factory=dict)
+    tenant_id: str = DEFAULT_TENANT_ID
 
 
 @dataclass(slots=True)
@@ -186,6 +207,7 @@ class Document:
     title: str
     body: str
     metadata: dict[str, Any] = field(default_factory=dict)
+    tenant_id: str = DEFAULT_TENANT_ID
 
 
 @dataclass(slots=True)
@@ -201,6 +223,7 @@ class Chunk:
     ordinal: int = 0
     embedding: list[float] | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    tenant_id: str = DEFAULT_TENANT_ID
 
 
 @dataclass(slots=True)
@@ -216,6 +239,7 @@ class PassageWindow:
     end_char: int = 0
     token_estimate: int = 0
     metadata: dict[str, Any] = field(default_factory=dict)
+    tenant_id: str = DEFAULT_TENANT_ID
 
 
 @dataclass(slots=True)
@@ -234,6 +258,7 @@ class OfflineIndexState:
     dirty_reason: str | None = None
     last_indexed_at: datetime | None = None
     updated_at: datetime = field(default_factory=utc_now)
+    tenant_id: str = DEFAULT_TENANT_ID
 
 
 @dataclass(slots=True)
@@ -249,6 +274,7 @@ class WorkspaceActivityEvent:
     summary: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
     created_at: datetime = field(default_factory=utc_now)
+    tenant_id: str = DEFAULT_TENANT_ID
 
 
 @dataclass(slots=True)
@@ -266,6 +292,7 @@ class DiscoveryItem:
     quality_signals: dict[str, Any] = field(default_factory=dict)
     status: str = "new"
     created_at: datetime = field(default_factory=utc_now)
+    tenant_id: str = DEFAULT_TENANT_ID
 
 
 @dataclass(slots=True)
@@ -279,6 +306,7 @@ class Memory:
     confidence: float
     source_refs: list[SourceRef] = field(default_factory=list)
     visible_team_ids: list[str] = field(default_factory=list)
+    tenant_id: str = DEFAULT_TENANT_ID
 
 
 @dataclass(slots=True)
@@ -292,6 +320,7 @@ class AgentMemory:
     decay_policy: str = "manual"
     last_verified_at: datetime | None = None
     created_by_user_id: str | None = None
+    tenant_id: str = DEFAULT_TENANT_ID
 
     def __post_init__(self) -> None:
         if self.created_by_user_id == self.owner_user_id:
@@ -308,6 +337,7 @@ class UserProfileCard:
     source_refs: list[SourceRef] = field(default_factory=list)
     confidence: float = 0.0
     last_verified_at: datetime | None = None
+    tenant_id: str = DEFAULT_TENANT_ID
 
 
 @dataclass(slots=True)
@@ -320,6 +350,7 @@ class Entity:
     visibility: Visibility
     visible_team_ids: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+    tenant_id: str = DEFAULT_TENANT_ID
 
 
 @dataclass(slots=True)
@@ -334,6 +365,7 @@ class Hyperedge:
     evidence_text: str = ""
     source_refs: list[SourceRef] = field(default_factory=list)
     confidence: float = 0.0
+    tenant_id: str = DEFAULT_TENANT_ID
 
 
 @dataclass(slots=True)
@@ -354,6 +386,7 @@ class KnowledgeClaim:
     request_id: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     created_at: datetime = field(default_factory=utc_now)
+    tenant_id: str = DEFAULT_TENANT_ID
 
 
 @dataclass(slots=True)
@@ -375,6 +408,7 @@ class DigestNote:
     request_id: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     created_at: datetime = field(default_factory=utc_now)
+    tenant_id: str = DEFAULT_TENANT_ID
 
 
 @dataclass(slots=True)
@@ -395,6 +429,7 @@ class ReviewItem:
     status: str = "pending"
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
+    tenant_id: str = DEFAULT_TENANT_ID
 
 
 @dataclass(slots=True)
@@ -418,6 +453,8 @@ class Job:
     heartbeat_at: datetime | None = None
     external_run_id: str | None = None
     source_refs: list[SourceRef] = field(default_factory=list)
+    tenant_id: str = DEFAULT_TENANT_ID
+    owner_user_id: str = "user_primary"
 
 
 @dataclass(slots=True)
@@ -428,6 +465,7 @@ class JobEvent:
     message: str
     detail: dict[str, Any] = field(default_factory=dict)
     created_at: datetime = field(default_factory=utc_now)
+    tenant_id: str = DEFAULT_TENANT_ID
 
 
 @dataclass(slots=True)
@@ -439,3 +477,4 @@ class AuditEvent:
     target_id: str
     decision: str
     metadata: dict[str, Any] = field(default_factory=dict)
+    tenant_id: str = DEFAULT_TENANT_ID

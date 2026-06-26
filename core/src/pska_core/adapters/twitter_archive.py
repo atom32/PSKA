@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from pska_core.enums import Visibility
-from pska_core.models import ChannelIngestPayload
+from pska_core.models import DEFAULT_TENANT_ID, ChannelIngestPayload
 
 
 def archive_metadata_to_payload(
@@ -12,6 +12,7 @@ def archive_metadata_to_payload(
     *,
     owner_user_id: str,
     space_id: str,
+    tenant_id: str = DEFAULT_TENANT_ID,
     visibility: Visibility = Visibility.PRIVATE,
     visible_team_ids: list[str] | None = None,
     archive_dir: Path | None = None,
@@ -22,6 +23,7 @@ def archive_metadata_to_payload(
         return _v2_metadata_to_payload(
             metadata,
             owner_user_id=owner_user_id,
+            tenant_id=tenant_id,
             space_id=space_id,
             visibility=visibility,
             visible_team_ids=visible_team_ids,
@@ -54,6 +56,7 @@ def archive_metadata_to_payload(
         media=list(metadata.get("media") or []),
         raw_paths=raw_paths,
         owner_user_id=owner_user_id,
+        tenant_id=tenant_id,
         space_id=space_id,
         visibility=visibility,
         visible_team_ids=visible_team_ids or [],
@@ -72,6 +75,7 @@ def _v2_metadata_to_payload(
     owner_user_id: str,
     space_id: str,
     visibility: Visibility,
+    tenant_id: str = DEFAULT_TENANT_ID,
     visible_team_ids: list[str] | None = None,
     archive_dir: Path | None = None,
 ) -> ChannelIngestPayload:
@@ -98,6 +102,7 @@ def _v2_metadata_to_payload(
         media=list(metadata.get("media") or []),
         raw_paths=raw_paths,
         owner_user_id=owner_user_id or pska.get("owner_user_id") or "user_primary",
+        tenant_id=tenant_id or pska.get("tenant_id") or DEFAULT_TENANT_ID,
         space_id=space_id or pska.get("space_id") or "private_primary",
         visibility=visibility or Visibility(pska.get("visibility") or Visibility.PRIVATE),
         visible_team_ids=visible_team_ids if visible_team_ids is not None else list(pska.get("visible_team_ids") or []),

@@ -12,10 +12,10 @@ from uuid import NAMESPACE_URL, uuid5
 import zipfile
 from xml.etree import ElementTree
 
-from pska_core.connectors import connector_state_from_mapping, connector_record_to_payload
+from pska_core.connectors import connector_record_to_payload, connector_state_from_mapping, connector_state_id
 from pska_core.enums import Visibility
 from pska_core.ingest import IngestService
-from pska_core.models import Chunk, ConnectorState, Document, SourceItem
+from pska_core.models import DEFAULT_TENANT_ID, Chunk, ConnectorState, Document, SourceItem
 from pska_core.offline_index import OfflineIndexService
 from pska_core.store import KnowledgeStore
 
@@ -75,6 +75,7 @@ def scan_files(
     *,
     root: Path,
     owner_user_id: str = "user_primary",
+    tenant_id: str = DEFAULT_TENANT_ID,
     space_id: str = "private_primary",
     visibility: Visibility = Visibility.PRIVATE,
     visible_team_ids: list[str] | None = None,
@@ -86,7 +87,7 @@ def scan_files(
     if not root.exists() or not root.is_dir():
         raise ValueError(f"Files connector root must be an existing directory: {root}")
 
-    state = _connector_state(store, root=root, owner_user_id=owner_user_id)
+    state = _connector_state(store, root=root, owner_user_id=owner_user_id, tenant_id=tenant_id)
     if not state.enabled:
         return FilesScanReport(root=str(root), connector_state=state, skipped=[{"root": str(root), "reason": "connector_disabled"}])
 
@@ -105,7 +106,7 @@ def scan_files(
             previous_manifest = legacy_manifest
     next_manifest: dict[str, dict[str, Any]] = {}
     previous_by_hash = _manifest_by_hash(previous_manifest)
-    existing_source_item_ids = {item.source_item_id for item in store.list_source_items()}
+    existing_source_item_ids = {item.source_item_id for item in store.list_source_items(tenant_id=tenant_id)}
     collection_roots = _find_collection_roots(root, ignore=patterns)
 
     for collection_root in collection_roots:
@@ -132,6 +133,7 @@ def scan_files(
                 collection_root=collection_root,
                 root=root,
                 owner_user_id=owner_user_id,
+                tenant_id=tenant_id,
                 space_id=space_id,
                 visibility=visibility,
                 visible_team_ids=visible_team_ids or [],
@@ -215,6 +217,7 @@ def scan_files(
                 raw=raw,
                 text=text,
                 owner_user_id=owner_user_id,
+                tenant_id=tenant_id,
                 space_id=space_id,
                 visibility=visibility,
                 visible_team_ids=visible_team_ids or [],
@@ -512,8 +515,8 @@ def _cell_to_text(value: Any) -> str:
     return str(value)
 
 
-def _connector_state(store: KnowledgeStore, *, root: Path, owner_user_id: str) -> ConnectorState:
-    state_id = f"conn_{owner_user_id}_files"
+def _connector_state(store: KnowledgeStore, *, root: Path, owner_user_id: str, tenant_id: str = DEFAULT_TENANT_ID) -> ConnectorState:
+    state_id = connector_state_id("files", owner_user_id, tenant_id)
     try:
         state = store.get_connector_state(state_id)
         roots = state.permission_scope.setdefault("roots", [])
@@ -525,6 +528,7 @@ def _connector_state(store: KnowledgeStore, *, root: Path, owner_user_id: str) -
             {
                 "connector_id": "files",
                 "owner_user_id": owner_user_id,
+                "tenant_id": tenant_id,
                 "enabled": True,
                 "permission_scope": {"roots": [str(root)]},
                 "config": {"default_ignore": DEFAULT_IGNORE},
@@ -631,11 +635,12 @@ def _ingest_collection(
     visible_team_ids: list[str],
     content_hash: str,
     files: list[Path],
+    tenant_id: str = DEFAULT_TENANT_ID,
 ) -> tuple[SourceItem, list[Document]]:
     marker_path, marker = _collection_marker(collection_root)
     title = str(marker.get("title") or collection_root.name)
     source_id = str(marker.get("source_id") or collection_root.relative_to(root).as_posix())
-    source_item_id = f"src_{uuid5(NAMESPACE_URL, 'files-collection:' + source_id).hex}"
+    source_item_id = f"src_{uuid5(NAMESPACE_URL, f'{tenant_id}:files-collection:{content_hash}:{source_id}').hex}"
     document_texts: list[tuple[Path, str]] = []
     for path in files:
         raw = path.read_bytes()
@@ -659,6 +664,7 @@ def _ingest_collection(
         url=collection_root.as_uri(),
         content_text=combined_text,
         content_hash=content_hash,
+        tenant_id=tenant_id,
         metadata={
             "schema_version": "pska.files.collection.v1",
             "collection": True,
@@ -691,6 +697,7 @@ def _ingest_collection(
                 "collection_root": str(collection_root),
                 "collection_source_id": source_id,
             },
+            tenant_id=stored.tenant_id,
         )
         documents.append(document)
         chunk_texts = ingest._chunk_text(text)  # noqa: SLF001 - collection ingest shares the existing chunking policy.
@@ -717,6 +724,7 @@ def _ingest_collection(
                         "collection": True,
                         "relative_path": relative,
                     },
+                    tenant_id=stored.tenant_id,
                 )
             )
     store.replace_source_documents(stored.source_item_id, documents, chunks)
@@ -740,6 +748,7 @@ def _ingest_file(
     space_id: str,
     visibility: Visibility,
     visible_team_ids: list[str],
+    tenant_id: str,
     stat,
     content_hash: str,
     extraction: dict[str, Any],
@@ -758,6 +767,7 @@ def _ingest_file(
             "title": path.name,
             "body": text,
             "owner_user_id": owner_user_id,
+            "tenant_id": tenant_id,
             "space_id": space_id,
             "visibility": visibility.value,
             "visible_team_ids": visible_team_ids,

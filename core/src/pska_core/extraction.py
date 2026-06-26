@@ -52,6 +52,7 @@ class ExtractionService:
                     owner_user_id=item.owner_user_id,
                     review_type=ReviewType.LOW_CONFIDENCE,
                     title=str(claim_spec.get("title") or "Review low-confidence knowledge claim"),
+                    tenant_id=item.tenant_id,
                     proposal=self._proposal_with_source_refs(
                         item,
                         {
@@ -87,6 +88,7 @@ class ExtractionService:
                     "prompt_version": EXTRACTION_PROMPT_VERSION,
                     **self._claim_dedupe_metadata(claim_spec),
                 },
+                tenant_id=item.tenant_id,
             )
             self.store.add_knowledge_claim(claim)
             report.knowledge_claims_created.append(claim.knowledge_claim_id)
@@ -115,6 +117,7 @@ class ExtractionService:
                 evidence_text=edge_spec["evidence_text"],
                 source_refs=[source_ref],
                 confidence=edge_spec.get("confidence", 0.75),
+                tenant_id=item.tenant_id,
             )
             report.hyperedges_created.append(edge.hyperedge_id)
 
@@ -125,6 +128,7 @@ class ExtractionService:
                 review_type=ReviewType(str(review_spec["review_type"])),
                 title=str(review_spec["title"]),
                 proposal=self._proposal_with_source_refs(item, review_spec, source_ref),
+                tenant_id=item.tenant_id,
             )
             self.store.add_review_item(review)
             report.review_items_created.append(review.review_item_id)
@@ -133,9 +137,9 @@ class ExtractionService:
             report.warnings.append("no_entities_extracted")
         return report
 
-    def extract_all_visible(self, owner_user_id: str | None = None) -> list[ExtractionReport]:
+    def extract_all_visible(self, owner_user_id: str | None = None, *, tenant_id: str | None = None) -> list[ExtractionReport]:
         reports = []
-        for item in self.store.list_source_items():
+        for item in self.store.list_source_items(tenant_id=tenant_id):
             if owner_user_id and item.owner_user_id != owner_user_id:
                 continue
             reports.append(self.extract_source_item(item))
@@ -347,13 +351,14 @@ Previous extraction:
 
     def _create_entity(self, item: SourceItem, entity_type: str, label: str) -> Entity:
         entity = Entity(
-            entity_id=self._id("ent", item.owner_user_id, entity_type, label),
+            entity_id=self._id("ent", item.tenant_id, item.owner_user_id, entity_type, label),
             entity_type=entity_type,
             label=label,
             owner_user_id=item.owner_user_id,
             space_id=item.space_id,
             visibility=item.visibility,
             visible_team_ids=item.visible_team_ids,
+            tenant_id=item.tenant_id,
         )
         self.store.add_entity(entity)
         return entity

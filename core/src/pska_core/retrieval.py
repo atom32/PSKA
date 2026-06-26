@@ -130,7 +130,7 @@ class RetrievalService:
     ) -> RetrievalResponse:
         visible_items = self.acl.filter_visible_items(
             user,
-            self.store.list_source_items(),
+            self.store.list_source_items(tenant_id=user.tenant_id),
             represented_user_id=represented_user_id,
         )
         source_ids = {item.source_item_id for item in visible_items}
@@ -145,7 +145,7 @@ class RetrievalService:
             top_k=top_k,
         )
         citations = [result.citation for result in ranked]
-        visible_team_ids = sorted(self.acl.visible_team_ids_for_user(represented_user_id or user.user_id))
+        visible_team_ids = sorted(self.acl.visible_team_ids_for_user(represented_user_id or user.user_id, tenant_id=user.tenant_id))
         hypergraph_context = self._hypergraph_context(
             query=query,
             ranked=ranked,
@@ -174,7 +174,7 @@ class RetrievalService:
         offline_index_freshness = OfflineIndexService(
             self.store,
             embedding_provider=self.embedding_provider,
-        ).freshness(owner_user_id=represented_user_id or user.user_id)
+        ).freshness(owner_user_id=represented_user_id or user.user_id, tenant_id=user.tenant_id)
         return RetrievalResponse(
             query=query,
             request_user_id=represented_user_id or user.user_id,
@@ -608,7 +608,7 @@ class RetrievalService:
         represented_user_id: str | None,
         query_embedding: list[float] | None,
     ) -> dict[str, Any]:
-        all_entities = self.store.list_entities()
+        all_entities = self.store.list_entities(tenant_id=user.tenant_id)
         visible_entities = self._visible_entities(all_entities, user=user, represented_user_id=represented_user_id)
         entity_by_id = {entity.entity_id: entity for entity in visible_entities}
         edge_ids_seen: set[str] = set()
@@ -623,6 +623,7 @@ class RetrievalService:
                 visible_hyperedges.append((edge, members))
         visible_claims = self.store.list_knowledge_claims(
             owner_user_id=represented_user_id or user.user_id,
+            tenant_id=user.tenant_id,
             source_item_ids=set(item_by_id),
             limit=200,
         )
@@ -810,7 +811,7 @@ class RetrievalService:
         owner_user_id = _context_owner_user_id(user, represented_user_id)
         query_terms = self._terms(query)
         contexts = []
-        for card in self.store.list_profile_cards(owner_user_id=owner_user_id):
+        for card in self.store.list_profile_cards(owner_user_id=owner_user_id, tenant_id=user.tenant_id):
             text = json.dumps(card.profile, ensure_ascii=False, sort_keys=True)
             lexical = self._lexical_score(query_terms, self._terms(text))
             if lexical <= 0 and not _is_profile_query(query):
@@ -844,7 +845,7 @@ class RetrievalService:
         owner_user_id = _context_owner_user_id(user, represented_user_id)
         query_terms = self._terms(query)
         contexts = []
-        for memory in self.store.list_agent_memories(owner_user_id=owner_user_id):
+        for memory in self.store.list_agent_memories(owner_user_id=owner_user_id, tenant_id=user.tenant_id):
             if memory.confidence <= 0 or memory.decay_policy == "forgotten":
                 continue
             lexical = self._lexical_score(query_terms, self._terms(memory.text))
@@ -880,13 +881,13 @@ class RetrievalService:
         user: User,
         represented_user_id: str | None,
     ) -> list[dict[str, Any]]:
-        entities = self._matching_entities(query, ranked)
+        entities = self._matching_entities(query, ranked, tenant_id=user.tenant_id)
         if _is_graph_global_query(query):
-            entities = self.store.list_entities()
+            entities = self.store.list_entities(tenant_id=user.tenant_id)
         visible_entities = self._visible_entities(entities, user=user, represented_user_id=represented_user_id)
         edges = self.store.list_hyperedges_for_entities({entity.entity_id for entity in visible_entities})
         context = []
-        entity_by_id = {entity.entity_id: entity for entity in self.store.list_entities()}
+        entity_by_id = {entity.entity_id: entity for entity in self.store.list_entities(tenant_id=user.tenant_id)}
         for edge, members in sorted(edges, key=lambda item: item[0].hyperedge_id):
             if not self._can_read_graph_object(user, edge.owner_user_id, edge.visibility, edge.visible_team_ids, represented_user_id):
                 continue
@@ -905,14 +906,14 @@ class RetrievalService:
     ) -> list[dict[str, Any]]:
         normalized_query = _normalize_match_text(query)
         seed_entities = self._visible_entities(
-            self._matching_entities(query, ranked),
+            self._matching_entities(query, ranked, tenant_id=user.tenant_id),
             user=user,
             represented_user_id=represented_user_id,
         )
         if not seed_entities:
             return []
 
-        all_entities = self.store.list_entities()
+        all_entities = self.store.list_entities(tenant_id=user.tenant_id)
         entity_by_id = {entity.entity_id: entity for entity in all_entities}
         visible_entity_ids = {
             entity.entity_id
@@ -987,11 +988,11 @@ class RetrievalService:
                     break
         return _rank_graph_paths(paths, max_paths=max_paths)
 
-    def _matching_entities(self, query: str, ranked: list[RetrievalResult]) -> list[Entity]:
+    def _matching_entities(self, query: str, ranked: list[RetrievalResult], *, tenant_id: str | None = None) -> list[Entity]:
         haystack = " ".join([query, *[result.title for result in ranked], *[result.snippet for result in ranked]])
         normalized_haystack = _normalize_match_text(haystack)
         matches: list[tuple[int, int, str, Entity]] = []
-        for entity in self.store.list_entities():
+        for entity in self.store.list_entities(tenant_id=tenant_id):
             for alias in _entity_aliases(entity):
                 normalized_alias = _normalize_match_text(alias)
                 if not normalized_alias:
@@ -1020,7 +1021,8 @@ class RetrievalService:
         return [
             entity
             for entity in entities
-            if self._can_read_graph_object(user, entity.owner_user_id, entity.visibility, entity.visible_team_ids, represented_user_id)
+            if entity.tenant_id == user.tenant_id
+            and self._can_read_graph_object(user, entity.owner_user_id, entity.visibility, entity.visible_team_ids, represented_user_id)
         ]
 
     def _entity_context(self, entity: Entity) -> dict[str, Any]:
@@ -1044,7 +1046,7 @@ class RetrievalService:
         if owner_user_id == effective_user_id:
             return True
         if str(visibility) == "team":
-            return bool(self.acl.visible_team_ids_for_user(effective_user_id).intersection(visible_team_ids))
+            return bool(self.acl.visible_team_ids_for_user(effective_user_id, tenant_id=user.tenant_id).intersection(visible_team_ids))
         return str(visibility) == "public"
 
     def _edge_context(
@@ -1089,7 +1091,7 @@ class RetrievalService:
             return []
         visible_ids = {
             item.source_item_id
-            for item in self.store.list_source_items()
+            for item in self.store.list_source_items(tenant_id=user.tenant_id)
             if item.source_item_id in source_item_ids
             and self.acl.can_read_item(user, item, represented_user_id=represented_user_id)
         }
@@ -1116,7 +1118,7 @@ class RetrievalService:
             return []
         items = [
             item
-            for item in self.store.list_source_items()
+            for item in self.store.list_source_items(tenant_id=user.tenant_id)
             if item.source_item_id in source_item_ids
             and self.acl.can_read_item(user, item, represented_user_id=represented_user_id)
         ]

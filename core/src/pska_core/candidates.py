@@ -8,7 +8,7 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 from pska_core.enums import Directionality, MemoryLayer, ReviewType, Visibility
 from pska_core.hypergraph import HypergraphService
 from pska_core.memory import MemoryService
-from pska_core.models import AuditEvent, DigestNote, Entity, KnowledgeClaim, ReviewItem, SourceRef, SourceItem
+from pska_core.models import DEFAULT_TENANT_ID, AuditEvent, DigestNote, Entity, KnowledgeClaim, ReviewItem, SourceRef, SourceItem
 from pska_core.store import KnowledgeStore
 
 
@@ -32,6 +32,7 @@ class CandidateWriteService:
         owner_user_id = str(payload.get("owner_user_id") or payload.get("represented_user_id") or "user_primary")
         producer = str(payload.get("producer") or "fastreact")
         job_id = payload.get("job_id")
+        tenant_id = str(payload.get("tenant_id") or self._tenant_id_for_job(job_id) or DEFAULT_TENANT_ID)
         request_id = payload.get("request_id")
         schema_version = str(payload.get("schema_version") or SUPPORTED_CANDIDATE_SCHEMA_VERSION)
         warnings: list[str] = []
@@ -40,13 +41,14 @@ class CandidateWriteService:
         if schema_version != SUPPORTED_CANDIDATE_SCHEMA_VERSION:
             raise CandidateWriteError(f"unsupported candidate schema_version: {schema_version}")
         source_refs = _source_refs(payload.get("source_refs"))
-        source_items = self._source_items_for_refs(source_refs)
+        source_items = self._source_items_for_refs(source_refs, tenant_id=tenant_id)
         if not source_refs:
             raise CandidateWriteError("candidate batch requires source_refs")
         if not source_items:
             raise CandidateWriteError("candidate batch source_refs must reference known source_items")
         self._assert_owner(owner_user_id, source_items)
-        defaults = _ContextDefaults(owner_user_id=owner_user_id, source_refs=source_refs, source_items=source_items)
+        self._assert_tenant(tenant_id, source_items)
+        defaults = _ContextDefaults(tenant_id=tenant_id, owner_user_id=owner_user_id, source_refs=source_refs, source_items=source_items)
 
         summary = {
             "entities": [],
@@ -129,6 +131,7 @@ class CandidateWriteService:
             target_id=str(request_id or job_id or uuid4().hex),
             decision="accepted",
             metadata={
+                "tenant_id": tenant_id,
                 "producer": producer,
                 "schema_version": schema_version,
                 "job_id": job_id,
@@ -145,13 +148,14 @@ class CandidateWriteService:
         first = defaults.source_items[0]
         source_refs = _source_refs(spec.get("source_refs")) or defaults.source_refs
         entity = Entity(
-            entity_id=str(spec.get("entity_id") or _stable_id("ent", defaults.owner_user_id, entity_type, label)),
+            entity_id=str(spec.get("entity_id") or _tenant_stable_id("ent", defaults.tenant_id, defaults.owner_user_id, entity_type, label)),
             entity_type=entity_type,
             label=label,
             owner_user_id=defaults.owner_user_id,
             space_id=str(spec.get("space_id") or first.space_id),
             visibility=_visibility(spec.get("visibility"), first.visibility),
             visible_team_ids=list(spec.get("visible_team_ids") or first.visible_team_ids),
+            tenant_id=defaults.tenant_id,
             metadata={
                 **_dict_or_empty(spec.get("metadata"), "entity.metadata"),
                 "producer": producer,
@@ -236,6 +240,7 @@ class CandidateWriteService:
             evidence_text=evidence_text,
             source_refs=source_refs,
             confidence=confidence,
+            tenant_id=defaults.tenant_id,
         )
 
     def _write_review_item(self, spec: dict[str, Any], defaults: "_ContextDefaults", *, producer: str, job_id: Any, request_id: Any) -> ReviewItem:
@@ -247,11 +252,22 @@ class CandidateWriteService:
         proposal.setdefault("request_id", request_id)
         proposal.setdefault("plain_text_summary", _plain_text_summary(spec, proposal))
         review_item = ReviewItem(
-            review_item_id=str(spec.get("review_item_id") or _stable_id("rev", defaults.owner_user_id, str(spec["review_type"]), str(spec["title"]), str(job_id or request_id or ""))),
+            review_item_id=str(
+                spec.get("review_item_id")
+                or _tenant_stable_id(
+                    "rev",
+                    defaults.tenant_id,
+                    defaults.owner_user_id,
+                    str(spec["review_type"]),
+                    str(spec["title"]),
+                    str(job_id or request_id or ""),
+                )
+            ),
             owner_user_id=defaults.owner_user_id,
             review_type=ReviewType(str(spec["review_type"])),
             title=str(spec["title"]),
             proposal=proposal,
+            tenant_id=defaults.tenant_id,
         )
         self.store.add_review_item(review_item)
         return review_item
@@ -298,7 +314,10 @@ class CandidateWriteService:
                 request_id=request_id,
             )
         claim = KnowledgeClaim(
-            knowledge_claim_id=str(spec.get("knowledge_claim_id") or _candidate_content_id("claim", defaults.owner_user_id, [statement], source_refs, spec)),
+            knowledge_claim_id=str(
+                spec.get("knowledge_claim_id")
+                or _candidate_content_id("claim", defaults.tenant_id, defaults.owner_user_id, [statement], source_refs, spec)
+            ),
             owner_user_id=defaults.owner_user_id,
             claim_type=str(spec.get("claim_type") or "fact"),
             statement=statement,
@@ -317,6 +336,7 @@ class CandidateWriteService:
                 **_dedupe_metadata(spec),
                 "plain_text_summary": str(spec.get("plain_text_summary") or statement),
             },
+            tenant_id=defaults.tenant_id,
         )
         stored = self.store.add_knowledge_claim(claim)
         self._derive_hyperedge_from_claim(stored, defaults, entity_lookup=entity_lookup, summary=summary, producer=producer, job_id=job_id, request_id=request_id)
@@ -368,7 +388,10 @@ class CandidateWriteService:
         if not source_refs:
             raise CandidateWriteError("digest_note requires source_refs")
         note = DigestNote(
-            digest_note_id=str(spec.get("digest_note_id") or _candidate_content_id("dig", defaults.owner_user_id, [title, synopsis], source_refs, spec)),
+            digest_note_id=str(
+                spec.get("digest_note_id")
+                or _candidate_content_id("dig", defaults.tenant_id, defaults.owner_user_id, [title, synopsis], source_refs, spec)
+            ),
             owner_user_id=defaults.owner_user_id,
             title=title,
             synopsis=synopsis,
@@ -384,6 +407,7 @@ class CandidateWriteService:
             job_id=str(job_id) if job_id else None,
             request_id=str(request_id) if request_id else None,
             metadata={**_dict_or_empty(spec.get("metadata"), "digest_note.metadata"), **_dedupe_metadata(spec)},
+            tenant_id=defaults.tenant_id,
         )
         _assert_digest_note_items_are_grounded(note)
         return self.store.add_digest_note(note)
@@ -408,6 +432,7 @@ class CandidateWriteService:
                 source_refs=source_refs,
                 sensitivity=sensitivity,
                 confidence=confidence,
+                tenant_id=defaults.tenant_id,
             )
         text = str(spec.get("text") or "")
         if not text:
@@ -454,16 +479,30 @@ class CandidateWriteService:
             source_refs=source_refs,
             created_by_user_id=str(spec.get("created_by_user_id") or "agent_service"),
             decay_policy=str(spec.get("decay_policy") or "manual"),
+            tenant_id=defaults.tenant_id,
         )
 
-    def _source_items_for_refs(self, source_refs: list[SourceRef]) -> list[SourceItem]:
+    def _source_items_for_refs(self, source_refs: list[SourceRef], *, tenant_id: str) -> list[SourceItem]:
         requested = {ref.source_item_id for ref in source_refs if ref.source_item_id}
-        return [item for item in self.store.list_source_items() if item.source_item_id in requested]
+        return [item for item in self.store.list_source_items(tenant_id=tenant_id) if item.source_item_id in requested]
 
     def _assert_owner(self, owner_user_id: str, source_items: list[SourceItem]) -> None:
         mismatches = [item.source_item_id for item in source_items if item.owner_user_id != owner_user_id]
         if mismatches:
             raise CandidateWriteError(f"source_refs do not belong to owner_user_id {owner_user_id}: {mismatches}")
+
+    def _assert_tenant(self, tenant_id: str, source_items: list[SourceItem]) -> None:
+        mismatches = [item.source_item_id for item in source_items if item.tenant_id != tenant_id]
+        if mismatches:
+            raise CandidateWriteError(f"source_refs do not belong to tenant_id {tenant_id}: {mismatches}")
+
+    def _tenant_id_for_job(self, job_id: Any) -> str | None:
+        if not job_id:
+            return None
+        try:
+            return self.store.get_job(str(job_id)).tenant_id
+        except Exception:
+            return None
 
     def _audit(self, *, actor_user_id: str, action: str, target_type: str, target_id: str, decision: str, metadata: dict[str, Any]) -> None:
         self.store.add_audit_event(
@@ -475,12 +514,14 @@ class CandidateWriteService:
                 target_id=target_id,
                 decision=decision,
                 metadata=metadata,
+                tenant_id=str(metadata.get("tenant_id") or DEFAULT_TENANT_ID),
             )
         )
 
 
 class _ContextDefaults:
-    def __init__(self, *, owner_user_id: str, source_refs: list[SourceRef], source_items: list[SourceItem]) -> None:
+    def __init__(self, *, tenant_id: str, owner_user_id: str, source_refs: list[SourceRef], source_items: list[SourceItem]) -> None:
+        self.tenant_id = tenant_id
         self.owner_user_id = owner_user_id
         self.source_refs = source_refs
         self.source_items = source_items
@@ -581,15 +622,25 @@ def _stable_id(prefix: str, *parts: str) -> str:
     return f"{prefix}_{uuid5(NAMESPACE_URL, '|'.join(parts)).hex}"
 
 
-def _content_stable_id(prefix: str, owner_user_id: str, text_parts: list[str], source_refs: list[SourceRef]) -> str:
-    return _stable_id(prefix, owner_user_id, *[_normalized_identity_text(part) for part in text_parts], *_source_ref_identity_parts(source_refs))
+def _tenant_identity_parts(tenant_id: str, *parts: str) -> tuple[str, ...]:
+    if tenant_id == DEFAULT_TENANT_ID:
+        return tuple(parts)
+    return (tenant_id, *parts)
 
 
-def _candidate_content_id(prefix: str, owner_user_id: str, text_parts: list[str], source_refs: list[SourceRef], spec: dict[str, Any]) -> str:
+def _tenant_stable_id(prefix: str, tenant_id: str, *parts: str) -> str:
+    return _stable_id(prefix, *_tenant_identity_parts(tenant_id, *parts))
+
+
+def _content_stable_id(prefix: str, tenant_id: str, owner_user_id: str, text_parts: list[str], source_refs: list[SourceRef]) -> str:
+    return _tenant_stable_id(prefix, tenant_id, owner_user_id, *[_normalized_identity_text(part) for part in text_parts], *_source_ref_identity_parts(source_refs))
+
+
+def _candidate_content_id(prefix: str, tenant_id: str, owner_user_id: str, text_parts: list[str], source_refs: list[SourceRef], spec: dict[str, Any]) -> str:
     dedupe_key = _candidate_dedupe_key(spec)
     if dedupe_key:
-        return _content_stable_id(prefix, owner_user_id, [f"dedupe:{dedupe_key}"], source_refs)
-    return _content_stable_id(prefix, owner_user_id, text_parts, source_refs)
+        return _content_stable_id(prefix, tenant_id, owner_user_id, [f"dedupe:{dedupe_key}"], source_refs)
+    return _content_stable_id(prefix, tenant_id, owner_user_id, text_parts, source_refs)
 
 
 def _candidate_dedupe_key(spec: dict[str, Any]) -> str:

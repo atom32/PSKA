@@ -686,6 +686,7 @@ def import_twitter_zips(args: argparse.Namespace) -> int:
         store,
         archive_root=args.archive_root,
         owner_user_id=args.owner_user_id,
+        tenant_id=getattr(args, "tenant_id", "tenant_default"),
         space_id=args.space_id,
         visibility=Visibility(args.visibility),
         visible_team_ids=[item.strip() for item in args.visible_team_ids.split(",") if item.strip()],
@@ -986,6 +987,7 @@ def _files_sync_twitter_archives(args: argparse.Namespace, config: PSKAConfig, s
         store,
         archive_root=archive_root,
         owner_user_id=getattr(args, "owner_user_id", None) or config.files.owner_user_id,
+        tenant_id=getattr(args, "tenant_id", None) or config.files.tenant_id,
         space_id=getattr(args, "space_id", None) or config.files.space_id,
         visibility=Visibility(getattr(args, "visibility", None) or config.files.visibility),
         visible_team_ids=[],
@@ -2275,6 +2277,7 @@ def _digest_now_fallback_review(
     store,
     *,
     owner_user_id: str,
+    tenant_id: str = "tenant_default",
     scheduled_source_item_ids: Sequence[str],
     diagnostics: dict[str, Any],
     worker_runs: list[dict[str, Any]],
@@ -2290,7 +2293,7 @@ def _digest_now_fallback_review(
         return {"created": False, "reason": "no_scheduled_source_items", "review_items": 0}
     known_items = {
         item.source_item_id: item
-        for item in store.list_source_items()
+        for item in store.list_source_items(tenant_id=tenant_id)
         if item.owner_user_id == owner_user_id and item.source_item_id in set(source_ids)
     }
     source_refs = [{"source_item_id": source_id} for source_id in source_ids if source_id in known_items]
@@ -2304,6 +2307,7 @@ def _digest_now_fallback_review(
     payload = {
         "schema_version": "pska.candidates.v1",
         "owner_user_id": owner_user_id,
+        "tenant_id": tenant_id,
         "producer": "pska_digest_now_fallback",
         "request_id": "digest_now_fallback:" + ":".join(source_ids),
         "source_refs": source_refs,

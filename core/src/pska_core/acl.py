@@ -11,17 +11,19 @@ class ACLService:
     def __init__(self, store: KnowledgeStore) -> None:
         self.store = store
 
-    def visible_team_ids_for_user(self, user_id: str) -> set[str]:
-        return {membership.team_id for membership in self.store.team_memberships_for_user(user_id)}
+    def visible_team_ids_for_user(self, user_id: str, *, tenant_id: str | None = None) -> set[str]:
+        return {membership.team_id for membership in self.store.team_memberships_for_user(user_id, tenant_id=tenant_id)}
 
     def can_read_item(self, user: User, item: SourceItem, *, represented_user_id: str | None = None) -> bool:
         if user.status != "active":
+            return False
+        if item.tenant_id != user.tenant_id:
             return False
         if user.role == UserRole.ADMIN:
             return True
         if user.role == UserRole.AGENT_SERVICE:
             return bool(represented_user_id) and self.can_read_item(
-                self.store.get_user(represented_user_id),
+                self.store.get_user(represented_user_id, tenant_id=item.tenant_id),
                 item,
             )
         if item.visibility == Visibility.PUBLIC:
@@ -29,7 +31,7 @@ class ACLService:
         if item.owner_user_id == user.user_id:
             return True
         if item.visibility == Visibility.TEAM:
-            user_teams = self.visible_team_ids_for_user(user.user_id)
+            user_teams = self.visible_team_ids_for_user(user.user_id, tenant_id=item.tenant_id)
             return bool(user_teams.intersection(item.visible_team_ids))
         return False
 

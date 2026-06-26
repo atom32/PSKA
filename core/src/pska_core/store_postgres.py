@@ -13,6 +13,7 @@ from pska_core.models import (
     AgentMemory,
     Chunk,
     ConnectorState,
+    DEFAULT_TENANT_ID,
     DiscoveryItem,
     Document,
     DigestNote,
@@ -53,17 +54,26 @@ class PostgresKnowledgeStore:
         with self.connect() as conn:
             conn.execute(
                 """
-                insert into users(user_id, handle, role, status)
-                values (%s, %s, %s, %s)
+                insert into users(user_id, handle, role, status, tenant_id)
+                values (%s, %s, %s, %s, %s)
                 on conflict (user_id) do update
-                set handle = excluded.handle, role = excluded.role, status = excluded.status, updated_at = now()
+                set handle = excluded.handle,
+                    role = excluded.role,
+                    status = excluded.status,
+                    tenant_id = excluded.tenant_id,
+                    updated_at = now()
                 """,
-                (user.user_id, user.handle, user.role.value, user.status.value),
+                (user.user_id, user.handle, user.role.value, user.status.value, user.tenant_id),
             )
 
-    def get_user(self, user_id: str) -> User:
+    def get_user(self, user_id: str, *, tenant_id: str | None = None) -> User:
+        clauses = ["user_id = %s"]
+        params: list[Any] = [user_id]
+        if tenant_id:
+            clauses.append("tenant_id = %s")
+            params.append(tenant_id)
         with self.connect() as conn:
-            row = conn.execute("select * from users where user_id = %s", (user_id,)).fetchone()
+            row = conn.execute(f"select * from users where {' and '.join(clauses)}", tuple(params)).fetchone()
         if not row:
             raise KeyError(user_id)
         return User(
@@ -71,24 +81,38 @@ class PostgresKnowledgeStore:
             handle=row["handle"],
             role=UserRole(row["role"]),
             status=UserStatus(row["status"]),
+            tenant_id=row.get("tenant_id") or DEFAULT_TENANT_ID,
         )
 
-    def team_memberships_for_user(self, user_id: str) -> list[TeamMembership]:
+    def team_memberships_for_user(self, user_id: str, *, tenant_id: str | None = None) -> list[TeamMembership]:
+        clauses = ["user_id = %s"]
+        params: list[Any] = [user_id]
+        if tenant_id:
+            clauses.append("tenant_id = %s")
+            params.append(tenant_id)
         with self.connect() as conn:
-            rows = conn.execute("select * from team_memberships where user_id = %s", (user_id,)).fetchall()
-        return [TeamMembership(user_id=row["user_id"], team_id=row["team_id"], role=row["role"]) for row in rows]
+            rows = conn.execute(f"select * from team_memberships where {' and '.join(clauses)}", tuple(params)).fetchall()
+        return [
+            TeamMembership(
+                user_id=row["user_id"],
+                team_id=row["team_id"],
+                role=row["role"],
+                tenant_id=row.get("tenant_id") or DEFAULT_TENANT_ID,
+            )
+            for row in rows
+        ]
 
     def upsert_source_item(self, item: SourceItem) -> SourceItem:
         with self.connect() as conn:
             existing = conn.execute(
-                "select * from source_items where content_hash = %s",
-                (item.content_hash,),
+                "select * from source_items where tenant_id = %s and content_hash = %s",
+                (item.tenant_id, item.content_hash),
             ).fetchone()
             if existing:
                 return self._source_item_from_row(existing)
             existing_by_id = conn.execute(
-                "select * from source_items where source_item_id = %s",
-                (item.source_item_id,),
+                "select * from source_items where tenant_id = %s and source_item_id = %s",
+                (item.tenant_id, item.source_item_id),
             ).fetchone()
             if existing_by_id:
                 row = conn.execute(
@@ -106,6 +130,7 @@ class PostgresKnowledgeStore:
                         content_text = %s,
                         content_hash = %s,
                         metadata = %s,
+                        tenant_id = %s,
                         updated_at = now()
                     where source_item_id = %s
                     returning *
@@ -123,6 +148,7 @@ class PostgresKnowledgeStore:
                         item.content_text,
                         item.content_hash,
                         Jsonb(to_jsonable(item.metadata)),
+                        item.tenant_id,
                         item.source_item_id,
                     ),
                 ).fetchone()
@@ -132,9 +158,9 @@ class PostgresKnowledgeStore:
                 insert into source_items(
                     source_item_id, source_channel, record_type, source_id, owner_user_id,
                     space_id, visibility, visible_team_ids, title, url, content_text,
-                    content_hash, metadata
+                    content_hash, metadata, tenant_id
                 )
-                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     item.source_item_id,
@@ -150,6 +176,7 @@ class PostgresKnowledgeStore:
                     item.content_text,
                     item.content_hash,
                     Jsonb(to_jsonable(item.metadata)),
+                    item.tenant_id,
                 ),
             )
             return item
@@ -160,12 +187,14 @@ class PostgresKnowledgeStore:
                 """
                 insert into connector_states(
                     connector_state_id, connector_id, owner_user_id, enabled, scan_cursor,
-                    sync_status, last_success_at, last_error_at, last_error, permission_scope, config
+                    sync_status, last_success_at, last_error_at, last_error, permission_scope, config,
+                    tenant_id
                 )
-                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 on conflict (connector_state_id) do update
                 set connector_id = excluded.connector_id,
                     owner_user_id = excluded.owner_user_id,
+                    tenant_id = excluded.tenant_id,
                     enabled = excluded.enabled,
                     scan_cursor = excluded.scan_cursor,
                     sync_status = excluded.sync_status,
@@ -189,6 +218,7 @@ class PostgresKnowledgeStore:
                     state.last_error,
                     Jsonb(to_jsonable(state.permission_scope)),
                     Jsonb(to_jsonable(state.config)),
+                    state.tenant_id,
                 ),
             ).fetchone()
         return self._connector_state_from_row(row)
@@ -200,10 +230,10 @@ class PostgresKnowledgeStore:
                 insert into knowledge_sources(
                     knowledge_source_id, owner_user_id, name, source_type, uri,
                     mode, status, connector_id, space_id, visibility, visible_team_ids,
-                    permission_scope, config, last_sync_at, last_error
+                    permission_scope, config, last_sync_at, last_error, tenant_id
                 )
-                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                on conflict (owner_user_id, uri) do update
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                on conflict (tenant_id, owner_user_id, uri) do update
                 set name = excluded.name,
                     source_type = excluded.source_type,
                     mode = excluded.mode,
@@ -212,6 +242,7 @@ class PostgresKnowledgeStore:
                     space_id = excluded.space_id,
                     visibility = excluded.visibility,
                     visible_team_ids = excluded.visible_team_ids,
+                    tenant_id = excluded.tenant_id,
                     permission_scope = excluded.permission_scope,
                     config = excluded.config,
                     last_sync_at = coalesce(knowledge_sources.last_sync_at, excluded.last_sync_at),
@@ -235,6 +266,7 @@ class PostgresKnowledgeStore:
                     Jsonb(to_jsonable(source.config)),
                     source.last_sync_at,
                     source.last_error,
+                    source.tenant_id,
                 ),
             ).fetchone()
         return self._knowledge_source_from_row(row)
@@ -249,12 +281,16 @@ class PostgresKnowledgeStore:
     def list_knowledge_sources(
         self,
         *,
+        tenant_id: str | None = None,
         owner_user_id: str | None = None,
         source_type: str | None = None,
         status: str | None = None,
     ) -> list[KnowledgeSource]:
         clauses: list[str] = []
         params: list[str] = []
+        if tenant_id:
+            clauses.append("tenant_id = %s")
+            params.append(tenant_id)
         if owner_user_id:
             clauses.append("owner_user_id = %s")
             params.append(owner_user_id)
@@ -279,9 +315,10 @@ class PostgresKnowledgeStore:
                 insert into sync_runs(
                     sync_run_id, knowledge_source_id, owner_user_id, connector_id, status,
                     started_at, finished_at, scanned, ingested, new_files, changed_files,
-                    unchanged_files, moved_files, missing_files, skipped, failed, error, report
+                    unchanged_files, moved_files, missing_files, skipped, failed, error, report,
+                    tenant_id
                 )
-                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 returning *
                 """,
                 (
@@ -303,6 +340,7 @@ class PostgresKnowledgeStore:
                     run.failed,
                     run.error,
                     Jsonb(to_jsonable(run.report)),
+                    run.tenant_id,
                 ),
             ).fetchone()
             conn.execute(
@@ -318,9 +356,12 @@ class PostgresKnowledgeStore:
             )
         return self._sync_run_from_row(row)
 
-    def list_sync_runs(self, *, knowledge_source_id: str | None = None, owner_user_id: str | None = None, limit: int = 50) -> list[SyncRun]:
+    def list_sync_runs(self, *, tenant_id: str | None = None, knowledge_source_id: str | None = None, owner_user_id: str | None = None, limit: int = 50) -> list[SyncRun]:
         clauses: list[str] = []
         params: list[Any] = []
+        if tenant_id:
+            clauses.append("tenant_id = %s")
+            params.append(tenant_id)
         if knowledge_source_id:
             clauses.append("knowledge_source_id = %s")
             params.append(knowledge_source_id)
@@ -343,9 +384,12 @@ class PostgresKnowledgeStore:
             raise KeyError(connector_state_id)
         return self._connector_state_from_row(row)
 
-    def list_connector_states(self, *, owner_user_id: str | None = None, connector_id: str | None = None) -> list[ConnectorState]:
+    def list_connector_states(self, *, tenant_id: str | None = None, owner_user_id: str | None = None, connector_id: str | None = None) -> list[ConnectorState]:
         clauses: list[str] = []
         params: list[str] = []
+        if tenant_id:
+            clauses.append("tenant_id = %s")
+            params.append(tenant_id)
         if owner_user_id:
             clauses.append("owner_user_id = %s")
             params.append(owner_user_id)
@@ -366,9 +410,9 @@ class PostgresKnowledgeStore:
                 """
                 insert into documents(
                     document_id, source_item_id, owner_user_id, space_id,
-                    visibility, visible_team_ids, title, body, metadata
+                    visibility, visible_team_ids, title, body, metadata, tenant_id
                 )
-                values (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 on conflict (document_id) do nothing
                 """,
                 (
@@ -381,6 +425,7 @@ class PostgresKnowledgeStore:
                     document.title,
                     document.body,
                     Jsonb(to_jsonable(document.metadata)),
+                    document.tenant_id,
                 ),
             )
 
@@ -391,9 +436,9 @@ class PostgresKnowledgeStore:
                 insert into chunks(
                     chunk_id, document_id, source_item_id, owner_user_id, space_id,
                     visibility, visible_team_ids, ordinal, text, embedding,
-                    embedding_provider, embedding_model
+                    embedding_provider, embedding_model, tenant_id
                 )
-                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector, %s, %s)
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector, %s, %s, %s)
                 on conflict (chunk_id) do nothing
                 """,
                 (
@@ -409,6 +454,7 @@ class PostgresKnowledgeStore:
                     _vector_literal(chunk.embedding) if chunk.embedding else None,
                     chunk.metadata.get("embedding_provider") if chunk.metadata else None,
                     chunk.metadata.get("embedding_model") if chunk.metadata else None,
+                    chunk.tenant_id,
                 ),
             )
 
@@ -421,9 +467,9 @@ class PostgresKnowledgeStore:
                     """
                     insert into documents(
                         document_id, source_item_id, owner_user_id, space_id,
-                        visibility, visible_team_ids, title, body, metadata
+                        visibility, visible_team_ids, title, body, metadata, tenant_id
                     )
-                    values (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         document.document_id,
@@ -435,6 +481,7 @@ class PostgresKnowledgeStore:
                         document.title,
                         document.body,
                         Jsonb(to_jsonable(document.metadata)),
+                        document.tenant_id,
                     ),
                 )
             for chunk in chunks:
@@ -443,9 +490,9 @@ class PostgresKnowledgeStore:
                     insert into chunks(
                         chunk_id, document_id, source_item_id, owner_user_id, space_id,
                         visibility, visible_team_ids, ordinal, text, embedding,
-                        embedding_provider, embedding_model
+                        embedding_provider, embedding_model, tenant_id
                     )
-                    values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector, %s, %s)
+                    values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector, %s, %s, %s)
                     """,
                     (
                         chunk.chunk_id,
@@ -460,6 +507,7 @@ class PostgresKnowledgeStore:
                         _vector_literal(chunk.embedding) if chunk.embedding else None,
                         chunk.metadata.get("embedding_provider") if chunk.metadata else None,
                         chunk.metadata.get("embedding_model") if chunk.metadata else None,
+                        chunk.tenant_id,
                     ),
                 )
 
@@ -469,9 +517,9 @@ class PostgresKnowledgeStore:
                 """
                 insert into agent_memories(
                     agent_memory_id, owner_user_id, created_by_user_id, layer, text,
-                    confidence, source_refs, decay_policy, last_verified_at
+                    confidence, source_refs, decay_policy, last_verified_at, tenant_id
                 )
-                values (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 on conflict (agent_memory_id) do nothing
                 """,
                 (
@@ -484,6 +532,7 @@ class PostgresKnowledgeStore:
                     Jsonb(to_jsonable(memory.source_refs)),
                     memory.decay_policy,
                     memory.last_verified_at,
+                    memory.tenant_id,
                 ),
             )
 
@@ -494,15 +543,18 @@ class PostgresKnowledgeStore:
             raise KeyError(agent_memory_id)
         return self._agent_memory_from_row(row)
 
-    def list_agent_memories(self, *, owner_user_id: str) -> list[AgentMemory]:
+    def list_agent_memories(self, *, owner_user_id: str, tenant_id: str | None = None) -> list[AgentMemory]:
+        tenant_clause = "and tenant_id = %s" if tenant_id else ""
+        params: tuple[Any, ...] = (owner_user_id, tenant_id) if tenant_id else (owner_user_id,)
         with self.connect() as conn:
             rows = conn.execute(
-                """
+                f"""
                 select * from agent_memories
                 where owner_user_id = %s
+                {tenant_clause}
                 order by confidence desc, updated_at desc, agent_memory_id
                 """,
-                (owner_user_id,),
+                params,
             ).fetchall()
         return [self._agent_memory_from_row(row) for row in rows]
 
@@ -544,8 +596,8 @@ class PostgresKnowledgeStore:
         with self.connect() as conn:
             conn.execute(
                 """
-                insert into user_profile_cards(profile_card_id, owner_user_id, profile, confidence, source_refs)
-                values (%s, %s, %s, %s, %s)
+                insert into user_profile_cards(profile_card_id, owner_user_id, profile, confidence, source_refs, tenant_id)
+                values (%s, %s, %s, %s, %s, %s)
                 on conflict (profile_card_id) do nothing
                 """,
                 (
@@ -554,6 +606,7 @@ class PostgresKnowledgeStore:
                     Jsonb(to_jsonable(profile_card.profile)),
                     profile_card.confidence,
                     Jsonb(to_jsonable(profile_card.source_refs)),
+                    profile_card.tenant_id,
                 ),
             )
 
@@ -579,15 +632,18 @@ class PostgresKnowledgeStore:
             raise KeyError(profile_card_id)
         return self._profile_card_from_row(row)
 
-    def list_profile_cards(self, *, owner_user_id: str) -> list[UserProfileCard]:
+    def list_profile_cards(self, *, owner_user_id: str, tenant_id: str | None = None) -> list[UserProfileCard]:
+        tenant_clause = "and tenant_id = %s" if tenant_id else ""
+        params: tuple[Any, ...] = (owner_user_id, tenant_id) if tenant_id else (owner_user_id,)
         with self.connect() as conn:
             rows = conn.execute(
-                """
+                f"""
                 select * from user_profile_cards
                 where owner_user_id = %s
+                {tenant_clause}
                 order by confidence desc, updated_at desc, profile_card_id
                 """,
-                (owner_user_id,),
+                params,
             ).fetchall()
         return [self._profile_card_from_row(row) for row in rows]
 
@@ -595,8 +651,8 @@ class PostgresKnowledgeStore:
         with self.connect() as conn:
             conn.execute(
                 """
-                insert into entities(entity_id, entity_type, label, owner_user_id, space_id, visibility, visible_team_ids, metadata)
-                values (%s, %s, %s, %s, %s, %s, %s, %s)
+                insert into entities(entity_id, entity_type, label, owner_user_id, space_id, visibility, visible_team_ids, metadata, tenant_id)
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 on conflict (entity_id) do nothing
                 """,
                 (
@@ -608,6 +664,7 @@ class PostgresKnowledgeStore:
                     entity.visibility.value,
                     entity.visible_team_ids,
                     Jsonb(to_jsonable(entity.metadata)),
+                    entity.tenant_id,
                 ),
             )
 
@@ -617,9 +674,10 @@ class PostgresKnowledgeStore:
                 """
                 insert into hyperedges(
                     hyperedge_id, relation_type, owner_user_id, space_id, visibility,
-                    visible_team_ids, directionality, evidence_text, source_refs, confidence
+                    visible_team_ids, directionality, evidence_text, source_refs, confidence,
+                    tenant_id
                 )
-                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 on conflict (hyperedge_id) do nothing
                 """,
                 (
@@ -635,6 +693,7 @@ class PostgresKnowledgeStore:
                     hyperedge.evidence_text,
                     Jsonb(to_jsonable(hyperedge.source_refs)),
                     hyperedge.confidence,
+                    hyperedge.tenant_id,
                 ),
             )
             for member in members:
@@ -655,9 +714,9 @@ class PostgresKnowledgeStore:
                     knowledge_claim_id, owner_user_id, claim_type, statement,
                     subject, predicate, object, qualifiers, evidence_text,
                     source_refs, confidence, producer, job_id, request_id,
-                    metadata, created_at
+                    metadata, created_at, tenant_id
                 )
-                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 on conflict (knowledge_claim_id) do update
                 set claim_type = excluded.claim_type,
                     statement = excluded.statement,
@@ -671,7 +730,8 @@ class PostgresKnowledgeStore:
                     producer = excluded.producer,
                     job_id = excluded.job_id,
                     request_id = excluded.request_id,
-                    metadata = excluded.metadata
+                    metadata = excluded.metadata,
+                    tenant_id = excluded.tenant_id
                 returning *
                 """,
                 (
@@ -691,6 +751,7 @@ class PostgresKnowledgeStore:
                     claim.request_id,
                     Jsonb(to_jsonable(claim.metadata)),
                     claim.created_at,
+                    claim.tenant_id,
                 ),
             ).fetchone()
         return self._knowledge_claim_from_row(row)
@@ -699,12 +760,16 @@ class PostgresKnowledgeStore:
         self,
         *,
         owner_user_id: str,
+        tenant_id: str | None = None,
         source_item_ids: set[str] | None = None,
         job_id: str | None = None,
         limit: int = 50,
     ) -> list[KnowledgeClaim]:
         clauses = ["owner_user_id = %s"]
         params: list[Any] = [owner_user_id]
+        if tenant_id:
+            clauses.append("tenant_id = %s")
+            params.append(tenant_id)
         if job_id:
             clauses.append("job_id = %s")
             params.append(job_id)
@@ -733,9 +798,9 @@ class PostgresKnowledgeStore:
                     digest_note_id, owner_user_id, title, synopsis, key_points,
                     actions, open_questions, risks, memory_suggestions,
                     relationship_suggestions, source_refs, confidence, producer,
-                    job_id, request_id, metadata, created_at
+                    job_id, request_id, metadata, created_at, tenant_id
                 )
-                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 on conflict (digest_note_id) do update
                 set title = excluded.title,
                     synopsis = excluded.synopsis,
@@ -750,7 +815,8 @@ class PostgresKnowledgeStore:
                     producer = excluded.producer,
                     job_id = excluded.job_id,
                     request_id = excluded.request_id,
-                    metadata = excluded.metadata
+                    metadata = excluded.metadata,
+                    tenant_id = excluded.tenant_id
                 returning *
                 """,
                 (
@@ -771,6 +837,7 @@ class PostgresKnowledgeStore:
                     note.request_id,
                     Jsonb(to_jsonable(note.metadata)),
                     note.created_at,
+                    note.tenant_id,
                 ),
             ).fetchone()
         return self._digest_note_from_row(row)
@@ -779,12 +846,16 @@ class PostgresKnowledgeStore:
         self,
         *,
         owner_user_id: str,
+        tenant_id: str | None = None,
         source_item_ids: set[str] | None = None,
         job_id: str | None = None,
         limit: int = 50,
     ) -> list[DigestNote]:
         clauses = ["owner_user_id = %s"]
         params: list[Any] = [owner_user_id]
+        if tenant_id:
+            clauses.append("tenant_id = %s")
+            params.append(tenant_id)
         if job_id:
             clauses.append("job_id = %s")
             params.append(job_id)
@@ -809,8 +880,8 @@ class PostgresKnowledgeStore:
         with self.connect() as conn:
             conn.execute(
                 """
-                insert into review_items(review_item_id, owner_user_id, review_type, title, proposal, status)
-                values (%s, %s, %s, %s, %s, %s)
+                insert into review_items(review_item_id, owner_user_id, review_type, title, proposal, status, tenant_id)
+                values (%s, %s, %s, %s, %s, %s, %s)
                 on conflict (review_item_id) do nothing
                 """,
                 (
@@ -820,6 +891,7 @@ class PostgresKnowledgeStore:
                     review_item.title,
                     Jsonb(to_jsonable(review_item.proposal)),
                     review_item.status,
+                    review_item.tenant_id,
                 ),
             )
 
@@ -830,9 +902,14 @@ class PostgresKnowledgeStore:
             raise KeyError(review_item_id)
         return self._review_item_from_row(row)
 
-    def list_review_items(self) -> list[ReviewItem]:
+    def list_review_items(self, *, tenant_id: str | None = None) -> list[ReviewItem]:
+        where = "where tenant_id = %s" if tenant_id else ""
+        params: tuple[Any, ...] = (tenant_id,) if tenant_id else ()
         with self.connect() as conn:
-            rows = conn.execute("select * from review_items order by created_at, review_item_id").fetchall()
+            rows = conn.execute(
+                f"select * from review_items {where} order by created_at, review_item_id",
+                params,
+            ).fetchall()
         return [self._review_item_from_row(row) for row in rows]
 
     def update_review_item_status(self, review_item_id: str, status: str) -> ReviewItem:
@@ -865,10 +942,11 @@ class PostgresKnowledgeStore:
             raise KeyError(review_item_id)
         return self._review_item_from_row(row)
 
-    def replace_graph_projection(self, *, owner_user_id: str, nodes: list[dict[str, Any]], edges: list[dict[str, Any]]) -> dict[str, int]:
+    def replace_graph_projection(self, *, owner_user_id: str, nodes: list[dict[str, Any]], edges: list[dict[str, Any]], tenant_id: str | None = None) -> dict[str, int]:
+        tenant_id = tenant_id or DEFAULT_TENANT_ID
         with self.connect() as conn:
-            conn.execute("delete from graph_edges where owner_user_id = %s", (owner_user_id,))
-            conn.execute("delete from graph_nodes where owner_user_id = %s", (owner_user_id,))
+            conn.execute("delete from graph_edges where tenant_id = %s and owner_user_id = %s", (tenant_id, owner_user_id))
+            conn.execute("delete from graph_nodes where tenant_id = %s and owner_user_id = %s", (tenant_id, owner_user_id))
             for node in nodes:
                 node_id = str(node.get("id") or "")
                 if not node_id:
@@ -877,9 +955,9 @@ class PostgresKnowledgeStore:
                     """
                     insert into graph_nodes(
                         graph_node_id, owner_user_id, node_type, object_type, object_id,
-                        label, summary, source_refs, confidence, metadata, updated_at
+                        label, summary, source_refs, confidence, metadata, tenant_id, updated_at
                     )
-                    values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+                    values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
                     """,
                     (
                         node_id,
@@ -892,6 +970,7 @@ class PostgresKnowledgeStore:
                         Jsonb(to_jsonable(node.get("source_refs") or [])),
                         node.get("confidence"),
                         Jsonb(to_jsonable({key: value for key, value in node.items() if key not in {"id", "type", "object_type", "object_id", "label", "summary", "source_refs", "confidence"}})),
+                        tenant_id,
                     ),
                 )
             for edge in edges:
@@ -904,9 +983,9 @@ class PostgresKnowledgeStore:
                     """
                     insert into graph_edges(
                         graph_edge_id, owner_user_id, edge_type, source_graph_node_id,
-                        target_graph_node_id, label, source_refs, confidence, metadata, updated_at
+                        target_graph_node_id, label, source_refs, confidence, metadata, tenant_id, updated_at
                     )
-                    values (%s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+                    values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
                     """,
                     (
                         edge_id,
@@ -918,6 +997,7 @@ class PostgresKnowledgeStore:
                         Jsonb(to_jsonable(edge.get("source_refs") or [])),
                         edge.get("confidence"),
                         Jsonb(to_jsonable({key: value for key, value in edge.items() if key not in {"id", "source", "target", "type", "label", "source_refs", "confidence"}})),
+                        tenant_id,
                     ),
                 )
         return {"graph_nodes": len(nodes), "graph_edges": len(edges)}
@@ -926,8 +1006,8 @@ class PostgresKnowledgeStore:
         with self.connect() as conn:
             conn.execute(
                 """
-                insert into audit_events(audit_event_id, actor_user_id, action, target_type, target_id, decision, metadata)
-                values (%s, %s, %s, %s, %s, %s, %s)
+                insert into audit_events(audit_event_id, actor_user_id, action, target_type, target_id, decision, metadata, tenant_id)
+                values (%s, %s, %s, %s, %s, %s, %s, %s)
                 on conflict (audit_event_id) do nothing
                 """,
                 (
@@ -938,6 +1018,7 @@ class PostgresKnowledgeStore:
                     event.target_id,
                     event.decision,
                     Jsonb(to_jsonable(event.metadata)),
+                    event.tenant_id,
                 ),
             )
         return event
@@ -966,6 +1047,7 @@ class PostgresKnowledgeStore:
                 target_id=row["target_id"],
                 decision=row["decision"],
                 metadata=dict(row["metadata"] or {}),
+                tenant_id=row.get("tenant_id") or DEFAULT_TENANT_ID,
             )
             for row in rows
         ]
@@ -1009,11 +1091,17 @@ class PostgresKnowledgeStore:
             source_item_id=source_item_id,
             visibility_version=_visibility_version(str(row.get("owner_user_id") or ""), visibility, visible_team_ids),
             dirty_reason="visibility_changed",
+            tenant_id=str(row.get("tenant_id") or DEFAULT_TENANT_ID),
         )
 
-    def list_source_items(self) -> list[SourceItem]:
+    def list_source_items(self, *, tenant_id: str | None = None) -> list[SourceItem]:
+        where = "where tenant_id = %s" if tenant_id else ""
+        params: tuple[Any, ...] = (tenant_id,) if tenant_id else ()
         with self.connect() as conn:
-            rows = conn.execute("select * from source_items order by created_at, source_item_id").fetchall()
+            rows = conn.execute(
+                f"select * from source_items {where} order by created_at, source_item_id",
+                params,
+            ).fetchall()
         return [self._source_item_from_row(row) for row in rows]
 
     def upsert_offline_index_state(self, state: OfflineIndexState) -> OfflineIndexState:
@@ -1023,9 +1111,9 @@ class PostgresKnowledgeStore:
                 insert into offline_index_states(
                     object_type, object_id, owner_user_id, source_item_id, content_hash, mtime,
                     visibility_version, embedding_provider, embedding_model, index_version,
-                    status, dirty_reason, last_indexed_at
+                    status, dirty_reason, last_indexed_at, tenant_id
                 )
-                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 on conflict (object_type, object_id) do update
                 set owner_user_id = excluded.owner_user_id,
                     source_item_id = excluded.source_item_id,
@@ -1038,6 +1126,7 @@ class PostgresKnowledgeStore:
                     status = excluded.status,
                     dirty_reason = excluded.dirty_reason,
                     last_indexed_at = excluded.last_indexed_at,
+                    tenant_id = excluded.tenant_id,
                     updated_at = now()
                 returning *
                 """,
@@ -1055,6 +1144,7 @@ class PostgresKnowledgeStore:
                     state.status,
                     state.dirty_reason,
                     state.last_indexed_at,
+                    state.tenant_id,
                 ),
             ).fetchone()
         return self._offline_index_state_from_row(row)
@@ -1062,6 +1152,7 @@ class PostgresKnowledgeStore:
     def list_offline_index_states(
         self,
         *,
+        tenant_id: str | None = None,
         status: str | None = None,
         source_item_id: str | None = None,
         object_type: str | None = None,
@@ -1069,6 +1160,9 @@ class PostgresKnowledgeStore:
     ) -> list[OfflineIndexState]:
         clauses: list[str] = []
         params: list[Any] = []
+        if tenant_id:
+            clauses.append("tenant_id = %s")
+            params.append(tenant_id)
         if status:
             clauses.append("status = %s")
             params.append(status)
@@ -1105,11 +1199,13 @@ class PostgresKnowledgeStore:
         embedding_provider: str | None = None,
         embedding_model: str | None = None,
         index_version: str = "hipporag_offline.v1",
+        tenant_id: str | None = None,
     ) -> OfflineIndexState:
+        tenant_id = tenant_id or DEFAULT_TENANT_ID
         with self.connect() as conn:
             existing = conn.execute(
-                "select * from offline_index_states where object_type = %s and object_id = %s",
-                (object_type, object_id),
+                "select * from offline_index_states where tenant_id = %s and object_type = %s and object_id = %s",
+                (tenant_id, object_type, object_id),
             ).fetchone()
         state = OfflineIndexState(
             object_type=object_type,
@@ -1124,6 +1220,7 @@ class PostgresKnowledgeStore:
             status="dirty",
             dirty_reason=dirty_reason,
             last_indexed_at=existing["last_indexed_at"] if existing else None,
+            tenant_id=tenant_id,
         )
         return self.upsert_offline_index_state(state)
 
@@ -1171,9 +1268,16 @@ class PostgresKnowledgeStore:
             ).fetchall()
         return [self._offline_index_state_from_row(row) for row in rows]
 
-    def offline_index_status(self, *, owner_user_id: str | None = None) -> dict:
-        clause = "where owner_user_id = %s" if owner_user_id else ""
-        params = (owner_user_id,) if owner_user_id else ()
+    def offline_index_status(self, *, tenant_id: str | None = None, owner_user_id: str | None = None) -> dict:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if tenant_id:
+            clauses.append("tenant_id = %s")
+            params.append(tenant_id)
+        if owner_user_id:
+            clauses.append("owner_user_id = %s")
+            params.append(owner_user_id)
+        clause = f"where {' and '.join(clauses)}" if clauses else ""
         with self.connect() as conn:
             rows = conn.execute(
                 f"""
@@ -1182,7 +1286,7 @@ class PostgresKnowledgeStore:
                 {clause}
                 group by status, object_type
                 """,
-                params,
+                tuple(params),
             ).fetchall()
         by_status: dict[str, int] = {}
         by_object_type: dict[str, int] = {}
@@ -1206,9 +1310,14 @@ class PostgresKnowledgeStore:
             "last_indexed_at": last_indexed.isoformat() if last_indexed else None,
         }
 
-    def list_entities(self) -> list[Entity]:
+    def list_entities(self, *, tenant_id: str | None = None) -> list[Entity]:
+        where = "where tenant_id = %s" if tenant_id else ""
+        params: tuple[Any, ...] = (tenant_id,) if tenant_id else ()
         with self.connect() as conn:
-            rows = conn.execute("select * from entities order by created_at, entity_id").fetchall()
+            rows = conn.execute(
+                f"select * from entities {where} order by created_at, entity_id",
+                params,
+            ).fetchall()
         return [
             Entity(
                 entity_id=row["entity_id"],
@@ -1219,6 +1328,7 @@ class PostgresKnowledgeStore:
                 visibility=Visibility(row["visibility"]),
                 visible_team_ids=list(row["visible_team_ids"] or []),
                 metadata=dict(row["metadata"] or {}),
+                tenant_id=row.get("tenant_id") or DEFAULT_TENANT_ID,
             )
             for row in rows
         ]
@@ -1303,9 +1413,10 @@ class PostgresKnowledgeStore:
                 """
                 insert into workspace_activity_events(
                     workspace_activity_event_id, owner_user_id, actor_user_id, activity_type,
-                    target_type, target_id, surface, title, summary, metadata, created_at
+                    target_type, target_id, surface, title, summary, metadata, created_at,
+                    tenant_id
                 )
-                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 returning *
                 """,
                 (
@@ -1320,6 +1431,7 @@ class PostgresKnowledgeStore:
                     event.summary,
                     Jsonb(to_jsonable(event.metadata)),
                     event.created_at,
+                    event.tenant_id,
                 ),
             ).fetchone()
         return self._workspace_activity_event_from_row(row)
@@ -1328,11 +1440,15 @@ class PostgresKnowledgeStore:
         self,
         *,
         owner_user_id: str,
+        tenant_id: str | None = None,
         activity_types: set[str] | None = None,
         limit: int = 50,
     ) -> list[WorkspaceActivityEvent]:
         clauses = ["owner_user_id = %s"]
         params: list[Any] = [owner_user_id]
+        if tenant_id:
+            clauses.append("tenant_id = %s")
+            params.append(tenant_id)
         if activity_types:
             clauses.append("activity_type = any(%s)")
             params.append(sorted(activity_types))
@@ -1353,21 +1469,22 @@ class PostgresKnowledgeStore:
     def upsert_discovery_item(self, item: DiscoveryItem) -> DiscoveryItem:
         with self.connect() as conn:
             existing_id = conn.execute(
-                "select discovery_id from discovery_items where discovery_id = %s",
-                (item.discovery_id,),
+                "select discovery_id from discovery_items where tenant_id = %s and discovery_id = %s",
+                (item.tenant_id, item.discovery_id),
             ).fetchone()
             if existing_id is None and item.fingerprint:
                 existing_id = conn.execute(
                     """
                     select discovery_id
                     from discovery_items
-                    where owner_user_id = %s
+                    where tenant_id = %s
+                      and owner_user_id = %s
                       and producer = %s
                       and fingerprint = %s
                     order by created_at desc, discovery_id desc
                     limit 1
                     """,
-                    (item.owner_user_id, item.producer, item.fingerprint),
+                    (item.tenant_id, item.owner_user_id, item.producer, item.fingerprint),
                 ).fetchone()
             discovery_id = existing_id["discovery_id"] if existing_id else item.discovery_id
             row = conn.execute(
@@ -1375,9 +1492,10 @@ class PostgresKnowledgeStore:
                 insert into discovery_items(
                     discovery_id, owner_user_id, discovery_type, title, evidence,
                     confidence, producer, fingerprint, evidence_snapshot,
-                    discovery_score, quality_signals, status, created_at
+                    discovery_score, quality_signals, status, created_at,
+                    tenant_id
                 )
-                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 on conflict (discovery_id) do update
                 set discovery_type = excluded.discovery_type,
                     title = excluded.title,
@@ -1388,6 +1506,7 @@ class PostgresKnowledgeStore:
                     evidence_snapshot = excluded.evidence_snapshot,
                     discovery_score = excluded.discovery_score,
                     quality_signals = excluded.quality_signals,
+                    tenant_id = excluded.tenant_id,
                     status = discovery_items.status,
                     created_at = discovery_items.created_at
                 returning *
@@ -1406,6 +1525,7 @@ class PostgresKnowledgeStore:
                     Jsonb(to_jsonable(item.quality_signals)),
                     item.status,
                     item.created_at,
+                    item.tenant_id,
                 ),
             ).fetchone()
         return self._discovery_item_from_row(row)
@@ -1414,12 +1534,16 @@ class PostgresKnowledgeStore:
         self,
         *,
         owner_user_id: str,
+        tenant_id: str | None = None,
         status: str | None = None,
         since=None,
         limit: int = 50,
     ) -> list[DiscoveryItem]:
         clauses = ["owner_user_id = %s"]
         params: list[Any] = [owner_user_id]
+        if tenant_id:
+            clauses.append("tenant_id = %s")
+            params.append(tenant_id)
         if status:
             clauses.append("status = %s")
             params.append(status)
@@ -1490,16 +1614,28 @@ class PostgresKnowledgeStore:
             )
         return [(self._hyperedge_from_row(row), members_by_edge.get(row["hyperedge_id"], [])) for row in edge_rows]
 
-    def create_job(self, job_type: str, payload: dict[str, Any], *, max_attempts: int = 3, priority: int = 0) -> Job:
+    def create_job(
+        self,
+        job_type: str,
+        payload: dict[str, Any],
+        *,
+        max_attempts: int = 3,
+        priority: int = 0,
+        tenant_id: str | None = None,
+        owner_user_id: str | None = None,
+    ) -> Job:
+        tenant_id = str(tenant_id or payload.get("tenant_id") or DEFAULT_TENANT_ID)
+        owner_user_id = str(owner_user_id or payload.get("owner_user_id") or "user_primary")
+        payload = {**dict(payload), "tenant_id": tenant_id, "owner_user_id": owner_user_id}
         source_refs = payload.get("source_refs") if isinstance(payload.get("source_refs"), list) else []
         with self.connect() as conn:
             row = conn.execute(
                 """
-                insert into jobs(job_type, payload, max_attempts, source_refs, priority, run_after)
-                values (%s, %s, %s, %s, %s, now())
+                insert into jobs(job_type, payload, max_attempts, source_refs, priority, run_after, tenant_id, owner_user_id)
+                values (%s, %s, %s, %s, %s, now(), %s, %s)
                 returning *
                 """,
-                (job_type, Jsonb(to_jsonable(payload)), max_attempts, Jsonb(to_jsonable(source_refs)), priority),
+                (job_type, Jsonb(to_jsonable(payload)), max_attempts, Jsonb(to_jsonable(source_refs)), priority, tenant_id, owner_user_id),
             ).fetchone()
             job = self._job_from_row(row)
         self.add_job_event(job.job_id, "queued", f"Queued {job_type} job", {"payload": payload, "priority": priority})
@@ -1512,9 +1648,12 @@ class PostgresKnowledgeStore:
             raise KeyError(job_id)
         return self._job_from_row(row)
 
-    def list_jobs(self, *, status: str | None = None, job_type: str | None = None, limit: int = 50) -> list[Job]:
+    def list_jobs(self, *, tenant_id: str | None = None, status: str | None = None, job_type: str | None = None, limit: int = 50) -> list[Job]:
         conditions: list[str] = []
         params: list[Any] = []
+        if tenant_id:
+            conditions.append("tenant_id = %s")
+            params.append(tenant_id)
         if status:
             conditions.append("status = %s")
             params.append(status)
@@ -1545,14 +1684,15 @@ class PostgresKnowledgeStore:
         message: str,
         detail: dict[str, Any] | None = None,
     ) -> JobEvent:
+        job = self.get_job(job_id)
         with self.connect() as conn:
             row = conn.execute(
                 """
-                insert into job_events(job_id, event_type, message, detail)
-                values (%s, %s, %s, %s)
+                insert into job_events(job_id, event_type, message, detail, tenant_id)
+                values (%s, %s, %s, %s, %s)
                 returning *
                 """,
-                (job_id, event_type, message, Jsonb(to_jsonable(detail or {}))),
+                (job_id, event_type, message, Jsonb(to_jsonable(detail or {})), job.tenant_id),
             ).fetchone()
         return self._job_event_from_row(row)
 
@@ -1560,13 +1700,16 @@ class PostgresKnowledgeStore:
         self,
         *,
         worker_id: str | None = None,
+        tenant_id: str | None = None,
         lease_seconds: int | None = None,
         excluded_job_types: set[str] | None = None,
     ) -> Job | None:
         excluded = sorted(excluded_job_types or set())
+        tenant_filter = "and tenant_id = %s" if tenant_id else ""
+        tenant_params: tuple[Any, ...] = (tenant_id,) if tenant_id else ()
         with self.connect() as conn:
             row = conn.execute(
-                """
+                f"""
                 update jobs
                 set status = 'running',
                     attempts = attempts + 1,
@@ -1582,6 +1725,7 @@ class PostgresKnowledgeStore:
                     from jobs
                     where status = 'queued'
                       and run_after <= now()
+                      {tenant_filter}
                       and (cardinality(%s::text[]) = 0 or not (job_type = any(%s::text[])))
                     order by priority desc, run_after, created_at, job_id
                     for update skip locked
@@ -1589,7 +1733,7 @@ class PostgresKnowledgeStore:
                 )
                 returning *
                 """,
-                (worker_id, lease_seconds, lease_seconds, excluded, excluded),
+                (worker_id, lease_seconds, lease_seconds, *tenant_params, excluded, excluded),
             ).fetchone()
         if not row:
             return None
@@ -1788,10 +1932,12 @@ class PostgresKnowledgeStore:
         self.add_job_event(job.job_id, "canceled", error)
         return job
 
-    def recover_stale_jobs(self, *, max_age_seconds: int) -> list[Job]:
+    def recover_stale_jobs(self, *, tenant_id: str | None = None, max_age_seconds: int) -> list[Job]:
+        tenant_filter = "and tenant_id = %s" if tenant_id else ""
+        params: tuple[Any, ...] = (max_age_seconds, tenant_id) if tenant_id else (max_age_seconds,)
         with self.connect() as conn:
             rows = conn.execute(
-                """
+                f"""
                 update jobs
                 set status = case when attempts < max_attempts then 'queued' else 'failed' end,
                     error = case
@@ -1807,9 +1953,10 @@ class PostgresKnowledgeStore:
                 where status = 'running'
                   and started_at is not null
                   and started_at < now() - (%s * interval '1 second')
+                  {tenant_filter}
                 returning *
-                """,
-                (max_age_seconds,),
+                """,  # noqa: S608 - tenant_filter is a fixed fragment.
+                params,
             ).fetchall()
         jobs = [self._job_from_row(row) for row in rows]
         for job in jobs:
@@ -1869,6 +2016,7 @@ class PostgresKnowledgeStore:
             metadata=dict(row["metadata"] or {}),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+            tenant_id=row.get("tenant_id") or DEFAULT_TENANT_ID,
         )
 
     def _offline_index_state_from_row(self, row: dict[str, Any]) -> OfflineIndexState:
@@ -1887,6 +2035,7 @@ class PostgresKnowledgeStore:
             dirty_reason=row.get("dirty_reason"),
             last_indexed_at=row.get("last_indexed_at"),
             updated_at=row["updated_at"],
+            tenant_id=row.get("tenant_id") or DEFAULT_TENANT_ID,
         )
 
     def _workspace_activity_event_from_row(self, row: dict[str, Any]) -> WorkspaceActivityEvent:
@@ -1902,6 +2051,7 @@ class PostgresKnowledgeStore:
             summary=row["summary"],
             metadata=dict(row.get("metadata") or {}),
             created_at=row["created_at"],
+            tenant_id=row.get("tenant_id") or DEFAULT_TENANT_ID,
         )
 
     def _discovery_item_from_row(self, row: dict[str, Any]) -> DiscoveryItem:
@@ -1919,6 +2069,7 @@ class PostgresKnowledgeStore:
             quality_signals=dict(row.get("quality_signals") or {}),
             status=row["status"],
             created_at=row["created_at"],
+            tenant_id=row.get("tenant_id") or DEFAULT_TENANT_ID,
         )
 
     def _connector_state_from_row(self, row: dict[str, Any]) -> ConnectorState:
@@ -1936,6 +2087,7 @@ class PostgresKnowledgeStore:
             config=dict(row.get("config") or {}),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+            tenant_id=row.get("tenant_id") or DEFAULT_TENANT_ID,
         )
 
     def _knowledge_source_from_row(self, row: dict[str, Any]) -> KnowledgeSource:
@@ -1957,6 +2109,7 @@ class PostgresKnowledgeStore:
             last_error=row.get("last_error"),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+            tenant_id=row.get("tenant_id") or DEFAULT_TENANT_ID,
         )
 
     def _sync_run_from_row(self, row: dict[str, Any]) -> SyncRun:
@@ -1979,6 +2132,7 @@ class PostgresKnowledgeStore:
             failed=int(row.get("failed") or 0),
             error=row.get("error"),
             report=dict(row.get("report") or {}),
+            tenant_id=row.get("tenant_id") or DEFAULT_TENANT_ID,
         )
 
     def _chunk_from_row(self, row: dict[str, Any]) -> Chunk:
@@ -1998,6 +2152,7 @@ class PostgresKnowledgeStore:
                 "embedding_model": row.get("embedding_model"),
                 "embedding_created_at": row.get("embedding_created_at"),
             },
+            tenant_id=row.get("tenant_id") or DEFAULT_TENANT_ID,
         )
 
     def _document_from_row(self, row: dict[str, Any]) -> Document:
@@ -2011,6 +2166,7 @@ class PostgresKnowledgeStore:
             title=row["title"],
             body=row["body"],
             metadata=dict(row.get("metadata") or {}),
+            tenant_id=row.get("tenant_id") or DEFAULT_TENANT_ID,
         )
 
     def _hyperedge_from_row(self, row: dict[str, Any]) -> Hyperedge:
@@ -2025,6 +2181,7 @@ class PostgresKnowledgeStore:
             evidence_text=row["evidence_text"],
             source_refs=[SourceRef(**item) for item in (row.get("source_refs") or [])],
             confidence=row["confidence"],
+            tenant_id=row.get("tenant_id") or DEFAULT_TENANT_ID,
         )
 
     def _knowledge_claim_from_row(self, row: dict[str, Any]) -> KnowledgeClaim:
@@ -2045,6 +2202,7 @@ class PostgresKnowledgeStore:
             request_id=row.get("request_id"),
             metadata=dict(row.get("metadata") or {}),
             created_at=row["created_at"],
+            tenant_id=row.get("tenant_id") or DEFAULT_TENANT_ID,
         )
 
     def _digest_note_from_row(self, row: dict[str, Any]) -> DigestNote:
@@ -2066,6 +2224,7 @@ class PostgresKnowledgeStore:
             request_id=row.get("request_id"),
             metadata=dict(row.get("metadata") or {}),
             created_at=row["created_at"],
+            tenant_id=row.get("tenant_id") or DEFAULT_TENANT_ID,
         )
 
     def _agent_memory_from_row(self, row: dict[str, Any]) -> AgentMemory:
@@ -2079,6 +2238,7 @@ class PostgresKnowledgeStore:
             decay_policy=row["decay_policy"],
             last_verified_at=row["last_verified_at"],
             created_by_user_id=row["created_by_user_id"],
+            tenant_id=row.get("tenant_id") or DEFAULT_TENANT_ID,
         )
 
     def _profile_card_from_row(self, row: dict[str, Any]) -> UserProfileCard:
@@ -2089,6 +2249,7 @@ class PostgresKnowledgeStore:
             source_refs=[SourceRef(**item) for item in row["source_refs"]],
             confidence=float(row["confidence"]),
             last_verified_at=row.get("updated_at"),
+            tenant_id=row.get("tenant_id") or DEFAULT_TENANT_ID,
         )
 
     def _job_from_row(self, row: dict[str, Any]) -> Job:
@@ -2112,6 +2273,8 @@ class PostgresKnowledgeStore:
             heartbeat_at=row.get("heartbeat_at"),
             external_run_id=row.get("external_run_id"),
             source_refs=[SourceRef(**item) for item in (row.get("source_refs") or [])],
+            tenant_id=row.get("tenant_id") or DEFAULT_TENANT_ID,
+            owner_user_id=row.get("owner_user_id") or (dict(row["payload"] or {}).get("owner_user_id") if row.get("payload") else None) or "user_primary",
         )
 
     def _review_item_from_row(self, row: dict[str, Any]) -> ReviewItem:
@@ -2124,6 +2287,7 @@ class PostgresKnowledgeStore:
             status=row["status"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+            tenant_id=row.get("tenant_id") or DEFAULT_TENANT_ID,
         )
 
     def _job_event_from_row(self, row: dict[str, Any]) -> JobEvent:
@@ -2134,6 +2298,7 @@ class PostgresKnowledgeStore:
             message=row["message"],
             detail=dict(row["detail"] or {}),
             created_at=row["created_at"],
+            tenant_id=row.get("tenant_id") or DEFAULT_TENANT_ID,
         )
 
 

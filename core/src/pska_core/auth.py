@@ -5,6 +5,8 @@ import hmac
 import json
 from typing import Any, Mapping
 
+from pska_core.models import DEFAULT_TENANT_ID
+
 
 class AuthError(RuntimeError):
     pass
@@ -12,6 +14,7 @@ class AuthError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class RequestContext:
+    tenant_id: str = DEFAULT_TENANT_ID
     user_id: str = "user_primary"
     represented_user_id: str | None = None
     caller: str = "user"
@@ -26,6 +29,7 @@ class RequestContext:
 
     def apply_to_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         merged = dict(payload)
+        merged["tenant_id"] = self.tenant_id
         if self.caller == "agent_service":
             merged["user_id"] = "agent_service"
             if self.represented_user_id and not merged.get("represented_user_id"):
@@ -53,11 +57,13 @@ def authenticate_headers(headers: Mapping[str, str], service_token: str | None =
 
 def context_from_headers(headers: Mapping[str, str], payload: dict[str, Any] | None = None, *, service_authenticated: bool = False) -> RequestContext:
     payload = payload or {}
+    tenant_id = str(headers.get("X-PSKA-Tenant-Id") or payload.get("tenant_id") or DEFAULT_TENANT_ID)
     caller = str(headers.get("X-PSKA-Caller") or payload.get("caller") or "user")
     user_id = str(headers.get("X-PSKA-User-Id") or payload.get("user_id") or ("agent_service" if caller == "agent_service" else "user_primary"))
     represented_user_id = headers.get("X-PSKA-Represented-User-Id") or payload.get("represented_user_id")
     scope = _scope_from(headers.get("X-PSKA-Scope"), payload.get("scope"))
     return RequestContext(
+        tenant_id=tenant_id,
         user_id=user_id,
         represented_user_id=str(represented_user_id) if represented_user_id else None,
         caller=caller,

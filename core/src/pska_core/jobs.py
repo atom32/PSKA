@@ -15,6 +15,7 @@ from pska_core.extraction import ExtractionService
 from pska_core.fastreact_client import FastreactClient, HttpFastreactClient
 from pska_core.importers.twitter_zip import TwitterZipImporter
 from pska_core.models import Job
+from pska_core.models import DEFAULT_TENANT_ID
 from pska_core.serde import to_jsonable
 from pska_core.llm import LLMClient
 from pska_core.store_postgres import PostgresKnowledgeStore
@@ -67,6 +68,7 @@ class JobService:
         worker_id: str | None = None,
         lease_seconds: int | None = None,
         excluded_job_types: set[str] | None = None,
+        tenant_id: str | None = None,
     ) -> None:
         self.store = store
         self.embedding_provider = embedding_provider
@@ -76,18 +78,28 @@ class JobService:
         self.worker_id = worker_id
         self.lease_seconds = lease_seconds
         self.excluded_job_types = excluded_job_types or set()
+        self.tenant_id = tenant_id
 
     def submit(self, job_type: str, payload: dict[str, Any] | None = None, *, max_attempts: int = 3, priority: int = 0) -> Job:
         if job_type not in JOB_TYPES:
             raise ValueError(f"Unsupported job type: {job_type}")
         payload = dict(payload or {})
+        payload.setdefault("tenant_id", self.tenant_id or DEFAULT_TENANT_ID)
         if "priority" in payload and priority == 0:
             priority = int(payload["priority"])
-        return self.store.create_job(job_type, payload, max_attempts=max_attempts, priority=priority)
+        return self.store.create_job(
+            job_type,
+            payload,
+            max_attempts=max_attempts,
+            priority=priority,
+            tenant_id=str(payload.get("tenant_id") or self.tenant_id or DEFAULT_TENANT_ID),
+            owner_user_id=str(payload.get("owner_user_id") or "user_primary"),
+        )
 
     def run_next(self) -> Job | None:
         job = self.store.claim_next_job(
             worker_id=self.worker_id,
+            tenant_id=self.tenant_id,
             lease_seconds=self.lease_seconds,
             excluded_job_types=self.excluded_job_types,
         )
@@ -128,7 +140,7 @@ class JobService:
         )
 
     def recover_stale(self, *, max_age_seconds: int) -> list[Job]:
-        return self.store.recover_stale_jobs(max_age_seconds=max_age_seconds)
+        return self.store.recover_stale_jobs(tenant_id=self.tenant_id, max_age_seconds=max_age_seconds)
 
     def _execute(self, job: Job) -> dict[str, Any]:
         self.store.add_job_event(job.job_id, "execute", f"Executing {job.job_type}")
@@ -155,6 +167,7 @@ class JobService:
             self.store,
             archive_root=Path(payload.get("archive_root") or workspace_root / "imports"),
             owner_user_id=str(payload.get("owner_user_id") or "user_primary"),
+            tenant_id=str(payload.get("tenant_id") or self.tenant_id or DEFAULT_TENANT_ID),
             space_id=str(payload.get("space_id") or "private_primary"),
             visibility=Visibility(payload.get("visibility") or Visibility.PRIVATE.value),
             visible_team_ids=_visible_team_ids(payload.get("visible_team_ids")),
@@ -164,12 +177,17 @@ class JobService:
         return to_jsonable(result)
 
     def _extract_all(self, payload: dict[str, Any]) -> dict[str, Any]:
-        reports = ExtractionService(self.store, llm=self.llm).extract_all_visible(owner_user_id=payload.get("owner_user_id"))
+        tenant_id = str(payload.get("tenant_id") or self.tenant_id or DEFAULT_TENANT_ID)
+        reports = ExtractionService(self.store, llm=self.llm).extract_all_visible(
+            owner_user_id=payload.get("owner_user_id"),
+            tenant_id=tenant_id,
+        )
         return {"reports": to_jsonable(reports)}
 
     def _extract_via_fastreact(self, job: Job) -> dict[str, Any]:
         payload = job.payload
         owner_user_id = str(payload.get("owner_user_id") or "user_primary")
+        tenant_id = str(payload.get("tenant_id") or job.tenant_id or self.tenant_id or DEFAULT_TENANT_ID)
         top_k = int(payload.get("top_k") or 20)
         source_items = [
             {
@@ -181,7 +199,7 @@ class JobService:
                 "url": item.url,
                 "content_text": item.content_text[:4000],
             }
-            for item in self.store.list_source_items()
+            for item in self.store.list_source_items(tenant_id=tenant_id)
             if item.owner_user_id == owner_user_id
         ][:top_k]
         prompt = (
@@ -323,6 +341,7 @@ class JobService:
         payload = {
             "schema_version": response.get("schema_version") or "pska.candidates.v1",
             "owner_user_id": owner_user_id,
+            "tenant_id": job.tenant_id,
             "job_id": job.job_id,
             "request_id": response.get("request_id") or response.get("run_id"),
             "producer": "fastreact",

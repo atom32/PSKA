@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from pska_core.enums import Visibility
-from pska_core.models import ChannelIngestPayload, ConnectorState
+from pska_core.models import DEFAULT_TENANT_ID, ChannelIngestPayload, ConnectorState
 
 
 CONNECTOR_RECORD_SCHEMA_VERSION = "pska.connector_record.v1"
@@ -21,6 +21,7 @@ class ConnectorRecord:
     body: str
     owner_user_id: str
     space_id: str
+    tenant_id: str = DEFAULT_TENANT_ID
     visibility: Visibility = Visibility.PRIVATE
     visible_team_ids: list[str] = field(default_factory=list)
     record_type: str = "document"
@@ -50,6 +51,7 @@ class ConnectorRecord:
             body=body,
             owner_user_id=str(data.get("owner_user_id") or "user_primary"),
             space_id=str(data.get("space_id") or "private_primary"),
+            tenant_id=str(data.get("tenant_id") or DEFAULT_TENANT_ID),
             visibility=Visibility(data.get("visibility") or Visibility.PRIVATE),
             visible_team_ids=list(data.get("visible_team_ids") or []),
             record_type=str(data.get("record_type") or "document"),
@@ -64,8 +66,10 @@ class ConnectorRecord:
         )
 
 
-def connector_state_id(connector_id: str, owner_user_id: str) -> str:
-    return f"conn_{owner_user_id}_{connector_id}".replace("/", "_").replace(" ", "_")
+def connector_state_id(connector_id: str, owner_user_id: str, tenant_id: str = DEFAULT_TENANT_ID) -> str:
+    if tenant_id == DEFAULT_TENANT_ID:
+        return f"conn_{owner_user_id}_{connector_id}".replace("/", "_").replace(" ", "_")
+    return f"conn_{tenant_id}_{owner_user_id}_{connector_id}".replace("/", "_").replace(" ", "_")
 
 
 def connector_state_from_mapping(data: dict[str, Any]) -> ConnectorState:
@@ -74,8 +78,9 @@ def connector_state_from_mapping(data: dict[str, Any]) -> ConnectorState:
         raise ValueError(f"Unsupported connector state schema_version: {schema_version}")
     connector_id = str(data["connector_id"])
     owner_user_id = str(data.get("owner_user_id") or "user_primary")
+    tenant_id = str(data.get("tenant_id") or DEFAULT_TENANT_ID)
     return ConnectorState(
-        connector_state_id=str(data.get("connector_state_id") or connector_state_id(connector_id, owner_user_id)),
+        connector_state_id=str(data.get("connector_state_id") or connector_state_id(connector_id, owner_user_id, tenant_id)),
         connector_id=connector_id,
         owner_user_id=owner_user_id,
         enabled=bool(data.get("enabled", True)),
@@ -84,6 +89,7 @@ def connector_state_from_mapping(data: dict[str, Any]) -> ConnectorState:
         last_error=data.get("last_error"),
         permission_scope=dict(data.get("permission_scope") or {}),
         config=dict(data.get("config") or {}),
+        tenant_id=tenant_id,
     )
 
 
@@ -97,6 +103,7 @@ def connector_record_to_payload(record: ConnectorRecord | dict[str, Any]) -> Cha
         source_id=record.external_id,
         owner_user_id=record.owner_user_id,
         space_id=record.space_id,
+        tenant_id=record.tenant_id,
         visibility=record.visibility,
         visible_team_ids=record.visible_team_ids,
         url=record.source_uri,

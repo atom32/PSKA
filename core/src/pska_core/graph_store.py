@@ -7,7 +7,7 @@ from pska_core.store import KnowledgeStore
 
 
 class GraphStore(Protocol):
-    def list_entities(self) -> list[Entity]: ...
+    def list_entities(self, *, tenant_id: str | None = None) -> list[Entity]: ...
 
     def neighbors(self, entity_ids: set[str], *, depth: int = 1) -> list[tuple[Hyperedge, list[HyperedgeMember]]]: ...
 
@@ -18,8 +18,8 @@ class PostgresGraphStore:
     def __init__(self, store: KnowledgeStore) -> None:
         self.store = store
 
-    def list_entities(self) -> list[Entity]:
-        return self.store.list_entities()
+    def list_entities(self, *, tenant_id: str | None = None) -> list[Entity]:
+        return self.store.list_entities(tenant_id=tenant_id)
 
     def neighbors(self, entity_ids: set[str], *, depth: int = 1) -> list[tuple[Hyperedge, list[HyperedgeMember]]]:
         if depth < 1:

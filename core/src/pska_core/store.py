@@ -8,6 +8,7 @@ from pska_core.models import (
     AgentMemory,
     Chunk,
     ConnectorState,
+    DEFAULT_TENANT_ID,
     DiscoveryItem,
     Document,
     DigestNote,
@@ -35,30 +36,31 @@ from pska_core.enums import Visibility
 
 class KnowledgeStore(Protocol):
     def add_user(self, user: User) -> None: ...
-    def get_user(self, user_id: str) -> User: ...
-    def team_memberships_for_user(self, user_id: str) -> list[TeamMembership]: ...
+    def get_user(self, user_id: str, *, tenant_id: str | None = None) -> User: ...
+    def team_memberships_for_user(self, user_id: str, *, tenant_id: str | None = None) -> list[TeamMembership]: ...
     def upsert_source_item(self, item: SourceItem) -> SourceItem: ...
     def upsert_knowledge_source(self, source: KnowledgeSource) -> KnowledgeSource: ...
     def get_knowledge_source(self, knowledge_source_id: str) -> KnowledgeSource: ...
     def list_knowledge_sources(
         self,
         *,
+        tenant_id: str | None = None,
         owner_user_id: str | None = None,
         source_type: str | None = None,
         status: str | None = None,
     ) -> list[KnowledgeSource]: ...
     def add_sync_run(self, run: SyncRun) -> SyncRun: ...
-    def list_sync_runs(self, *, knowledge_source_id: str | None = None, owner_user_id: str | None = None, limit: int = 50) -> list[SyncRun]: ...
+    def list_sync_runs(self, *, tenant_id: str | None = None, knowledge_source_id: str | None = None, owner_user_id: str | None = None, limit: int = 50) -> list[SyncRun]: ...
     def upsert_connector_state(self, state: ConnectorState) -> ConnectorState: ...
     def get_connector_state(self, connector_state_id: str) -> ConnectorState: ...
-    def list_connector_states(self, *, owner_user_id: str | None = None, connector_id: str | None = None) -> list[ConnectorState]: ...
+    def list_connector_states(self, *, tenant_id: str | None = None, owner_user_id: str | None = None, connector_id: str | None = None) -> list[ConnectorState]: ...
     def add_document(self, document: Document) -> None: ...
     def add_chunk(self, chunk: Chunk) -> None: ...
     def replace_source_documents(self, source_item_id: str, documents: list[Document], chunks: list[Chunk]) -> None: ...
     def list_documents_for_sources(self, source_item_ids: set[str]) -> list[Document]: ...
     def add_agent_memory(self, memory: AgentMemory) -> None: ...
     def get_agent_memory(self, agent_memory_id: str) -> AgentMemory: ...
-    def list_agent_memories(self, *, owner_user_id: str) -> list[AgentMemory]: ...
+    def list_agent_memories(self, *, owner_user_id: str, tenant_id: str | None = None) -> list[AgentMemory]: ...
     def update_agent_memory_lifecycle(
         self,
         agent_memory_id: str,
@@ -77,7 +79,7 @@ class KnowledgeStore(Protocol):
         source_refs: list[SourceRef],
         last_verified_at,
     ) -> UserProfileCard: ...
-    def list_profile_cards(self, *, owner_user_id: str) -> list[UserProfileCard]: ...
+    def list_profile_cards(self, *, owner_user_id: str, tenant_id: str | None = None) -> list[UserProfileCard]: ...
     def add_entity(self, entity: Entity) -> None: ...
     def add_hyperedge(self, hyperedge: Hyperedge, members: list[HyperedgeMember]) -> None: ...
     def add_knowledge_claim(self, claim: KnowledgeClaim) -> KnowledgeClaim: ...
@@ -85,6 +87,7 @@ class KnowledgeStore(Protocol):
         self,
         *,
         owner_user_id: str,
+        tenant_id: str | None = None,
         source_item_ids: set[str] | None = None,
         job_id: str | None = None,
         limit: int = 50,
@@ -94,16 +97,17 @@ class KnowledgeStore(Protocol):
         self,
         *,
         owner_user_id: str,
+        tenant_id: str | None = None,
         source_item_ids: set[str] | None = None,
         job_id: str | None = None,
         limit: int = 50,
     ) -> list[DigestNote]: ...
     def add_review_item(self, review_item: ReviewItem) -> None: ...
     def get_review_item(self, review_item_id: str) -> ReviewItem: ...
-    def list_review_items(self) -> list[ReviewItem]: ...
+    def list_review_items(self, *, tenant_id: str | None = None) -> list[ReviewItem]: ...
     def update_review_item_status(self, review_item_id: str, status: str) -> ReviewItem: ...
     def update_review_item_proposal(self, review_item_id: str, proposal: dict[str, Any]) -> ReviewItem: ...
-    def replace_graph_projection(self, *, owner_user_id: str, nodes: list[dict[str, Any]], edges: list[dict[str, Any]]) -> dict[str, int]: ...
+    def replace_graph_projection(self, *, owner_user_id: str, nodes: list[dict[str, Any]], edges: list[dict[str, Any]], tenant_id: str | None = None) -> dict[str, int]: ...
     def add_audit_event(self, event: AuditEvent) -> AuditEvent: ...
     def list_audit_events(self, target_type: str | None = None, target_id: str | None = None) -> list[AuditEvent]: ...
     def update_visibility(
@@ -114,12 +118,13 @@ class KnowledgeStore(Protocol):
         visibility: str,
         visible_team_ids: list[str],
     ) -> None: ...
-    def list_entities(self) -> list[Entity]: ...
-    def list_source_items(self) -> list[SourceItem]: ...
+    def list_entities(self, *, tenant_id: str | None = None) -> list[Entity]: ...
+    def list_source_items(self, *, tenant_id: str | None = None) -> list[SourceItem]: ...
     def upsert_offline_index_state(self, state: OfflineIndexState) -> OfflineIndexState: ...
     def list_offline_index_states(
         self,
         *,
+        tenant_id: str | None = None,
         status: str | None = None,
         source_item_id: str | None = None,
         object_type: str | None = None,
@@ -138,6 +143,7 @@ class KnowledgeStore(Protocol):
         embedding_provider: str | None = None,
         embedding_model: str | None = None,
         index_version: str = "hipporag_offline.v1",
+        tenant_id: str | None = None,
     ) -> OfflineIndexState: ...
     def mark_offline_indexed(
         self,
@@ -149,12 +155,13 @@ class KnowledgeStore(Protocol):
         index_version: str = "hipporag_offline.v1",
     ) -> OfflineIndexState: ...
     def tombstone_offline_index_for_source(self, source_item_id: str, *, reason: str) -> list[OfflineIndexState]: ...
-    def offline_index_status(self, *, owner_user_id: str | None = None) -> dict: ...
+    def offline_index_status(self, *, tenant_id: str | None = None, owner_user_id: str | None = None) -> dict: ...
     def add_workspace_activity_event(self, event: WorkspaceActivityEvent) -> WorkspaceActivityEvent: ...
     def list_workspace_activity_events(
         self,
         *,
         owner_user_id: str,
+        tenant_id: str | None = None,
         activity_types: set[str] | None = None,
         limit: int = 50,
     ) -> list[WorkspaceActivityEvent]: ...
@@ -164,6 +171,7 @@ class KnowledgeStore(Protocol):
         self,
         *,
         owner_user_id: str,
+        tenant_id: str | None = None,
         status: str | None = None,
         since=None,
         limit: int = 50,
@@ -178,13 +186,14 @@ class KnowledgeStore(Protocol):
         self,
         *,
         worker_id: str | None = None,
+        tenant_id: str | None = None,
         lease_seconds: int | None = None,
         excluded_job_types: set[str] | None = None,
     ) -> Job | None: ...
     def lease_job(self, job_id: str, *, worker_id: str | None = None, lease_seconds: int | None = None) -> Job: ...
     def heartbeat_job(self, job_id: str, *, worker_id: str | None = None, lease_seconds: int | None = None, external_run_id: str | None = None) -> Job: ...
-    def create_job(self, job_type: str, payload: dict, *, max_attempts: int = 3, priority: int = 0) -> Job: ...
-    def list_jobs(self, *, status: str | None = None, job_type: str | None = None, limit: int = 50) -> list[Job]: ...
+    def create_job(self, job_type: str, payload: dict, *, max_attempts: int = 3, priority: int = 0, tenant_id: str | None = None, owner_user_id: str | None = None) -> Job: ...
+    def list_jobs(self, *, tenant_id: str | None = None, status: str | None = None, job_type: str | None = None, limit: int = 50) -> list[Job]: ...
     def cancel_job(self, job_id: str, *, reason: str = "") -> Job: ...
 
 
@@ -195,7 +204,7 @@ class InMemoryKnowledgeStore:
         self.users: dict[str, User] = {}
         self.team_memberships: list[TeamMembership] = []
         self.source_items: dict[str, SourceItem] = {}
-        self.source_items_by_hash: dict[str, str] = {}
+        self.source_items_by_hash: dict[tuple[str, str], str] = {}
         self.knowledge_sources: dict[str, KnowledgeSource] = {}
         self.sync_runs: dict[str, SyncRun] = {}
         self.connector_states: dict[str, ConnectorState] = {}
@@ -214,32 +223,39 @@ class InMemoryKnowledgeStore:
         self.audit_events: list[AuditEvent] = []
         self.jobs: dict[str, Job] = {}
         self.job_events: list[JobEvent] = []
-        self.offline_index_states: dict[tuple[str, str], OfflineIndexState] = {}
+        self.offline_index_states: dict[tuple[str, str, str], OfflineIndexState] = {}
         self.workspace_activity_events: list[WorkspaceActivityEvent] = []
         self.discovery_items: dict[str, DiscoveryItem] = {}
 
     def add_user(self, user: User) -> None:
         self.users[user.user_id] = user
 
-    def get_user(self, user_id: str) -> User:
-        return self.users[user_id]
+    def get_user(self, user_id: str, *, tenant_id: str | None = None) -> User:
+        user = self.users[user_id]
+        if tenant_id and user.tenant_id != tenant_id:
+            raise KeyError(user_id)
+        return user
 
     def add_team_membership(self, membership: TeamMembership) -> None:
         self.team_memberships.append(membership)
 
-    def team_memberships_for_user(self, user_id: str) -> list[TeamMembership]:
-        return [membership for membership in self.team_memberships if membership.user_id == user_id]
+    def team_memberships_for_user(self, user_id: str, *, tenant_id: str | None = None) -> list[TeamMembership]:
+        return [
+            membership
+            for membership in self.team_memberships
+            if membership.user_id == user_id and (tenant_id is None or membership.tenant_id == tenant_id)
+        ]
 
     def upsert_source_item(self, item: SourceItem) -> SourceItem:
-        existing_id = self.source_items_by_hash.get(item.content_hash)
+        existing_id = self.source_items_by_hash.get((item.tenant_id, item.content_hash))
         if existing_id:
             return self.source_items[existing_id]
         existing = self.source_items.get(item.source_item_id)
         if existing:
-            self.source_items_by_hash.pop(existing.content_hash, None)
+            self.source_items_by_hash.pop((existing.tenant_id, existing.content_hash), None)
             item.created_at = existing.created_at
         self.source_items[item.source_item_id] = item
-        self.source_items_by_hash[item.content_hash] = item.source_item_id
+        self.source_items_by_hash[(item.tenant_id, item.content_hash)] = item.source_item_id
         return item
 
     def upsert_knowledge_source(self, source: KnowledgeSource) -> KnowledgeSource:
@@ -256,11 +272,14 @@ class InMemoryKnowledgeStore:
     def list_knowledge_sources(
         self,
         *,
+        tenant_id: str | None = None,
         owner_user_id: str | None = None,
         source_type: str | None = None,
         status: str | None = None,
     ) -> list[KnowledgeSource]:
         sources = list(self.knowledge_sources.values())
+        if tenant_id:
+            sources = [source for source in sources if source.tenant_id == tenant_id]
         if owner_user_id:
             sources = [source for source in sources if source.owner_user_id == owner_user_id]
         if source_type:
@@ -279,8 +298,10 @@ class InMemoryKnowledgeStore:
             source.updated_at = utc_now()
         return run
 
-    def list_sync_runs(self, *, knowledge_source_id: str | None = None, owner_user_id: str | None = None, limit: int = 50) -> list[SyncRun]:
+    def list_sync_runs(self, *, tenant_id: str | None = None, knowledge_source_id: str | None = None, owner_user_id: str | None = None, limit: int = 50) -> list[SyncRun]:
         runs = list(self.sync_runs.values())
+        if tenant_id:
+            runs = [run for run in runs if run.tenant_id == tenant_id]
         if knowledge_source_id:
             runs = [run for run in runs if run.knowledge_source_id == knowledge_source_id]
         if owner_user_id:
@@ -298,8 +319,10 @@ class InMemoryKnowledgeStore:
     def get_connector_state(self, connector_state_id: str) -> ConnectorState:
         return self.connector_states[connector_state_id]
 
-    def list_connector_states(self, *, owner_user_id: str | None = None, connector_id: str | None = None) -> list[ConnectorState]:
+    def list_connector_states(self, *, tenant_id: str | None = None, owner_user_id: str | None = None, connector_id: str | None = None) -> list[ConnectorState]:
         states = list(self.connector_states.values())
+        if tenant_id:
+            states = [state for state in states if state.tenant_id == tenant_id]
         if owner_user_id:
             states = [state for state in states if state.owner_user_id == owner_user_id]
         if connector_id:
@@ -335,11 +358,11 @@ class InMemoryKnowledgeStore:
     def get_agent_memory(self, agent_memory_id: str) -> AgentMemory:
         return self.agent_memories[agent_memory_id]
 
-    def list_agent_memories(self, *, owner_user_id: str) -> list[AgentMemory]:
+    def list_agent_memories(self, *, owner_user_id: str, tenant_id: str | None = None) -> list[AgentMemory]:
         return [
             memory
             for memory in self.agent_memories.values()
-            if memory.owner_user_id == owner_user_id
+            if memory.owner_user_id == owner_user_id and (tenant_id is None or memory.tenant_id == tenant_id)
         ]
 
     def update_agent_memory_lifecycle(
@@ -376,11 +399,11 @@ class InMemoryKnowledgeStore:
         card.last_verified_at = last_verified_at
         return card
 
-    def list_profile_cards(self, *, owner_user_id: str) -> list[UserProfileCard]:
+    def list_profile_cards(self, *, owner_user_id: str, tenant_id: str | None = None) -> list[UserProfileCard]:
         return [
             card
             for card in self.profile_cards.values()
-            if card.owner_user_id == owner_user_id
+            if card.owner_user_id == owner_user_id and (tenant_id is None or card.tenant_id == tenant_id)
         ]
 
     def add_entity(self, entity: Entity) -> None:
@@ -398,11 +421,16 @@ class InMemoryKnowledgeStore:
         self,
         *,
         owner_user_id: str,
+        tenant_id: str | None = None,
         source_item_ids: set[str] | None = None,
         job_id: str | None = None,
         limit: int = 50,
     ) -> list[KnowledgeClaim]:
-        claims = [claim for claim in self.knowledge_claims.values() if claim.owner_user_id == owner_user_id]
+        claims = [
+            claim
+            for claim in self.knowledge_claims.values()
+            if claim.owner_user_id == owner_user_id and (tenant_id is None or claim.tenant_id == tenant_id)
+        ]
         if source_item_ids:
             claims = [
                 claim
@@ -422,11 +450,16 @@ class InMemoryKnowledgeStore:
         self,
         *,
         owner_user_id: str,
+        tenant_id: str | None = None,
         source_item_ids: set[str] | None = None,
         job_id: str | None = None,
         limit: int = 50,
     ) -> list[DigestNote]:
-        notes = [note for note in self.digest_notes.values() if note.owner_user_id == owner_user_id]
+        notes = [
+            note
+            for note in self.digest_notes.values()
+            if note.owner_user_id == owner_user_id and (tenant_id is None or note.tenant_id == tenant_id)
+        ]
         if source_item_ids:
             notes = [
                 note
@@ -444,8 +477,11 @@ class InMemoryKnowledgeStore:
     def get_review_item(self, review_item_id: str) -> ReviewItem:
         return self.review_items[review_item_id]
 
-    def list_review_items(self) -> list[ReviewItem]:
-        return list(self.review_items.values())
+    def list_review_items(self, *, tenant_id: str | None = None) -> list[ReviewItem]:
+        items = list(self.review_items.values())
+        if tenant_id:
+            items = [item for item in items if item.tenant_id == tenant_id]
+        return items
 
     def update_review_item_status(self, review_item_id: str, status: str) -> ReviewItem:
         review_item = self.review_items[review_item_id]
@@ -457,25 +493,26 @@ class InMemoryKnowledgeStore:
         review_item.proposal = dict(proposal)
         return review_item
 
-    def replace_graph_projection(self, *, owner_user_id: str, nodes: list[dict[str, Any]], edges: list[dict[str, Any]]) -> dict[str, int]:
+    def replace_graph_projection(self, *, owner_user_id: str, nodes: list[dict[str, Any]], edges: list[dict[str, Any]], tenant_id: str | None = None) -> dict[str, int]:
+        tenant_id = tenant_id or DEFAULT_TENANT_ID
         self.graph_nodes = {
             node_id: node
             for node_id, node in self.graph_nodes.items()
-            if node.get("owner_user_id") != owner_user_id
+            if node.get("owner_user_id") != owner_user_id or node.get("tenant_id", DEFAULT_TENANT_ID) != tenant_id
         }
         self.graph_edges = {
             edge_id: edge
             for edge_id, edge in self.graph_edges.items()
-            if edge.get("owner_user_id") != owner_user_id
+            if edge.get("owner_user_id") != owner_user_id or edge.get("tenant_id", DEFAULT_TENANT_ID) != tenant_id
         }
         for node in nodes:
             node_id = str(node.get("id") or "")
             if node_id:
-                self.graph_nodes[node_id] = {**node, "owner_user_id": owner_user_id}
+                self.graph_nodes[node_id] = {**node, "owner_user_id": owner_user_id, "tenant_id": tenant_id}
         for edge in edges:
             edge_id = str(edge.get("id") or "")
             if edge_id:
-                self.graph_edges[edge_id] = {**edge, "owner_user_id": owner_user_id}
+                self.graph_edges[edge_id] = {**edge, "owner_user_id": owner_user_id, "tenant_id": tenant_id}
         return {"graph_nodes": len(nodes), "graph_edges": len(edges)}
 
     def add_audit_event(self, event: AuditEvent) -> AuditEvent:
@@ -524,26 +561,35 @@ class InMemoryKnowledgeStore:
             dirty_reason="visibility_changed",
         )
 
-    def list_entities(self) -> list[Entity]:
-        return list(self.entities.values())
+    def list_entities(self, *, tenant_id: str | None = None) -> list[Entity]:
+        entities = list(self.entities.values())
+        if tenant_id:
+            entities = [entity for entity in entities if entity.tenant_id == tenant_id]
+        return entities
 
-    def list_source_items(self) -> list[SourceItem]:
-        return list(self.source_items.values())
+    def list_source_items(self, *, tenant_id: str | None = None) -> list[SourceItem]:
+        items = list(self.source_items.values())
+        if tenant_id:
+            items = [item for item in items if item.tenant_id == tenant_id]
+        return items
 
     def upsert_offline_index_state(self, state: OfflineIndexState) -> OfflineIndexState:
         state.updated_at = utc_now()
-        self.offline_index_states[(state.object_type, state.object_id)] = state
+        self.offline_index_states[(state.tenant_id, state.object_type, state.object_id)] = state
         return state
 
     def list_offline_index_states(
         self,
         *,
+        tenant_id: str | None = None,
         status: str | None = None,
         source_item_id: str | None = None,
         object_type: str | None = None,
         limit: int | None = None,
     ) -> list[OfflineIndexState]:
         states = list(self.offline_index_states.values())
+        if tenant_id:
+            states = [state for state in states if state.tenant_id == tenant_id]
         if status:
             states = [state for state in states if state.status == status]
         if source_item_id:
@@ -566,8 +612,10 @@ class InMemoryKnowledgeStore:
         embedding_provider: str | None = None,
         embedding_model: str | None = None,
         index_version: str = "hipporag_offline.v1",
+        tenant_id: str | None = None,
     ) -> OfflineIndexState:
-        existing = self.offline_index_states.get((object_type, object_id))
+        lookup_tenant_id = tenant_id or DEFAULT_TENANT_ID
+        existing = self.offline_index_states.get((lookup_tenant_id, object_type, object_id))
         state = OfflineIndexState(
             object_type=object_type,
             object_id=object_id,
@@ -581,6 +629,7 @@ class InMemoryKnowledgeStore:
             status="dirty",
             dirty_reason=dirty_reason,
             last_indexed_at=existing.last_indexed_at if existing else None,
+            tenant_id=tenant_id or (existing.tenant_id if existing else DEFAULT_TENANT_ID),
         )
         return self.upsert_offline_index_state(state)
 
@@ -593,7 +642,11 @@ class InMemoryKnowledgeStore:
         embedding_model: str | None = None,
         index_version: str = "hipporag_offline.v1",
     ) -> OfflineIndexState:
-        existing = self.offline_index_states[(object_type, object_id)]
+        existing = next(
+            state
+            for state in self.offline_index_states.values()
+            if state.object_type == object_type and state.object_id == object_id
+        )
         existing.status = "indexed"
         existing.dirty_reason = None
         existing.embedding_provider = embedding_provider or existing.embedding_provider
@@ -614,8 +667,10 @@ class InMemoryKnowledgeStore:
             tombstoned.append(state)
         return tombstoned
 
-    def offline_index_status(self, *, owner_user_id: str | None = None) -> dict:
+    def offline_index_status(self, *, tenant_id: str | None = None, owner_user_id: str | None = None) -> dict:
         states = list(self.offline_index_states.values())
+        if tenant_id:
+            states = [state for state in states if state.tenant_id == tenant_id]
         if owner_user_id:
             states = [state for state in states if state.owner_user_id == owner_user_id]
         by_status: dict[str, int] = {}
@@ -645,10 +700,15 @@ class InMemoryKnowledgeStore:
         self,
         *,
         owner_user_id: str,
+        tenant_id: str | None = None,
         activity_types: set[str] | None = None,
         limit: int = 50,
     ) -> list[WorkspaceActivityEvent]:
-        events = [event for event in self.workspace_activity_events if event.owner_user_id == owner_user_id]
+        events = [
+            event
+            for event in self.workspace_activity_events
+            if event.owner_user_id == owner_user_id and (tenant_id is None or event.tenant_id == tenant_id)
+        ]
         if activity_types:
             events = [event for event in events if event.activity_type in activity_types]
         events = sorted(events, key=lambda event: (event.created_at, event.workspace_activity_event_id), reverse=True)
@@ -662,6 +722,7 @@ class InMemoryKnowledgeStore:
                     candidate
                     for candidate in self.discovery_items.values()
                     if candidate.owner_user_id == item.owner_user_id
+                    and candidate.tenant_id == item.tenant_id
                     and candidate.producer == item.producer
                     and candidate.fingerprint == item.fingerprint
                 ),
@@ -690,11 +751,16 @@ class InMemoryKnowledgeStore:
         self,
         *,
         owner_user_id: str,
+        tenant_id: str | None = None,
         status: str | None = None,
         since=None,
         limit: int = 50,
     ) -> list[DiscoveryItem]:
-        items = [item for item in self.discovery_items.values() if item.owner_user_id == owner_user_id]
+        items = [
+            item
+            for item in self.discovery_items.values()
+            if item.owner_user_id == owner_user_id and (tenant_id is None or item.tenant_id == tenant_id)
+        ]
         if status:
             items = [item for item in items if item.status == status]
         if since is not None:
@@ -745,7 +811,19 @@ class InMemoryKnowledgeStore:
             results.append((self.hyperedges[edge_id], members))
         return results
 
-    def create_job(self, job_type: str, payload: dict, *, max_attempts: int = 3, priority: int = 0) -> Job:
+    def create_job(
+        self,
+        job_type: str,
+        payload: dict,
+        *,
+        max_attempts: int = 3,
+        priority: int = 0,
+        tenant_id: str | None = None,
+        owner_user_id: str | None = None,
+    ) -> Job:
+        tenant_id = str(tenant_id or payload.get("tenant_id") or DEFAULT_TENANT_ID)
+        owner_user_id = str(owner_user_id or payload.get("owner_user_id") or "user_primary")
+        payload = {**dict(payload), "tenant_id": tenant_id, "owner_user_id": owner_user_id}
         job = Job(
             job_id=f"job_{uuid4().hex}",
             job_type=job_type,
@@ -754,6 +832,8 @@ class InMemoryKnowledgeStore:
             priority=priority,
             run_after=utc_now(),
             source_refs=_source_refs_from_payload(payload.get("source_refs")),
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
         )
         self.jobs[job.job_id] = job
         self.add_job_event(job.job_id, "queued", f"Queued {job_type} job", {"payload": payload, "priority": priority})
@@ -762,8 +842,10 @@ class InMemoryKnowledgeStore:
     def get_job(self, job_id: str) -> Job:
         return self.jobs[job_id]
 
-    def list_jobs(self, *, status: str | None = None, job_type: str | None = None, limit: int = 50) -> list[Job]:
+    def list_jobs(self, *, tenant_id: str | None = None, status: str | None = None, job_type: str | None = None, limit: int = 50) -> list[Job]:
         jobs = list(self.jobs.values())
+        if tenant_id:
+            jobs = [job for job in jobs if job.tenant_id == tenant_id]
         if status:
             jobs = [job for job in jobs if job.status == status]
         if job_type:
@@ -774,12 +856,14 @@ class InMemoryKnowledgeStore:
         return [event for event in self.job_events if event.job_id == job_id]
 
     def add_job_event(self, job_id: str, event_type: str, message: str, detail: dict | None = None) -> JobEvent:
+        job = self.jobs.get(job_id)
         event = JobEvent(
             job_event_id=f"evt_{uuid4().hex}",
             job_id=job_id,
             event_type=event_type,
             message=message,
             detail=dict(detail or {}),
+            tenant_id=job.tenant_id if job else DEFAULT_TENANT_ID,
         )
         self.job_events.append(event)
         return event
@@ -788,6 +872,7 @@ class InMemoryKnowledgeStore:
         self,
         *,
         worker_id: str | None = None,
+        tenant_id: str | None = None,
         lease_seconds: int | None = None,
         excluded_job_types: set[str] | None = None,
     ) -> Job | None:
@@ -798,6 +883,7 @@ class InMemoryKnowledgeStore:
                 job
                 for job in self.jobs.values()
                 if job.status == "queued" and (job.run_after is None or job.run_after <= now)
+                and (tenant_id is None or job.tenant_id == tenant_id)
                 and job.job_type not in excluded_job_types
             ),
             key=lambda job: (-job.priority, job.run_after or job.created_at, job.created_at, job.job_id),
@@ -937,10 +1023,12 @@ class InMemoryKnowledgeStore:
         self.add_job_event(job.job_id, "canceled", job.error)
         return job
 
-    def recover_stale_jobs(self, *, max_age_seconds: int) -> list[Job]:
+    def recover_stale_jobs(self, *, tenant_id: str | None = None, max_age_seconds: int) -> list[Job]:
         now = utc_now()
         recovered: list[Job] = []
         for job in self.jobs.values():
+            if tenant_id and job.tenant_id != tenant_id:
+                continue
             if job.status != "running" or job.started_at is None:
                 continue
             if (now - job.started_at).total_seconds() < max_age_seconds:

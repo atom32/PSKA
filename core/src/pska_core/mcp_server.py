@@ -11,7 +11,7 @@ from pska_core.config import DatabaseConfig, PSKAConfig
 from pska_core.embeddings import build_embedding_provider
 from pska_core.extraction import ExtractionService
 from pska_core.ingest import IngestService
-from pska_core.models import ChannelIngestPayload
+from pska_core.models import DEFAULT_TENANT_ID, ChannelIngestPayload
 from pska_core.retrieval import RetrievalService
 from pska_core.serde import to_jsonable
 from pska_core.store_postgres import PostgresKnowledgeStore
@@ -28,6 +28,7 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "query": {"type": "string"},
+                "tenant_id": {"type": "string", "default": DEFAULT_TENANT_ID},
                 "user_id": {"type": "string", "default": "user_primary"},
                 "represented_user_id": {"type": "string"},
                 "top_k": {"type": "integer", "default": 5},
@@ -40,7 +41,7 @@ TOOLS = [
     {
         "name": "pska_index_status",
         "description": "Return basic PSKA index counts.",
-        "inputSchema": {"type": "object", "properties": {}, "required": []},
+        "inputSchema": {"type": "object", "properties": {"tenant_id": {"type": "string", "default": DEFAULT_TENANT_ID}}, "required": []},
     },
     {
         "name": "pska_ingest_channel_payload",
@@ -52,14 +53,14 @@ TOOLS = [
         "description": "Extract MVP entities, hyperedges, and review items from source items.",
         "inputSchema": {
             "type": "object",
-            "properties": {"owner_user_id": {"type": "string"}},
+            "properties": {"tenant_id": {"type": "string", "default": DEFAULT_TENANT_ID}, "owner_user_id": {"type": "string"}},
             "required": [],
         },
     },
     {
         "name": "pska_review_items",
         "description": "List PSKA review items.",
-        "inputSchema": {"type": "object", "properties": {}, "required": []},
+        "inputSchema": {"type": "object", "properties": {"tenant_id": {"type": "string", "default": DEFAULT_TENANT_ID}}, "required": []},
     },
     {
         "name": "pska_write_candidates",
@@ -68,6 +69,7 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "owner_user_id": {"type": "string"},
+                "tenant_id": {"type": "string", "default": DEFAULT_TENANT_ID},
                 "schema_version": {"type": "string", "default": "pska.candidates.v1"},
                 "job_id": {"type": "string"},
                 "request_id": {"type": "string"},
@@ -203,6 +205,7 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "job_id": {"type": "string"},
+                "tenant_id": {"type": "string", "default": DEFAULT_TENANT_ID},
                 "user_id": {"type": "string", "default": "user_primary"},
                 "represented_user_id": {"type": "string"},
                 "cursor": {"type": "integer", "default": 0},
@@ -281,13 +284,13 @@ class MCPServer:
         if name == "pska_search":
             payload = self.pska_search(arguments)
         elif name == "pska_index_status":
-            payload = self.pska_index_status()
+            payload = self.pska_index_status(arguments)
         elif name == "pska_ingest_channel_payload":
             payload = self.pska_ingest_channel_payload(arguments)
         elif name == "pska_extract_all":
             payload = self.pska_extract_all(arguments)
         elif name == "pska_review_items":
-            payload = self.pska_review_items()
+            payload = self.pska_review_items(arguments)
         elif name == "pska_write_candidates":
             payload = self.pska_write_candidates(arguments)
         elif name == "pska_job_context":
@@ -297,7 +300,8 @@ class MCPServer:
         return {"content": [{"type": "text", "text": json.dumps(to_jsonable(payload), ensure_ascii=False)}]}
 
     def pska_search(self, arguments: dict[str, Any]) -> Any:
-        user = self.store.get_user(arguments.get("user_id") or "user_primary")
+        tenant_id = str(arguments.get("tenant_id") or DEFAULT_TENANT_ID)
+        user = self.store.get_user(arguments.get("user_id") or "user_primary", tenant_id=tenant_id)
         response = self.retrieval.search(
             arguments["query"],
             user,
@@ -310,38 +314,50 @@ class MCPServer:
             max_snippet_chars=_bounded_int(arguments.get("max_snippet_chars"), default=700, minimum=120, maximum=1600),
         )
 
-    def pska_index_status(self) -> dict[str, int | bool]:
+    def pska_index_status(self, arguments: dict[str, Any] | None = None) -> dict[str, int | bool]:
+        tenant_id = str((arguments or {}).get("tenant_id") or DEFAULT_TENANT_ID)
+        source_items = self.store.list_source_items(tenant_id=tenant_id)
+        source_ids = {item.source_item_id for item in source_items}
         return {
             "ok": True,
-            "source_items": self.store.count_table("source_items"),
-            "documents": self.store.count_table("documents"),
-            "chunks": self.store.count_table("chunks"),
-            "entities": self.store.count_table("entities"),
-            "hyperedges": self.store.count_table("hyperedges"),
-            "knowledge_claims": self.store.count_table("knowledge_claims"),
-            "digest_notes": self.store.count_table("digest_notes"),
-            "review_items": self.store.count_table("review_items"),
+            "tenant_id": tenant_id,
+            "source_items": len(source_items),
+            "documents": len(self.store.list_documents_for_sources(source_ids)),
+            "chunks": len(self.store.list_chunks_for_sources(source_ids)),
+            "entities": len(self.store.list_entities(tenant_id=tenant_id)),
+            "hyperedges": len(self.store.list_hyperedges_for_entities({entity.entity_id for entity in self.store.list_entities(tenant_id=tenant_id)})),
+            "knowledge_claims": len(self.store.list_knowledge_claims(owner_user_id="user_primary", tenant_id=tenant_id, limit=10_000)),
+            "digest_notes": len(self.store.list_digest_notes(owner_user_id="user_primary", tenant_id=tenant_id, limit=10_000)),
+            "review_items": len(self.store.list_review_items(tenant_id=tenant_id)),
         }
 
     def pska_ingest_channel_payload(self, arguments: dict[str, Any]) -> Any:
-        return self.ingest.ingest_channel_payload(ChannelIngestPayload.from_mapping(arguments["payload"]))
+        payload = dict(arguments["payload"])
+        payload.setdefault("tenant_id", arguments.get("tenant_id") or DEFAULT_TENANT_ID)
+        return self.ingest.ingest_channel_payload(ChannelIngestPayload.from_mapping(payload))
 
     def pska_extract_all(self, arguments: dict[str, Any]) -> Any:
-        return {"reports": self.extraction.extract_all_visible(owner_user_id=arguments.get("owner_user_id"))}
+        tenant_id = str(arguments.get("tenant_id") or DEFAULT_TENANT_ID)
+        return {"reports": self.extraction.extract_all_visible(owner_user_id=arguments.get("owner_user_id"), tenant_id=tenant_id)}
 
-    def pska_review_items(self) -> Any:
-        return {"review_items": self.store.list_review_items()}
+    def pska_review_items(self, arguments: dict[str, Any] | None = None) -> Any:
+        tenant_id = str((arguments or {}).get("tenant_id") or DEFAULT_TENANT_ID)
+        return {"review_items": self.store.list_review_items(tenant_id=tenant_id)}
 
     def pska_write_candidates(self, arguments: dict[str, Any]) -> Any:
+        arguments.setdefault("tenant_id", _tenant_id_for_job(self.store, arguments.get("job_id")) or DEFAULT_TENANT_ID)
         return {"summary": self.candidates.write_candidates(arguments)}
 
     def pska_job_context(self, arguments: dict[str, Any]) -> Any:
         job = self.store.get_job(str(arguments["job_id"]))
+        tenant_id = str(arguments.get("tenant_id") or job.tenant_id or DEFAULT_TENANT_ID)
+        if tenant_id != job.tenant_id:
+            raise PermissionError("job tenant mismatch")
         request_user_id = str(arguments.get("represented_user_id") or arguments.get("user_id") or "user_primary")
         source_item_ids = _job_source_item_ids(job)
         candidate_items = [
             item
-            for item in self.store.list_source_items()
+            for item in self.store.list_source_items(tenant_id=tenant_id)
             if item.source_item_id in source_item_ids and item.owner_user_id == request_user_id
         ]
         candidate_items = sorted(candidate_items, key=lambda item: (item.created_at, item.source_item_id))
@@ -364,6 +380,7 @@ class MCPServer:
         passage_windows = _passage_windows_for_documents(documents, chunks, target_chars=max_passage_chars)
         return {
             "job": _compact_job(job),
+            "tenant_id": tenant_id,
             "request_user_id": request_user_id,
             "source_items": [_compact_source_item(item, max_chars=max_source_chars) for item in source_items],
             "documents": [_compact_document(document, max_chars=max_document_chars) for document in documents],
@@ -371,19 +388,19 @@ class MCPServer:
             "chunks": [_compact_chunk(chunk, max_chars=max_chunk_chars) for chunk in chunks[:max_chunks]],
             "knowledge_claims": [
                 _compact_knowledge_claim(claim)
-                for claim in self.store.list_knowledge_claims(owner_user_id=request_user_id, source_item_ids=source_ids, limit=max_existing_claims)
+                for claim in self.store.list_knowledge_claims(owner_user_id=request_user_id, tenant_id=tenant_id, source_item_ids=source_ids, limit=max_existing_claims)
             ],
             "digest_notes": [
                 _compact_digest_note(note)
-                for note in self.store.list_digest_notes(owner_user_id=request_user_id, source_item_ids=source_ids, limit=max_existing_digest_notes)
+                for note in self.store.list_digest_notes(owner_user_id=request_user_id, tenant_id=tenant_id, source_item_ids=source_ids, limit=max_existing_digest_notes)
             ],
             "agent_memories": [
                 _compact_memory(memory)
-                for memory in self.store.list_agent_memories(owner_user_id=request_user_id)[:1]
+                for memory in self.store.list_agent_memories(owner_user_id=request_user_id, tenant_id=tenant_id)[:1]
             ],
             "entities": [
                 _compact_entity(entity)
-                for entity in self.store.list_entities()
+                for entity in self.store.list_entities(tenant_id=tenant_id)
                 if entity.owner_user_id == request_user_id
             ][:3],
             "cursor": str(offset),
@@ -521,6 +538,15 @@ def _job_source_item_ids(job) -> set[str]:
             if isinstance(ref, dict) and ref.get("source_item_id"):
                 ids.add(str(ref["source_item_id"]))
     return ids
+
+
+def _tenant_id_for_job(store: Any, job_id: Any) -> str | None:
+    if not job_id:
+        return None
+    try:
+        return str(store.get_job(str(job_id)).tenant_id)
+    except Exception:
+        return None
 
 
 def _cursor_offset(value: Any) -> int:
@@ -665,6 +691,7 @@ def _compact_job(job: Any) -> dict[str, Any]:
         "max_attempts": payload.get("max_attempts"),
         "priority": payload.get("priority"),
         "run_after": payload.get("run_after"),
+        "tenant_id": payload.get("tenant_id") or (payload.get("payload") or {}).get("tenant_id"),
         "owner_user_id": (payload.get("payload") or {}).get("owner_user_id"),
         "reason": (payload.get("payload") or {}).get("reason"),
         "source_item_ids": sorted(_job_source_item_ids(job)),

@@ -87,6 +87,7 @@ class ReviewService:
             profile=profile_delta,
             source_refs=source_refs,
             confidence=float(proposal.get("confidence", 0.8)),
+            tenant_id=review_item.tenant_id,
         )
         return {
             **metadata,
@@ -111,6 +112,7 @@ class ReviewService:
             source_refs=source_refs,
             created_by_user_id=str(proposal.get("created_by_user_id") or "agent_service"),
             decay_policy=str(proposal.get("decay_policy") or "manual"),
+            tenant_id=review_item.tenant_id,
         )
         return {
             **metadata,
@@ -163,7 +165,7 @@ class ReviewService:
         confidence = float(proposal.get("confidence", 0.0))
         if confidence <= 0 or confidence > 1:
             raise ValueError("Relationship candidate review confidence must be between 0 and 1")
-        anchor = self._source_item_for_refs(source_refs)
+        anchor = self._source_item_for_refs(source_refs, tenant_id=review_item.tenant_id)
         evidence_text = str(proposal.get("evidence_text") or proposal.get("evidence") or review_item.title)
         edge = HypergraphService(self.store).create_hyperedge(
             relation_type=relation_type,
@@ -176,6 +178,7 @@ class ReviewService:
             evidence_text=evidence_text,
             source_refs=source_refs,
             confidence=confidence,
+            tenant_id=review_item.tenant_id,
         )
         return {
             "created_hyperedge_id": edge.hyperedge_id,
@@ -195,7 +198,7 @@ class ReviewService:
                 label = str(member.get("label") or "").strip()
                 if not entity_type or not label:
                     raise ValueError("Relationship candidate members require entity_id or entity_type and label")
-                entity_id = f"ent_{uuid5(NAMESPACE_URL, '|'.join([review_item.owner_user_id, entity_type, label])).hex}"
+                entity_id = f"ent_{uuid5(NAMESPACE_URL, '|'.join([review_item.tenant_id, review_item.owner_user_id, entity_type, label])).hex}"
                 self.store.add_entity(
                     Entity(
                         entity_id=str(entity_id),
@@ -204,14 +207,15 @@ class ReviewService:
                         owner_user_id=review_item.owner_user_id,
                         space_id=str(proposal.get("space_id") or "private_primary"),
                         visibility=_visibility(proposal.get("visibility"), Visibility.PRIVATE),
+                        tenant_id=review_item.tenant_id,
                     )
                 )
             members.append((str(entity_id), role))
         return members
 
-    def _source_item_for_refs(self, source_refs: list[SourceRef]):
+    def _source_item_for_refs(self, source_refs: list[SourceRef], *, tenant_id: str):
         source_item_ids = {ref.source_item_id for ref in source_refs if ref.source_item_id}
-        for item in self.store.list_source_items():
+        for item in self.store.list_source_items(tenant_id=tenant_id):
             if item.source_item_id in source_item_ids:
                 return item
         raise ValueError("Relationship candidate source_refs must reference an existing source_item")
@@ -235,6 +239,7 @@ class ReviewService:
                 target_id=review_item.review_item_id,
                 decision=decision,
                 metadata={"reason": reason, "review_type": review_item.review_type.value, **(metadata or {})},
+                tenant_id=review_item.tenant_id,
             )
         )
 

@@ -34,7 +34,7 @@ from pska_core.jobs import DIGEST_VIA_FASTREACT, JobService
 from pska_core.knowledge_sources import KnowledgeSourceService
 from pska_core.memory import MemoryService
 from pska_core.mcp_server import MCPServer, PROTOCOL_VERSION
-from pska_core.models import ChannelIngestPayload, PassageWindow, ReviewItem, SourceRef, WorkspaceActivityEvent
+from pska_core.models import DEFAULT_TENANT_ID, ChannelIngestPayload, PassageWindow, ReviewItem, SourceRef, WorkspaceActivityEvent
 from pska_core.offline_index import OfflineIndexService
 from pska_core.retrieval import RetrievalService
 from pska_core.review import ReviewService
@@ -188,7 +188,8 @@ class PSKAApi:
             request_id = request.get("id") if isinstance(request, dict) else None
             return self.mcp.error(request_id, -32000, f"{type(exc).__name__}: {exc}")
 
-    def ingest_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def ingest_payload(self, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
+        payload = context.apply_to_payload(payload) if context else payload
         item = self.ingest.ingest_channel_payload(ChannelIngestPayload.from_mapping(payload))
         return to_jsonable(item)
 
@@ -217,21 +218,26 @@ class PSKAApi:
     def connector_states(
         self,
         *,
+        tenant_id: str | None = None,
         owner_user_id: str | None = None,
         connector_id: str | None = None,
         connector_state_id: str | None = None,
     ) -> dict[str, Any]:
         if connector_state_id:
-            return {"connector_state": to_jsonable(self.store.get_connector_state(connector_state_id))}
+            state = self.store.get_connector_state(connector_state_id)
+            if tenant_id and state.tenant_id != tenant_id:
+                raise PermissionError("connector state tenant mismatch")
+            return {"connector_state": to_jsonable(state)}
         return {
             "connector_states": to_jsonable(
-                self.store.list_connector_states(owner_user_id=owner_user_id, connector_id=connector_id)
+                self.store.list_connector_states(tenant_id=tenant_id, owner_user_id=owner_user_id, connector_id=connector_id)
             )
         }
 
     def search(self, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
         payload = context.apply_to_payload(payload) if context else payload
-        user = self.store.get_user(payload.get("user_id") or "user_primary")
+        tenant_id = str(payload.get("tenant_id") or DEFAULT_TENANT_ID)
+        user = self.store.get_user(payload.get("user_id") or "user_primary", tenant_id=tenant_id)
         return to_jsonable(
             self.retrieval.search(
                 payload["query"],
@@ -243,7 +249,8 @@ class PSKAApi:
 
     def agentic_search(self, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
         payload = context.apply_to_payload(payload) if context else payload
-        user = self.store.get_user(payload.get("user_id") or "user_primary")
+        tenant_id = str(payload.get("tenant_id") or DEFAULT_TENANT_ID)
+        user = self.store.get_user(payload.get("user_id") or "user_primary", tenant_id=tenant_id)
         return self._agentic_service_search(
             str(payload["query"]),
             user,
@@ -282,14 +289,18 @@ class PSKAApi:
             "agentic_service": response.get("agentic_service") if isinstance(response.get("agentic_service"), dict) else {},
         }
 
-    def extract_all(self, payload: dict[str, Any]) -> dict[str, Any]:
-        reports = self.extraction.extract_all_visible(owner_user_id=payload.get("owner_user_id"))
+    def extract_all(self, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
+        payload = context.apply_to_payload(payload) if context else payload
+        tenant_id = str(payload.get("tenant_id") or DEFAULT_TENANT_ID)
+        reports = self.extraction.extract_all_visible(owner_user_id=payload.get("owner_user_id"), tenant_id=tenant_id)
         return {"reports": to_jsonable(reports), "index_status": self.index_status()}
 
-    def review_items(self) -> dict[str, Any]:
-        return {"review_items": to_jsonable(self.store.list_review_items())}
+    def review_items(self, *, tenant_id: str | None = None) -> dict[str, Any]:
+        return {"review_items": to_jsonable(self.store.list_review_items(tenant_id=tenant_id))}
 
-    def propose_profile_update(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def propose_profile_update(self, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
+        payload = context.apply_to_payload(payload) if context else payload
+        tenant_id = str(payload.get("tenant_id") or DEFAULT_TENANT_ID)
         profile_delta = payload.get("profile_delta") or payload.get("profile")
         if not isinstance(profile_delta, dict) or not profile_delta:
             raise ValueError("profile_delta must be a non-empty object")
@@ -300,6 +311,7 @@ class PSKAApi:
             source_refs=_source_refs_from_payload(payload.get("source_refs")),
             sensitivity=str(payload.get("sensitivity") or "normal"),
             confidence=float(payload.get("confidence", 0.8)),
+            tenant_id=tenant_id,
         )
         if isinstance(result, ReviewItem):
             return {"review_item": to_jsonable(result)}
@@ -354,22 +366,34 @@ class PSKAApi:
         discovery = self.store.update_discovery_item_status(discovery_id, "snoozed")
         return {"discovery": to_jsonable(discovery), "review_item": None}
 
-    def submit_job(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def submit_job(self, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
+        payload = context.apply_to_payload(payload) if context else payload
+        job_payload = {**dict(payload.get("payload") or {}), "tenant_id": payload.get("tenant_id") or DEFAULT_TENANT_ID}
+        if payload.get("owner_user_id") and not job_payload.get("owner_user_id"):
+            job_payload["owner_user_id"] = payload["owner_user_id"]
         job = self.jobs.submit(
             str(payload["job_type"]),
-            dict(payload.get("payload") or {}),
+            job_payload,
             max_attempts=int(payload.get("max_attempts") or 3),
-            priority=int(payload.get("priority") or (payload.get("payload") or {}).get("priority") or 0),
+            priority=int(payload.get("priority") or job_payload.get("priority") or 0),
         )
         return {"job": to_jsonable(job)}
 
-    def run_jobs(self, payload: dict[str, Any]) -> dict[str, Any]:
-        report = self.jobs.run_available(limit=int(payload.get("limit") or 1))
+    def run_jobs(self, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
+        payload = context.apply_to_payload(payload) if context else payload
+        tenant_id = str(payload.get("tenant_id") or DEFAULT_TENANT_ID)
+        service = JobService(
+            self.store,
+            workspace_root=self.config.workspace.root,
+            tenant_id=tenant_id,
+        )
+        report = service.run_available(limit=int(payload.get("limit") or 1))
         return {"run": to_jsonable(report)}
 
     def files_sync(self, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
         payload = context.apply_to_payload(payload) if context else payload
         source_service = KnowledgeSourceService(self.store)
+        tenant_id = str(payload.get("tenant_id") or self.config.files.tenant_id or DEFAULT_TENANT_ID)
         owner_user_id = str(payload.get("owner_user_id") or self.config.files.owner_user_id)
         requested_roots = [Path(str(root)).expanduser().resolve() for root in _string_list(payload.get("roots") or payload.get("root"))]
         ignore = _string_list(payload.get("ignore"))
@@ -382,6 +406,7 @@ class PSKAApi:
                     source_service.add_folder_source(
                         root,
                         owner_user_id=owner_user_id,
+                        tenant_id=tenant_id,
                         space_id=str(payload.get("space_id") or self.config.files.space_id),
                         visibility=Visibility(str(payload.get("visibility") or self.config.files.visibility)),
                         ignore=[*self.config.files.ignore, *ignore],
@@ -391,7 +416,7 @@ class PSKAApi:
             active_uris = {root.as_uri() for root in [*configured_roots, *requested_roots]}
             sources = [
                 source
-                for source in source_service.list_sources(owner_user_id=owner_user_id, source_type="folder")
+                for source in source_service.list_sources(tenant_id=tenant_id, owner_user_id=owner_user_id, source_type="folder")
                 if source.mode != "paused" and source.status != "paused" and source.uri in active_uris
             ]
         except Exception as exc:  # noqa: BLE001 - report local setup failures to the UI.
@@ -423,6 +448,7 @@ class PSKAApi:
                     self.store,
                     root=root,
                     owner_user_id=source.owner_user_id,
+                    tenant_id=source.tenant_id,
                     space_id=source.space_id,
                     visibility=source.visibility,
                     visible_team_ids=source.visible_team_ids,
@@ -480,6 +506,7 @@ class PSKAApi:
         )
 
         payload = context.apply_to_payload(payload) if context else payload
+        tenant_id = str(payload.get("tenant_id") or DEFAULT_TENANT_ID)
         owner_user_id = str(payload.get("owner_user_id") or "user_primary")
         args = argparse.Namespace(
             database_url=getattr(self.store, "database_url", self.config.database.url),
@@ -526,15 +553,16 @@ class PSKAApi:
         fallback_review = _digest_now_fallback_review(
             self.store,
             owner_user_id=owner_user_id,
+            tenant_id=tenant_id,
             scheduled_source_item_ids=scheduled.get("scheduled_source_item_ids") or [],
             diagnostics=diagnostics,
             worker_runs=worker_runs,
         )
-        stats = self.job_stats()["stats"]
-        discoveries = self.workspace_discoveries(owner_user_id=owner_user_id, limit=50)
-        all_new_discoveries = self.workspace_discoveries(owner_user_id=owner_user_id, limit=50, min_score=0)
+        stats = self.job_stats(tenant_id=tenant_id)["stats"]
+        discoveries = self.workspace_discoveries(owner_user_id=owner_user_id, limit=50, context=context)
+        all_new_discoveries = self.workspace_discoveries(owner_user_id=owner_user_id, limit=50, min_score=0, context=context)
         pending_reviews = _review_items_payload(
-            self.store.list_review_items(),
+            self.store.list_review_items(tenant_id=tenant_id),
             status="pending",
             owner_user_id=owner_user_id,
             limit=50,
@@ -542,7 +570,7 @@ class PSKAApi:
         )
         failed_digest_jobs = [
             to_jsonable(job)
-            for job in self.store.list_jobs(status="failed", job_type=DIGEST_VIA_FASTREACT, limit=10)
+            for job in self.store.list_jobs(tenant_id=tenant_id, status="failed", job_type=DIGEST_VIA_FASTREACT, limit=10)
         ]
         candidate_summary = _digest_now_candidate_summary(worker_runs)
         candidate_summary["review_items"] += int(fallback_review.get("review_items") or 0)
@@ -573,27 +601,39 @@ class PSKAApi:
         }
         return to_jsonable(result)
 
-    def job_status(self, job_id: str | None = None, *, status: str | None = None, job_type: str | None = None, limit: int = 50) -> dict[str, Any]:
+    def job_status(
+        self,
+        job_id: str | None = None,
+        *,
+        tenant_id: str | None = None,
+        status: str | None = None,
+        job_type: str | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
         if job_id:
+            job = self.store.get_job(job_id)
+            if tenant_id and job.tenant_id != tenant_id:
+                raise PermissionError("job tenant mismatch")
             return {
-                "job": to_jsonable(self.store.get_job(job_id)),
+                "job": to_jsonable(job),
                 "events": to_jsonable(self.store.list_job_events(job_id)),
             }
-        return {"jobs": to_jsonable(self.store.list_jobs(status=status, job_type=job_type, limit=limit))}
+        return {"jobs": to_jsonable(self.store.list_jobs(tenant_id=tenant_id, status=status, job_type=job_type, limit=limit))}
 
-    def digest_logs(self, *, owner_user_id: str = "user_primary", limit: int = 10) -> dict[str, Any]:
+    def digest_logs(self, *, owner_user_id: str = "user_primary", tenant_id: str | None = None, limit: int = 10) -> dict[str, Any]:
         limit = max(1, limit)
+        tenant_id = tenant_id or DEFAULT_TENANT_ID
         jobs = [
             job
-            for job in self.store.list_jobs(job_type=DIGEST_VIA_FASTREACT, limit=max(limit * 3, limit))
+            for job in self.store.list_jobs(tenant_id=tenant_id, job_type=DIGEST_VIA_FASTREACT, limit=max(limit * 3, limit))
             if str(job.payload.get("owner_user_id") or owner_user_id) == owner_user_id
         ][:limit]
         entries = []
         for job in jobs:
             source_ids = _job_source_item_ids(job)
             events = self.store.list_job_events(job.job_id)
-            claims = self.store.list_knowledge_claims(owner_user_id=owner_user_id, job_id=job.job_id, limit=20)
-            notes = self.store.list_digest_notes(owner_user_id=owner_user_id, job_id=job.job_id, limit=10)
+            claims = self.store.list_knowledge_claims(owner_user_id=owner_user_id, tenant_id=tenant_id, job_id=job.job_id, limit=20)
+            notes = self.store.list_digest_notes(owner_user_id=owner_user_id, tenant_id=tenant_id, job_id=job.job_id, limit=10)
             entries.append(_digest_log_entry(job, events, claims, notes, source_ids))
         return {
             "ok": True,
@@ -603,33 +643,36 @@ class PSKAApi:
             "count": len(entries),
         }
 
-    def metrics(self) -> dict[str, Any]:
-        source_items = self.store.list_source_items()
+    def metrics(self, *, tenant_id: str | None = None) -> dict[str, Any]:
+        tenant_id = tenant_id or DEFAULT_TENANT_ID
+        source_items = self.store.list_source_items(tenant_id=tenant_id)
         chunks = self.store.list_chunks_for_sources({item.source_item_id for item in source_items})
         return {
             "index": self.index_status(),
-            "offline_index": OfflineIndexService(self.store).freshness(),
+            "tenant_id": tenant_id,
+            "offline_index": OfflineIndexService(self.store).freshness(tenant_id=tenant_id),
             "embedding": _embedding_metrics(chunks, _api_config(self)),
-            "connectors": _connector_metrics(source_items, self.store.list_connector_states()),
-            "jobs": self.job_stats()["stats"],
+            "connectors": _connector_metrics(source_items, self.store.list_connector_states(tenant_id=tenant_id)),
+            "jobs": self.job_stats(tenant_id=tenant_id)["stats"],
         }
 
-    def console_dashboard(self, *, owner_user_id: str = "user_primary", limit: int = 5) -> dict[str, Any]:
+    def console_dashboard(self, *, owner_user_id: str = "user_primary", tenant_id: str | None = None, limit: int = 5) -> dict[str, Any]:
         limit = max(0, limit)
+        tenant_id = tenant_id or DEFAULT_TENANT_ID
         try:
             ready = self.ready()
         except Exception as exc:  # noqa: BLE001 - console should explain local service failures.
             ready = {"ok": False, "error": f"{type(exc).__name__}: {exc}", "checks": {}}
         try:
-            metrics = self.metrics()
+            metrics = self.metrics(tenant_id=tenant_id)
         except Exception as exc:  # noqa: BLE001
             metrics = {"ok": False, "error": f"{type(exc).__name__}: {exc}", "index": {}, "connectors": {}}
         try:
-            stats = self.job_stats()["stats"]
+            stats = self.job_stats(tenant_id=tenant_id)["stats"]
         except Exception as exc:  # noqa: BLE001
             stats = {"ok": False, "error": f"{type(exc).__name__}: {exc}", "by_status": {}, "digest_backlog": {}}
         try:
-            reviews = self.review_items()
+            reviews = self.review_items(tenant_id=tenant_id)
         except Exception as exc:  # noqa: BLE001
             reviews = {"error": f"{type(exc).__name__}: {exc}", "items": []}
 
@@ -647,6 +690,7 @@ class PSKAApi:
         return {
             "ok": bool(ready.get("ok")),
             "owner_user_id": owner_user_id,
+            "tenant_id": tenant_id,
             "requires_agentic_service_online": False,
             "service_readiness": {
                 "database_ok": bool((checks.get("database") or {}).get("ok")),
@@ -667,7 +711,7 @@ class PSKAApi:
             "pending_reviews": {"total_matching": pending_count, "recent": pending_reviews[:limit]},
             "failed_jobs": {"count": failed_count, "recent": failed_jobs},
             "source_summary": {
-                "recent_sources": _console_recent_sources(self.store.list_source_items(), owner_user_id=owner_user_id, limit=limit),
+                "recent_sources": _console_recent_sources(self.store.list_source_items(tenant_id=tenant_id), owner_user_id=owner_user_id, limit=limit),
                 "connector_state": metrics.get("connectors") or {},
             },
             "recommended_commands": _console_recommended_commands(
@@ -682,8 +726,9 @@ class PSKAApi:
             ),
         }
 
-    def job_stats(self, *, limit: int = 1000) -> dict[str, Any]:
-        jobs = self.store.list_jobs(limit=limit)
+    def job_stats(self, *, tenant_id: str | None = None, limit: int = 1000) -> dict[str, Any]:
+        tenant_id = tenant_id or DEFAULT_TENANT_ID
+        jobs = self.store.list_jobs(tenant_id=tenant_id, limit=limit)
         by_status = {status: 0 for status in ["queued", "running", "failed", "succeeded", "canceled"]}
         by_type: dict[str, int] = {}
         worker_ids: set[str] = set()
@@ -725,6 +770,7 @@ class PSKAApi:
         return {
             "stats": {
                 "sample_size": len(jobs),
+                "tenant_id": tenant_id,
                 "by_status": by_status,
                 "by_type": by_type,
                 "active_worker_ids": sorted(worker_ids),
@@ -738,10 +784,11 @@ class PSKAApi:
             }
         }
 
-    def console_reviews(self, *, status: str = "pending", owner_user_id: str = "user_primary", limit: int = 50) -> dict[str, Any]:
+    def console_reviews(self, *, status: str = "pending", owner_user_id: str = "user_primary", tenant_id: str | None = None, limit: int = 50) -> dict[str, Any]:
         limit = max(0, limit)
+        tenant_id = tenant_id or DEFAULT_TENANT_ID
         items = _console_review_items(
-            to_jsonable(self.store.list_review_items()),
+            to_jsonable(self.store.list_review_items(tenant_id=tenant_id)),
             status=status,
             owner_user_id=owner_user_id,
             limit=limit,
@@ -749,12 +796,13 @@ class PSKAApi:
         return {
             "ok": True,
             "owner_user_id": owner_user_id,
+            "tenant_id": tenant_id,
             "status": status,
             "review_items": items,
             "count": len(items),
             "total_matching": len(
                 _console_review_items(
-                    to_jsonable(self.store.list_review_items()),
+                    to_jsonable(self.store.list_review_items(tenant_id=tenant_id)),
                     status=status,
                     owner_user_id=owner_user_id,
                     limit=10_000,
@@ -769,9 +817,10 @@ class PSKAApi:
         if not query:
             raise ValueError("query is required")
         user_id = str(payload.get("user_id") or "user_primary")
+        tenant_id = str(payload.get("tenant_id") or DEFAULT_TENANT_ID)
         represented_user_id = payload.get("represented_user_id")
         mode = str(payload.get("mode") or "direct")
-        user = self.store.get_user(user_id)
+        user = self.store.get_user(user_id, tenant_id=tenant_id)
         if mode == "agentic":
             try:
                 result = self._agentic_service_search(
@@ -816,6 +865,7 @@ class PSKAApi:
                 captured = capture_agent_conversation(
                     self.store,
                     owner_user_id=str(represented_user_id or user_id),
+                    tenant_id=tenant_id,
                     represented_user_id=str(represented_user_id or user_id),
                     purpose="agentic_search",
                     prompt=query,
@@ -885,17 +935,19 @@ class PSKAApi:
         context: RequestContext | None = None,
     ) -> dict[str, Any]:
         owner_user_id = _workspace_owner_user_id(context, owner_user_id)
+        tenant_id = _tenant_id_for_request(context)
         limit = max(1, min(limit, 50))
-        dashboard = self.console_dashboard(owner_user_id=owner_user_id, limit=limit)
-        reviews = self.console_reviews(status="pending", owner_user_id=owner_user_id, limit=limit)
+        dashboard = self.console_dashboard(owner_user_id=owner_user_id, tenant_id=tenant_id, limit=limit)
+        reviews = self.console_reviews(status="pending", owner_user_id=owner_user_id, tenant_id=tenant_id, limit=limit)
         corpus = self.workspace_corpus(owner_user_id=owner_user_id, limit=limit, context=context)
         activity = self.workspace_activity(owner_user_id=owner_user_id, limit=limit, context=context)
         discoveries = self.workspace_discoveries(owner_user_id=owner_user_id, limit=limit, context=context)
-        stats = self.job_stats()["stats"]
+        stats = self.job_stats(tenant_id=tenant_id)["stats"]
         review_items = reviews.get("review_items") if isinstance(reviews.get("review_items"), list) else []
         return {
             "ok": True,
             "owner_user_id": owner_user_id,
+            "tenant_id": tenant_id,
             "read_only": True,
             "surface": "today",
             "continue_working": [_today_continue_item_from_activity(item) for item in activity["continue_working"][: min(limit, 6)]],
@@ -935,10 +987,12 @@ class PSKAApi:
         context: RequestContext | None = None,
     ) -> dict[str, Any]:
         owner_user_id = _workspace_owner_user_id(context, owner_user_id)
-        DiscoveryService(self.store, owner_user_id=owner_user_id).produce()
+        tenant_id = _tenant_id_for_request(context)
+        DiscoveryService(self.store, owner_user_id=owner_user_id, tenant_id=tenant_id).produce()
         since = datetime.now(UTC) - timedelta(days=7)
         items = self.store.list_discovery_items(
             owner_user_id=owner_user_id,
+            tenant_id=tenant_id,
             status="new",
             since=since,
             limit=100,
@@ -949,6 +1003,7 @@ class PSKAApi:
         return {
             "ok": True,
             "owner_user_id": owner_user_id,
+            "tenant_id": tenant_id,
             "window_days": 7,
             "min_score": threshold,
             "discoveries": [_discovery_item_payload(item) for item in filtered],
@@ -957,7 +1012,9 @@ class PSKAApi:
         }
 
     def record_workspace_activity(self, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
+        payload = context.apply_to_payload(payload) if context else payload
         owner_user_id = _workspace_owner_user_id(context, payload.get("owner_user_id"))
+        tenant_id = str(payload.get("tenant_id") or DEFAULT_TENANT_ID)
         actor_user_id = str(payload.get("actor_user_id") or owner_user_id)
         activity_type = str(payload.get("activity_type") or "").strip().lower()
         if activity_type not in {"opened", "edited", "viewed", "pinned"}:
@@ -978,6 +1035,7 @@ class PSKAApi:
             title=str(payload.get("title") or _workspace_activity_default_title(surface, target_id)),
             summary=str(payload.get("summary") or ""),
             metadata=dict(payload.get("metadata") or {}),
+            tenant_id=tenant_id,
         )
         return {"ok": True, "activity": to_jsonable(self.store.add_workspace_activity_event(event))}
 
@@ -989,8 +1047,10 @@ class PSKAApi:
         context: RequestContext | None = None,
     ) -> dict[str, Any]:
         owner_user_id = _workspace_owner_user_id(context, owner_user_id)
+        tenant_id = _tenant_id_for_request(context)
         events = self.store.list_workspace_activity_events(
             owner_user_id=owner_user_id,
+            tenant_id=tenant_id,
             activity_types={"opened", "edited", "viewed", "pinned"},
             limit=max(1, min(limit, 100)),
         )
@@ -1013,10 +1073,11 @@ class PSKAApi:
         context: RequestContext | None = None,
     ) -> dict[str, Any]:
         owner_user_id = _workspace_owner_user_id(context, owner_user_id)
+        tenant_id = _tenant_id_for_request(context)
         limit = max(1, min(limit, 100))
         query_text = str(query or "").strip().lower()
         channel = str(source_channel or "").strip()
-        all_sources = [item for item in self.store.list_source_items() if item.owner_user_id == owner_user_id]
+        all_sources = [item for item in self.store.list_source_items(tenant_id=tenant_id) if item.owner_user_id == owner_user_id]
         all_source_ids = {item.source_item_id for item in all_sources}
         all_chunks = self.store.list_chunks_for_sources(all_source_ids)
         chunks_by_source: dict[str, list[Any]] = {}
@@ -1037,16 +1098,16 @@ class PSKAApi:
             if chunk.source_item_id in limited_source_ids and _workspace_chunk_matches(chunk, query=query_text)
         ][: limit * 3]
         memories = sorted(
-            self.store.list_agent_memories(owner_user_id=owner_user_id),
+            self.store.list_agent_memories(owner_user_id=owner_user_id, tenant_id=tenant_id),
             key=lambda memory: (float(getattr(memory, "confidence", 0.0) or 0.0), getattr(memory, "agent_memory_id", "")),
             reverse=True,
         )[:limit]
         profiles = sorted(
-            self.store.list_profile_cards(owner_user_id=owner_user_id),
+            self.store.list_profile_cards(owner_user_id=owner_user_id, tenant_id=tenant_id),
             key=lambda card: (float(getattr(card, "confidence", 0.0) or 0.0), getattr(card, "profile_card_id", "")),
             reverse=True,
         )[:limit]
-        entities = [entity for entity in self.store.list_entities() if getattr(entity, "owner_user_id", "") == owner_user_id]
+        entities = [entity for entity in self.store.list_entities(tenant_id=tenant_id) if getattr(entity, "owner_user_id", "") == owner_user_id]
         entity_by_id = {entity.entity_id: entity for entity in entities}
         edge_pairs = self.store.list_hyperedges_for_entities(set(entity_by_id))
         edge_summaries = [
@@ -1092,21 +1153,22 @@ class PSKAApi:
         context: RequestContext | None = None,
     ) -> dict[str, Any]:
         owner_user_id = _workspace_owner_user_id(context, owner_user_id)
+        tenant_id = _tenant_id_for_request(context)
         limit = max(1, min(limit, 100))
-        source_items = [item for item in self.store.list_source_items() if item.owner_user_id == owner_user_id][:limit]
+        source_items = [item for item in self.store.list_source_items(tenant_id=tenant_id) if item.owner_user_id == owner_user_id][:limit]
         source_ids = {item.source_item_id for item in source_items}
         documents = self.store.list_documents_for_sources(source_ids)
         chunks = self.store.list_chunks_for_sources(source_ids)
         passage_windows = _passage_windows_for_documents(documents, chunks)
-        claims = self.store.list_knowledge_claims(owner_user_id=owner_user_id, source_item_ids=source_ids, limit=limit * 4)
-        digest_notes = self.store.list_digest_notes(owner_user_id=owner_user_id, source_item_ids=source_ids, limit=limit)
-        memories = self.store.list_agent_memories(owner_user_id=owner_user_id)[:limit]
+        claims = self.store.list_knowledge_claims(owner_user_id=owner_user_id, tenant_id=tenant_id, source_item_ids=source_ids, limit=limit * 4)
+        digest_notes = self.store.list_digest_notes(owner_user_id=owner_user_id, tenant_id=tenant_id, source_item_ids=source_ids, limit=limit)
+        memories = self.store.list_agent_memories(owner_user_id=owner_user_id, tenant_id=tenant_id)[:limit]
         review_items = [
             item
-            for item in self.store.list_review_items()
+            for item in self.store.list_review_items(tenant_id=tenant_id)
             if getattr(item, "owner_user_id", "") == owner_user_id and getattr(item, "status", "") == "pending"
         ][:limit]
-        entities = [entity for entity in self.store.list_entities() if getattr(entity, "owner_user_id", "") == owner_user_id]
+        entities = [entity for entity in self.store.list_entities(tenant_id=tenant_id) if getattr(entity, "owner_user_id", "") == owner_user_id]
         entity_by_id = {entity.entity_id: entity for entity in entities}
         hyperedges = [
             (edge, members)
@@ -1257,13 +1319,16 @@ class PSKAApi:
         self,
         *,
         owner_user_id: str = "user_primary",
+        tenant_id: str = DEFAULT_TENANT_ID,
         limit: int = 100,
     ) -> dict[str, Any]:
-        graph = self.workspace_graph_data(owner_user_id=owner_user_id, limit=limit)
+        context = RequestContext(tenant_id=tenant_id, user_id=owner_user_id)
+        graph = self.workspace_graph_data(owner_user_id=owner_user_id, limit=limit, context=context)
         counts = self.store.replace_graph_projection(
             owner_user_id=owner_user_id,
             nodes=graph.get("nodes") or [],
             edges=graph.get("edges") or [],
+            tenant_id=tenant_id,
         )
         return {
             "ok": True,
@@ -1289,7 +1354,8 @@ class PSKAApi:
         context: RequestContext | None = None,
     ) -> dict[str, Any]:
         owner_user_id = _workspace_owner_user_id(context, owner_user_id)
-        user = self.store.get_user(owner_user_id)
+        tenant_id = _tenant_id_for_request(context)
+        user = self.store.get_user(owner_user_id, tenant_id=tenant_id)
         result = self.retrieval.search(query, user, represented_user_id=owner_user_id, top_k=max(1, min(top_k, 20)))
         deterministic = {
             "ok": True,
@@ -1394,8 +1460,9 @@ class PSKAApi:
         if not selected_text and not query:
             raise ValueError("selected_text or query is required")
         user_id = str(payload.get("user_id") or "user_primary")
+        tenant_id = str(payload.get("tenant_id") or DEFAULT_TENANT_ID)
         represented_user_id = payload.get("represented_user_id")
-        user = self.store.get_user(user_id)
+        user = self.store.get_user(user_id, tenant_id=tenant_id)
         response = self.retrieval.search(
             query,
             user,
@@ -1444,10 +1511,11 @@ class PSKAApi:
             },
         }
 
-    def console_memory(self, *, owner_user_id: str = "user_primary", limit: int = 50) -> dict[str, Any]:
+    def console_memory(self, *, owner_user_id: str = "user_primary", tenant_id: str | None = None, limit: int = 50) -> dict[str, Any]:
         limit = max(0, limit)
+        tenant_id = tenant_id or DEFAULT_TENANT_ID
         memories = sorted(
-            self.store.list_agent_memories(owner_user_id=owner_user_id),
+            self.store.list_agent_memories(owner_user_id=owner_user_id, tenant_id=tenant_id),
             key=lambda memory: (
                 memory.confidence,
                 memory.last_verified_at.isoformat() if memory.last_verified_at else "",
@@ -1456,13 +1524,14 @@ class PSKAApi:
             reverse=True,
         )[:limit]
         profile_cards = sorted(
-            self.store.list_profile_cards(owner_user_id=owner_user_id),
+            self.store.list_profile_cards(owner_user_id=owner_user_id, tenant_id=tenant_id),
             key=lambda card: (card.confidence, card.profile_card_id),
             reverse=True,
         )[:limit]
         return {
             "ok": True,
             "owner_user_id": owner_user_id,
+            "tenant_id": tenant_id,
             "read_only": True,
             "agent_memories": [_console_agent_memory(memory) for memory in memories],
             "profile_cards": [_console_profile_card(card) for card in profile_cards],
@@ -1471,18 +1540,19 @@ class PSKAApi:
             "limit": limit,
         }
 
-    def console_jobs(self, *, limit: int = 20) -> dict[str, Any]:
+    def console_jobs(self, *, tenant_id: str | None = None, limit: int = 20) -> dict[str, Any]:
         limit = max(1, limit)
+        tenant_id = tenant_id or DEFAULT_TENANT_ID
         try:
             ready = self.ready()
         except Exception as exc:  # noqa: BLE001
             ready = {"ok": False, "error": f"{type(exc).__name__}: {exc}", "checks": {}}
-        stats = self.job_stats(limit=1000)["stats"]
-        failed_jobs = [to_jsonable(job) for job in self.store.list_jobs(status="failed", limit=limit)]
-        running_jobs = [to_jsonable(job) for job in self.store.list_jobs(status="running", limit=limit)]
+        stats = self.job_stats(tenant_id=tenant_id, limit=1000)["stats"]
+        failed_jobs = [to_jsonable(job) for job in self.store.list_jobs(tenant_id=tenant_id, status="failed", limit=limit)]
+        running_jobs = [to_jsonable(job) for job in self.store.list_jobs(tenant_id=tenant_id, status="running", limit=limit)]
         stale_running = stats.get("stale_running") or [
             _console_job_summary(job)
-            for job in self.store.list_jobs(status="running", limit=limit)
+            for job in self.store.list_jobs(tenant_id=tenant_id, status="running", limit=limit)
             if _console_job_is_stale(job)
         ]
         issues = _console_ops_issues(ready, stats, failed_jobs, stale_running)
@@ -1496,6 +1566,7 @@ class PSKAApi:
         ]
         return {
             "ok": bool(ready.get("ok")) and not any(issue.get("severity") == "critical" for issue in issues),
+            "tenant_id": tenant_id,
             "requires_agentic_service_online": False,
             "read_only": True,
             "service_readiness": _console_service_readiness(ready),
@@ -1519,20 +1590,22 @@ class PSKAApi:
             ],
         }
 
-    def console_sources(self, *, owner_user_id: str = "user_primary", limit: int = 20) -> dict[str, Any]:
+    def console_sources(self, *, owner_user_id: str = "user_primary", tenant_id: str | None = None, limit: int = 20) -> dict[str, Any]:
         limit = max(1, limit)
-        source_items = self.store.list_source_items()
-        connector_states = self.store.list_connector_states(owner_user_id=owner_user_id)
-        knowledge_sources = self.store.list_knowledge_sources(owner_user_id=owner_user_id)
+        tenant_id = tenant_id or DEFAULT_TENANT_ID
+        source_items = self.store.list_source_items(tenant_id=tenant_id)
+        connector_states = self.store.list_connector_states(tenant_id=tenant_id, owner_user_id=owner_user_id)
+        knowledge_sources = self.store.list_knowledge_sources(tenant_id=tenant_id, owner_user_id=owner_user_id)
         metrics = _connector_metrics(source_items, connector_states)
         recent_sources = _console_recent_sources(source_items, owner_user_id=owner_user_id, limit=limit)
         states = [_console_connector_state(state) for state in connector_states[:limit]]
-        source_cards = [_console_knowledge_source(source, self.store.list_sync_runs(knowledge_source_id=source.knowledge_source_id, limit=1)) for source in knowledge_sources[:limit]]
+        source_cards = [_console_knowledge_source(source, self.store.list_sync_runs(tenant_id=tenant_id, knowledge_source_id=source.knowledge_source_id, limit=1)) for source in knowledge_sources[:limit]]
         files_roots = _console_knowledge_source_roots(source_cards) or _console_files_roots(states)
         input_sources = _console_input_sources(self.config, source_cards)
         return {
             "ok": True,
             "owner_user_id": owner_user_id,
+            "tenant_id": tenant_id,
             "read_only": True,
             "source_counts": {
                 "source_items": self.store.count_table("source_items"),
@@ -1608,6 +1681,8 @@ class PSKAApi:
         )
 
     def schedule_digest(self, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
+        payload = context.apply_to_payload(payload) if context else payload
+        tenant_id = str(payload.get("tenant_id") or DEFAULT_TENANT_ID)
         owner_user_id = _owner_user_id_for_write(payload, context)
         source_item_ids = _string_list(payload.get("source_item_ids"))
         scoped_source_item_ids = set(_string_list(context.scope.get("source_item_ids"))) if context and context.scope else set()
@@ -1617,11 +1692,12 @@ class PSKAApi:
         priority = int(payload.get("priority") or 0)
         max_attempts = int(payload.get("max_attempts") or 3)
         retry_backoff_seconds = int(payload.get("retry_backoff_seconds") or payload.get("backoff_seconds") or 60)
-        quota = _digest_schedule_quota(self.store, owner_user_id=owner_user_id, payload=payload, force=force)
+        quota = _digest_schedule_quota(self.store, owner_user_id=owner_user_id, tenant_id=tenant_id, payload=payload, force=force)
         if quota["limited"]:
             return {
                 "job": None,
                 "owner_user_id": owner_user_id,
+                "tenant_id": tenant_id,
                 "scheduled_source_item_ids": [],
                 "skipped_source_item_ids": [],
                 "selected_source_items": [],
@@ -1634,7 +1710,7 @@ class PSKAApi:
                 "quota_limited": True,
             }
 
-        source_items = [item for item in self.store.list_source_items() if item.owner_user_id == owner_user_id]
+        source_items = [item for item in self.store.list_source_items(tenant_id=tenant_id) if item.owner_user_id == owner_user_id]
         if source_item_ids:
             requested = set(source_item_ids)
             source_items = [item for item in source_items if item.source_item_id in requested]
@@ -1642,7 +1718,7 @@ class PSKAApi:
             source_items = [item for item in source_items if item.source_item_id in scoped_source_item_ids]
         source_items = sorted(source_items, key=lambda item: (item.created_at, item.source_item_id), reverse=True)
 
-        coverage = {} if force else _digest_source_coverage(self.store)
+        coverage = {} if force else _digest_source_coverage(self.store, tenant_id=tenant_id)
         current_coverage = {
             item.source_item_id: covered
             for item in source_items
@@ -1675,6 +1751,7 @@ class PSKAApi:
         if source_refs:
             job_payload: dict[str, Any] = {
                 "owner_user_id": owner_user_id,
+                "tenant_id": tenant_id,
                 "batch_size": batch_size,
                 "retry_backoff_seconds": retry_backoff_seconds,
                 "source_refs": source_refs,
@@ -1689,6 +1766,7 @@ class PSKAApi:
                 "Scheduled digest job from source backlog",
                 {
                     "owner_user_id": owner_user_id,
+                    "tenant_id": tenant_id,
                     "source_item_count": len(source_refs),
                     "force": force,
                     "priority": priority,
@@ -1701,6 +1779,7 @@ class PSKAApi:
         return {
             "job": to_jsonable(job) if job else None,
             "owner_user_id": owner_user_id,
+            "tenant_id": tenant_id,
             "scheduled_source_item_ids": [ref["source_item_id"] for ref in source_refs],
             "skipped_source_item_ids": [item["source_item_id"] for item in skipped_items],
             "selected_source_items": selected_items,
@@ -1722,11 +1801,15 @@ class PSKAApi:
         limit: int | None = None,
     ) -> dict[str, Any]:
         job = self.store.get_job(job_id)
+        tenant_id = str(job.tenant_id or DEFAULT_TENANT_ID)
+        requested_tenant_id = _tenant_id_for_request(context) if context else tenant_id
+        if requested_tenant_id != tenant_id:
+            raise PermissionError("job tenant mismatch")
         user_id = context.effective_user_id if context else str(job.payload.get("owner_user_id") or "user_primary")
         represented_user_id = context.represented_user_id if context else None
         allowed_owner_id = represented_user_id or user_id
         source_item_ids = _job_source_item_ids(job)
-        candidate_items = [item for item in self.store.list_source_items() if item.owner_user_id == allowed_owner_id]
+        candidate_items = [item for item in self.store.list_source_items(tenant_id=tenant_id) if item.owner_user_id == allowed_owner_id]
         if source_item_ids:
             candidate_items = [item for item in candidate_items if item.source_item_id in source_item_ids]
         candidate_items = sorted(candidate_items, key=lambda item: (item.created_at, item.source_item_id))
@@ -1739,17 +1822,18 @@ class PSKAApi:
         documents = self.store.list_documents_for_sources(source_ids)
         chunks = self.store.list_chunks_for_sources(source_ids)
         passage_windows = _passage_windows_for_documents(documents, chunks)
-        entities = [entity for entity in self.store.list_entities() if entity.owner_user_id == allowed_owner_id]
-        memories = self.store.list_agent_memories(owner_user_id=allowed_owner_id)
+        entities = [entity for entity in self.store.list_entities(tenant_id=tenant_id) if entity.owner_user_id == allowed_owner_id]
+        memories = self.store.list_agent_memories(owner_user_id=allowed_owner_id, tenant_id=tenant_id)
         return {
             "job": to_jsonable(job),
+            "tenant_id": tenant_id,
             "request_user_id": allowed_owner_id,
             "source_items": to_jsonable(source_items),
             "documents": to_jsonable(documents),
             "passage_windows": to_jsonable(passage_windows),
             "chunks": to_jsonable(chunks),
-            "knowledge_claims": to_jsonable(self.store.list_knowledge_claims(owner_user_id=allowed_owner_id, source_item_ids=source_ids, limit=100)),
-            "digest_notes": to_jsonable(self.store.list_digest_notes(owner_user_id=allowed_owner_id, source_item_ids=source_ids, limit=20)),
+            "knowledge_claims": to_jsonable(self.store.list_knowledge_claims(owner_user_id=allowed_owner_id, tenant_id=tenant_id, source_item_ids=source_ids, limit=100)),
+            "digest_notes": to_jsonable(self.store.list_digest_notes(owner_user_id=allowed_owner_id, tenant_id=tenant_id, source_item_ids=source_ids, limit=20)),
             "agent_memories": to_jsonable(memories[:20]),
             "entities": to_jsonable(entities[:50]),
             "context_policy": {
@@ -1778,25 +1862,33 @@ class PSKAApi:
             "lease_seconds": lease_seconds,
         }
 
-    def complete_job(self, job_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def complete_job(self, job_id: str, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
+        _assert_job_context_tenant(self.store.get_job(job_id), context)
         result = dict(payload.get("result") or {})
         if payload.get("summary") is not None:
             result.setdefault("summary", payload.get("summary"))
         return {"job": to_jsonable(self.store.finish_job(job_id, result))}
 
-    def fail_job(self, job_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def fail_job(self, job_id: str, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
+        _assert_job_context_tenant(self.store.get_job(job_id), context)
         error = str(payload.get("error") or "job failed")
         retryable = bool(payload.get("retryable", True))
         return {"job": to_jsonable(self.store.fail_job(job_id, error, retryable=retryable))}
 
-    def retry_job(self, job_id: str) -> dict[str, Any]:
+    def retry_job(self, job_id: str, context: RequestContext | None = None) -> dict[str, Any]:
+        _assert_job_context_tenant(self.store.get_job(job_id), context)
         return {"job": to_jsonable(self.store.retry_job(job_id))}
 
-    def cancel_job(self, job_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def cancel_job(self, job_id: str, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
+        _assert_job_context_tenant(self.store.get_job(job_id), context)
         return {"job": to_jsonable(self.store.cancel_job(job_id, reason=str(payload.get("reason") or "")))}
 
-    def recover_jobs(self, payload: dict[str, Any]) -> dict[str, Any]:
-        jobs = self.store.recover_stale_jobs(max_age_seconds=int(payload.get("max_age_seconds") or 3600))
+    def recover_jobs(self, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
+        payload = context.apply_to_payload(payload) if context else payload
+        jobs = self.store.recover_stale_jobs(
+            tenant_id=str(payload.get("tenant_id") or DEFAULT_TENANT_ID),
+            max_age_seconds=int(payload.get("max_age_seconds") or 3600),
+        )
         return {"recovered": to_jsonable(jobs)}
 
 
@@ -1856,6 +1948,7 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
                 200,
                 self.api.console_dashboard(
                     owner_user_id=_first(query.get("owner_user_id")) or "user_primary",
+                    tenant_id=context.tenant_id,
                     limit=_int_first(query.get("limit")) or 5,
                 ),
             )
@@ -1865,6 +1958,7 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
                 self.api.console_reviews(
                     status=_first(query.get("status")) or "pending",
                     owner_user_id=_first(query.get("owner_user_id")) or "user_primary",
+                    tenant_id=context.tenant_id,
                     limit=_int_first(query.get("limit")) or 50,
                 ),
             )
@@ -1873,16 +1967,18 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
                 200,
                 self.api.console_memory(
                     owner_user_id=_first(query.get("owner_user_id")) or "user_primary",
+                    tenant_id=context.tenant_id,
                     limit=_int_first(query.get("limit")) or 50,
                 ),
             )
         if path == "/console/jobs/data":
-            return self._json(200, self.api.console_jobs(limit=_int_first(query.get("limit")) or 20))
+            return self._json(200, self.api.console_jobs(tenant_id=context.tenant_id, limit=_int_first(query.get("limit")) or 20))
         if path == "/digest/logs":
             return self._json(
                 200,
                 self.api.digest_logs(
                     owner_user_id=_first(query.get("owner_user_id")) or "user_primary",
+                    tenant_id=context.tenant_id,
                     limit=_int_first(query.get("limit")) or 10,
                 ),
             )
@@ -1891,6 +1987,7 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
                 200,
                 self.api.console_sources(
                     owner_user_id=_first(query.get("owner_user_id")) or "user_primary",
+                    tenant_id=context.tenant_id,
                     limit=_int_first(query.get("limit")) or 20,
                 ),
             )
@@ -1981,25 +2078,27 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
                 ),
             )
         if path == "/review-items":
-            return self._json(200, self.api.review_items())
+            return self._json(200, self.api.review_items(tenant_id=context.tenant_id))
         if path == "/connectors/states":
             return self._json(
                 200,
                 self.api.connector_states(
+                    tenant_id=context.tenant_id,
                     owner_user_id=_first(query.get("owner_user_id")),
                     connector_id=_first(query.get("connector_id")),
                 ),
             )
         if path.startswith("/connectors/states/"):
-            return self._json(200, self.api.connector_states(connector_state_id=path.removeprefix("/connectors/states/")))
+            return self._json(200, self.api.connector_states(tenant_id=context.tenant_id, connector_state_id=path.removeprefix("/connectors/states/")))
         if path == "/jobs/stats":
-            return self._json(200, self.api.job_stats(limit=_int_first(query.get("limit")) or 1000))
+            return self._json(200, self.api.job_stats(tenant_id=context.tenant_id, limit=_int_first(query.get("limit")) or 1000))
         if path == "/jobs":
             return self._json(
                 200,
                 self.api.job_status(
                     status=_first(query.get("status")),
                     job_type=_first(query.get("job_type")),
+                    tenant_id=context.tenant_id,
                     limit=_int_first(query.get("limit")) or 50,
                 ),
             )
@@ -2010,7 +2109,7 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
             job_id = path.removeprefix("/digest/batches/")
             return self._json(200, self.api.job_context(job_id, context=context, cursor=_first(query.get("cursor")), limit=_int_first(query.get("limit"))))
         if path.startswith("/jobs/"):
-            return self._json(200, self.api.job_status(path.removeprefix("/jobs/")))
+            return self._json(200, self.api.job_status(path.removeprefix("/jobs/"), tenant_id=context.tenant_id))
         self._json(404, {"error": f"not found: {path}"})
 
     def do_POST(self) -> None:  # noqa: N802 - stdlib handler API
@@ -2027,7 +2126,7 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
                     return self._empty(204)
                 return self._json(200, response)
             if path == "/ingest/channel-payload":
-                return self._json(200, self.api.ingest_payload(payload))
+                return self._json(200, self.api.ingest_payload(payload, context=context))
             if path == "/connectors/records":
                 return self._json(200, self.api.ingest_connector_record(payload, context=context))
             if path == "/connectors/states":
@@ -2057,9 +2156,9 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
                 discovery_id = path.removeprefix("/workspace/discoveries/").removesuffix("/snooze")
                 return self._json(200, self.api.snooze_discovery_item(discovery_id, payload))
             if path == "/extract/all":
-                return self._json(200, self.api.extract_all(payload))
+                return self._json(200, self.api.extract_all(payload, context=context))
             if path == "/profile/update-proposals":
-                return self._json(200, self.api.propose_profile_update(payload))
+                return self._json(200, self.api.propose_profile_update(payload, context=context))
             if path == "/candidates":
                 return self._json(200, self.api.write_candidates(payload, context=context))
             if path == "/digest/candidates":
@@ -2074,25 +2173,25 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
             if path == "/digest/now":
                 return self._json(200, self.api.digest_now(payload, context=context))
             if path == "/jobs":
-                return self._json(200, self.api.submit_job(payload))
+                return self._json(200, self.api.submit_job(payload, context=context))
             if path == "/jobs/run":
-                return self._json(200, self.api.run_jobs(payload))
+                return self._json(200, self.api.run_jobs(payload, context=context))
             if path == "/jobs/recover":
-                return self._json(200, self.api.recover_jobs(payload))
+                return self._json(200, self.api.recover_jobs(payload, context=context))
             if path == "/jobs/recover-stale":
-                return self._json(200, self.api.recover_jobs(payload))
+                return self._json(200, self.api.recover_jobs(payload, context=context))
             if path.startswith("/jobs/") and path.endswith("/lease"):
                 job_id = path.removeprefix("/jobs/").removesuffix("/lease")
                 return self._json(200, self.api.lease_job(job_id, payload, context=context))
             if path.startswith("/jobs/") and path.endswith("/complete"):
                 job_id = path.removeprefix("/jobs/").removesuffix("/complete")
-                return self._json(200, self.api.complete_job(job_id, payload))
+                return self._json(200, self.api.complete_job(job_id, payload, context=context))
             if path.startswith("/jobs/") and path.endswith("/fail"):
                 job_id = path.removeprefix("/jobs/").removesuffix("/fail")
-                return self._json(200, self.api.fail_job(job_id, payload))
+                return self._json(200, self.api.fail_job(job_id, payload, context=context))
             if path.startswith("/jobs/") and path.endswith("/cancel"):
                 job_id = path.removeprefix("/jobs/").removesuffix("/cancel")
-                return self._json(200, self.api.cancel_job(job_id, payload))
+                return self._json(200, self.api.cancel_job(job_id, payload, context=context))
             if path.startswith("/review-items/") and path.endswith("/approve"):
                 review_item_id = path.removeprefix("/review-items/").removesuffix("/approve")
                 return self._json(200, self.api.approve_review_item(review_item_id, payload))
@@ -2104,7 +2203,7 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
                 return self._json(200, self.api.apply_review_item(review_item_id, payload))
             if path.startswith("/jobs/") and path.endswith("/retry"):
                 job_id = path.removeprefix("/jobs/").removesuffix("/retry")
-                return self._json(200, self.api.retry_job(job_id))
+                return self._json(200, self.api.retry_job(job_id, context=context))
             self._json(404, {"error": f"not found: {path}"})
         except Exception as exc:  # noqa: BLE001 - local API should report JSON errors.
             if not hasattr(self, "_request_meta"):
@@ -2424,10 +2523,10 @@ def _job_source_item_ids(job) -> set[str]:
     return ids
 
 
-def _digest_source_coverage(store: PostgresKnowledgeStore) -> dict[str, dict[str, Any]]:
+def _digest_source_coverage(store: PostgresKnowledgeStore, *, tenant_id: str | None = None) -> dict[str, dict[str, Any]]:
     coverage: dict[str, dict[str, Any]] = {}
     priority = {"queued": 0, "running": 1, "succeeded": 2, "failed": 3, "canceled": 4}
-    for job in store.list_jobs(job_type=DIGEST_VIA_FASTREACT, limit=10000):
+    for job in store.list_jobs(tenant_id=tenant_id, job_type=DIGEST_VIA_FASTREACT, limit=10000):
         reason = _digest_coverage_reason(job.status)
         for source_item_id in _job_source_item_ids(job):
             current = coverage.get(source_item_id)
@@ -2509,7 +2608,7 @@ def _digest_budget_policy(*, limit: int, batch_size: int, force: bool) -> dict[s
     }
 
 
-def _digest_schedule_quota(store: PostgresKnowledgeStore, *, owner_user_id: str, payload: dict[str, Any], force: bool) -> dict[str, Any]:
+def _digest_schedule_quota(store: PostgresKnowledgeStore, *, owner_user_id: str, tenant_id: str, payload: dict[str, Any], force: bool) -> dict[str, Any]:
     window_seconds = _optional_positive_int(payload.get("quota_window_seconds"))
     max_jobs = _optional_positive_int(payload.get("max_jobs_per_window"))
     if force or not window_seconds or not max_jobs:
@@ -2523,9 +2622,11 @@ def _digest_schedule_quota(store: PostgresKnowledgeStore, *, owner_user_id: str,
         }
     cutoff = datetime.now(UTC) - timedelta(seconds=window_seconds)
     jobs_in_window = 0
-    for job in store.list_jobs(job_type=DIGEST_VIA_FASTREACT, limit=10000):
+    for job in store.list_jobs(tenant_id=tenant_id, job_type=DIGEST_VIA_FASTREACT, limit=10000):
         job_payload = job.payload if isinstance(job.payload, dict) else {}
         if str(job_payload.get("owner_user_id") or "") != owner_user_id:
+            continue
+        if str(job_payload.get("tenant_id") or job.tenant_id or DEFAULT_TENANT_ID) != tenant_id:
             continue
         created_at = _as_aware(job.created_at)
         if created_at >= cutoff:
@@ -2563,6 +2664,7 @@ def _files_sync_twitter_archives(store: PostgresKnowledgeStore, config: PSKAConf
             store,
             archive_root=archive_root,
             owner_user_id=str(payload.get("owner_user_id") or config.files.owner_user_id),
+            tenant_id=str(payload.get("tenant_id") or config.files.tenant_id or DEFAULT_TENANT_ID),
             space_id=str(payload.get("space_id") or config.files.space_id),
             visibility=Visibility(str(payload.get("visibility") or config.files.visibility)),
             visible_team_ids=[],
@@ -2939,6 +3041,15 @@ def _workspace_owner_user_id(context: RequestContext | None, requested_owner_use
     if context.caller == "agent_service":
         return context.represented_user_id or "agent_service"
     return requested_owner_user_id or context.represented_user_id or context.user_id
+
+
+def _tenant_id_for_request(context: RequestContext | None, requested_tenant_id: str | None = None) -> str:
+    return requested_tenant_id or (context.tenant_id if context else None) or DEFAULT_TENANT_ID
+
+
+def _assert_job_context_tenant(job: Any, context: RequestContext | None) -> None:
+    if context and getattr(job, "tenant_id", DEFAULT_TENANT_ID) != context.tenant_id:
+        raise PermissionError("job tenant mismatch")
 
 
 def _workspace_source_matches(item: Any, chunks: list[Any], *, source_channel: str, query: str) -> bool:

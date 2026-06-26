@@ -10,7 +10,7 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 from pska_core.adapters.conversation import conversation_to_payload
 from pska_core.enums import ReviewType, Visibility
 from pska_core.ingest import IngestService
-from pska_core.models import ReviewItem, SourceItem, SourceRef
+from pska_core.models import DEFAULT_TENANT_ID, ReviewItem, SourceItem, SourceRef
 from pska_core.serde import to_jsonable
 from pska_core.store import KnowledgeStore
 
@@ -41,6 +41,7 @@ def capture_agent_conversation(
     store: KnowledgeStore,
     *,
     owner_user_id: str,
+    tenant_id: str = DEFAULT_TENANT_ID,
     purpose: str,
     prompt: str,
     answer: str,
@@ -61,13 +62,14 @@ def capture_agent_conversation(
     represented = represented_user_id or owner_user_id
     dedupe_key = _capture_dedupe_key(
         owner_user_id=owner_user_id,
+        tenant_id=tenant_id,
         represented_user_id=represented,
         purpose=purpose,
         prompt=prompt,
         answer=answer,
         source_refs=refs,
     )
-    existing = _existing_capture(store, dedupe_key=dedupe_key, owner_user_id=owner_user_id, source_channel=source_channel)
+    existing = _existing_capture(store, dedupe_key=dedupe_key, owner_user_id=owner_user_id, tenant_id=tenant_id, source_channel=source_channel)
     policy = {
         "schema_version": "pska.agent_capture_policy.v1",
         "dedupe_key": dedupe_key,
@@ -94,6 +96,7 @@ def capture_agent_conversation(
         review = _write_capture_review(
             store,
             owner_user_id=owner_user_id,
+            tenant_id=tenant_id,
             represented_user_id=represented,
             purpose=purpose,
             prompt=prompt,
@@ -157,6 +160,7 @@ def capture_agent_conversation(
             },
         },
         owner_user_id=owner_user_id,
+        tenant_id=tenant_id,
         space_id="private_primary",
         visibility=Visibility.PRIVATE,
     )
@@ -172,6 +176,7 @@ def capture_agent_conversation(
 def _capture_dedupe_key(
     *,
     owner_user_id: str,
+    tenant_id: str,
     represented_user_id: str,
     purpose: str,
     prompt: str,
@@ -180,6 +185,7 @@ def _capture_dedupe_key(
 ) -> str:
     payload = {
         "owner_user_id": owner_user_id,
+        "tenant_id": tenant_id,
         "represented_user_id": represented_user_id,
         "purpose": purpose,
         "prompt": prompt.strip(),
@@ -190,9 +196,9 @@ def _capture_dedupe_key(
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def _existing_capture(store: KnowledgeStore, *, dedupe_key: str, owner_user_id: str, source_channel: str) -> SourceItem | None:
+def _existing_capture(store: KnowledgeStore, *, dedupe_key: str, owner_user_id: str, tenant_id: str, source_channel: str) -> SourceItem | None:
     try:
-        items = store.list_source_items()
+        items = store.list_source_items(tenant_id=tenant_id)
     except Exception:
         return None
     for item in items:
@@ -220,6 +226,7 @@ def _write_capture_review(
     store: KnowledgeStore,
     *,
     owner_user_id: str,
+    tenant_id: str,
     represented_user_id: str,
     purpose: str,
     prompt: str,
@@ -230,7 +237,7 @@ def _write_capture_review(
     violation: str,
     dedupe_key: str,
 ) -> ReviewItem:
-    existing = _existing_capture_review(store, dedupe_key=dedupe_key, owner_user_id=owner_user_id)
+    existing = _existing_capture_review(store, dedupe_key=dedupe_key, owner_user_id=owner_user_id, tenant_id=tenant_id)
     if existing:
         return existing
     review_type = ReviewType.SENSITIVE_CONTENT if sensitivity.strip().lower() in {"high", "sensitive", "secret"} else ReviewType.LOW_CONFIDENCE
@@ -239,6 +246,7 @@ def _write_capture_review(
         owner_user_id=owner_user_id,
         review_type=review_type,
         title=f"Review agent capture: {purpose}",
+        tenant_id=tenant_id,
         proposal={
             "candidate_type": "agent_capture",
             "purpose": purpose,
@@ -258,9 +266,9 @@ def _write_capture_review(
     return review
 
 
-def _existing_capture_review(store: KnowledgeStore, *, dedupe_key: str, owner_user_id: str) -> ReviewItem | None:
+def _existing_capture_review(store: KnowledgeStore, *, dedupe_key: str, owner_user_id: str, tenant_id: str) -> ReviewItem | None:
     try:
-        items = store.list_review_items()
+        items = store.list_review_items(tenant_id=tenant_id)
     except Exception:
         return None
     for item in items:

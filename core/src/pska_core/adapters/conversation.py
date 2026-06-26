@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from pska_core.enums import Visibility
-from pska_core.models import ChannelIngestPayload
+from pska_core.models import DEFAULT_TENANT_ID, ChannelIngestPayload
 
 
 def conversation_to_payload(
@@ -12,6 +12,7 @@ def conversation_to_payload(
     *,
     owner_user_id: str,
     space_id: str,
+    tenant_id: str = DEFAULT_TENANT_ID,
     visibility: Visibility = Visibility.PRIVATE,
     visible_team_ids: list[str] | None = None,
 ) -> ChannelIngestPayload:
@@ -32,6 +33,7 @@ def conversation_to_payload(
         source_id=conversation_id,
         owner_user_id=owner_user_id,
         space_id=space_id,
+        tenant_id=tenant_id,
         visibility=visibility,
         visible_team_ids=visible_team_ids or [],
         url=conversation.get("url"),
