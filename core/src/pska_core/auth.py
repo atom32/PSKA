@@ -153,7 +153,7 @@ def context_from_jwt(
         audience=getattr(auth_config, "jwt_audience", None),
     )
     user_claim = str(getattr(auth_config, "jwt_user_claim", "sub") or "sub")
-    subject = str(claims.get(user_claim) or claims.get("sub") or "").strip()
+    subject = str(claims.get("sub") or claims.get("user_key") or claims.get(user_claim) or "").strip()
     if not subject:
         raise AuthError("JWT subject claim required")
     tenant_id = ""
@@ -162,12 +162,12 @@ def context_from_jwt(
         if value:
             tenant_id = str(value).strip()
             break
-    user_id = subject if ":" in subject else subject
+    user_identity = str(claims.get("user_id") or claims.get(user_claim) or claims.get("user_key") or subject).strip()
     represented_claim = str(getattr(auth_config, "jwt_represented_user_claim", "represented_user_id") or "represented_user_id")
-    provider_claim = str(getattr(auth_config, "jwt_provider_claim", "iss") or "iss")
+    provider_claim = str(getattr(auth_config, "jwt_provider_claim", "provider") or "provider")
     return RequestContext(
-        tenant_id=tenant_id or _tenant_from_user_key(user_id) or DEFAULT_TENANT_ID,
-        user_id=_pska_user_id_from_key(user_id),
+        tenant_id=tenant_id or _tenant_from_user_key(user_identity) or DEFAULT_TENANT_ID,
+        user_id=_pska_user_id_from_key(user_identity),
         represented_user_id=str(claims.get(represented_claim)) if claims.get(represented_claim) else None,
         caller="user",
         service_authenticated=service_authenticated,

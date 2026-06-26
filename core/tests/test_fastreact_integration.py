@@ -15,6 +15,7 @@ from http.server import ThreadingHTTPServer
 from pska_core.acl import ACLService
 from pska_core.agentic_service import AgenticServiceError, _agentic_messages
 from pska_core.api import PSKAApi, PSKARequestHandler
+from pska_core.auth import context_from_headers
 from pska_core.candidates import CandidateWriteService
 from pska_core.cli import service_check
 from pska_core.config import AuthConfig, FilesConfig, PSKAConfig, ServiceConfig, WorkspaceConfig
@@ -1067,12 +1068,18 @@ def test_trusted_headers_auth_requires_identity_header() -> None:
 def test_jwt_auth_maps_claims_to_request_context() -> None:
     token = _jwt(
         {
-            "sub": "user_primary",
+            "sub": "pska:user_primary",
+            "tenant_id": "tenant_jwt",
             "tenant_key": "tenant_jwt",
+            "tenant": "tenant_jwt",
+            "org_id": "tenant_jwt",
+            "user_id": "user_primary",
+            "user_key": "pska:user_primary",
             "name": "Primary User",
             "email": "primary@example.com",
             "groups": ["team-a"],
             "roles": ["admin"],
+            "provider": "authnode",
             "iss": "issuer",
             "aud": "pska",
         },
@@ -1091,6 +1098,25 @@ def test_jwt_auth_maps_claims_to_request_context() -> None:
     assert status == 200
     assert payload["tenant_id"] == "tenant_jwt"
     assert api.store.list_source_items(tenant_id="tenant_jwt")[0].source_id == "jwt-note"
+    context = context_from_headers(
+        {"Authorization": f"Bearer {token}"},
+        auth_config=AuthConfig(mode="jwt", jwt_secret="jwt-secret", jwt_issuer="issuer", jwt_audience="pska"),
+    )
+    assert context.tenant_id == "tenant_jwt"
+    assert context.user_id == "user_primary"
+    assert context.subject == "pska:user_primary"
+    assert context.roles == ["admin"]
+    assert context.groups == ["team-a"]
+    assert context.auth_provider == "authnode"
+
+
+def test_jwt_auth_requires_bearer_token() -> None:
+    api = _api(auth=AuthConfig(mode="jwt", jwt_secret="jwt-secret"))
+    with _http_server(api) as base_url:
+        status, payload = _http_json(base_url, "GET", "/ready")
+
+    assert status == 401
+    assert "Bearer JWT required" in payload["error"]
 
 
 def test_jwt_auth_rejects_invalid_signature() -> None:
@@ -1101,6 +1127,36 @@ def test_jwt_auth_rejects_invalid_signature() -> None:
 
     assert status == 401
     assert "signature" in payload["error"]
+
+
+def test_jwt_auth_rejects_wrong_issuer() -> None:
+    token = _jwt({"sub": "pska:user_primary", "tenant_id": "tenant_jwt", "iss": "wrong"}, secret="jwt-secret")
+    api = _api(auth=AuthConfig(mode="jwt", jwt_secret="jwt-secret", jwt_issuer="issuer"))
+    with _http_server(api) as base_url:
+        status, payload = _http_json(base_url, "GET", "/ready", headers={"Authorization": f"Bearer {token}"})
+
+    assert status == 401
+    assert "issuer" in payload["error"]
+
+
+def test_jwt_auth_rejects_wrong_audience() -> None:
+    token = _jwt({"sub": "pska:user_primary", "tenant_id": "tenant_jwt", "aud": "other"}, secret="jwt-secret")
+    api = _api(auth=AuthConfig(mode="jwt", jwt_secret="jwt-secret", jwt_audience="pska"))
+    with _http_server(api) as base_url:
+        status, payload = _http_json(base_url, "GET", "/ready", headers={"Authorization": f"Bearer {token}"})
+
+    assert status == 401
+    assert "audience" in payload["error"]
+
+
+def test_jwt_auth_rejects_expired_token() -> None:
+    token = _jwt({"sub": "pska:user_primary", "tenant_id": "tenant_jwt", "exp": 1}, secret="jwt-secret")
+    api = _api(auth=AuthConfig(mode="jwt", jwt_secret="jwt-secret"))
+    with _http_server(api) as base_url:
+        status, payload = _http_json(base_url, "GET", "/ready", headers={"Authorization": f"Bearer {token}"})
+
+    assert status == 401
+    assert "expired" in payload["error"]
 
 
 def test_local_console_serves_dashboard_assets_when_service_token_enabled() -> None:

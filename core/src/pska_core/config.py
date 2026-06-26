@@ -85,7 +85,7 @@ class AuthConfig:
     jwt_email_claim: str = "email"
     jwt_groups_claim: str = "groups"
     jwt_roles_claim: str = "roles"
-    jwt_provider_claim: str = "iss"
+    jwt_provider_claim: str = "provider"
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> "AuthConfig":
@@ -115,7 +115,7 @@ class AuthConfig:
             jwt_email_claim=str(data.get("jwt_email_claim") or "email"),
             jwt_groups_claim=str(data.get("jwt_groups_claim") or "groups"),
             jwt_roles_claim=str(data.get("jwt_roles_claim") or "roles"),
-            jwt_provider_claim=str(data.get("jwt_provider_claim") or "iss"),
+            jwt_provider_claim=str(data.get("jwt_provider_claim") or "provider"),
         )
 
     @classmethod
@@ -132,7 +132,7 @@ class AuthConfig:
             trusted_header_groups=os.getenv("PSKA_AUTH_HEADER_GROUPS", base.trusted_header_groups),
             trusted_header_roles=os.getenv("PSKA_AUTH_HEADER_ROLES", base.trusted_header_roles),
             trusted_header_provider=os.getenv("PSKA_AUTH_HEADER_PROVIDER", base.trusted_header_provider),
-            jwt_secret=os.getenv("PSKA_AUTH_JWT_SECRET") or base.jwt_secret,
+            jwt_secret=os.getenv("PSKA_AUTH_JWT_SECRET") or os.getenv("AUTHNODE_JWT_SECRET") or base.jwt_secret,
             jwt_issuer=os.getenv("PSKA_AUTH_JWT_ISSUER") or base.jwt_issuer,
             jwt_audience=os.getenv("PSKA_AUTH_JWT_AUDIENCE") or base.jwt_audience,
             jwt_algorithm=os.getenv("PSKA_AUTH_JWT_ALGORITHM", base.jwt_algorithm),
