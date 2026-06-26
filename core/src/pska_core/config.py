@@ -175,10 +175,15 @@ class FastreactConfig:
     temperature: float | None = None
     top_p: float | None = None
     max_tokens: int | None = None
+    authnode_url: str | None = None
+    authnode_admin_token: str | None = None
+    authnode_audience: str = "fastreact"
+    authnode_token_ttl_seconds: int | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None, *, api_key_file: Path | None = None) -> "FastreactConfig":
         data = data or {}
+        authnode = data.get("authnode") if isinstance(data.get("authnode"), dict) else {}
         token = data.get("service_token") or data.get("token") or _fastreact_token_from_key_file(api_key_file)
         return cls(
             url=str(data.get("url") or "http://127.0.0.1:8000").rstrip("/"),
@@ -188,6 +193,10 @@ class FastreactConfig:
             temperature=float(data["temperature"]) if data.get("temperature") is not None else None,
             top_p=float(data["top_p"]) if data.get("top_p") is not None else None,
             max_tokens=int(data["max_tokens"]) if data.get("max_tokens") is not None else None,
+            authnode_url=_optional_url(data.get("authnode_url") or authnode.get("url")),
+            authnode_admin_token=_optional_str(data.get("authnode_admin_token") or authnode.get("admin_token")),
+            authnode_audience=str(data.get("authnode_audience") or authnode.get("audience") or "fastreact"),
+            authnode_token_ttl_seconds=_optional_int(data.get("authnode_token_ttl_seconds") or authnode.get("token_ttl_seconds")),
         )
 
 
@@ -201,6 +210,10 @@ class AgenticServiceConfigFile:
     temperature: float | None = None
     top_p: float | None = None
     max_tokens: int | None = None
+    authnode_url: str | None = None
+    authnode_admin_token: str | None = None
+    authnode_audience: str = "fastreact"
+    authnode_token_ttl_seconds: int | None = None
 
     @classmethod
     def from_dict(
@@ -211,6 +224,7 @@ class AgenticServiceConfigFile:
         api_key_file: Path | None = None,
     ) -> "AgenticServiceConfigFile":
         data = data or {}
+        authnode = data.get("authnode") if isinstance(data.get("authnode"), dict) else {}
         token = data.get("service_token") or data.get("token") or fallback.service_token or _fastreact_token_from_key_file(api_key_file)
         return cls(
             provider=str(data.get("provider") or "fastreact"),
@@ -221,6 +235,12 @@ class AgenticServiceConfigFile:
             temperature=float(data["temperature"]) if data.get("temperature") is not None else fallback.temperature,
             top_p=float(data["top_p"]) if data.get("top_p") is not None else fallback.top_p,
             max_tokens=int(data["max_tokens"]) if data.get("max_tokens") is not None else fallback.max_tokens,
+            authnode_url=_optional_url(data.get("authnode_url") or authnode.get("url") or fallback.authnode_url),
+            authnode_admin_token=_optional_str(data.get("authnode_admin_token") or authnode.get("admin_token") or fallback.authnode_admin_token),
+            authnode_audience=str(data.get("authnode_audience") or authnode.get("audience") or fallback.authnode_audience or "fastreact"),
+            authnode_token_ttl_seconds=_optional_int(
+                data.get("authnode_token_ttl_seconds") or authnode.get("token_ttl_seconds") or fallback.authnode_token_ttl_seconds
+            ),
         )
 
 
@@ -417,6 +437,18 @@ class PSKAConfig:
         agentic_max_tokens = os.getenv("PSKA_AGENTIC_SERVICE_MAX_TOKENS")
         if not agentic_max_tokens and base.agentic_service.max_tokens == default_agentic.max_tokens:
             agentic_max_tokens = os.getenv("PSKA_FASTREACT_MAX_TOKENS")
+        agentic_authnode_url = os.getenv("PSKA_AGENTIC_SERVICE_AUTHNODE_URL")
+        if not agentic_authnode_url and base.agentic_service.authnode_url == default_agentic.authnode_url:
+            agentic_authnode_url = os.getenv("PSKA_FASTREACT_AUTHNODE_URL") or os.getenv("AUTHNODE_URL")
+        agentic_authnode_admin_token = os.getenv("PSKA_AGENTIC_SERVICE_AUTHNODE_ADMIN_TOKEN")
+        if not agentic_authnode_admin_token and base.agentic_service.authnode_admin_token == default_agentic.authnode_admin_token:
+            agentic_authnode_admin_token = os.getenv("PSKA_FASTREACT_AUTHNODE_ADMIN_TOKEN") or os.getenv("AUTHNODE_ADMIN_TOKEN")
+        agentic_authnode_audience = os.getenv("PSKA_AGENTIC_SERVICE_AUTHNODE_AUDIENCE")
+        if not agentic_authnode_audience and base.agentic_service.authnode_audience == default_agentic.authnode_audience:
+            agentic_authnode_audience = os.getenv("PSKA_FASTREACT_AUTHNODE_AUDIENCE")
+        agentic_authnode_ttl = os.getenv("PSKA_AGENTIC_SERVICE_AUTHNODE_TOKEN_TTL_SECONDS")
+        if not agentic_authnode_ttl and base.agentic_service.authnode_token_ttl_seconds == default_agentic.authnode_token_ttl_seconds:
+            agentic_authnode_ttl = os.getenv("PSKA_FASTREACT_AUTHNODE_TOKEN_TTL_SECONDS")
         return cls(
             database=DatabaseConfig(url=os.getenv("PSKA_DATABASE_URL", base.database.url)),
             service=ServiceConfig(
@@ -439,6 +471,11 @@ class PSKAConfig:
                 temperature=float(os.getenv("PSKA_FASTREACT_TEMPERATURE")) if os.getenv("PSKA_FASTREACT_TEMPERATURE") else base.fastreact.temperature,
                 top_p=float(os.getenv("PSKA_FASTREACT_TOP_P")) if os.getenv("PSKA_FASTREACT_TOP_P") else base.fastreact.top_p,
                 max_tokens=int(os.getenv("PSKA_FASTREACT_MAX_TOKENS")) if os.getenv("PSKA_FASTREACT_MAX_TOKENS") else base.fastreact.max_tokens,
+                authnode_url=_optional_url(os.getenv("PSKA_FASTREACT_AUTHNODE_URL") or os.getenv("AUTHNODE_URL") or base.fastreact.authnode_url),
+                authnode_admin_token=os.getenv("PSKA_FASTREACT_AUTHNODE_ADMIN_TOKEN") or os.getenv("AUTHNODE_ADMIN_TOKEN") or base.fastreact.authnode_admin_token,
+                authnode_audience=os.getenv("PSKA_FASTREACT_AUTHNODE_AUDIENCE") or base.fastreact.authnode_audience,
+                authnode_token_ttl_seconds=_optional_int(os.getenv("PSKA_FASTREACT_AUTHNODE_TOKEN_TTL_SECONDS"))
+                or base.fastreact.authnode_token_ttl_seconds,
             ),
             agentic_service=AgenticServiceConfigFile(
                 provider=os.getenv("PSKA_AGENTIC_SERVICE_PROVIDER") or os.getenv("PSKA_AGENTIC_PROVIDER") or base.agentic_service.provider,
@@ -451,6 +488,12 @@ class PSKAConfig:
                 temperature=float(agentic_temperature) if agentic_temperature else base.agentic_service.temperature,
                 top_p=float(agentic_top_p) if agentic_top_p else base.agentic_service.top_p,
                 max_tokens=int(agentic_max_tokens) if agentic_max_tokens else base.agentic_service.max_tokens,
+                authnode_url=_optional_url(agentic_authnode_url or base.agentic_service.authnode_url),
+                authnode_admin_token=agentic_authnode_admin_token or base.agentic_service.authnode_admin_token,
+                authnode_audience=agentic_authnode_audience or base.agentic_service.authnode_audience,
+                authnode_token_ttl_seconds=int(agentic_authnode_ttl)
+                if agentic_authnode_ttl
+                else base.agentic_service.authnode_token_ttl_seconds,
             ),
             embedding=EmbeddingConfigFile(
                 provider=os.getenv("PSKA_EMBEDDING_PROVIDER", base.embedding.provider),
@@ -498,6 +541,10 @@ class PSKAConfig:
             temperature=self.fastreact.temperature,
             top_p=self.fastreact.top_p,
             max_tokens=self.fastreact.max_tokens,
+            authnode_url=self.fastreact.authnode_url,
+            authnode_admin_token=self.fastreact.authnode_admin_token,
+            authnode_audience=self.fastreact.authnode_audience,
+            authnode_token_ttl_seconds=self.fastreact.authnode_token_ttl_seconds,
         )
 
     def agentic_service_runtime_config(self) -> "AgenticServiceConfig":
@@ -512,6 +559,10 @@ class PSKAConfig:
             temperature=self.agentic_service.temperature,
             top_p=self.agentic_service.top_p,
             max_tokens=self.agentic_service.max_tokens,
+            authnode_url=self.agentic_service.authnode_url,
+            authnode_admin_token=self.agentic_service.authnode_admin_token,
+            authnode_audience=self.agentic_service.authnode_audience,
+            authnode_token_ttl_seconds=self.agentic_service.authnode_token_ttl_seconds,
         )
 
     def ingest_kwargs(self) -> dict[str, int]:
@@ -555,3 +606,21 @@ def _csv_env_tuple(name: str) -> tuple[str, ...]:
     if not value:
         return ()
     return tuple(item.strip() for item in value.split(",") if item.strip())
+
+
+def _optional_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    stripped = str(value).strip()
+    return stripped or None
+
+
+def _optional_url(value: Any) -> str | None:
+    stripped = _optional_str(value)
+    return stripped.rstrip("/") if stripped else None
+
+
+def _optional_int(value: Any) -> int | None:
+    if value in {None, ""}:
+        return None
+    return int(value)

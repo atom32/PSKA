@@ -304,6 +304,7 @@ class JobService:
                 {"role": "user", "content": prompt},
             ],
             user_id=user_id,
+            tenant_id=job.tenant_id,
             purpose=purpose,
             stream=False,
             job_id=job.job_id,

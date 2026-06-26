@@ -57,6 +57,48 @@ def test_mcp_calls_pska_search() -> None:
     assert "score_debug" not in payload["results"][0]
 
 
+def test_mcp_params_tenant_identity_overrides_tool_arguments() -> None:
+    store = InMemoryKnowledgeStore()
+    store.add_user(User("user_primary", "primary", tenant_id="tenant_default"))
+    store.add_user(User("alice", "alice", tenant_id="tenant_acme"))
+    IngestService(store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "mcp-tenant-default-note",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "content": {"text": "tenant default only marker orchard lantern"},
+        }
+    )
+    response = MCPServer("postgresql:///unused", store=store).handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 24,
+            "method": "tools/call",
+            "params": {
+                "name": "pska_search",
+                "user_key": "pska:alice",
+                "tenant_key": "tenant_acme",
+                "arguments": {
+                    "query": "orchard lantern",
+                    "user_id": "user_primary",
+                    "tenant_id": "tenant_default",
+                    "top_k": 5,
+                },
+            },
+        }
+    )
+
+    payload = json.loads(response["result"]["content"][0]["text"])
+
+    assert payload["request_user_id"] == "alice"
+    assert payload["results"] == []
+    assert payload["citations"] == []
+
+
 def test_mcp_search_compacts_long_results_for_fastreact() -> None:
     store = InMemoryKnowledgeStore()
     store.add_user(User("user_primary", "primary"))

@@ -101,6 +101,10 @@ def test_pska_config_loads_generic_agentic_service(tmp_path: Path, monkeypatch) 
                     "url": "http://127.0.0.1:9010",
                     "service_token": "agent-token",
                     "timeout_seconds": 12,
+                    "authnode_url": "http://127.0.0.1:8788",
+                    "authnode_admin_token": "admin-token",
+                    "authnode_audience": "fastreact",
+                    "authnode_token_ttl_seconds": 600,
                 }
             }
         ),
@@ -113,6 +117,10 @@ def test_pska_config_loads_generic_agentic_service(tmp_path: Path, monkeypatch) 
     assert config.agentic_service.url == "http://127.0.0.1:9010"
     assert config.agentic_service.service_token == "agent-token"
     assert config.agentic_service.timeout_seconds == 12
+    assert config.agentic_service.authnode_url == "http://127.0.0.1:8788"
+    assert config.agentic_service.authnode_admin_token == "admin-token"
+    assert config.agentic_service.authnode_audience == "fastreact"
+    assert config.agentic_service.authnode_token_ttl_seconds == 600
 
 
 def test_pska_config_loads_startup_config(tmp_path: Path) -> None:
@@ -182,8 +190,16 @@ def test_pska_config_builds_runtime_configs(tmp_path: Path) -> None:
                 "temperature": 0.3,
                 "top_p": 0.9,
                 "max_tokens": 4096,
+                "authnode_url": "http://127.0.0.1:8788",
+                "authnode_admin_token": "fast-admin",
+                "authnode_token_ttl_seconds": 300,
             },
-            "agentic_service": {"url": "http://127.0.0.1:9010", "service_token": "agent-token", "timeout_seconds": 12},
+            "agentic_service": {
+                "url": "http://127.0.0.1:9010",
+                "service_token": "agent-token",
+                "timeout_seconds": 12,
+                "authnode_admin_token": "agent-admin",
+            },
             "embedding": {"provider": "bge-m3", "model": "custom-bge", "dimensions": 768, "batch_size": 8},
             "ingest": {"chunk_size": 512, "chunk_overlap": 32},
         }
@@ -200,6 +216,10 @@ def test_pska_config_builds_runtime_configs(tmp_path: Path) -> None:
     assert fastreact.temperature == 0.3
     assert fastreact.top_p == 0.9
     assert fastreact.max_tokens == 4096
+    assert fastreact.authnode_url == "http://127.0.0.1:8788"
+    assert fastreact.authnode_admin_token == "fast-admin"
+    assert fastreact.authnode_audience == "fastreact"
+    assert fastreact.authnode_token_ttl_seconds == 300
     assert agentic.url == "http://127.0.0.1:9010"
     assert agentic.service_token == "agent-token"
     assert agentic.timeout_seconds == 12
@@ -207,6 +227,10 @@ def test_pska_config_builds_runtime_configs(tmp_path: Path) -> None:
     assert agentic.temperature == 0.3
     assert agentic.top_p == 0.9
     assert agentic.max_tokens == 4096
+    assert agentic.authnode_url == "http://127.0.0.1:8788"
+    assert agentic.authnode_admin_token == "agent-admin"
+    assert agentic.authnode_audience == "fastreact"
+    assert agentic.authnode_token_ttl_seconds == 300
     assert embedding.provider == "bge-m3"
     assert embedding.model == "custom-bge"
     assert embedding.dimensions == 768
@@ -225,3 +249,18 @@ def test_pska_config_from_env_remains_explicit_legacy_loader(tmp_path: Path, mon
     assert reloaded.files.roots == (notes, docs)
     assert reloaded.files.ignore == ("*.tmp", "*.bak")
     assert reloaded.files.max_bytes == 777
+
+
+def test_pska_config_agentic_authnode_env_overrides(monkeypatch) -> None:
+    monkeypatch.setenv("PSKA_AGENTIC_SERVICE_AUTHNODE_URL", "http://authnode.test/")
+    monkeypatch.setenv("PSKA_AGENTIC_SERVICE_AUTHNODE_ADMIN_TOKEN", "admin-token")
+    monkeypatch.setenv("PSKA_AGENTIC_SERVICE_AUTHNODE_AUDIENCE", "fastreact")
+    monkeypatch.setenv("PSKA_AGENTIC_SERVICE_AUTHNODE_TOKEN_TTL_SECONDS", "900")
+
+    config = PSKAConfig.from_env(PSKAConfig.from_dict({}))
+    runtime = config.agentic_service_runtime_config()
+
+    assert runtime.authnode_url == "http://authnode.test"
+    assert runtime.authnode_admin_token == "admin-token"
+    assert runtime.authnode_audience == "fastreact"
+    assert runtime.authnode_token_ttl_seconds == 900

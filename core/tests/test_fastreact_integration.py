@@ -120,6 +120,66 @@ def test_fastreact_client_forwards_pska_tenant_identity(monkeypatch) -> None:
     assert captured["headers"]["X-fastreact-auth-provider"] == "pska"
 
 
+def test_fastreact_client_uses_authnode_jwt_for_tenant_identity(monkeypatch) -> None:
+    calls = []
+
+    def fake_urlopen(request, timeout):
+        body = json.loads(request.data.decode("utf-8")) if request.data else None
+        calls.append({"url": request.full_url, "headers": dict(request.header_items()), "payload": body, "timeout": timeout})
+        if request.full_url == "http://authnode.test/v1/token":
+            return FakeResponse({"access_token": "jwt-fastreact", "expires_at": "2030-01-01T00:00:00+00:00"})
+        if request.full_url == "http://fastreact.test/v1/runs":
+            return FakeResponse({"run_id": "run_authnode"})
+        if request.full_url == "http://fastreact.test/v1/runs/run_authnode":
+            return FakeResponse({"status": "completed"})
+        if request.full_url == "http://fastreact.test/v1/runs/run_authnode/events?limit=500":
+            return FakeResponse({"events": []})
+        raise AssertionError(request.full_url)
+
+    monkeypatch.setattr(fastreact_module, "urlopen", fake_urlopen)
+    client = HttpFastreactClient(
+        FastreactConfig(
+            url="http://fastreact.test",
+            service_token="service-token",
+            timeout_seconds=9,
+            authnode_url="http://authnode.test",
+            authnode_admin_token="admin-token",
+            authnode_audience="fastreact",
+            authnode_token_ttl_seconds=600,
+        )
+    )
+
+    created = client.create_run(
+        messages=[{"role": "user", "content": "hello"}],
+        user_id="user_primary",
+        tenant_id="tenant_acme",
+        purpose="agentic_search",
+    )
+    snapshot = client.wait_for_run(str(created["run_id"]))
+    events = client.run_events(str(created["run_id"]))
+
+    assert snapshot["status"] == "completed"
+    assert events["events"] == []
+    token_call = calls[0]
+    assert token_call["url"] == "http://authnode.test/v1/token"
+    assert token_call["headers"]["X-authnode-admin-token"] == "admin-token"
+    assert token_call["payload"] == {
+        "user_key": "pska:user_primary",
+        "audience": "fastreact",
+        "tenant_id": "tenant_acme",
+        "ttl_seconds": 600,
+    }
+    fastreact_calls = calls[1:]
+    assert [call["url"] for call in fastreact_calls] == [
+        "http://fastreact.test/v1/runs",
+        "http://fastreact.test/v1/runs/run_authnode",
+        "http://fastreact.test/v1/runs/run_authnode/events?limit=500",
+    ]
+    for call in fastreact_calls:
+        assert call["headers"]["Authorization"] == "Bearer jwt-fastreact"
+        assert call["headers"]["X-fastreact-service-token"] == "service-token"
+
+
 def test_fastreact_client_applies_config_generation_options_to_runs(monkeypatch) -> None:
     captured = {}
 
@@ -165,6 +225,15 @@ def test_agentic_search_prompt_routes_pska_queries_to_pska_skill_tools() -> None
     assert "exec" in joined
     assert "retrieve source evidence through PSKA tools" in joined
     assert "4-8 concrete bullets" in joined
+
+
+def test_agentic_search_prompt_includes_pska_tenant_identity() -> None:
+    messages = _agentic_messages("What is known?", tenant_id="tenant_acme", user_id="alice")
+    system = messages[0]["content"]
+
+    assert "tenant_id='tenant_acme'" in system
+    assert "user_id='alice'" in system
+    assert "Every PSKA MCP tool call must include exactly these tenant_id and user_id" in system
 
 
 def test_fastreact_ready_reports_missing_pska_tools(monkeypatch) -> None:
@@ -247,13 +316,15 @@ def test_fastreact_pska_service_config_keeps_builtin_tools_under_fastreact_polic
 def test_fastreact_job_records_run_id_and_event() -> None:
     store = _store()
     store.upsert_source_item(_source_item())
-    service = JobService(store, fastreact=FakeFastreact({"run_id": "run_extract", "content": "done"}))
-    job = service.submit(EXTRACT_VIA_FASTREACT, {"owner_user_id": "user_primary"}, max_attempts=1)
+    fastreact = FakeFastreact({"run_id": "run_extract", "content": "done"})
+    service = JobService(store, fastreact=fastreact)
+    job = service.submit(EXTRACT_VIA_FASTREACT, {"owner_user_id": "user_primary", "tenant_id": "tenant_acme"}, max_attempts=1)
 
     completed = service.run_next()
 
     assert completed is not None
     assert completed.status == "succeeded"
+    assert fastreact.calls[0]["tenant_id"] == "tenant_acme"
     assert completed.result["fastreact"]["run_id"] == "run_extract"
     events = store.list_job_events(job.job_id)
     assert [event.event_type for event in events] == ["queued", "started", "execute", "fastreact_submitted", "heartbeat", "succeeded"]
@@ -2807,11 +2878,13 @@ def test_postgres_graph_store_defaults_to_store_backed_neighbors() -> None:
 class FakeFastreact:
     def __init__(self, response: dict) -> None:
         self.response = response
+        self.calls = []
 
     def ready(self) -> dict:
         return {"ok": True}
 
-    def chat_completion(self, **_kwargs) -> dict:
+    def chat_completion(self, **kwargs) -> dict:
+        self.calls.append(kwargs)
         return self.response
 
 

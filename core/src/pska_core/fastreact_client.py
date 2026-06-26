@@ -65,6 +65,10 @@ class FastreactConfig:
     temperature: float | None = None
     top_p: float | None = None
     max_tokens: int | None = None
+    authnode_url: str | None = None
+    authnode_admin_token: str | None = None
+    authnode_audience: str = "fastreact"
+    authnode_token_ttl_seconds: int | None = None
 
     @classmethod
     def from_env(cls) -> "FastreactConfig":
@@ -76,12 +80,17 @@ class FastreactConfig:
             temperature=_optional_float_env("PSKA_FASTREACT_TEMPERATURE"),
             top_p=_optional_float_env("PSKA_FASTREACT_TOP_P"),
             max_tokens=_optional_int_env("PSKA_FASTREACT_MAX_TOKENS"),
+            authnode_url=_optional_url_env("PSKA_FASTREACT_AUTHNODE_URL") or _optional_url_env("AUTHNODE_URL"),
+            authnode_admin_token=os.getenv("PSKA_FASTREACT_AUTHNODE_ADMIN_TOKEN") or os.getenv("AUTHNODE_ADMIN_TOKEN") or None,
+            authnode_audience=os.getenv("PSKA_FASTREACT_AUTHNODE_AUDIENCE", "fastreact"),
+            authnode_token_ttl_seconds=_optional_int_env("PSKA_FASTREACT_AUTHNODE_TOKEN_TTL_SECONDS"),
         )
 
 
 @dataclass(slots=True)
 class HttpFastreactClient:
     config: FastreactConfig = field(default_factory=FastreactConfig.from_env)
+    _run_authorizations: dict[str, str] = field(default_factory=dict, init=False, repr=False)
 
     def ready(self) -> dict[str, Any]:
         health = self._request_json("GET", "/health")
@@ -188,22 +197,32 @@ class HttpFastreactClient:
         deadline = time.monotonic() + self.config.timeout_seconds
         snapshot: dict[str, Any] = {}
         while time.monotonic() < deadline:
-            snapshot = self._request_json("GET", f"/v1/runs/{run_id}")
+            snapshot = self._request_json("GET", f"/v1/runs/{run_id}", authorization=self._run_authorizations.get(run_id))
             if snapshot.get("status") in {"completed", "failed", "cancelled", "expired"}:
                 return snapshot
             time.sleep(0.25)
         raise FastreactError(f"Fastreact /v1/runs/{run_id} timed out")
 
     def run_events(self, run_id: str) -> dict[str, Any]:
-        return self._request_json("GET", f"/v1/runs/{run_id}/events?limit=500")
+        return self._request_json("GET", f"/v1/runs/{run_id}/events?limit=500", authorization=self._run_authorizations.get(run_id))
 
-    def _request_json(self, method: str, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _request_json(
+        self,
+        method: str,
+        path: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        authorization: str | None = None,
+    ) -> dict[str, Any]:
         data = None if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers = self._headers(payload is not None, payload=payload)
+        if authorization and "Authorization" not in headers:
+            headers["Authorization"] = authorization
         request = Request(
             f"{self.config.url}{path}",
             data=data,
             method=method,
-            headers=self._headers(payload is not None, payload=payload),
+            headers=headers,
         )
         try:
             with urlopen(request, timeout=self.config.timeout_seconds) as response:
@@ -221,6 +240,11 @@ class HttpFastreactClient:
             raise FastreactError(f"Fastreact {method} {path} returned invalid JSON") from exc
         if not isinstance(parsed, dict):
             raise FastreactError(f"Fastreact {method} {path} returned non-object JSON")
+        if method == "POST" and path == "/v1/runs":
+            run_id = str(parsed.get("run_id") or "")
+            bearer = headers.get("Authorization")
+            if run_id and bearer:
+                self._run_authorizations[run_id] = bearer
         return parsed
 
     def _headers(self, has_body: bool, *, payload: dict[str, Any] | None = None) -> dict[str, str]:
@@ -229,6 +253,9 @@ class HttpFastreactClient:
             headers["content-type"] = "application/json; charset=utf-8"
         if self.config.service_token:
             headers["X-FastReAct-Service-Token"] = self.config.service_token
+        authnode_token = self._authnode_token(payload)
+        if authnode_token:
+            headers["Authorization"] = f"Bearer {authnode_token}"
         if payload:
             user_key = payload.get("user_key")
             metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
@@ -240,6 +267,52 @@ class HttpFastreactClient:
             if user_key or tenant_key:
                 headers["X-FastReAct-Auth-Provider"] = "pska"
         return headers
+
+    def _authnode_token(self, payload: dict[str, Any] | None) -> str | None:
+        authnode_url = (self.config.authnode_url or "").rstrip("/")
+        if not authnode_url or not payload:
+            return None
+        user_key, tenant_key = _payload_identity(payload)
+        if not user_key:
+            raise FastreactError("Fastreact AuthNode token request requires payload.user_key")
+        request_payload: dict[str, Any] = {
+            "user_key": user_key,
+            "audience": _authnode_audience_payload(self.config.authnode_audience),
+        }
+        if tenant_key:
+            request_payload["tenant_id"] = tenant_key
+        if self.config.authnode_token_ttl_seconds:
+            request_payload["ttl_seconds"] = int(self.config.authnode_token_ttl_seconds)
+        headers = {
+            "accept": "application/json",
+            "content-type": "application/json; charset=utf-8",
+        }
+        if self.config.authnode_admin_token:
+            headers["X-AuthNode-Admin-Token"] = self.config.authnode_admin_token
+        request = Request(
+            f"{authnode_url}/v1/token",
+            data=json.dumps(request_payload, ensure_ascii=False).encode("utf-8"),
+            method="POST",
+            headers=headers,
+        )
+        try:
+            with urlopen(request, timeout=self.config.timeout_seconds) as response:
+                body = response.read().decode("utf-8")
+        except HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise FastreactError(f"AuthNode token request failed with HTTP {exc.code}: {detail}") from exc
+        except URLError as exc:
+            raise FastreactError(f"AuthNode token request unavailable: {exc.reason}") from exc
+        except TimeoutError as exc:
+            raise FastreactError("AuthNode token request timed out") from exc
+        try:
+            parsed = json.loads(body or "{}")
+        except json.JSONDecodeError as exc:
+            raise FastreactError("AuthNode token request returned invalid JSON") from exc
+        token = parsed.get("access_token") if isinstance(parsed, dict) else None
+        if not isinstance(token, str) or not token.strip():
+            raise FastreactError("AuthNode token request returned no access_token")
+        return token.strip()
 
 
 REQUIRED_PSKA_TOOLS = {"pska_search", "pska_index_status", "pska_job_context", "pska_write_candidates"}
@@ -264,6 +337,23 @@ def _pska_metadata(
         metadata["tenant_key"] = tenant_id
         metadata["pska_tenant_id"] = tenant_id
     return metadata
+
+
+def _payload_identity(payload: dict[str, Any]) -> tuple[str | None, str | None]:
+    user_key = payload.get("user_key")
+    user = user_key.strip() if isinstance(user_key, str) and user_key.strip() else None
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    tenant_key = metadata.get("tenant_key") or metadata.get("pska_tenant_id")
+    tenant = tenant_key.strip() if isinstance(tenant_key, str) and tenant_key.strip() else None
+    return user, tenant
+
+
+def _authnode_audience_payload(value: str | None) -> str | list[str]:
+    audience = str(value or "fastreact")
+    parts = [item.strip() for item in audience.split(",") if item.strip()]
+    if len(parts) <= 1:
+        return parts[0] if parts else "fastreact"
+    return parts
 
 
 def _pska_tools_loaded(tools_payload: dict[str, Any]) -> bool:
@@ -301,6 +391,11 @@ def _optional_float_env(name: str) -> float | None:
 def _optional_int_env(name: str) -> int | None:
     value = os.getenv(name)
     return int(value) if value not in {None, ""} else None
+
+
+def _optional_url_env(name: str) -> str | None:
+    value = os.getenv(name)
+    return value.rstrip("/") if value else None
 
 
 def _generation_options_payload(

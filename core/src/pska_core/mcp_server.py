@@ -276,11 +276,17 @@ class MCPServer:
             return self.result(request_id, {"tools": TOOLS})
         if method == "tools/call":
             params = request.get("params") or {}
-            return self.result(request_id, self.call_tool(params.get("name"), params.get("arguments") or {}, context=context))
+            mcp_context = _context_from_mcp_params(params)
+            if context and mcp_context and not context.service_authenticated:
+                _assert_context_matches(context, mcp_context)
+            return self.result(
+                request_id,
+                self.call_tool(params.get("name"), params.get("arguments") or {}, context=mcp_context or context),
+            )
         return self.error(request_id, -32601, f"Unknown method: {method}")
 
     def call_tool(self, name: str, arguments: dict[str, Any], *, context: RequestContext | None = None) -> dict[str, Any]:
-        arguments = context.apply_to_payload(arguments) if context else arguments
+        arguments = _apply_mcp_context(arguments, context) if context else arguments
         if name == "pska_search":
             payload = self.pska_search(arguments)
         elif name == "pska_index_status":
@@ -464,6 +470,52 @@ def _compact_search_response(payload: dict[str, Any], *, max_results: int, max_s
             "reason": "MCP compact output keeps FastReAct tool results parser-safe.",
         },
     }
+
+
+def _context_from_mcp_params(params: dict[str, Any]) -> RequestContext | None:
+    user_key = _clean_string(params.get("user_key") or params.get("user_id"))
+    tenant_key = _clean_string(params.get("tenant_key") or params.get("tenant_id"))
+    represented_user_id = _clean_string(params.get("represented_user_id"))
+    if not user_key and not tenant_key and not represented_user_id:
+        return None
+    user_id = _pska_user_id_from_key(user_key or "user_primary")
+    return RequestContext(
+        tenant_id=tenant_key or DEFAULT_TENANT_ID,
+        user_id=user_id,
+        represented_user_id=_pska_user_id_from_key(represented_user_id) if represented_user_id else None,
+        caller="user",
+        subject=user_key or user_id,
+        auth_provider="mcp_params",
+    )
+
+
+def _assert_context_matches(authenticated: RequestContext, mcp_context: RequestContext) -> None:
+    if authenticated.tenant_id != mcp_context.tenant_id or authenticated.user_id != mcp_context.user_id:
+        raise PermissionError("MCP identity params do not match authenticated context")
+
+
+def _apply_mcp_context(arguments: dict[str, Any], context: RequestContext) -> dict[str, Any]:
+    merged = dict(arguments)
+    merged["tenant_id"] = context.tenant_id
+    merged["user_id"] = context.user_id
+    if context.represented_user_id:
+        merged["represented_user_id"] = context.represented_user_id
+    if isinstance(merged.get("payload"), dict):
+        payload = dict(merged["payload"])
+        payload["tenant_id"] = context.tenant_id
+        payload["owner_user_id"] = context.represented_user_id or context.user_id
+        merged["payload"] = payload
+    if "owner_user_id" in merged or context.user_id:
+        merged["owner_user_id"] = context.represented_user_id or context.user_id
+    return merged
+
+
+def _pska_user_id_from_key(value: str) -> str:
+    return value.split(":", 1)[1] if value.startswith("pska:") else value
+
+
+def _clean_string(value: Any) -> str:
+    return str(value).strip() if value is not None and str(value).strip() else ""
 
 
 def _compact_search_result(item: dict[str, Any], *, max_snippet_chars: int) -> dict[str, Any]:

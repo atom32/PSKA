@@ -40,6 +40,10 @@ class AgenticServiceConfig:
     temperature: float | None = None
     top_p: float | None = None
     max_tokens: int | None = None
+    authnode_url: str | None = None
+    authnode_admin_token: str | None = None
+    authnode_audience: str = "fastreact"
+    authnode_token_ttl_seconds: int | None = None
 
     @classmethod
     def from_env(cls) -> "AgenticServiceConfig":
@@ -53,6 +57,25 @@ class AgenticServiceConfig:
             temperature=_optional_float_env("PSKA_AGENTIC_SERVICE_TEMPERATURE", fallback_name="PSKA_FASTREACT_TEMPERATURE"),
             top_p=_optional_float_env("PSKA_AGENTIC_SERVICE_TOP_P", fallback_name="PSKA_FASTREACT_TOP_P"),
             max_tokens=_optional_int_env("PSKA_AGENTIC_SERVICE_MAX_TOKENS", fallback_name="PSKA_FASTREACT_MAX_TOKENS"),
+            authnode_url=(
+                os.getenv("PSKA_AGENTIC_SERVICE_AUTHNODE_URL")
+                or os.getenv("PSKA_FASTREACT_AUTHNODE_URL")
+                or os.getenv("AUTHNODE_URL")
+                or None
+            ),
+            authnode_admin_token=(
+                os.getenv("PSKA_AGENTIC_SERVICE_AUTHNODE_ADMIN_TOKEN")
+                or os.getenv("PSKA_FASTREACT_AUTHNODE_ADMIN_TOKEN")
+                or os.getenv("AUTHNODE_ADMIN_TOKEN")
+                or None
+            ),
+            authnode_audience=os.getenv("PSKA_AGENTIC_SERVICE_AUTHNODE_AUDIENCE")
+            or os.getenv("PSKA_FASTREACT_AUTHNODE_AUDIENCE")
+            or "fastreact",
+            authnode_token_ttl_seconds=_optional_int_env(
+                "PSKA_AGENTIC_SERVICE_AUTHNODE_TOKEN_TTL_SECONDS",
+                fallback_name="PSKA_FASTREACT_AUTHNODE_TOKEN_TTL_SECONDS",
+            ),
         )
 
 
@@ -119,7 +142,7 @@ class FastreactAgenticServiceAdapter:
         represented_user_id: str | None = None,
         max_iterations: int = 3,
     ) -> dict[str, Any]:
-        messages = _agentic_messages(query)
+        messages = _agentic_messages(query, tenant_id=user.tenant_id, user_id=user.user_id)
         scope = {
             "query": query,
             "tenant_id": user.tenant_id,
@@ -208,6 +231,10 @@ class FastreactAgenticServiceAdapter:
                 temperature=self.config.temperature,
                 top_p=self.config.top_p,
                 max_tokens=self.config.max_tokens,
+                authnode_url=self.config.authnode_url.rstrip("/") if self.config.authnode_url else None,
+                authnode_admin_token=self.config.authnode_admin_token,
+                authnode_audience=self.config.authnode_audience,
+                authnode_token_ttl_seconds=self.config.authnode_token_ttl_seconds,
             )
         )
 
@@ -224,7 +251,14 @@ class FastreactAgenticServiceAdapter:
         }
 
 
-def _agentic_messages(query: str) -> list[dict[str, str]]:
+def _agentic_messages(query: str, *, tenant_id: str | None = None, user_id: str | None = None) -> list[dict[str, str]]:
+    identity_instruction = ""
+    if tenant_id or user_id:
+        identity_instruction = (
+            f" Current PSKA request identity: tenant_id={tenant_id or 'tenant_default'!r}, "
+            f"user_id={user_id or 'user_primary'!r}. Every PSKA MCP tool call must include exactly "
+            "these tenant_id and user_id arguments; never use PSKA tool defaults or a different tenant/user."
+        )
     return [
         {
             "role": "system",
@@ -242,6 +276,7 @@ def _agentic_messages(query: str) -> list[dict[str, str]]:
                 "For PSKA personal knowledge questions, use only PSKA MCP tools such as pska_search and never "
                 "use host tools such as read_file, write_file, edit_file, exec, shell, or direct filesystem access. "
                 "Only use host tools when the user explicitly asks to inspect local files or run a command."
+                f"{identity_instruction}"
             ),
         },
         {
