@@ -883,6 +883,8 @@ def test_external_agentic_adapter_returns_trace_and_citations() -> None:
     assert service.client.captured_kwargs["temperature"] == 0.3
     assert service.client.captured_kwargs["top_p"] == 0.9
     assert service.client.captured_kwargs["max_tokens"] == 4096
+    assert service.client.captured_kwargs["tenant_id"] == "tenant_default"
+    assert service.client.captured_kwargs["scope"]["tenant_id"] == "tenant_default"
 
 
 def test_external_agentic_adapter_prefers_background_run_events() -> None:

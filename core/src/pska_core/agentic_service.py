@@ -122,12 +122,13 @@ class FastreactAgenticServiceAdapter:
         messages = _agentic_messages(query)
         scope = {
             "query": query,
+            "tenant_id": user.tenant_id,
             "represented_user_id": represented_user_id,
             "max_iterations": max_iterations,
             "agentic_boundary": "external_service",
         }
         try:
-            response = self._run_agentic_search(messages=messages, user_id=user.user_id, scope=scope)
+            response = self._run_agentic_search(messages=messages, user_id=user.user_id, tenant_id=user.tenant_id, scope=scope)
         except FastreactError as exc:
             raise AgenticServiceError(str(exc)) from exc
         return _normalize_agentic_response(
@@ -137,12 +138,13 @@ class FastreactAgenticServiceAdapter:
             url=self.config.url,
         )
 
-    def _run_agentic_search(self, *, messages: list[dict[str, str]], user_id: str, scope: dict[str, Any]) -> dict[str, Any]:
+    def _run_agentic_search(self, *, messages: list[dict[str, str]], user_id: str, tenant_id: str, scope: dict[str, Any]) -> dict[str, Any]:
         client = self._client()
         try:
             created = client.create_run(
                 messages=messages,
                 user_id=user_id,
+                tenant_id=tenant_id,
                 purpose="agentic_search",
                 scope=scope,
                 skills=[PSKA_QA_SKILL],
@@ -173,6 +175,7 @@ class FastreactAgenticServiceAdapter:
                 return client.chat_completion(
                     messages=messages,
                     user_id=user_id,
+                    tenant_id=tenant_id,
                     purpose="agentic_search",
                     stream=False,
                     scope=scope,
@@ -185,6 +188,7 @@ class FastreactAgenticServiceAdapter:
         return client.chat_completion(
             messages=messages,
             user_id=user_id,
+            tenant_id=tenant_id,
             purpose="agentic_search",
             stream=False,
             scope=scope,

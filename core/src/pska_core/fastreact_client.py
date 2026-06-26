@@ -21,6 +21,7 @@ class FastreactClient(Protocol):
         *,
         messages: list[dict[str, str]],
         user_id: str,
+        tenant_id: str | None = None,
         purpose: str,
         stream: bool = False,
         job_id: str | None = None,
@@ -38,6 +39,7 @@ class FastreactClient(Protocol):
         *,
         messages: list[dict[str, str]],
         user_id: str,
+        tenant_id: str | None = None,
         purpose: str,
         job_id: str | None = None,
         scope: dict[str, Any] | None = None,
@@ -110,6 +112,7 @@ class HttpFastreactClient:
         *,
         messages: list[dict[str, str]],
         user_id: str,
+        tenant_id: str | None = None,
         purpose: str,
         stream: bool = False,
         job_id: str | None = None,
@@ -121,17 +124,12 @@ class HttpFastreactClient:
         top_p: float | None = None,
         max_tokens: int | None = None,
     ) -> dict[str, Any]:
+        metadata = _pska_metadata(user_id=user_id, tenant_id=tenant_id, purpose=purpose, job_id=job_id, scope=scope)
         payload = {
             "messages": messages,
             "stream": stream,
             "user_key": f"pska:{user_id}",
-            "metadata": {
-                "caller": "pska",
-                "purpose": purpose,
-                "pska_user_id": user_id,
-                "pska_job_id": job_id,
-                "scope": scope or {},
-            },
+            "metadata": metadata,
         }
         payload.update(
             _generation_options_payload(
@@ -153,6 +151,7 @@ class HttpFastreactClient:
         *,
         messages: list[dict[str, str]],
         user_id: str,
+        tenant_id: str | None = None,
         purpose: str,
         job_id: str | None = None,
         scope: dict[str, Any] | None = None,
@@ -163,17 +162,12 @@ class HttpFastreactClient:
         top_p: float | None = None,
         max_tokens: int | None = None,
     ) -> dict[str, Any]:
+        metadata = _pska_metadata(user_id=user_id, tenant_id=tenant_id, purpose=purpose, job_id=job_id, scope=scope)
         payload = {
             "messages": messages,
             "stream": True,
             "user_key": f"pska:{user_id}",
-            "metadata": {
-                "caller": "pska",
-                "purpose": purpose,
-                "pska_user_id": user_id,
-                "pska_job_id": job_id,
-                "scope": scope or {},
-            },
+            "metadata": metadata,
         }
         payload.update(
             _generation_options_payload(
@@ -209,7 +203,7 @@ class HttpFastreactClient:
             f"{self.config.url}{path}",
             data=data,
             method=method,
-            headers=self._headers(payload is not None),
+            headers=self._headers(payload is not None, payload=payload),
         )
         try:
             with urlopen(request, timeout=self.config.timeout_seconds) as response:
@@ -229,16 +223,47 @@ class HttpFastreactClient:
             raise FastreactError(f"Fastreact {method} {path} returned non-object JSON")
         return parsed
 
-    def _headers(self, has_body: bool) -> dict[str, str]:
+    def _headers(self, has_body: bool, *, payload: dict[str, Any] | None = None) -> dict[str, str]:
         headers: dict[str, str] = {"accept": "application/json"}
         if has_body:
             headers["content-type"] = "application/json; charset=utf-8"
         if self.config.service_token:
             headers["X-FastReAct-Service-Token"] = self.config.service_token
+        if payload:
+            user_key = payload.get("user_key")
+            metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+            tenant_key = metadata.get("tenant_key") or metadata.get("pska_tenant_id")
+            if isinstance(user_key, str) and user_key.strip():
+                headers["X-FastReAct-User-Key"] = user_key.strip()
+            if isinstance(tenant_key, str) and tenant_key.strip():
+                headers["X-FastReAct-Tenant-Key"] = tenant_key.strip()
+            if user_key or tenant_key:
+                headers["X-FastReAct-Auth-Provider"] = "pska"
         return headers
 
 
 REQUIRED_PSKA_TOOLS = {"pska_search", "pska_index_status", "pska_job_context", "pska_write_candidates"}
+
+
+def _pska_metadata(
+    *,
+    user_id: str,
+    tenant_id: str | None,
+    purpose: str,
+    job_id: str | None,
+    scope: dict[str, Any] | None,
+) -> dict[str, Any]:
+    metadata = {
+        "caller": "pska",
+        "purpose": purpose,
+        "pska_user_id": user_id,
+        "pska_job_id": job_id,
+        "scope": scope or {},
+    }
+    if tenant_id:
+        metadata["tenant_key"] = tenant_id
+        metadata["pska_tenant_id"] = tenant_id
+    return metadata
 
 
 def _pska_tools_loaded(tools_payload: dict[str, Any]) -> bool:

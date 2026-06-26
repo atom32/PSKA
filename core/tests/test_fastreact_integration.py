@@ -90,6 +90,32 @@ def test_fastreact_client_builds_pska_metadata(monkeypatch) -> None:
     assert "top_p" not in captured["payload"]["metadata"]
 
 
+def test_fastreact_client_forwards_pska_tenant_identity(monkeypatch) -> None:
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        captured["headers"] = dict(request.header_items())
+        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse({"run_id": "run_456"})
+
+    monkeypatch.setattr(fastreact_module, "urlopen", fake_urlopen)
+    client = HttpFastreactClient(FastreactConfig(url="http://fastreact.test", service_token="token"))
+
+    client.create_run(
+        messages=[{"role": "user", "content": "hello"}],
+        user_id="user_primary",
+        tenant_id="tenant_acme",
+        purpose="agentic_search",
+    )
+
+    assert captured["payload"]["user_key"] == "pska:user_primary"
+    assert captured["payload"]["metadata"]["tenant_key"] == "tenant_acme"
+    assert captured["payload"]["metadata"]["pska_tenant_id"] == "tenant_acme"
+    assert captured["headers"]["X-fastreact-user-key"] == "pska:user_primary"
+    assert captured["headers"]["X-fastreact-tenant-key"] == "tenant_acme"
+    assert captured["headers"]["X-fastreact-auth-provider"] == "pska"
+
+
 def test_fastreact_client_applies_config_generation_options_to_runs(monkeypatch) -> None:
     captured = {}
 
