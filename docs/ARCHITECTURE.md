@@ -112,6 +112,15 @@ when it identifies a new relationship, conflict, pattern, decision, or risk.
 The frontend runs separately through Vite on `127.0.0.1:5173`. `./start.sh`
 starts both the backend supervisor and frontend dev server.
 
+For enterprise/SaaS access, the browser should enter through PSKA Gateway
+rather than raw Vite or the raw PSKA API. The gateway serves the built
+frontend, redirects unauthenticated users to its AuthNode-backed login flow,
+stores a signed HttpOnly session cookie, proxies API calls to PSKA, strips
+caller-supplied identity headers, and injects AuthNode-issued `aud=pska` JWT
+and PSKA tenant/user headers. See
+[Enterprise Auth Gateway](ENTERPRISE_AUTH_GATEWAY.zh.md) for the concrete
+startup and security contract.
+
 The digest scheduler is an incremental interval loop, not a fixed daily cron.
 The default local daemon interval is 300 seconds. Manual `digest-now` performs
 sync first and then processes one digest pass. If FastReAct processes a digest

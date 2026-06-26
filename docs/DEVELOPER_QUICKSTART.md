@@ -30,6 +30,31 @@ http://127.0.0.1:8765/
 
 Press `Ctrl-C` in the `start.sh` terminal to stop both frontend and backend.
 
+## Enterprise Gateway Path
+
+The Vite server above is for local hot reload. To exercise the regular
+enterprise browser path, build the frontend and run PSKA Gateway in front of
+the backend:
+
+```bash
+cd frontend && npm run build && cd ..
+
+export AUTHNODE_URL=http://127.0.0.1:8788
+export AUTHNODE_ADMIN_TOKEN='<server-side-authnode-admin-token>'
+export PSKA_GATEWAY_SESSION_SECRET='<random-long-secret>'
+
+./scripts/pska --config .pska/config.json gateway \
+  --port 8080 \
+  --pska-url http://127.0.0.1:8765
+```
+
+Open `http://127.0.0.1:8080/`. The browser receives only an HttpOnly session
+cookie and tenant/user metadata from `/auth/session`; AuthNode admin tokens,
+PSKA service tokens, FastReAct tokens, and PSKA JWTs remain server-side.
+
+See `docs/ENTERPRISE_AUTH_GATEWAY.zh.md` for the full AuthNode/PSKA/FastReAct
+identity flow.
+
 ## First-Time Setup
 
 ```bash

@@ -27,6 +27,8 @@ digest、HTTP API 和 MCP，并在配置后把复杂 agentic digest 交给 FastR
 
 `digest-now` 会先跑 file sync。sync 路径覆盖 folder sources、PDF/DOCX/XLSX 文本抽取、可选 legacy XLS 抽取、workspace 的 Twitter/X archive inbox，以及基于内容 hash 的增量处理。随后它会调度并处理一次 digest。
 
+企业/SaaS 访问应通过 PSKA Gateway/BFF 承接 AuthNode 登录和 HttpOnly session，而不是让浏览器直接持有 token；流程见 [企业认证网关](docs/ENTERPRISE_AUTH_GATEWAY.zh.md)。
+
 ## 日常使用
 
 当前后台 digest scheduler 是增量轮询，不是每天固定时间的 cron。`./start.sh`

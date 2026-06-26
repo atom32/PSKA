@@ -34,6 +34,10 @@ PDF/DOCX/XLSX text extraction, optional legacy XLS extraction, the workspace
 Twitter/X archive inbox, and content-hash based incremental handling. It then
 schedules and processes one digest pass.
 
+Enterprise/SaaS browser access should run through PSKA Gateway/BFF for
+AuthNode login and HttpOnly sessions instead of exposing tokens to the browser;
+see [Enterprise Auth Gateway](docs/ENTERPRISE_AUTH_GATEWAY.zh.md).
+
 ## Daily Operation
 
 The background digest scheduler is incremental, not a fixed daily cron. When

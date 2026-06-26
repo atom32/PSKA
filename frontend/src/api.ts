@@ -26,6 +26,20 @@ export type PSKAIdentity = {
 
 export type PSKAAuth = string | PSKAIdentity;
 
+export type PSKAGatewaySession = {
+  authenticated: boolean;
+  tenant_id?: string;
+  user_id?: string;
+  represented_user_id?: string;
+  subject?: string;
+  display_name?: string;
+  email?: string;
+  roles?: string[];
+  groups?: string[];
+  auth_provider?: string;
+  expires_at?: string;
+};
+
 const DEFAULT_TENANT_ID = "tenant_default";
 const DEFAULT_USER_ID = "user_primary";
 
@@ -72,6 +86,19 @@ const requestUserPayload = (auth: PSKAAuth) => {
 const ownerUserId = (auth: PSKAAuth) => resolveIdentity(auth).representedUserId;
 const actorUserId = (auth: PSKAAuth) => resolveIdentity(auth).userId;
 const clean = (value?: string) => (value || "").trim();
+
+export async function loadGatewaySession(): Promise<PSKAGatewaySession | null> {
+  try {
+    const response = await fetch("/auth/session", { headers: { Accept: "application/json" } });
+    if (!response.ok) {
+      return null;
+    }
+    const data = (await response.json()) as PSKAGatewaySession;
+    return data.authenticated ? data : null;
+  } catch {
+    return null;
+  }
+}
 
 export async function analyzeWorkspaceContext(
   query: string,

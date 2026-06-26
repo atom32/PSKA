@@ -38,7 +38,8 @@ capability map.
 
 ## Multi-Tenant Identity
 
-The frontend keeps a lightweight PSKA identity context in `sessionStorage`:
+For local Vite development, the frontend keeps a lightweight PSKA identity
+context in `sessionStorage`:
 
 - `tenantId`, defaulting to `tenant_default`
 - `userId`, defaulting to `user_primary`
@@ -50,6 +51,7 @@ All API calls derive `X-PSKA-Tenant-Id`, `X-PSKA-User-Id`,
 payloads from that single context. This removes the old single-user
 `user_primary` request assumption while keeping local development simple.
 
-For SaaS deployment, run the frontend behind AuthNode or another trusted
-gateway that injects JWT/trusted headers. Do not put AuthNode admin tokens in
-the browser.
+For SaaS deployment, run the built frontend behind `pska gateway`. The gateway
+exposes `/auth/session`, which returns only tenant/user metadata; the browser
+does not receive AuthNode admin tokens, PSKA service tokens, FastReAct tokens,
+or PSKA JWTs. See [Enterprise Auth Gateway](../docs/ENTERPRISE_AUTH_GATEWAY.zh.md).

@@ -33,6 +33,7 @@
 
 - [Operations Runbook](../core/docs/operations-runbook-zh.md)：local daemon、数据库、状态、jobs 和恢复命令。
 - [Online Service Contract](../core/docs/service-contract-zh.md)：HTTP service、auth/request context、jobs、candidates、connectors 和 digest API。
+- [企业认证网关](ENTERPRISE_AUTH_GATEWAY.zh.md)：AuthNode + PSKA Gateway 的正规浏览器登录、session 和反向代理流程。
 - [FastReAct Boundary](../core/docs/fastreact-agentic-boundary-zh.md)：PSKA/FastReAct 职责边界。
 - [FastReAct Protocol](../core/docs/fastreact-protocol-zh.md)：层间协议细节。
 - [FastReAct Real Integration Manual](../core/docs/fastreact-pska-real-integration-manual-zh.md)：真实本地联调流程。

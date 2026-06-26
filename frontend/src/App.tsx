@@ -42,6 +42,7 @@ import {
   loadCorpusContext,
   loadCorpusData,
   loadDigestLogs,
+  loadGatewaySession,
   loadGraphData,
   loadGraphPath,
   loadGraphSearchSubgraph,
@@ -117,6 +118,26 @@ export default function App() {
   const lastAnalyzedText = useRef(documentText);
   const lastEditedActivityAt = useRef(0);
   const [pinStatus, setPinStatus] = useState<"idle" | "saved" | "failed">("idle");
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadGatewaySession().then((session) => {
+      if (!session || cancelled) {
+        return;
+      }
+      if (session.tenant_id) {
+        setTenantId(session.tenant_id);
+      }
+      if (session.user_id) {
+        setUserId(session.user_id);
+      }
+      setRepresentedUserId(session.represented_user_id || session.user_id || "");
+      setServiceToken("");
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [setRepresentedUserId, setServiceToken, setTenantId, setUserId]);
 
   const corpusQuery = useQuery({
     queryKey: ["corpus-context", pskaIdentity],

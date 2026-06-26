@@ -164,6 +164,22 @@ def build_parser() -> argparse.ArgumentParser:
     serve_parser.add_argument("--host", default=None)
     serve_parser.add_argument("--port", type=int, default=None)
 
+    gateway_parser = subparsers.add_parser("gateway", help="Start PSKA frontend/auth gateway")
+    gateway_parser.add_argument("--host", default=None)
+    gateway_parser.add_argument("--port", type=int, default=None)
+    gateway_parser.add_argument("--frontend-dist", type=Path, default=None)
+    gateway_parser.add_argument("--pska-url", default=None)
+    gateway_parser.add_argument("--authnode-url", default=None)
+    gateway_parser.add_argument("--authnode-admin-token", default=None)
+    gateway_parser.add_argument("--pska-service-token", default=None)
+    gateway_parser.add_argument("--session-secret", default=None)
+    gateway_parser.add_argument("--cookie-name", default=None)
+    gateway_parser.add_argument("--cookie-secure", action=argparse.BooleanOptionalAction, default=None)
+    gateway_parser.add_argument("--token-ttl-seconds", type=int, default=None)
+    gateway_parser.add_argument("--request-timeout-seconds", type=float, default=None)
+    gateway_parser.add_argument("--default-tenant-id", default=None)
+    gateway_parser.add_argument("--default-user-key", default=None)
+
     local_daemon_parser = subparsers.add_parser("local-daemon", help="Run or inspect the local PSKA service supervisor")
     local_daemon_parser.add_argument("action", choices=["run", "status", "config-check", "supervisor-config"], nargs="?", default="run")
     local_daemon_parser.add_argument("--no-worker", action="store_true")
@@ -509,6 +525,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         return extract_all(args)
     if args.command == "serve":
         serve(args.host or config.service.host, args.port or config.service.port, args.database_url, config=config)
+        return 0
+    if args.command == "gateway":
+        from pska_core.gateway import GatewayConfig, serve_gateway
+
+        env_gateway = GatewayConfig.from_env()
+        gateway_config = GatewayConfig(
+            host=args.host or env_gateway.host,
+            port=args.port or env_gateway.port,
+            frontend_dist=(args.frontend_dist or env_gateway.frontend_dist).expanduser(),
+            pska_url=(args.pska_url or env_gateway.pska_url).rstrip("/"),
+            authnode_url=(args.authnode_url or env_gateway.authnode_url).rstrip("/"),
+            authnode_admin_token=args.authnode_admin_token or env_gateway.authnode_admin_token,
+            pska_service_token=args.pska_service_token or env_gateway.pska_service_token or config.service.service_token,
+            session_secret=args.session_secret or env_gateway.session_secret,
+            cookie_name=args.cookie_name or env_gateway.cookie_name,
+            cookie_secure=env_gateway.cookie_secure if args.cookie_secure is None else bool(args.cookie_secure),
+            token_ttl_seconds=args.token_ttl_seconds or env_gateway.token_ttl_seconds,
+            request_timeout_seconds=args.request_timeout_seconds or env_gateway.request_timeout_seconds,
+            default_tenant_id=args.default_tenant_id or env_gateway.default_tenant_id,
+            default_user_key=args.default_user_key or env_gateway.default_user_key,
+        )
+        serve_gateway(gateway_config)
         return 0
     if args.command == "local-daemon":
         return local_daemon(args, config)

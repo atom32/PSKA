@@ -37,6 +37,7 @@ Directory-level material packs can opt into source collection ingest with
 
 - [Operations Runbook](../core/docs/operations-runbook-zh.md): local daemon, database, status, jobs, and recovery commands.
 - [Online Service Contract](../core/docs/service-contract-zh.md): HTTP service, auth/request context, jobs, candidates, connectors, and digest APIs.
+- [Enterprise Auth Gateway](ENTERPRISE_AUTH_GATEWAY.zh.md): AuthNode + PSKA Gateway browser login, session, and reverse-proxy flow.
 - [FastReAct Boundary](../core/docs/fastreact-agentic-boundary-zh.md): PSKA/FastReAct responsibility split.
 - [FastReAct Protocol](../core/docs/fastreact-protocol-zh.md): detailed protocol notes.
 - [FastReAct Real Integration Manual](../core/docs/fastreact-pska-real-integration-manual-zh.md): real local integration workflow.
