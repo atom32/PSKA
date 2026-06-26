@@ -1,0 +1,451 @@
+#!/usr/bin/env python3
+"""Run a live PSKA -> AuthNode -> FastReAct tenant isolation smoke test.
+
+The script assumes AuthNode, PSKA, and FastReAct are already running. It seeds a
+small tenant-scoped PSKA marker through the local database, then exercises PSKA
+through AuthNode's proxy and verifies that FastReAct is in multitenant mode.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+from pathlib import Path
+import sys
+from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
+from uuid import uuid4
+
+
+ROOT = Path(__file__).resolve().parents[1]
+CORE_SRC = ROOT / "core" / "src"
+if str(CORE_SRC) not in sys.path:
+    sys.path.insert(0, str(CORE_SRC))
+
+from pska_core.config import PSKAConfig  # noqa: E402
+from pska_core.enums import UserRole, UserStatus  # noqa: E402
+from pska_core.ingest import IngestService  # noqa: E402
+from pska_core.models import DEFAULT_TENANT_ID, User  # noqa: E402
+from pska_core.store_postgres import PostgresKnowledgeStore  # noqa: E402
+
+
+DEFAULT_AUTHNODE_URL = "http://127.0.0.1:8788"
+DEFAULT_PSKA_URL = "http://127.0.0.1:8765"
+DEFAULT_FASTREACT_URL = "http://127.0.0.1:8000"
+DEFAULT_AUTHNODE_CONFIG = ROOT.parent / "AuthNode" / "authnode.local.json"
+REQUIRED_FASTREACT_PSKA_TOOLS = {"pska_search", "pska_index_status", "pska_job_context", "pska_write_candidates"}
+
+
+class SmokeFailure(RuntimeError):
+    pass
+
+
+def main() -> int:
+    args = parse_args()
+    try:
+        report = run_smoke(args)
+    except SmokeFailure as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False, indent=2), file=sys.stderr)
+        return 1
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", type=Path, default=ROOT / ".pska" / "config.json", help="PSKA config file.")
+    parser.add_argument("--database-url", help="Override PSKA database URL used for marker seeding.")
+    parser.add_argument("--authnode-url", default=os.getenv("AUTHNODE_URL", DEFAULT_AUTHNODE_URL))
+    parser.add_argument("--pska-url", default=os.getenv("PSKA_URL", DEFAULT_PSKA_URL))
+    parser.add_argument("--fastreact-url", default=os.getenv("PSKA_FASTREACT_URL") or os.getenv("FASTREACT_URL") or DEFAULT_FASTREACT_URL)
+    parser.add_argument("--authnode-config", type=Path, default=Path(os.getenv("AUTHNODE_CONFIG", str(DEFAULT_AUTHNODE_CONFIG))))
+    parser.add_argument("--authnode-admin-token", default=os.getenv("AUTHNODE_ADMIN_TOKEN") or os.getenv("PSKA_AGENTIC_SERVICE_AUTHNODE_ADMIN_TOKEN"))
+    parser.add_argument("--fastreact-service-token", default=os.getenv("PSKA_FASTREACT_SERVICE_TOKEN") or os.getenv("FASTREACT_SERVICE_TOKEN"))
+    parser.add_argument("--positive-tenant", default=DEFAULT_TENANT_ID)
+    parser.add_argument("--positive-user", default="user_primary")
+    parser.add_argument("--negative-tenant", default="tenant_acme")
+    parser.add_argument("--negative-user", default="alice")
+    parser.add_argument("--marker", default=f"pska-authnode-fastreact-smoke-{uuid4().hex[:12]}")
+    parser.add_argument("--timeout-seconds", type=float, default=float(os.getenv("PSKA_SMOKE_TIMEOUT_SECONDS", "60")))
+    parser.add_argument("--authnode-mode", choices=["jwt", "trusted_headers"], help="Force AuthNode proxy mode.")
+    parser.add_argument("--skip-agentic", action="store_true", help="Skip the LLM-backed FastReAct agentic query checks.")
+    return parser.parse_args()
+
+
+def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
+    config = load_pska_config(args.config)
+    database_url = args.database_url or config.database.url
+    authnode_url = args.authnode_url.rstrip("/")
+    pska_url = args.pska_url.rstrip("/")
+    fastreact_url = args.fastreact_url.rstrip("/")
+    admin_token = args.authnode_admin_token or read_authnode_admin_token(args.authnode_config)
+    fastreact_service_token = args.fastreact_service_token or config.agentic_service.service_token or config.fastreact.service_token
+
+    check_authnode(authnode_url, timeout=args.timeout_seconds)
+    check_pska_via_authnode(
+        authnode_url,
+        user_key=f"pska:{args.positive_user}",
+        tenant_id=args.positive_tenant,
+        timeout=args.timeout_seconds,
+        authnode_mode=args.authnode_mode,
+    )
+    fastreact_ready = check_fastreact_ready(
+        fastreact_url,
+        user_key=f"pska:{args.positive_user}",
+        tenant_id=args.positive_tenant,
+        service_token=fastreact_service_token,
+        authnode_url=authnode_url,
+        authnode_admin_token=admin_token,
+        timeout=args.timeout_seconds,
+    )
+
+    source_item_id = seed_marker(
+        database_url,
+        marker=args.marker,
+        positive_tenant=args.positive_tenant,
+        positive_user=args.positive_user,
+        negative_tenant=args.negative_tenant,
+        negative_user=args.negative_user,
+    )
+
+    positive_direct = proxy_post(
+        authnode_url,
+        "/search",
+        {"query": args.marker, "top_k": 3},
+        user_key=f"pska:{args.positive_user}",
+        tenant_id=args.positive_tenant,
+        timeout=args.timeout_seconds,
+        authnode_mode=args.authnode_mode,
+    )
+    require(marker_visible(positive_direct, args.marker), "positive direct search did not return the seeded marker")
+
+    negative_direct = proxy_post(
+        authnode_url,
+        "/search",
+        {"query": args.marker, "top_k": 3},
+        user_key=f"pska:{args.negative_user}",
+        tenant_id=args.negative_tenant,
+        timeout=args.timeout_seconds,
+        authnode_mode=args.authnode_mode,
+    )
+    require(not marker_visible(negative_direct, args.marker), "negative direct search leaked the seeded marker")
+
+    positive_agentic: dict[str, Any] | None = None
+    negative_agentic: dict[str, Any] | None = None
+    if not args.skip_agentic:
+        query = "What is the PSKA AuthNode FastReAct integration smoke answer? Return the exact marker."
+        positive_agentic = proxy_post(
+            authnode_url,
+            "/agentic-search",
+            {"query": query, "max_iterations": 2},
+            user_key=f"pska:{args.positive_user}",
+            tenant_id=args.positive_tenant,
+            timeout=args.timeout_seconds,
+            authnode_mode=args.authnode_mode,
+        )
+        require(
+            args.marker in str(positive_agentic.get("answer") or ""),
+            "positive agentic search did not answer with the seeded marker",
+        )
+        require(
+            bool(positive_agentic.get("source_refs") or positive_agentic.get("retrieval", {}).get("citations")),
+            "positive agentic search returned no PSKA citations/source_refs",
+        )
+
+        negative_agentic = proxy_post(
+            authnode_url,
+            "/agentic-search",
+            {"query": query, "max_iterations": 2},
+            user_key=f"pska:{args.negative_user}",
+            tenant_id=args.negative_tenant,
+            timeout=args.timeout_seconds,
+            authnode_mode=args.authnode_mode,
+        )
+        require(args.marker not in json.dumps(negative_agentic, ensure_ascii=False), "negative agentic search leaked the seeded marker")
+        require(not negative_agentic.get("source_refs"), "negative agentic search returned cross-tenant source_refs")
+
+    return {
+        "ok": True,
+        "marker": args.marker,
+        "database_url": database_url,
+        "source_item_id": source_item_id,
+        "services": {
+            "authnode_url": authnode_url,
+            "pska_url": pska_url,
+            "fastreact_url": fastreact_url,
+        },
+        "fastreact": {
+            "multitenant_enabled": fastreact_ready["multitenant_enabled"],
+            "workspaces_root": fastreact_ready.get("workspaces_root"),
+            "pska_tools_loaded": fastreact_ready["pska_tools_loaded"],
+            "tool_names": fastreact_ready["tool_names"],
+        },
+        "checks": {
+            "authnode_ready": True,
+            "pska_ready_via_authnode": True,
+            "positive_direct_search": True,
+            "negative_direct_search": True,
+            "positive_agentic_search": None if args.skip_agentic else True,
+            "negative_agentic_search": None if args.skip_agentic else True,
+        },
+        "agentic_runs": {
+            "positive": run_identity(positive_agentic),
+            "negative": run_identity(negative_agentic),
+        },
+    }
+
+
+def load_pska_config(path: Path) -> PSKAConfig:
+    base = PSKAConfig.load(path if path.exists() else None)
+    return PSKAConfig.from_env(base)
+
+
+def read_authnode_admin_token(path: Path) -> str | None:
+    if not path.exists():
+        return None
+    data = json.loads(path.read_text(encoding="utf-8"))
+    token = data.get("admin_token") if isinstance(data, dict) else None
+    return str(token).strip() if token else None
+
+
+def check_authnode(authnode_url: str, *, timeout: float) -> None:
+    ready = request_json("GET", f"{authnode_url}/ready", timeout=timeout)
+    require(bool(ready.get("ok")), "AuthNode /ready is not ok")
+
+
+def check_pska_via_authnode(
+    authnode_url: str,
+    *,
+    user_key: str,
+    tenant_id: str,
+    timeout: float,
+    authnode_mode: str | None,
+) -> None:
+    ready = proxy_get(authnode_url, "/ready", user_key=user_key, tenant_id=tenant_id, timeout=timeout, authnode_mode=authnode_mode)
+    require(bool(ready.get("ok")), "PSKA /ready through AuthNode is not ok")
+
+
+def check_fastreact_ready(
+    fastreact_url: str,
+    *,
+    user_key: str,
+    tenant_id: str,
+    service_token: str | None,
+    authnode_url: str,
+    authnode_admin_token: str | None,
+    timeout: float,
+) -> dict[str, Any]:
+    headers = fastreact_identity_headers(user_key=user_key, tenant_id=tenant_id, service_token=service_token)
+    if authnode_admin_token:
+        headers["Authorization"] = f"Bearer {authnode_token(authnode_url, authnode_admin_token, user_key, tenant_id, 'fastreact', timeout)}"
+    ready = request_json("GET", f"{fastreact_url}/ready", headers=headers, timeout=timeout)
+    tools = request_json("GET", f"{fastreact_url}/v1/tools", headers=headers, timeout=timeout)
+    multitenant = ready.get("multitenant") if isinstance(ready.get("multitenant"), dict) else {}
+    tool_names = sorted(tool_names_from_payload(tools) | tool_names_from_payload(ready.get("mcp") or {}))
+    normalized_tool_names = normalized_pska_tool_names(set(tool_names))
+    missing = sorted(REQUIRED_FASTREACT_PSKA_TOOLS.difference(normalized_tool_names))
+    require(bool(multitenant.get("enabled")), "FastReAct /ready does not report multitenant.enabled=true")
+    require(not missing, f"FastReAct is missing PSKA MCP tools: {', '.join(missing)}")
+    return {
+        "multitenant_enabled": True,
+        "workspaces_root": multitenant.get("workspaces_root"),
+        "pska_tools_loaded": True,
+        "tool_names": tool_names,
+    }
+
+
+def seed_marker(
+    database_url: str,
+    *,
+    marker: str,
+    positive_tenant: str,
+    positive_user: str,
+    negative_tenant: str,
+    negative_user: str,
+) -> str:
+    store = PostgresKnowledgeStore(database_url)
+    store.add_user(User(positive_user, positive_user, role=UserRole.ADMIN, status=UserStatus.ACTIVE, tenant_id=positive_tenant))
+    store.add_user(User(negative_user, negative_user, role=UserRole.USER, status=UserStatus.ACTIVE, tenant_id=negative_tenant))
+    item = IngestService(store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": f"authnode-fastreact-smoke-{marker}",
+            "owner_user_id": positive_user,
+            "space_id": "private_primary",
+            "visibility": "private",
+            "tenant_id": positive_tenant,
+            "title": "PSKA AuthNode FastReAct tenant smoke fixture",
+            "content": {
+                "text": (
+                    "PSKA AuthNode FastReAct integration smoke answer: "
+                    f"{marker}. This marker belongs only to tenant {positive_tenant}."
+                )
+            },
+            "extra": {"smoke_test": "authnode_fastreact_tenant"},
+        }
+    )
+    return item.source_item_id
+
+
+def proxy_get(
+    authnode_url: str,
+    path: str,
+    *,
+    user_key: str,
+    tenant_id: str,
+    timeout: float,
+    authnode_mode: str | None,
+) -> dict[str, Any]:
+    return request_json("GET", proxy_url(authnode_url, path, user_key=user_key, tenant_id=tenant_id, authnode_mode=authnode_mode), timeout=timeout)
+
+
+def proxy_post(
+    authnode_url: str,
+    path: str,
+    payload: dict[str, Any],
+    *,
+    user_key: str,
+    tenant_id: str,
+    timeout: float,
+    authnode_mode: str | None,
+) -> dict[str, Any]:
+    return request_json(
+        "POST",
+        proxy_url(authnode_url, path, user_key=user_key, tenant_id=tenant_id, authnode_mode=authnode_mode),
+        payload=payload,
+        timeout=timeout,
+    )
+
+
+def proxy_url(authnode_url: str, path: str, *, user_key: str, tenant_id: str, authnode_mode: str | None = None) -> str:
+    query = {
+        "authnode_user_key": user_key,
+        "authnode_tenant_id": tenant_id,
+    }
+    if authnode_mode:
+        query["authnode_mode"] = authnode_mode
+    return f"{authnode_url.rstrip('/')}/proxy/pska/{path.lstrip('/')}?{urlencode(query)}"
+
+
+def request_json(
+    method: str,
+    url: str,
+    *,
+    payload: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
+    timeout: float,
+) -> dict[str, Any]:
+    data = None if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    request_headers = {"accept": "application/json", **(headers or {})}
+    if data is not None:
+        request_headers["content-type"] = "application/json; charset=utf-8"
+    request = Request(url, data=data, method=method, headers=request_headers)
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            body = response.read().decode("utf-8")
+    except HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise SmokeFailure(f"{method} {redact_url(url)} failed with HTTP {exc.code}: {detail}") from exc
+    except URLError as exc:
+        raise SmokeFailure(f"{method} {redact_url(url)} unavailable: {exc.reason}") from exc
+    except TimeoutError as exc:
+        raise SmokeFailure(f"{method} {redact_url(url)} timed out") from exc
+    try:
+        parsed = json.loads(body or "{}")
+    except json.JSONDecodeError as exc:
+        raise SmokeFailure(f"{method} {redact_url(url)} returned invalid JSON") from exc
+    if not isinstance(parsed, dict):
+        raise SmokeFailure(f"{method} {redact_url(url)} returned non-object JSON")
+    return parsed
+
+
+def authnode_token(
+    authnode_url: str,
+    admin_token: str,
+    user_key: str,
+    tenant_id: str,
+    audience: str,
+    timeout: float,
+) -> str:
+    payload = {"user_key": user_key, "tenant_id": tenant_id, "audience": audience, "ttl_seconds": int(max(timeout, 60))}
+    response = request_json(
+        "POST",
+        f"{authnode_url.rstrip('/')}/v1/token",
+        payload=payload,
+        headers={"X-AuthNode-Admin-Token": admin_token},
+        timeout=timeout,
+    )
+    token = response.get("access_token")
+    require(isinstance(token, str) and bool(token.strip()), "AuthNode /v1/token returned no access_token")
+    return str(token).strip()
+
+
+def fastreact_identity_headers(*, user_key: str, tenant_id: str, service_token: str | None) -> dict[str, str]:
+    headers = {
+        "X-FastReAct-User-Key": user_key,
+        "X-FastReAct-Tenant-Key": tenant_id,
+        "X-FastReAct-Auth-Provider": "pska-smoke",
+    }
+    if service_token:
+        headers["X-FastReAct-Service-Token"] = service_token
+    return headers
+
+
+def marker_visible(payload: dict[str, Any], marker: str) -> bool:
+    results = payload.get("results") if isinstance(payload.get("results"), list) else []
+    citations = payload.get("citations") if isinstance(payload.get("citations"), list) else []
+    visible_payload = {"results": results, "citations": citations}
+    return marker in json.dumps(visible_payload, ensure_ascii=False)
+
+
+def run_identity(payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not payload:
+        return None
+    service = payload.get("agentic_service") if isinstance(payload.get("agentic_service"), dict) else {}
+    trace = payload.get("trace") if isinstance(payload.get("trace"), dict) else {}
+    return {
+        "run_id": service.get("run_id") or trace.get("run_id"),
+        "session_id": service.get("session_id") or trace.get("session_id"),
+        "source_ref_count": len(payload.get("source_refs") or []),
+    }
+
+
+def tool_names_from_payload(payload: Any) -> set[str]:
+    raw_tools = payload.get("tools") if isinstance(payload, dict) else None
+    if not isinstance(raw_tools, list):
+        return set()
+    names = set()
+    for tool in raw_tools:
+        if isinstance(tool, str):
+            names.add(tool)
+        elif isinstance(tool, dict) and tool.get("name"):
+            names.add(str(tool["name"]))
+    return names
+
+
+def normalized_pska_tool_names(tool_names: set[str]) -> set[str]:
+    normalized: set[str] = set()
+    for name in tool_names:
+        if name.startswith("pska_"):
+            normalized.add(name)
+        if name.startswith("pska_pska_"):
+            normalized.add(name.removeprefix("pska_"))
+    return normalized
+
+
+def redact_url(url: str) -> str:
+    return url.split("?", 1)[0]
+
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise SmokeFailure(message)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
