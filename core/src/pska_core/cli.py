@@ -488,7 +488,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args.database_url = args.database_url or config.database.url
     _apply_workspace_defaults(args, workspace_root)
     if args.command == "service-check":
-        args.url = args.url or f"http://{config.service.host}:{config.service.port}"
+        args.url = args.url or _service_check_url(config.service.host, config.service.port)
         args.service_token = args.service_token or config.service.service_token
         args.expected_database_url = args.expected_database_url or config.database.url
     if args.command == "db-check":
@@ -4165,6 +4165,13 @@ def _service_check_headers(service_token: str | None) -> dict[str, str]:
     if service_token:
         headers["X-PSKA-Service-Token"] = service_token
     return headers
+
+
+def _service_check_url(host: str, port: int) -> str:
+    client_host = "127.0.0.1" if host.strip() in {"", "0.0.0.0", "::", "[::]"} else host.strip()
+    if ":" in client_host and not client_host.startswith("["):
+        client_host = f"[{client_host}]"
+    return f"http://{client_host}:{port}"
 
 
 def _service_check_request(

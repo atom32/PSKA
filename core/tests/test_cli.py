@@ -31,6 +31,7 @@ from pska_core.cli import (
     _review_backfill_summaries_payload,
     _review_batch_payload,
     _review_items_payload,
+    _service_check_url,
 )
 from pska_core.enums import MemoryLayer, ReviewType, Visibility
 from pska_core.fastreact_client import FastreactError
@@ -260,6 +261,14 @@ def test_cli_accepts_search_and_smoke() -> None:
     assert str(files_watch.root[0]) == "notes"
     assert files_watch.initial_sync is True
     assert files_watch.max_events == 1
+
+
+def test_service_check_url_uses_loopback_for_wildcard_bind_hosts() -> None:
+    assert _service_check_url("0.0.0.0", 8765) == "http://127.0.0.1:8765"
+    assert _service_check_url("::", 8765) == "http://127.0.0.1:8765"
+    assert _service_check_url("", 8765) == "http://127.0.0.1:8765"
+    assert _service_check_url("127.0.0.1", 8765) == "http://127.0.0.1:8765"
+    assert _service_check_url("::1", 8765) == "http://[::1]:8765"
 
 
 def test_graph_qa_eval_questions_use_digest_claim_and_explicit_questions() -> None:
