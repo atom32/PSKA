@@ -51,14 +51,16 @@ All API calls derive `X-PSKA-Tenant-Id`, `X-PSKA-User-Id`,
 payloads from that single context. This removes the old single-user
 `user_primary` request assumption while keeping local development simple.
 
-For SaaS deployment, run the built frontend behind `pska gateway`. The gateway
-exposes `/auth/session`, which returns only tenant/user metadata; the browser
-does not receive AuthNode admin tokens, PSKA service tokens, FastReAct tokens,
-or PSKA JWTs.
+For SaaS deployment, run the built frontend behind AuthNode/OIDC, a trusted
+ingress, or a BFF that verifies AuthNode login artifacts. The browser must not
+receive AuthNode admin tokens, PSKA service tokens, FastReAct tokens, or PSKA
+JWTs.
 
 For local login-protected testing on the usual frontend port, set
 `startup.frontend.mode` to `gateway` in `.pska/config.json`; then `./start.sh`
 serves the built frontend through PSKA Gateway on `:5173` and redirects
-unauthenticated browsers to `/login`. Use `mode: "vite"` for hot reload.
+unauthenticated browsers to the local token-broker `/login`. That path is for
+smoke tests, not a production multi-tenant boundary. Use `mode: "vite"` for
+hot reload.
 
 See [Enterprise Auth Gateway](../docs/ENTERPRISE_AUTH_GATEWAY.zh.md).

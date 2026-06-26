@@ -30,11 +30,11 @@ http://127.0.0.1:8765/
 
 Press `Ctrl-C` in the `start.sh` terminal to stop both frontend and backend.
 
-## Enterprise Gateway Path
+## Local Gateway Login Smoke
 
-The Vite server above is for local hot reload. To exercise the regular
-enterprise browser path, build the frontend and run PSKA Gateway in front of
-the backend:
+The Vite server above is for local hot reload. To smoke-test the login-shaped
+browser path locally, build the frontend and run PSKA Gateway in front of the
+backend:
 
 ```bash
 cd frontend && npm run build && cd ..
@@ -51,6 +51,11 @@ export PSKA_GATEWAY_SESSION_SECRET='<random-long-secret>'
 Open `http://127.0.0.1:8080/`. The browser receives only an HttpOnly session
 cookie and tenant/user metadata from `/auth/session`; AuthNode admin tokens,
 PSKA service tokens, FastReAct tokens, and PSKA JWTs remain server-side.
+
+This built-in `/login` path is a local token-broker shim. It is not the
+enterprise multi-tenant security boundary. Production should use AuthNode/OIDC
+or a trusted ingress to perform user login, while PSKA runs with JWT or trusted
+header authentication.
 
 See `docs/ENTERPRISE_AUTH_GATEWAY.zh.md` for the full AuthNode/PSKA/FastReAct
 identity flow.
@@ -70,8 +75,8 @@ entrypoint, set:
 ```
 
 Then `http://127.0.0.1:5173/` is served by PSKA Gateway and redirects to
-`/login` when no signed session cookie is present. Use `"mode": "vite"` when
-you want hot reload instead.
+the local token-broker `/login` when no signed session cookie is present. Use
+`"mode": "vite"` when you want hot reload instead.
 
 ## First-Time Setup
 

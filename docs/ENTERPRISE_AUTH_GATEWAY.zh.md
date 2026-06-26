@@ -4,34 +4,33 @@
 
 ## 目标
 
-浏览器不直接持有 AuthNode admin token、PSKA service token 或 FastReAct token。用户只访问 PSKA gateway；gateway 负责检查登录状态、向 AuthNode 换取短期 `aud=pska` 身份令牌、保存 HttpOnly session cookie，并把 API 请求代理到 PSKA 后端。
+浏览器不直接持有 AuthNode admin token、PSKA service token 或 FastReAct token。生产环境里，PSKA 进程也不应该依赖 AuthNode admin token 启动。PSKA 只应该知道验证身份所需的配置，例如 JWT issuer/audience/signing secret 或受信任 header 边界。
 
 生产形态通常是：
 
 ```mermaid
 sequenceDiagram
   participant Browser as Browser
-  participant Gateway as PSKA Gateway/BFF
+  participant Gateway as Gateway/BFF or Ingress
   participant AuthNode as AuthNode
   participant PSKA as PSKA API
   participant FastReAct as FastReAct
 
   Browser->>Gateway: GET /
-  Gateway-->>Browser: redirect /login when no session
-  Browser->>Gateway: POST /login tenant/user
-  Gateway->>AuthNode: POST /v1/token audience=pska
-  AuthNode-->>Gateway: short-lived PSKA JWT + claims
+  Gateway-->>Browser: redirect to AuthNode/SSO when no session
+  Browser->>AuthNode: interactive login / SSO
+  AuthNode-->>Gateway: callback/code or user JWT
+  Gateway->>AuthNode: verify callback/token when needed
   Gateway-->>Browser: HttpOnly signed session cookie
   Browser->>Gateway: GET /workspace/today/data
-  Gateway->>PSKA: inject Authorization: Bearer <aud=pska JWT>
-  Gateway->>PSKA: inject X-PSKA-Tenant-Id / X-PSKA-User-Id
+  Gateway->>PSKA: forward AuthNode-verified JWT or trusted headers
   PSKA-->>Gateway: tenant-filtered data
   Gateway-->>Browser: JSON
   PSKA->>FastReAct: AuthNode-issued aud=fastreact token when agentic work is needed
   FastReAct->>PSKA: tenant/user-aware MCP calls
 ```
 
-当前 gateway 内置的 `/login` 是本地/开发 token-broker 页面，不是 PSKA 自有密码系统。正式企业部署应把这一段替换为 AuthNode/OIDC 的 `/authorize -> callback`，但后续接口边界保持一致：gateway 只保存 HttpOnly session，并只向 PSKA 注入 AuthNode 认可的身份。
+当前 PSKA gateway 内置的 `/login` 是本地/开发 token-broker 页面，不是 PSKA 自有密码系统，也不是生产级多租户认证边界。正式企业部署应把这一段替换为 AuthNode/OIDC 的 `/authorize -> callback`、AuthNode 反向代理，或企业 ingress；PSKA 只验证 AuthNode/SSO 已证明的身份。
 
 ## 启动
 
@@ -48,7 +47,13 @@ export PSKA_AUTH_JWT_AUDIENCE=pska
 ./scripts/pska --config .pska/config.json serve
 ```
 
-构建前端并启动 gateway：
+生产入口可以由企业 ingress/AuthNode proxy 承接，也可以由一个只处理已验证 SSO callback 的 BFF 承接。不要在生产中用 AuthNode admin token 让 PSKA gateway 代用户签发身份。
+
+## 本地开发 Token Broker
+
+如果只是本地 smoke `5173 -> login -> PSKA`，可以临时启用内置 token-broker 登录。这个模式需要 AuthNode admin token 调 `/v1/token`，因此仅用于本机开发；它不能证明真实用户已经交互式登录，也不能作为 SaaS 多租户安全保证。
+
+构建前端并启动本地 token-broker gateway：
 
 ```bash
 cd frontend
@@ -86,8 +91,8 @@ http://127.0.0.1:8080/
 ```
 
 这样打开 `http://127.0.0.1:5173/` 或 LAN 地址上的 `:5173` 时，未登录会由
-gateway 自动跳到 `/login`。如果使用 `"mode": "vite"`，`5173` 仍是开发热更新
-服务器，不会负责登录跳转。
+gateway 自动跳到本地 `/login` token-broker。这个模式仍然是开发模式；如果使用
+`"mode": "vite"`，`5173` 是开发热更新服务器，不负责登录跳转。
 
 如果后端仍运行在旧的 `service_token` 模式，gateway 可以临时使用服务端 token 代理：
 
@@ -115,7 +120,7 @@ export PSKA_GATEWAY_PSKA_SERVICE_TOKEN='<pska-service-token>'
 | `PSKA_GATEWAY_FRONTEND_DIST` | 已构建前端目录，默认 `frontend/dist` |
 | `PSKA_GATEWAY_PSKA_URL` | PSKA 后端 URL，默认 `http://127.0.0.1:8765` |
 | `PSKA_GATEWAY_AUTHNODE_URL` / `AUTHNODE_URL` | AuthNode URL |
-| `PSKA_GATEWAY_AUTHNODE_ADMIN_TOKEN` / `AUTHNODE_ADMIN_TOKEN` | 服务端调用 AuthNode `/v1/token` 的 admin token |
+| `PSKA_GATEWAY_AUTHNODE_ADMIN_TOKEN` / `AUTHNODE_ADMIN_TOKEN` | 仅本地 token-broker 使用；生产不应要求 PSKA 持有 |
 | `PSKA_GATEWAY_SESSION_SECRET` | 签名浏览器 session cookie；生产必须设置 |
 | `PSKA_GATEWAY_COOKIE_SECURE` | HTTPS 下设置为 `true` |
 | `PSKA_GATEWAY_TOKEN_TTL_SECONDS` | AuthNode 签发的 PSKA JWT TTL |
@@ -125,6 +130,8 @@ export PSKA_GATEWAY_PSKA_SERVICE_TOKEN='<pska-service-token>'
 
 - AuthNode 只证明用户与租户身份；PSKA 仍负责知识 ACL、tenant filter、review 写入治理。
 - Gateway 不是身份源，不存密码，不做组织管理。
+- 强多租户要求 PSKA 后端运行在 `PSKA_AUTH_MODE=jwt` 或受保护 ingress 下的 `trusted_headers`，不能把公网用户可达的 `service_token + X-PSKA-*` headers 当作租户认证。
+- 本地 `/login` token-broker 只能做 smoke test；它不能替代用户交互式登录，也不能作为生产租户边界。
 - Browser 不能直接拿 AuthNode admin token、PSKA service token 或 FastReAct service token。
 - Gateway 的 `/auth/session` 只返回 tenant/user/roles/groups 等摘要，不返回 JWT。
 - PSKA 不能信任公网直连传入的 `X-PSKA-*` 头；这些头只在 AuthNode/gateway/loopback 受信任边界内有效。

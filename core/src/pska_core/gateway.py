@@ -240,7 +240,9 @@ def proxy_request_headers(incoming: Mapping[str, str], session: Mapping[str, Any
         if any(lowered.startswith(prefix) for prefix in IDENTITY_HEADER_PREFIXES):
             continue
         headers[name] = value
-    headers["Authorization"] = f"Bearer {session['token']}"
+    token = str(session.get("token") or "")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     if config.pska_service_token:
         headers["X-PSKA-Service-Token"] = config.pska_service_token
     headers["X-PSKA-Tenant-Id"] = str(session.get("tenant_id") or "")
@@ -360,11 +362,18 @@ class PSKAGatewayHandler(BaseHTTPRequestHandler):
         tenant_id = (_first(form.get("tenant_id")) or "").strip()
         if not user_key or not tenant_id:
             return self._html(400, "<h1>Missing tenant_id or user_key</h1>")
-        try:
-            token_data = request_authnode_token(self.config, user_key=user_key, tenant_id=tenant_id)
-            session = session_from_token_response(token_data, requested_user_key=user_key, requested_tenant_id=tenant_id)
-        except GatewayError as exc:
-            return self._html(502, f"<h1>AuthNode token request failed</h1><p>{html.escape(str(exc))}</p>")
+        if self.config.authnode_admin_token:
+            try:
+                token_data = request_authnode_token(self.config, user_key=user_key, tenant_id=tenant_id)
+                session = session_from_token_response(token_data, requested_user_key=user_key, requested_tenant_id=tenant_id)
+            except GatewayError as exc:
+                return self._html(502, f"<h1>AuthNode token request failed</h1><p>{html.escape(str(exc))}</p>")
+        else:
+            return self._html(
+                503,
+                "<h1>Gateway login is not configured</h1>"
+                "<p>Use an upstream AuthNode/OIDC login in production. The built-in login form is only a local token-broker shim.</p>",
+            )
         cookie_value = encode_session(session, str(self.config.session_secret))
         self.send_response(302)
         self.send_header("Location", next_path)

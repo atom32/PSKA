@@ -178,8 +178,8 @@ if [[ "$(config_value startup_frontend)" == "true" ]]; then
   else
     if [[ "$FRONTEND_MODE" == "gateway" ]]; then
       if [[ -z "${AUTHNODE_ADMIN_TOKEN:-}" && -z "${PSKA_GATEWAY_AUTHNODE_ADMIN_TOKEN:-}" ]]; then
-        echo "PSKA warning: gateway mode has no AUTHNODE_ADMIN_TOKEN/PSKA_GATEWAY_AUTHNODE_ADMIN_TOKEN in the environment." >&2
-        echo "If AuthNode requires an admin token, login token exchange will fail." >&2
+        echo "PSKA warning: gateway mode will serve the frontend, but the built-in /login token-broker is not configured." >&2
+        echo "For production, put AuthNode/OIDC or a trusted ingress in front of PSKA and run PSKA with JWT/trusted-header auth." >&2
       fi
       if [[ ! -d "$ROOT/frontend/node_modules" ]]; then
         echo "Installing frontend dependencies..."
