@@ -49,6 +49,7 @@ FastReAct 负责：
 - tool results：工具返回的 JSON/text、citation/source ids、trace、error
 - response summary：final answer、events、tool calls、duration、run id、session id
 - health/readiness：模型配置状态、MCP readiness、loaded tools、依赖状态
+- tool policy：本次 run 可见和可执行的工具范围
 
 不传递：
 
@@ -59,6 +60,11 @@ FastReAct 负责：
 - 原始 secrets
 
 ## PSKA 调用 FastReAct
+
+PSKA 的产品问答入口是 `POST /workspace/ask`。该入口负责路由、租户上下文、
+证据包统一、citation/source_ref 校验和 fallback。旧
+`/workspace/search/query` 只作为兼容或调试入口；`/workspace/graph/path`
+只作为图谱诊断、eval 和证据详情入口。
 
 Endpoint：
 
@@ -84,6 +90,10 @@ POST /v1/chat/completions
   "session_id": "optional-session-id",
   "user_key": "pska:user_primary",
   "skills": ["optional-skill-name"],
+  "tool_policy": {
+    "mode": "allowlist",
+    "allowed_tools": ["pska_pska_search", "pska_pska_index_status"]
+  },
   "metadata": {
     "caller": "pska",
     "run_id": "optional-report-run-id",
@@ -99,6 +109,9 @@ POST /v1/chat/completions
 - `stream`：`true` 返回 SSE；`false` 返回汇总 JSON。
 - `session_id`：可选。用于续接 FastReAct session。
 - `user_key`：FastReAct 侧用户/租户隔离 key。
+- `tool_policy`：本次 run 的工具边界。`{"mode":"none"}` 表示 LLM 不收到任何
+  tool schema，执行层也拒绝所有 tool call；`{"mode":"allowlist","allowed_tools":[...]}`
+  表示只暴露和执行白名单工具。
 - `metadata.caller`：调用方，PSKA 固定用 `pska`。
 - `metadata.run_id`：PSKA report/job 可以传自己的 run id，便于串联 trace。
 - `metadata.purpose`：调用目的，例如 `qa`、`report`、`review`、`memory`、`job`。
@@ -248,6 +261,15 @@ PSKA 通过 MCP 提供工具，FastReAct 通过部署配置加载。
 - 检索/agentic-search 结果应包含 citations 或 source ids。
 - 结果可以包含 trace/gaps/confidence，但不能包含 secrets。
 - 权限拒绝必须作为明确 error 返回，不能静默返回空成功。
+
+Ask PSKA deep 路径只允许 read-only 查询工具：
+
+- `pska_pska_search`
+- `pska_pska_index_status`
+
+不得在 deep 问答中调用 `pska_pska_agentic_search`、写入、review apply、job mutation
+或 filesystem/host 工具。FastReAct run trace 必须记录 `tool_policy`、实际 tool calls
+和 denied tool calls，便于证明一次问题没有重复检索 owner。
 
 ## Identity And ACL
 

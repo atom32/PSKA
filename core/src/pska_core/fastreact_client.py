@@ -28,6 +28,7 @@ class FastreactClient(Protocol):
         scope: dict[str, Any] | None = None,
         session_id: str | None = None,
         skills: list[str] | None = None,
+        tool_policy: dict[str, Any] | None = None,
         model: str | None = None,
         temperature: float | None = None,
         top_p: float | None = None,
@@ -45,6 +46,7 @@ class FastreactClient(Protocol):
         scope: dict[str, Any] | None = None,
         session_id: str | None = None,
         skills: list[str] | None = None,
+        tool_policy: dict[str, Any] | None = None,
         model: str | None = None,
         temperature: float | None = None,
         top_p: float | None = None,
@@ -128,6 +130,7 @@ class HttpFastreactClient:
         scope: dict[str, Any] | None = None,
         session_id: str | None = None,
         skills: list[str] | None = None,
+        tool_policy: dict[str, Any] | None = None,
         model: str | None = None,
         temperature: float | None = None,
         top_p: float | None = None,
@@ -153,6 +156,8 @@ class HttpFastreactClient:
             payload["session_id"] = session_id
         if skills is not None:
             payload["skills"] = skills
+        if tool_policy is not None:
+            payload["tool_policy"] = tool_policy
         return self._request_json("POST", "/v1/chat/completions", payload)
 
     def create_run(
@@ -166,6 +171,7 @@ class HttpFastreactClient:
         scope: dict[str, Any] | None = None,
         session_id: str | None = None,
         skills: list[str] | None = None,
+        tool_policy: dict[str, Any] | None = None,
         model: str | None = None,
         temperature: float | None = None,
         top_p: float | None = None,
@@ -191,6 +197,8 @@ class HttpFastreactClient:
             payload["session_id"] = session_id
         if skills is not None:
             payload["skills"] = skills
+        if tool_policy is not None:
+            payload["tool_policy"] = tool_policy
         return self._request_json("POST", "/v1/runs", payload)
 
     def wait_for_run(self, run_id: str) -> dict[str, Any]:

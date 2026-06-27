@@ -110,11 +110,13 @@ def test_fastreact_client_forwards_pska_tenant_identity(monkeypatch) -> None:
         user_id="user_primary",
         tenant_id="tenant_acme",
         purpose="agentic_search",
+        tool_policy={"mode": "allowlist", "allowed_tools": ["pska_pska_search"]},
     )
 
     assert captured["payload"]["user_key"] == "pska:user_primary"
     assert captured["payload"]["metadata"]["tenant_key"] == "tenant_acme"
     assert captured["payload"]["metadata"]["pska_tenant_id"] == "tenant_acme"
+    assert captured["payload"]["tool_policy"] == {"mode": "allowlist", "allowed_tools": ["pska_pska_search"]}
     assert captured["headers"]["X-fastreact-user-key"] == "pska:user_primary"
     assert captured["headers"]["X-fastreact-tenant-key"] == "tenant_acme"
     assert captured["headers"]["X-fastreact-auth-provider"] == "pska"
@@ -1857,6 +1859,234 @@ def test_user_workspace_direct_search_returns_evidence_summary() -> None:
     assert "conflicts" in evidence
 
 
+def test_workspace_ask_quick_returns_report_ready_answer_and_evidence() -> None:
+    api = _api()
+    IngestService(api.store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "workspace-ask-quick-note",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "Ask Quick Note",
+            "content": {"text": "Acme Example status is active and the owner is Alice Example."},
+        }
+    )
+
+    with _http_server(api) as base_url:
+        status, payload = _http_json(
+            base_url,
+            "POST",
+            "/workspace/ask",
+            {
+                "query": "Acme Example 的状态和负责人是什么？",
+                "intent": "quick",
+                "user_id": "user_primary",
+                "represented_user_id": "user_primary",
+            },
+        )
+
+    assert status == 200
+    assert payload["ok"] is True
+    assert payload["route"]["retrieval_owner"] == "pska"
+    assert payload["route"]["tool_policy"] == {"mode": "none"}
+    assert payload["answer"].startswith("关键结论")
+    assert "Ask Quick Note" in payload["answer"]
+    assert payload["citations"][0]["title"] == "Ask Quick Note"
+    assert payload["evidence"]["source_refs"] == payload["citations"]
+    assert payload["timing"]["time_to_first_answer_ms"] >= 0
+
+
+def test_workspace_ask_deep_uses_fastreact_readonly_tool_policy() -> None:
+    api = _api()
+    IngestService(api.store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "workspace-ask-deep-note",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "Ask Deep Note",
+            "content": {"text": "Atlas reporting needs a risk summary grounded in PSKA evidence."},
+        }
+    )
+
+    with _http_server(api) as base_url:
+        status, payload = _http_json(
+            base_url,
+            "POST",
+            "/workspace/ask",
+            {
+                "query": "请分析 Atlas reporting 的风险并给出报告可用结论。",
+                "intent": "deep",
+                "surface": "today",
+                "session_id": "ask-session-1",
+                "user_id": "user_primary",
+                "represented_user_id": "user_primary",
+            },
+        )
+
+    assert status == 200
+    assert payload["ok"] is True
+    assert payload["route"]["retrieval_owner"] == "fastreact_pska_mcp"
+    assert payload["route"]["tool_policy"] == {
+        "mode": "allowlist",
+        "allowed_tools": ["pska_pska_search", "pska_pska_index_status"],
+    }
+    assert payload["answer"] == "Fake external agentic answer."
+    call = api.agentic_service.calls[0]
+    assert call["skills"] == ["pska_answer_with_citations"]
+    assert call["tool_policy"] == payload["route"]["tool_policy"]
+    assert call["session_id"] == "ask-session-1"
+    assert "User question: 请分析 Atlas reporting" in call["query"]
+
+
+def test_workspace_ask_deep_drops_source_refs_outside_current_owner_scope() -> None:
+    api = _api()
+    IngestService(api.store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "workspace-ask-owned-note",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "Owned Ask Note",
+            "content": {"text": "Owned source ref is allowed in Ask deep answers."},
+        }
+    )
+    owned_source_id = api.store.list_source_items()[0].source_item_id
+
+    class RefReturningAgenticService:
+        def ready(self):
+            return {"ok": True}
+
+        def search(self, *_args, **_kwargs):
+            return {
+                "answer": "Deep answer with refs.",
+                "retrieval": {},
+                "source_refs": [
+                    {"source_item_id": owned_source_id, "title": "Owned Ask Note"},
+                    {"source_item_id": "src_other_tenant", "title": "Other tenant"},
+                    {"title": "No source id"},
+                ],
+                "trace": {},
+                "agentic_service": {"provider": "test"},
+            }
+
+    api.agentic_service = RefReturningAgenticService()
+
+    with _http_server(api) as base_url:
+        status, payload = _http_json(
+            base_url,
+            "POST",
+            "/workspace/ask",
+            {
+                "query": "请分析 owned source refs。",
+                "intent": "deep",
+                "user_id": "user_primary",
+                "represented_user_id": "user_primary",
+            },
+        )
+
+    assert status == 200
+    assert [ref["source_item_id"] for ref in payload["source_refs"]] == [owned_source_id]
+    assert payload["trace"]["dropped_source_refs"] == [
+        {"source_item_id": "src_other_tenant", "reason": "tenant_or_owner_mismatch"},
+        {"reason": "missing_source_item_id"},
+    ]
+
+
+def test_workspace_ask_deep_falls_back_to_quick_when_fastreact_is_unavailable() -> None:
+    api = _api()
+    IngestService(api.store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "workspace-ask-fallback-note",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "Ask Fallback Note",
+            "content": {"text": "Fallback should still answer from PSKA evidence when FastReAct is offline."},
+        }
+    )
+
+    class BrokenAgenticService:
+        def ready(self):
+            return {"ok": False}
+
+        def search(self, *_args, **_kwargs):
+            raise AgenticServiceError("FastReAct offline")
+
+    api.agentic_service = BrokenAgenticService()
+
+    with _http_server(api) as base_url:
+        status, payload = _http_json(
+            base_url,
+            "POST",
+            "/workspace/ask",
+            {
+                "query": "请分析 FastReAct offline 时的 fallback 风险报告。",
+                "intent": "deep",
+                "user_id": "user_primary",
+                "represented_user_id": "user_primary",
+            },
+        )
+
+    assert status == 200
+    assert payload["ok"] is False
+    assert payload["route"]["retrieval_owner"] == "pska"
+    assert payload["route"]["fallback_from"] == "deep"
+    assert payload["trace"]["fallback_reason"] == "agentic_service_unavailable"
+    assert "Ask Fallback Note" in payload["answer"]
+
+
+def test_workspace_ask_stream_emits_product_events() -> None:
+    api = _api()
+    IngestService(api.store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "workspace-ask-stream-note",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "Ask Stream Note",
+            "content": {"text": "Ask stream should emit route, evidence, answer, trace, and done events."},
+        }
+    )
+
+    with _http_server(api) as base_url:
+        status, headers, body = _http_text(
+            base_url,
+            "POST",
+            "/workspace/ask/stream",
+            payload={
+                "query": "Ask stream 事件有哪些？",
+                "intent": "quick",
+                "user_id": "user_primary",
+                "represented_user_id": "user_primary",
+            },
+        )
+
+    assert status == 200
+    assert headers["content-type"].startswith("text/event-stream")
+    assert "event: route" in body
+    assert "event: evidence" in body
+    assert "event: answer_delta" in body
+    assert "event: trace" in body
+    assert "event: done" in body
+    assert "time_to_first_answer_ms" in body
+
+
 def test_user_workspace_agentic_failure_reports_direct_fallback() -> None:
     api = _api()
     IngestService(api.store).ingest_channel_payload(
@@ -2188,7 +2418,7 @@ def test_workspace_graph_path_defaults_to_agentic_graphrag_with_deterministic_se
             self.query = ""
             self.skills = None
 
-        def search(self, query, user, *, represented_user_id=None, max_iterations=3, skills=None):
+        def search(self, query, user, *, represented_user_id=None, max_iterations=3, skills=None, tool_policy=None):
             self.query = query
             self.skills = skills
             return {
@@ -3045,11 +3275,34 @@ class FailingFastreact:
 class FakeAgenticService:
     def __init__(self, retrieval):
         self.retrieval = retrieval
+        self.calls = []
 
     def ready(self):
         return {"ok": True, "provider": "test", "adapter": "fake"}
 
-    def search(self, query, user, *, represented_user_id=None, max_iterations=3):
+    def search(
+        self,
+        query,
+        user,
+        *,
+        represented_user_id=None,
+        max_iterations=3,
+        skills=None,
+        tool_policy=None,
+        session_id=None,
+    ):
+        self.calls.append(
+            {
+                "query": query,
+                "user_id": user.user_id,
+                "tenant_id": user.tenant_id,
+                "represented_user_id": represented_user_id,
+                "max_iterations": max_iterations,
+                "skills": skills,
+                "tool_policy": tool_policy,
+                "session_id": session_id,
+            }
+        )
         retrieval = self.retrieval.search(query, user, represented_user_id=represented_user_id)
         return {
             "answer": "Fake external agentic answer.",
@@ -3176,9 +3429,13 @@ def _http_json(base_url: str, method: str, path: str, payload: dict | None = Non
     return response.status, json.loads(data.decode("utf-8"))
 
 
-def _http_text(base_url: str, method: str, path: str, headers: dict | None = None):
+def _http_text(base_url: str, method: str, path: str, headers: dict | None = None, payload: dict | None = None):
     conn = HTTPConnection(base_url, timeout=5)
-    conn.request(method, path, headers=dict(headers or {}))
+    body = None if payload is None else json.dumps(payload).encode("utf-8")
+    request_headers = dict(headers or {})
+    if body:
+        request_headers.setdefault("content-type", "application/json")
+    conn.request(method, path, body=body, headers=request_headers)
     response = conn.getresponse()
     data = response.read().decode("utf-8")
     response_headers = {key.lower(): value for key, value in response.getheaders()}

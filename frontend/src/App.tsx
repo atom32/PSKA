@@ -35,6 +35,7 @@ import { useQuery } from "@tanstack/react-query";
 import {
   analyzeWorkspaceContext,
   acceptDiscovery,
+  askWorkspace,
   applyReviewItem,
   approveReviewItem,
   cleanupKnowledgeSource,
@@ -44,7 +45,6 @@ import {
   loadDigestLogs,
   loadGatewaySession,
   loadGraphData,
-  loadGraphPath,
   loadGraphSearchSubgraph,
   loadGraphSubgraph,
   loadReviewCenter,
@@ -54,7 +54,6 @@ import {
   rejectReviewItem,
   runDigestNow,
   runFileSync,
-  searchWorkspace,
   snoozeDiscovery
 } from "./api";
 import type { PSKAAuth, PSKAIdentity } from "./api";
@@ -72,6 +71,7 @@ import type {
   TodayDiscoveryItem,
   TodayResponse,
   TodayReviewItem,
+  WorkspaceAskResponse,
   WorkspaceCorpusResponse,
   WorkspaceGraphEdge,
   WorkspaceGraphNode,
@@ -484,7 +484,7 @@ function TodayWorkspace({
 }) {
   const [actions, setActions] = useState<Record<string, TodayAction>>({});
   const [searchQuery, setSearchQuery] = useState("");
-  const [searchResult, setSearchResult] = useState<WorkspaceSearchResponse | null>(null);
+  const [searchResult, setSearchResult] = useState<WorkspaceAskResponse | null>(null);
   const [searchError, setSearchError] = useState<string | null>(null);
   const [searching, setSearching] = useState(false);
   const todayQuery = useQuery({
@@ -527,7 +527,7 @@ function TodayWorkspace({
     setSearching(true);
     setSearchError(null);
     try {
-      const result = await searchWorkspace(query, serviceToken, "direct");
+      const result = await askWorkspace(query, serviceToken, "auto", "today");
       setSearchResult(result);
       setBrain(searchToBrain(result, query));
       if (result.error) {
@@ -645,7 +645,7 @@ function TodayWorkspace({
       ) : (
       <div className="today-grid">
         <section className="today-section today-search">
-          <SectionTitle icon={<Search size={18} />} title="Ask PSKA" subtitle="快速 direct 检索" />
+          <SectionTitle icon={<Search size={18} />} title="Ask PSKA" subtitle="自动选择快速回答或深入分析" />
           <form className="today-search-form" onSubmit={runTodaySearch}>
             <textarea value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="问 PSKA" />
             <button className="primary" type="submit" disabled={searching}>
@@ -653,7 +653,7 @@ function TodayWorkspace({
             </button>
           </form>
           {searchError ? <div className="review-empty error-state compact">{searchError}</div> : null}
-          {searchResult ? <TodaySearchResult result={searchResult} /> : (
+          {searchResult ? <AskResult result={searchResult} /> : (
             <div className="review-empty compact">当前没有查询结果。</div>
           )}
         </section>
@@ -965,62 +965,92 @@ function normalizeContinueItems(data?: TodayResponse): TodayContinueItem[] {
     }));
 }
 
-function TodaySearchResult({ result }: { result: WorkspaceSearchResponse }) {
+function AskResult({ result }: { result: WorkspaceAskResponse | WorkspaceSearchResponse }) {
+  const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "failed">("idle");
+  const askEvidence = (result as WorkspaceAskResponse).evidence;
+  const route = (result as WorkspaceAskResponse).route;
+  const timing = (result as WorkspaceAskResponse).timing;
+  const workspaceEvidence = (result as WorkspaceSearchResponse).workspace?.evidence;
+  const retrieval = (result as WorkspaceSearchResponse).retrieval;
+  const fallback = (result as WorkspaceSearchResponse).fallback;
+  const fallbackReason = (result as WorkspaceSearchResponse).fallback_reason;
   const parsed = parseAgenticAnswer(result.answer);
   const eventAnswer = finalAnswerFromTraceEvents(result);
   const answer = cleanAgenticAnswer(parsed?.answer || result.answer || eventAnswer || "");
-  const events = agenticTraceEvents(result);
-  const streamItems = summarizeAgenticEvents(result).slice(0, 8);
   const refs = normalizeSearchRefs([
     ...(parsed?.source_refs || []),
     ...(parsed?.citations || []),
     ...(result.source_refs || []),
     ...(result.citations || []),
-    ...(result.workspace?.evidence?.citations || []),
-    ...(result.retrieval?.results || []),
-    ...(result.fallback?.retrieval?.citations || []),
-    ...(result.fallback?.retrieval?.results || [])
+    ...(askEvidence?.citations || []),
+    ...(askEvidence?.results || []),
+    ...(workspaceEvidence?.citations || []),
+    ...(retrieval?.results || []),
+    ...(fallback?.retrieval?.citations || []),
+    ...(fallback?.retrieval?.results || [])
   ]);
+  const gaps = normalizeAskNotes(askEvidence?.gaps);
+  const conflicts = normalizeAskNotes(askEvidence?.conflicts);
+  const markdown = buildAskMarkdown((result as WorkspaceAskResponse).query || "", answer, refs, gaps, conflicts);
 
-  if (!answer && refs.length === 0 && !result.error) {
+  async function handleCopyMarkdown() {
+    try {
+      await navigator.clipboard.writeText(markdown);
+      setCopyStatus("copied");
+    } catch {
+      setCopyStatus("failed");
+    }
+  }
+
+  if (!answer && refs.length === 0 && gaps.length === 0 && conflicts.length === 0 && !result.error) {
     return <div className="review-empty compact">PSKA 没有为这个问题找到可展示的真实证据。</div>;
   }
 
   return (
     <article className="today-search-result">
+      <div className="ask-result-header">
+        <small className="search-note">
+          {route ? askRouteLabel(route) : "Ask PSKA"}
+          {timing?.time_to_first_answer_ms !== undefined ? ` · 首字 ${Math.round(timing.time_to_first_answer_ms)} ms` : ""}
+          {timing?.total_ms !== undefined ? ` · 总耗时 ${Math.round(timing.total_ms)} ms` : ""}
+        </small>
+        <button type="button" onClick={() => void handleCopyMarkdown()} disabled={!markdown.trim()}>
+          {copyStatus === "copied" ? "已复制" : copyStatus === "failed" ? "复制失败" : "复制 Markdown"}
+        </button>
+      </div>
       {answer ? <p className="answer-text">{displayText(answer)}</p> : null}
-      {result.fallback_reason ? <small className="search-note">Fallback: {displayText(result.fallback_reason)}</small> : null}
-      {result.agentic_service?.run_id || result.trace?.event_count || events.length ? (
-        <div className="event-stream-summary">
-          <div className="event-stream-header">
-            <strong>FastReAct event stream</strong>
-            <span>
-              {displayText(result.agentic_service?.run_id || result.trace?.run_id, "run")} · {result.trace?.event_count ?? events.length} events
-            </span>
-          </div>
-          {streamItems.length > 0 ? (
-            <ol className="event-stream-list">
-              {streamItems.map((item, index) => (
-                <li key={`${item.type}-${index}`}>
-                  <span>{item.type}</span>
-                  <p>{displayText(item.message, "已记录事件")}</p>
-                </li>
-              ))}
-            </ol>
-          ) : null}
-        </div>
-      ) : null}
+      {fallbackReason ? <small className="search-note">{askFallbackLabel(fallbackReason)}</small> : null}
       {refs.length > 0 ? (
         <div className="source-ref-list">
           {refs.slice(0, 5).map((ref, index) => (
             <div className="source-ref" key={`${ref.source_item_id || ref.title || "ref"}-${index}`}>
               <strong>{displayText(ref.title || ref.source_item_id, "来源")}</strong>
+              {ref.source_item_id ? <code>{ref.source_item_id}</code> : null}
               {ref.snippet ? <p>{trimText(displayText(ref.snippet), 180)}</p> : null}
             </div>
           ))}
         </div>
       ) : null}
+      {gaps.length || conflicts.length ? (
+        <div className="ask-gap-list">
+          {gaps.length ? <EvidenceNoteList title="缺口" values={gaps} /> : null}
+          {conflicts.length ? <EvidenceNoteList title="冲突" values={conflicts} /> : null}
+        </div>
+      ) : null}
     </article>
+  );
+}
+
+function EvidenceNoteList({ title, values }: { title: string; values: string[] }) {
+  return (
+    <div className="ask-gap-section">
+      <strong>{title}</strong>
+      <ul>
+        {values.slice(0, 4).map((value, index) => (
+          <li key={`${title}-${index}`}>{value}</li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -1094,11 +1124,77 @@ function normalizeSearchRefIdentity(value?: string) {
   return displayText(value, "").replace(/\s+/g, " ").trim().toLocaleLowerCase();
 }
 
-function agenticTraceEvents(result: WorkspaceSearchResponse): Array<Record<string, unknown>> {
-  return Array.isArray(result.trace?.events) ? result.trace.events : [];
+function normalizeAskNotes(values: unknown): string[] {
+  if (!Array.isArray(values)) {
+    return [];
+  }
+  return values
+    .map((value) => {
+      if (typeof value === "string") {
+        return trimText(value, 220);
+      }
+      if (isRecord(value)) {
+        return trimText(firstString(value.message, value.detail, value.summary, value.reason) || compactJson(value), 220);
+      }
+      return trimText(String(value), 220);
+    })
+    .filter(Boolean);
 }
 
-function finalAnswerFromTraceEvents(result: WorkspaceSearchResponse) {
+function askRouteLabel(route?: WorkspaceAskResponse["route"]) {
+  const selected = route?.selected_intent || route?.intent;
+  const label = selected === "deep" ? "深入分析" : selected === "quick" ? "快速回答" : "自动路由";
+  return route?.fallback_from ? `${label} · 已降级` : label;
+}
+
+function askFallbackLabel(reason?: string) {
+  if (!reason) {
+    return "";
+  }
+  if (reason === "agentic_service_unavailable") {
+    return "深入分析暂不可用，已使用快速回答。";
+  }
+  return `已使用备用回答：${displayText(reason)}`;
+}
+
+function buildAskMarkdown(query: string, answer: string, refs: SearchEvidenceRef[], gaps: string[], conflicts: string[]) {
+  const lines = [
+    query ? `## ${query}` : "## Ask PSKA",
+    "",
+    answer || "PSKA 没有生成可复制的回答。",
+    ""
+  ];
+  if (refs.length > 0) {
+    lines.push("### 引用");
+    refs.slice(0, 8).forEach((ref, index) => {
+      const title = ref.title || ref.source_item_id || `来源 ${index + 1}`;
+      const source = ref.source_item_id ? ` (${ref.source_item_id})` : "";
+      lines.push(`${index + 1}. ${title}${source}`);
+      if (ref.snippet) {
+        lines.push(`   - ${trimText(ref.snippet, 220)}`);
+      }
+    });
+    lines.push("");
+  }
+  if (gaps.length > 0) {
+    lines.push("### 缺口");
+    gaps.slice(0, 6).forEach((gap) => lines.push(`- ${gap}`));
+    lines.push("");
+  }
+  if (conflicts.length > 0) {
+    lines.push("### 冲突");
+    conflicts.slice(0, 6).forEach((conflict) => lines.push(`- ${conflict}`));
+    lines.push("");
+  }
+  return lines.join("\n").trim();
+}
+
+function agenticTraceEvents(result: WorkspaceAskResponse | WorkspaceSearchResponse): Array<Record<string, unknown>> {
+  const trace = (result as { trace?: Record<string, unknown> }).trace;
+  return Array.isArray(trace?.events) ? trace.events as Array<Record<string, unknown>> : [];
+}
+
+function finalAnswerFromTraceEvents(result: WorkspaceAskResponse | WorkspaceSearchResponse) {
   const events = agenticTraceEvents(result);
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index];
@@ -1114,7 +1210,7 @@ function finalAnswerFromTraceEvents(result: WorkspaceSearchResponse) {
   return "";
 }
 
-function summarizeAgenticEvents(result: WorkspaceSearchResponse): AgenticEventSummary[] {
+function summarizeAgenticEvents(result: WorkspaceAskResponse | WorkspaceSearchResponse): AgenticEventSummary[] {
   const events = agenticTraceEvents(result);
   const summaries = events
     .map((event) => summarizeAgenticEvent(event))
@@ -1122,7 +1218,9 @@ function summarizeAgenticEvents(result: WorkspaceSearchResponse): AgenticEventSu
   if (summaries.length > 0) {
     return summaries;
   }
-  return (result.trace?.tool_calls || []).map((call) => ({
+  const trace = (result as { trace?: Record<string, unknown> }).trace;
+  const toolCalls = Array.isArray(trace?.tool_calls) ? trace.tool_calls as Array<Record<string, unknown>> : [];
+  return toolCalls.map((call) => ({
     type: displayText(asString(call.tool_name), "tool_call"),
     message: compactJson(call.tool_args)
   }));
@@ -1185,7 +1283,7 @@ function compactJson(value: unknown) {
   }
 }
 
-function displaySearchError(error: WorkspaceSearchResponse["error"]) {
+function displaySearchError(error: WorkspaceAskResponse["error"] | WorkspaceSearchResponse["error"]) {
   if (!error) {
     return "PSKA 查询失败。";
   }
@@ -1195,7 +1293,11 @@ function displaySearchError(error: WorkspaceSearchResponse["error"]) {
   return displayText(error.message || error.detail || error.type, "PSKA 查询失败。");
 }
 
-function searchToBrain(result: WorkspaceSearchResponse, query: string): Partial<BrainState> {
+function searchToBrain(result: WorkspaceAskResponse | WorkspaceSearchResponse, query: string): Partial<BrainState> {
+  const askEvidence = (result as WorkspaceAskResponse).evidence;
+  const workspaceEvidence = (result as WorkspaceSearchResponse).workspace?.evidence;
+  const retrieval = (result as WorkspaceSearchResponse).retrieval;
+  const fallback = (result as WorkspaceSearchResponse).fallback;
   const parsed = parseAgenticAnswer(result.answer);
   const eventAnswer = finalAnswerFromTraceEvents(result);
   const answer = cleanAgenticAnswer(parsed?.answer || result.answer || eventAnswer || "");
@@ -1204,17 +1306,19 @@ function searchToBrain(result: WorkspaceSearchResponse, query: string): Partial<
     ...(parsed?.citations || []),
     ...(result.source_refs || []),
     ...(result.citations || []),
-    ...(result.workspace?.evidence?.citations || []),
-    ...(result.retrieval?.results || []),
-    ...(result.fallback?.retrieval?.citations || []),
-    ...(result.fallback?.retrieval?.results || [])
+    ...(askEvidence?.citations || []),
+    ...(askEvidence?.results || []),
+    ...(workspaceEvidence?.citations || []),
+    ...(retrieval?.results || []),
+    ...(fallback?.retrieval?.citations || []),
+    ...(fallback?.retrieval?.results || [])
   ])
     .map((ref, index) => ({
       id: `today-search-${index}`,
       title: displayText(ref.title || ref.source_item_id, query),
       score: typeof ref.score === "number" ? Math.round(ref.score * 100) : undefined,
       snippet: displayText(ref.snippet || answer, "PSKA 返回了相关证据。"),
-      source: "PSKA Agentic"
+      source: "PSKA evidence"
     }))
     .filter((item) => item.title || item.snippet);
   return {
@@ -1223,7 +1327,7 @@ function searchToBrain(result: WorkspaceSearchResponse, query: string): Partial<
     updatedAt: Date.now(),
     error: result.error ? displaySearchError(result.error) : null,
     relatedKnowledge: [
-      ...(answer ? [{ id: "today-answer", title: query, snippet: displayText(answer), source: "PSKA Agentic answer" }] : []),
+      ...(answer ? [{ id: "today-answer", title: query, snippet: displayText(answer), source: "Ask PSKA" }] : []),
       ...refs
     ].slice(0, 6),
     entities: extractEntities(`${query} ${answer}`).slice(0, 8),
@@ -1512,6 +1616,10 @@ function CorpusWorkspace({
   setBrain: (brain: Partial<BrainState>) => void;
 }) {
   const [query, setQuery] = useState("");
+  const [askQuery, setAskQuery] = useState("");
+  const [askResult, setAskResult] = useState<WorkspaceAskResponse | null>(null);
+  const [askStatus, setAskStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
+  const [askError, setAskError] = useState("");
   const [operationStatus, setOperationStatus] = useState<"idle" | "syncing" | "digesting" | "cleaning" | "success" | "error">("idle");
   const [operationMessage, setOperationMessage] = useState("");
   const [cleanupPreview, setCleanupPreview] = useState<KnowledgeSourceCleanupResponse | null>(null);
@@ -1635,6 +1743,26 @@ function CorpusWorkspace({
     }
   }
 
+  async function handleCorpusAsk(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const prompt = askQuery.trim();
+    if (!prompt) {
+      return;
+    }
+    setAskStatus("loading");
+    setAskError("");
+    try {
+      const payload = await askWorkspace(prompt, serviceToken, "auto", "corpus");
+      setAskResult(payload);
+      setAskStatus(payload.ok === false ? "error" : "success");
+      setAskError(payload.error ? displaySearchError(payload.error) : "");
+      setBrain(searchToBrain(payload, prompt));
+    } catch (error) {
+      setAskStatus("error");
+      setAskError(error instanceof Error ? error.message : "Ask PSKA 失败。");
+    }
+  }
+
   return (
     <section className="main-workspace corpus-surface" aria-label="语料库">
       <div className="corpus-header">
@@ -1695,6 +1823,18 @@ function CorpusWorkspace({
       </div>
 
       <UnderstandingSummary payload={digestLogs} />
+
+      <section className="today-section corpus-ask">
+        <SectionTitle icon={<Search size={18} />} title="Ask PSKA" subtitle="基于当前资料库回答" />
+        <form className="today-search-form" onSubmit={handleCorpusAsk}>
+          <textarea value={askQuery} onChange={(event) => setAskQuery(event.target.value)} placeholder="问这批资料" />
+          <button className="primary" type="submit" disabled={askStatus === "loading"}>
+            {askStatus === "loading" ? "查询中" : "查询"}
+          </button>
+        </form>
+        {askError ? <div className="review-empty error-state compact">{askError}</div> : null}
+        {askResult ? <AskResult result={askResult} /> : null}
+      </section>
 
       <div className="corpus-tools">
         <label>
@@ -2227,9 +2367,9 @@ function GraphWorkspace({
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [graphSearch, setGraphSearch] = useState("");
   const [neighborhoodOnly, setNeighborhoodOnly] = useState(false);
-  const [pathQuery, setPathQuery] = useState("GraphRAG digest claims");
-  const [pathMode, setPathMode] = useState<"deterministic" | "agentic">("deterministic");
+  const [pathQuery, setPathQuery] = useState("digest claims");
   const [pathResult, setPathResult] = useState<WorkspaceGraphPathResponse | null>(null);
+  const [graphAskResult, setGraphAskResult] = useState<WorkspaceAskResponse | null>(null);
   const [pathStatus, setPathStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
   const [pathError, setPathError] = useState("");
   const [controlsOpen, setControlsOpen] = useState(false);
@@ -2271,14 +2411,16 @@ function GraphWorkspace({
     }
     setPathStatus("loading");
     setPathError("");
+    setGraphAskResult(null);
     try {
-      const payload = await loadGraphPath(serviceToken, query, pathMode);
-      setPathResult(payload);
+      const payload = await askWorkspace(query, serviceToken, "auto", "graph");
+      setGraphAskResult(payload);
+      setPathResult(null);
       setPathStatus(payload.ok === false ? "error" : "success");
-      setPathError(displayText(payload.error));
+      setPathError(payload.error ? displaySearchError(payload.error) : "");
     } catch (err) {
       setPathStatus("error");
-      setPathError(err instanceof Error ? err.message : "Graph path 查询失败。");
+      setPathError(err instanceof Error ? err.message : "Ask PSKA 失败。");
     }
   }
 
@@ -2406,23 +2548,15 @@ function GraphWorkspace({
                 拉取子图
               </button>
             </div>
-            <form className="graph-path-search" onSubmit={(event) => void handleGraphPath(event)} aria-label="GraphRAG 路径查询">
+            <form className="graph-path-search" onSubmit={(event) => void handleGraphPath(event)} aria-label="Ask PSKA">
               <Search size={15} />
               <input
                 value={pathQuery}
                 onChange={(event) => setPathQuery(event.target.value)}
-                placeholder="查询 GraphRAG 路径、facts 与证据"
+                placeholder="向 PSKA 提问，证据会在右侧展开"
               />
-              <div className="graph-path-mode" aria-label="GraphRAG 查询模式">
-                <button type="button" className={pathMode === "deterministic" ? "active" : ""} onClick={() => setPathMode("deterministic")}>
-                  Direct
-                </button>
-                <button type="button" className={pathMode === "agentic" ? "active" : ""} onClick={() => setPathMode("agentic")}>
-                  Agentic
-                </button>
-              </div>
               <button type="submit" disabled={pathStatus === "loading"}>
-                {pathStatus === "loading" ? "查询中" : pathMode === "agentic" ? "Agentic 问答" : "解释路径"}
+                {pathStatus === "loading" ? "查询中" : "Ask PSKA"}
               </button>
             </form>
           </div>
@@ -2485,12 +2619,12 @@ function GraphWorkspace({
               </>
             ) : (
               <>
-                <span className="eyebrow">GraphRAG v2</span>
+                <span className="eyebrow">Knowledge Graph</span>
                 <h2>选择一个节点</h2>
                 <p>点击 digest、claim、hyperedge 或 passage，查看它如何追溯到原文证据。</p>
               </>
             )}
-            <GraphPathPanel result={pathResult} status={pathStatus} error={pathError} />
+            {graphAskResult ? <AskResult result={graphAskResult} /> : <GraphPathPanel result={pathResult} status={pathStatus} error={pathError} />}
           </aside>
         </div>
       )}
@@ -2600,24 +2734,24 @@ function GraphPathPanel({
   if (status === "idle" && !result) {
     return (
       <div className="graph-path-panel">
-        <span className="eyebrow">Path Explain</span>
-        <p>输入问题后，这里会显示 query seeds、facts、passages 和 citations。</p>
+        <span className="eyebrow">证据详情</span>
+        <p>输入问题后，这里会显示 seeds、facts、passages 和 citations。</p>
       </div>
     );
   }
   if (status === "loading") {
     return (
       <div className="graph-path-panel">
-        <span className="eyebrow">Path Explain</span>
-        <p>正在计算 GraphRAG 检索路径...</p>
+        <span className="eyebrow">证据详情</span>
+        <p>正在查询证据...</p>
       </div>
     );
   }
   if (status === "error" && !result) {
     return (
       <div className="graph-path-panel error-state">
-        <span className="eyebrow">Path Explain</span>
-        <p>{error || "Graph path 查询失败。"}</p>
+        <span className="eyebrow">证据详情</span>
+        <p>{error || "Ask PSKA 查询失败。"}</p>
       </div>
     );
   }
@@ -2631,16 +2765,14 @@ function GraphPathPanel({
   const expansionDecisions = result?.agentic_trace?.expansion_decisions || [];
   return (
     <div className="graph-path-panel">
-      <span className="eyebrow">Path Explain</span>
-      <h3>{displayText(result?.query, "GraphRAG 查询")}</h3>
+      <span className="eyebrow">证据详情</span>
+      <h3>{displayText(result?.query, "Ask PSKA")}</h3>
       <p>{result?.answer || result?.path_summary?.summary || "暂无路径摘要。"}</p>
       {error ? <p className="graph-path-warning">{error}</p> : null}
       {result?.mode || result?.agentic_service ? (
         <div className="graph-path-run">
-          <span>{displayText(result.mode, "deterministic")}</span>
-          {result.requires_agentic_service_online ? <span>FastReAct required</span> : <span>direct retrieval</span>}
+          <span>{result.requires_agentic_service_online ? "深入分析" : "快速证据"}</span>
           {result.display_mode ? <span>{displayText(result.display_mode)}</span> : null}
-          {result.agentic_service ? <span>{displayText(result.agentic_service.provider || result.agentic_service.adapter || result.agentic_service.run_id, "agentic service")}</span> : null}
         </div>
       ) : null}
       <div className="graph-path-metrics">
@@ -2658,13 +2790,13 @@ function GraphPathPanel({
       ) : null}
       {result?.agentic_repair?.attempted ? (
         <p className={result.agentic_repair.accepted ? "graph-path-repair-note" : "graph-path-warning"}>
-          Repair {result.agentic_repair.accepted ? "accepted" : "not accepted"} · {displayText(result.agentic_repair.final_answer_mode || result.display_mode || result.mode)}
+          答案重写{result.agentic_repair.accepted ? "已采用" : "未采用"} · {displayText(result.agentic_repair.final_answer_mode || result.display_mode || result.mode)}
           {result.agentic_repair.repaired_answer_chars ? ` · ${result.agentic_repair.repaired_answer_chars} chars` : ""}
         </p>
       ) : null}
       {expansionDecisions.length ? (
         <div className="graph-path-section">
-          <strong>Agentic Expansion</strong>
+          <strong>Evidence Expansion</strong>
           {expansionDecisions.slice(0, 4).map((decision, index) => (
             <article key={`expansion-${index}`}>
               <b>{trimText(decision.target || decision.action || decision.type || `decision ${index + 1}`, 92)}</b>

@@ -90,9 +90,50 @@ limit=20
 Returns sources, chunks, documents, entities, hyperedges, memories, and profile
 cards.
 
+### `POST /workspace/ask`
+
+Primary Ask PSKA endpoint for workspace QA. This is the product-facing route
+used by Today, Corpus, and Graph surfaces.
+
+```json
+{
+  "query": "Agent Runtime",
+  "intent": "auto",
+  "surface": "today",
+  "scope": {},
+  "session_id": "optional-session-id",
+  "user_id": "user_primary",
+  "represented_user_id": "user_primary",
+  "top_k": 8
+}
+```
+
+`intent=quick` lets PSKA own retrieval. `intent=deep` delegates retrieval to
+FastReAct through PSKA read-only MCP tools. `intent=auto` chooses between those
+routes and returns `route.retrieval_owner` as either `pska` or
+`fastreact_pska_mcp`.
+
+Response includes:
+
+- `answer`
+- `route`
+- `evidence`
+- `citations`
+- `source_refs`
+- `trace`
+- `timing.total_ms`
+- `timing.time_to_first_answer_ms`
+
+### `POST /workspace/ask/stream`
+
+SSE version of Ask PSKA. Events are `route`, `evidence`, `answer_delta`,
+`trace`, `done`, and `error`. `time_to_first_answer_ms` starts when the first
+user-visible answer character is emitted, not when route or trace events start.
+
 ### `POST /workspace/search/query`
 
-Search for the PSKA Brain and workspace surfaces.
+Compatibility/debug search endpoint for legacy clients and eval tools. Product
+UI should prefer `/workspace/ask`.
 
 ```json
 {
@@ -106,7 +147,8 @@ Search for the PSKA Brain and workspace surfaces.
 ```
 
 `mode=agentic` uses the configured agentic service and falls back to direct
-retrieval when unavailable.
+retrieval when unavailable. New product surfaces should not expose this mode
+switch to users.
 
 ### `POST /workspace/writer/suggest`
 

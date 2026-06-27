@@ -28,6 +28,8 @@ class AgenticServiceClient(Protocol):
         represented_user_id: str | None = None,
         max_iterations: int = 3,
         skills: list[str] | None = None,
+        tool_policy: dict[str, Any] | None = None,
+        session_id: str | None = None,
     ) -> dict[str, Any]: ...
 
 
@@ -107,6 +109,8 @@ class UnsupportedAgenticService:
         represented_user_id: str | None = None,
         max_iterations: int = 3,
         skills: list[str] | None = None,
+        tool_policy: dict[str, Any] | None = None,
+        session_id: str | None = None,
     ) -> dict[str, Any]:
         raise AgenticServiceError(f"Unsupported agentic service provider: {self.config.provider}")
 
@@ -144,6 +148,8 @@ class FastreactAgenticServiceAdapter:
         represented_user_id: str | None = None,
         max_iterations: int = 3,
         skills: list[str] | None = None,
+        tool_policy: dict[str, Any] | None = None,
+        session_id: str | None = None,
     ) -> dict[str, Any]:
         messages = _agentic_messages(query, tenant_id=user.tenant_id, user_id=user.user_id)
         scope = {
@@ -161,6 +167,8 @@ class FastreactAgenticServiceAdapter:
                 tenant_id=user.tenant_id,
                 scope=scope,
                 skills=run_skills,
+                tool_policy=tool_policy,
+                session_id=session_id,
             )
         except FastreactError as exc:
             raise AgenticServiceError(str(exc)) from exc
@@ -179,6 +187,8 @@ class FastreactAgenticServiceAdapter:
         tenant_id: str,
         scope: dict[str, Any],
         skills: list[str],
+        tool_policy: dict[str, Any] | None = None,
+        session_id: str | None = None,
     ) -> dict[str, Any]:
         client = self._client()
         try:
@@ -188,7 +198,9 @@ class FastreactAgenticServiceAdapter:
                 tenant_id=tenant_id,
                 purpose="agentic_search",
                 scope=scope,
+                session_id=session_id,
                 skills=skills,
+                tool_policy=tool_policy,
                 **self._generation_options(),
             )
             run_id = str(created.get("run_id") or "")
@@ -220,7 +232,9 @@ class FastreactAgenticServiceAdapter:
                     purpose="agentic_search",
                     stream=False,
                     scope=scope,
+                    session_id=session_id,
                     skills=skills,
+                    tool_policy=tool_policy,
                     **self._generation_options(),
                 )
             detail = str(exc)
@@ -233,7 +247,9 @@ class FastreactAgenticServiceAdapter:
             purpose="agentic_search",
             stream=False,
             scope=scope,
+            session_id=session_id,
             skills=skills,
+            tool_policy=tool_policy,
             **self._generation_options(),
         )
 

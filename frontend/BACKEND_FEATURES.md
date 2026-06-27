@@ -128,14 +128,24 @@ audit metadata.
 
 | Need | Endpoint | Status |
 | --- | --- | --- |
-| Direct retrieval | `POST /workspace/search/query` with `mode=direct` | Implemented |
-| Agentic search with direct fallback | `POST /workspace/search/query` with `mode=agentic` | Implemented |
+| Ask PSKA unified QA | `POST /workspace/ask` with `intent=auto\|quick\|deep` | Implemented |
+| Ask PSKA streaming | `POST /workspace/ask/stream` SSE | Implemented |
+| Legacy direct retrieval | `POST /workspace/search/query` with `mode=direct` | Compatibility/debug |
+| Legacy agentic search with direct fallback | `POST /workspace/search/query` with `mode=agentic` | Compatibility/debug |
 | Corpus data for entities/edges/memory/profile | `GET /workspace/corpus/data` | Implemented |
 | Selected-text evidence suggestion | `POST /workspace/writer/suggest` | Implemented |
 
-`/workspace/search/query` returns `workspace.evidence` with:
+Main product surfaces should call `/workspace/ask`. It returns `answer`,
+`route`, `evidence`, `citations`, `source_refs`, `trace`, and `timing`.
+`route.retrieval_owner` is either `pska` for quick PSKA-owned retrieval or
+`fastreact_pska_mcp` for deep retrieval owned by FastReAct through PSKA read-only
+MCP tools. `/workspace/search/query` remains for older clients and diagnostics.
+
+Ask evidence may include:
 
 - `citations`
+- `source_refs`
+- `results`
 - `graph_paths`
 - `memory_context`
 - `profile_context`

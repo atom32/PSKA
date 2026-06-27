@@ -222,6 +222,42 @@ export type WorkspaceGraphPathResponse = {
   error?: string | { message?: string; detail?: string; type?: string };
 };
 
+export type WorkspaceAskResponse = {
+  ok?: boolean;
+  query?: string;
+  answer?: string;
+  route?: {
+    intent?: "auto" | "quick" | "deep" | string;
+    selected_intent?: "quick" | "deep" | string;
+    retrieval_owner?: "pska" | "fastreact_pska_mcp" | string;
+    surface?: string;
+    requires_agentic_service_online?: boolean;
+    fallback_from?: string;
+    tool_policy?: Record<string, unknown>;
+  };
+  evidence?: {
+    citations?: Array<Record<string, unknown>>;
+    source_refs?: Array<Record<string, unknown>>;
+    results?: Array<Record<string, unknown>>;
+    graph_paths?: Array<Record<string, unknown>>;
+    memory_context?: Array<Record<string, unknown>>;
+    profile_context?: Array<Record<string, unknown>>;
+    gaps?: unknown[];
+    conflicts?: unknown[];
+  };
+  citations?: Array<Record<string, unknown>>;
+  source_refs?: Array<Record<string, unknown>>;
+  trace?: Record<string, unknown>;
+  timing?: {
+    total_ms?: number;
+    time_to_first_answer_ms?: number;
+  };
+  agentic_service?: Record<string, unknown>;
+  tenant_id?: string;
+  owner_user_id?: string;
+  error?: string | { message?: string; detail?: string; type?: string };
+};
+
 export type FileSyncResponse = {
   ok?: boolean;
   error?: string;

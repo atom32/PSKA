@@ -17,7 +17,7 @@ from psycopg.types.json import Jsonb
 
 from pska_core.acl import ACLService
 from pska_core.agent_capture import capture_agent_conversation
-from pska_core.agentic_service import AgenticServiceError, build_agentic_service_client
+from pska_core.agentic_service import PSKA_QA_SKILL, AgenticServiceError, build_agentic_service_client
 from pska_core.auth import AuthError, RequestContext, authenticate_headers, context_from_headers, service_token_required
 from pska_core.candidates import CandidateWriteService
 from pska_core.config import DEFAULT_DATABASE_URL, DatabaseConfig, PSKAConfig, ServiceConfig
@@ -40,6 +40,9 @@ from pska_core.retrieval import RetrievalService
 from pska_core.review import ReviewService
 from pska_core.serde import to_jsonable
 from pska_core.store_postgres import PostgresKnowledgeStore
+
+
+ASK_READ_ONLY_TOOLS = ["pska_pska_search", "pska_pska_index_status"]
 
 
 class PSKAApi:
@@ -266,6 +269,8 @@ class PSKAApi:
         represented_user_id: str | None = None,
         max_iterations: int = 3,
         skills: list[str] | None = None,
+        tool_policy: dict[str, Any] | None = None,
+        session_id: str | None = None,
     ) -> dict[str, Any]:
         kwargs: dict[str, Any] = {
             "represented_user_id": represented_user_id,
@@ -273,12 +278,23 @@ class PSKAApi:
         }
         if skills is not None:
             kwargs["skills"] = skills
+        if tool_policy is not None:
+            kwargs["tool_policy"] = tool_policy
+        if session_id:
+            kwargs["session_id"] = session_id
         try:
             response = self.agentic_service.search(query, user, **kwargs)
         except TypeError as exc:
-            if skills is None or "skills" not in str(exc):
+            if (
+                (skills is not None and "skills" in str(exc))
+                or (tool_policy is not None and "tool_policy" in str(exc))
+                or (session_id is not None and "session_id" in str(exc))
+            ):
+                kwargs.pop("skills", None)
+                kwargs.pop("tool_policy", None)
+                kwargs.pop("session_id", None)
+            else:
                 raise
-            kwargs.pop("skills", None)
             response = self.agentic_service.search(query, user, **kwargs)
         retrieval = response.get("retrieval") if isinstance(response.get("retrieval"), dict) else {}
         trace = response.get("trace") if isinstance(response.get("trace"), dict) else {}
@@ -935,6 +951,124 @@ class PSKAApi:
             },
         }
 
+    def workspace_ask(self, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
+        started_at = time.perf_counter()
+        payload = context.apply_to_payload(payload) if context else payload
+        query = str(payload.get("query") or "").strip()
+        if not query:
+            raise ValueError("query is required")
+        intent = str(payload.get("intent") or "auto").strip().lower()
+        if intent not in {"auto", "quick", "deep"}:
+            raise ValueError("intent must be one of auto, quick, deep")
+        tenant_id = str(payload.get("tenant_id") or DEFAULT_TENANT_ID)
+        owner_user_id = _workspace_owner_user_id(context, payload.get("owner_user_id") or payload.get("represented_user_id"))
+        user_id = str(payload.get("user_id") or owner_user_id)
+        represented_user_id = str(payload.get("represented_user_id") or owner_user_id)
+        surface = str(payload.get("surface") or "ask").strip() or "ask"
+        scope = payload.get("scope") if isinstance(payload.get("scope"), dict) else {}
+        top_k = max(1, min(int(payload.get("top_k") or 8), 20))
+        session_id = str(payload.get("session_id") or "").strip() or None
+        selected_intent = _ask_route_intent(query, intent=intent)
+        user = self.store.get_user(user_id, tenant_id=tenant_id)
+        if selected_intent == "deep":
+            try:
+                deep = self._agentic_service_search(
+                    _ask_deep_query(query=query, surface=surface, scope=scope),
+                    user,
+                    represented_user_id=represented_user_id,
+                    max_iterations=max(1, min(int(payload.get("max_iterations") or 4), 8)),
+                    skills=[PSKA_QA_SKILL],
+                    tool_policy={"mode": "allowlist", "allowed_tools": ASK_READ_ONLY_TOOLS},
+                    session_id=session_id,
+                )
+                return _ask_deep_response(
+                    query=query,
+                    intent=intent,
+                    surface=surface,
+                    tenant_id=tenant_id,
+                    owner_user_id=owner_user_id,
+                    selected_intent=selected_intent,
+                    agentic=deep,
+                    started_at=started_at,
+                    allowed_tools=ASK_READ_ONLY_TOOLS,
+                    store=self.store,
+                )
+            except AgenticServiceError as exc:
+                quick = self._workspace_ask_quick(
+                    query=query,
+                    intent=intent,
+                    surface=surface,
+                    tenant_id=tenant_id,
+                    owner_user_id=owner_user_id,
+                    represented_user_id=represented_user_id,
+                    user=user,
+                    top_k=top_k,
+                    started_at=started_at,
+                )
+                quick["ok"] = False
+                quick["route"]["selected_intent"] = "quick"
+                quick["route"]["fallback_from"] = "deep"
+                quick["trace"]["fallback_reason"] = "agentic_service_unavailable"
+                quick["trace"]["error"] = str(exc)
+                return quick
+        return self._workspace_ask_quick(
+            query=query,
+            intent=intent,
+            surface=surface,
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            represented_user_id=represented_user_id,
+            user=user,
+            top_k=top_k,
+            started_at=started_at,
+        )
+
+    def _workspace_ask_quick(
+        self,
+        *,
+        query: str,
+        intent: str,
+        surface: str,
+        tenant_id: str,
+        owner_user_id: str,
+        represented_user_id: str,
+        user: Any,
+        top_k: int,
+        started_at: float,
+    ) -> dict[str, Any]:
+        retrieval_result = self.retrieval.search(query, user, represented_user_id=represented_user_id, top_k=top_k)
+        retrieval = _console_search_summary(to_jsonable(retrieval_result))
+        evidence = _ask_evidence_from_retrieval(retrieval)
+        answer = _ask_quick_answer(query, retrieval)
+        elapsed_ms = _elapsed_ms(started_at)
+        return {
+            "ok": True,
+            "query": query,
+            "answer": answer,
+            "route": {
+                "intent": intent,
+                "selected_intent": "quick",
+                "retrieval_owner": "pska",
+                "surface": surface,
+                "requires_agentic_service_online": False,
+                "tool_policy": {"mode": "none"},
+            },
+            "evidence": evidence,
+            "citations": evidence["citations"],
+            "source_refs": evidence["source_refs"],
+            "trace": {
+                "mode": "quick",
+                "retrieval": retrieval,
+                "diagnostics": retrieval.get("diagnostics") if isinstance(retrieval.get("diagnostics"), dict) else {},
+            },
+            "timing": {
+                "total_ms": elapsed_ms,
+                "time_to_first_answer_ms": elapsed_ms,
+            },
+            "tenant_id": tenant_id,
+            "owner_user_id": owner_user_id,
+        }
+
     def workspace_today(
         self,
         *,
@@ -1393,6 +1527,7 @@ class PSKAApi:
                 represented_user_id=owner_user_id,
                 max_iterations=max(1, min(int(max_iterations or 3), 8)),
                 skills=[],
+                tool_policy={"mode": "none"},
             )
         except AgenticServiceError as exc:
             return {
@@ -1435,6 +1570,7 @@ class PSKAApi:
                     represented_user_id=owner_user_id,
                     max_iterations=max(1, min(int(max_iterations or 3), 8)),
                     skills=[],
+                    tool_policy={"mode": "none"},
                 )
                 repair_unusable = _agentic_graph_unusable_reason(repair_agentic)
                 if not repair_unusable:
@@ -2154,6 +2290,10 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
                 return self._json(200, self.api.agentic_search(payload, context=context))
             if path == "/console/search/query":
                 return self._json(200, self.api.console_search(payload, context=context))
+            if path == "/workspace/ask":
+                return self._json(200, self.api.workspace_ask(payload, context=context))
+            if path == "/workspace/ask/stream":
+                return self._sse(200, self.api.workspace_ask(payload, context=context))
             if path == "/workspace/search/query":
                 return self._json(200, self.api.workspace_search(payload, context=context))
             if path == "/workspace/writer/suggest":
@@ -2267,6 +2407,21 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
         self.send_header("content-length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
+        self._log_request(status)
+
+    def _sse(self, status: int, payload: dict[str, Any]) -> None:
+        if not hasattr(self, "_request_meta"):
+            self._begin_request(path=urlparse(self.path).path, payload={})
+        self._request_meta.update(_response_metrics(payload))
+        self.send_response(status)
+        self.send_header("content-type", "text/event-stream; charset=utf-8")
+        self.send_header("cache-control", "no-store")
+        self.send_header("x-pska-request-id", self._request_id())
+        self.end_headers()
+        for event_name, event_payload in _ask_sse_events(payload):
+            frame = f"event: {event_name}\ndata: {json.dumps(to_jsonable(event_payload), ensure_ascii=False)}\n\n"
+            self.wfile.write(frame.encode("utf-8"))
+            self.wfile.flush()
         self._log_request(status)
 
     def _empty(self, status: int) -> None:
@@ -3056,6 +3211,227 @@ def _workspace_chat_status(result: dict[str, Any]) -> dict[str, Any]:
             "message": "Agentic search is unavailable; direct retrieval fallback is shown.",
         }
     return {"ok": False, "mode": mode, "message": str((result.get("error") or {}).get("message") or "Search failed.")}
+
+
+def _elapsed_ms(started_at: float) -> float:
+    return round((time.perf_counter() - started_at) * 1000, 2)
+
+
+def _ask_route_intent(query: str, *, intent: str) -> str:
+    if intent in {"quick", "deep"}:
+        return intent
+    lowered = query.lower()
+    deep_markers = [
+        "分析",
+        "总结",
+        "对比",
+        "比较",
+        "报告",
+        "规划",
+        "策略",
+        "为什么",
+        "风险",
+        "建议",
+        "复盘",
+        "梳理",
+        "多步",
+        "analyze",
+        "compare",
+        "summarize",
+        "report",
+        "strategy",
+        "why",
+        "risk",
+    ]
+    quick_markers = [
+        "谁",
+        "什么",
+        "多少",
+        "哪个",
+        "何时",
+        "状态",
+        "负责人",
+        "下一步",
+        "arr",
+        "owner",
+        "lead",
+        "status",
+        "next action",
+        "how much",
+        "when",
+        "where",
+        "who",
+    ]
+    if any(marker in lowered for marker in deep_markers):
+        return "deep"
+    if any(marker in lowered for marker in quick_markers) or len(query) <= 90:
+        return "quick"
+    return "deep"
+
+
+def _ask_deep_query(*, query: str, surface: str, scope: dict[str, Any]) -> str:
+    scope_text = json.dumps(scope or {}, ensure_ascii=False)
+    return (
+        "Answer this PSKA knowledge question for a user-facing Ask PSKA surface.\n"
+        "Use only PSKA read-only retrieval tools exposed in this run. Do not use host filesystem, shell, "
+        "write, review mutation, job, or candidate-write tools. Do not mention FastReAct, MCP, GraphRAG, "
+        "tool policy, or retrieval mechanics in the answer body. Put diagnostics in trace only.\n"
+        "Return JSON with keys answer, citations, source_refs, retrieval, and trace. The answer must be "
+        "Chinese by default, conclusion-first, useful as report evidence, and grounded in citations when "
+        "PSKA returns evidence. If evidence is insufficient, say what is missing.\n\n"
+        f"Surface: {surface}\n"
+        f"Scope: {scope_text}\n"
+        f"User question: {query}"
+    )
+
+
+def _ask_evidence_from_retrieval(retrieval: dict[str, Any]) -> dict[str, Any]:
+    diagnostics = retrieval.get("diagnostics") if isinstance(retrieval.get("diagnostics"), dict) else {}
+    citations = _list_of_dicts(retrieval.get("citations"))
+    return {
+        "citations": citations,
+        "source_refs": citations,
+        "results": _list_of_dicts(retrieval.get("results")),
+        "graph_paths": _list_of_dicts(retrieval.get("graph_paths")),
+        "memory_context": _list_of_dicts(retrieval.get("memory_context")),
+        "profile_context": _list_of_dicts(retrieval.get("profile_context")),
+        "gaps": list(diagnostics.get("gaps") or []),
+        "conflicts": list(diagnostics.get("conflicts") or []),
+    }
+
+
+def _ask_quick_answer(query: str, retrieval: dict[str, Any]) -> str:
+    results = _list_of_dicts(retrieval.get("results"))
+    if not results:
+        return f"关键结论：当前 PSKA 没有找到足够证据回答“{query}”。建议补充相关资料或扩大检索范围后再问。"
+    snippets = [str(item.get("snippet") or "").strip() for item in results if str(item.get("snippet") or "").strip()]
+    titles: list[str] = []
+    for item in results:
+        title = str(item.get("title") or item.get("source_item_id") or "").strip()
+        if title and title not in titles:
+            titles.append(title)
+    lines = [f"关键结论：关于“{query}”，PSKA 找到了 {len(results)} 条相关证据。"]
+    for snippet in snippets[:4]:
+        lines.append(f"- {snippet[:260]}")
+    if not snippets:
+        lines.append("- 找到了相关来源，但这些结果没有可展示的摘要片段。")
+    if titles:
+        lines.append(f"可引用来源：{'；'.join(titles[:4])}。")
+    diagnostics = retrieval.get("diagnostics") if isinstance(retrieval.get("diagnostics"), dict) else {}
+    if diagnostics.get("gaps") or diagnostics.get("conflicts"):
+        lines.append("不确定性：存在检索缺口或证据冲突，报告中应保留限定表述。")
+    return "\n".join(lines)
+
+
+def _ask_deep_response(
+    *,
+    query: str,
+    intent: str,
+    surface: str,
+    tenant_id: str,
+    owner_user_id: str,
+    selected_intent: str,
+    agentic: dict[str, Any],
+    started_at: float,
+    allowed_tools: list[str],
+    store: Any,
+) -> dict[str, Any]:
+    retrieval_payload = agentic.get("retrieval") if isinstance(agentic.get("retrieval"), dict) else {}
+    retrieval = _console_search_summary(to_jsonable(retrieval_payload)) if retrieval_payload else {}
+    evidence = _ask_evidence_from_retrieval(retrieval)
+    raw_refs = [
+        *_list_of_dicts(agentic.get("source_refs")),
+        *_list_of_dicts(retrieval.get("citations") if retrieval else []),
+        *_list_of_dicts(evidence.get("citations")),
+    ]
+    refs, dropped_refs = _ask_validate_source_refs(raw_refs, store=store, tenant_id=tenant_id, owner_user_id=owner_user_id)
+    if refs:
+        evidence["citations"] = refs
+        evidence["source_refs"] = refs
+    trace = agentic.get("trace") if isinstance(agentic.get("trace"), dict) else {}
+    trace = {
+        **trace,
+        "mode": "deep",
+        "retrieval_owner": "fastreact_pska_mcp",
+        "tool_policy": {"mode": "allowlist", "allowed_tools": allowed_tools},
+    }
+    if dropped_refs:
+        trace["dropped_source_refs"] = dropped_refs
+    elapsed_ms = _elapsed_ms(started_at)
+    return {
+        "ok": True,
+        "query": query,
+        "answer": str(agentic.get("answer") or "").strip(),
+        "route": {
+            "intent": intent,
+            "selected_intent": selected_intent,
+            "retrieval_owner": "fastreact_pska_mcp",
+            "surface": surface,
+            "requires_agentic_service_online": True,
+            "tool_policy": {"mode": "allowlist", "allowed_tools": allowed_tools},
+        },
+        "evidence": evidence,
+        "citations": evidence["citations"],
+        "source_refs": evidence["source_refs"],
+        "trace": trace,
+        "timing": {
+            "total_ms": elapsed_ms,
+            "time_to_first_answer_ms": elapsed_ms,
+        },
+        "agentic_service": agentic.get("agentic_service") if isinstance(agentic.get("agentic_service"), dict) else {},
+        "tenant_id": tenant_id,
+        "owner_user_id": owner_user_id,
+    }
+
+
+def _ask_validate_source_refs(
+    refs: list[dict[str, Any]],
+    *,
+    store: Any,
+    tenant_id: str,
+    owner_user_id: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if not refs:
+        return [], []
+    allowed_source_ids = {
+        item.source_item_id
+        for item in store.list_source_items(tenant_id=tenant_id)
+        if getattr(item, "owner_user_id", "") == owner_user_id
+    }
+    kept: list[dict[str, Any]] = []
+    dropped: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for ref in refs:
+        source_item_id = str(ref.get("source_item_id") or "").strip()
+        if not source_item_id:
+            dropped.append({"reason": "missing_source_item_id"})
+            continue
+        if source_item_id not in allowed_source_ids:
+            dropped.append({"source_item_id": source_item_id, "reason": "tenant_or_owner_mismatch"})
+            continue
+        key = "|".join(str(ref.get(name) or "") for name in ["source_item_id", "chunk_id", "title", "url", "snippet"])
+        if key in seen:
+            continue
+        seen.add(key)
+        kept.append(ref)
+    return kept, dropped
+
+
+def _ask_sse_events(payload: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    timing = payload.get("timing") if isinstance(payload.get("timing"), dict) else {}
+    return [
+        ("route", {"route": payload.get("route") or {}, "timing": timing}),
+        ("evidence", {"evidence": payload.get("evidence") or {}, "citations": payload.get("citations") or []}),
+        (
+            "answer_delta",
+            {
+                "delta": str(payload.get("answer") or ""),
+                "time_to_first_answer_ms": timing.get("time_to_first_answer_ms"),
+            },
+        ),
+        ("trace", {"trace": payload.get("trace") or {}, "agentic_service": payload.get("agentic_service") or {}}),
+        ("done", {"ok": payload.get("ok") is not False, "timing": timing}),
+    ]
 
 
 def _workspace_owner_user_id(context: RequestContext | None, requested_owner_user_id: str | None) -> str:

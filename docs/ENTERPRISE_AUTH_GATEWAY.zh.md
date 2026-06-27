@@ -112,6 +112,10 @@ export PSKA_GATEWAY_PSKA_SERVICE_TOKEN='<pska-service-token>'
 
 因此用户不需要手动把 token 填到前端。裸 `http://127.0.0.1:5173` 仍可用于开发热更新，但正规入口应是 gateway 或上游 ingress 暴露的地址。
 
+Ask PSKA 同样走这个边界：浏览器只带 HttpOnly session cookie；gateway/BFF 注入
+AuthNode 已验证的 tenant/user 身份给 PSKA。PSKA 调 FastReAct 时使用服务端配置的
+FastReAct 凭据和 AuthNode/tenant 上下文，浏览器不接触 FastReAct service token。
+
 ## 关键环境变量
 
 | 变量 | 用途 |

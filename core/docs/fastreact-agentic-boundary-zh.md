@@ -1,6 +1,6 @@
 # PSKA / Fastreact Agentic Boundary
 
-日期：2026-06-14
+日期：2026-06-27
 
 PSKA 采用 Postgres-first knowledge core + Fastreact agentic service 的双系统边界。
 
@@ -23,6 +23,35 @@ Fastreact 负责：
 - tool approval 和 trace
 
 Fastreact 不能直接访问 PSKA DB。PSKA 不 import Fastreact Python internals。两者只通过 HTTP/SSE 和 MCP 工具协议通信。
+
+## 统一问答入口
+
+产品入口统一为 **Ask PSKA**：
+
+- 主 API：`POST /workspace/ask`
+- 流式 API：`POST /workspace/ask/stream`
+- 兼容/诊断 API：`POST /workspace/search/query`、`POST /workspace/graph/path`
+
+`/workspace/ask` 返回 `answer`、`route`、`evidence`、`citations`、`source_refs`、`trace`
+和 `timing`。UI 只展示结论、引用、证据、缺口/冲突和可复制 Markdown；`trace`
+用于调试、eval 和证明工具边界，不作为主回答正文。
+
+一次用户问题只能有一个 retrieval owner：
+
+- `quick`：PSKA 自己检索、组装证据和回答。若后续只需要 LLM 合成，调用 Fastreact 时必须使用 `tool_policy={"mode":"none"}`。
+- `deep`：PSKA 不先预检索正文证据，只把问题、tenant/user/scope 交给 Fastreact。Fastreact 只能通过 PSKA read-only MCP 工具查库，PSKA 最后校验 citations/source refs 是否属于当前 tenant/user。
+- `auto`：PSKA 根据问题形态选择 `quick` 或 `deep`，旧 direct/agentic/GraphRAG 模式不再暴露给主 UI。
+
+deep 路径使用的 Fastreact tool policy：
+
+```json
+{
+  "mode": "allowlist",
+  "allowed_tools": ["pska_pska_search", "pska_pska_index_status"]
+}
+```
+
+该限制必须同时发生在 Fastreact 给 LLM 暴露的 tool schema 层和工具执行层，不能只依赖 system prompt。
 
 ## 配置
 
@@ -58,6 +87,7 @@ export PSKA_FASTREACT_SERVICE_TOKEN="replace-with-local-service-token"
 - `metadata.pska_user_id`: PSKA represented user
 - `metadata.pska_job_id`: PSKA job id
 - `metadata.scope`: 允许的 source/job scope
+- `tool_policy`: `none` 或 `allowlist`，用于避免重复检索和越权工具调用
 
 ## Job Orchestration
 

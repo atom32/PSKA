@@ -10,6 +10,7 @@ import type {
   TodayResponse,
   WorkspaceActivityResponse,
   WorkspaceActivityType,
+  WorkspaceAskResponse,
   WorkspaceCorpusResponse,
   WorkspaceGraphPathResponse,
   WorkspaceGraphResponse,
@@ -335,6 +336,29 @@ export async function searchWorkspace(
     throw new Error(`search ${response.status}`);
   }
   return (await response.json()) as WorkspaceSearchResponse;
+}
+
+export async function askWorkspace(
+  query: string,
+  serviceToken: PSKAAuth,
+  intent: "auto" | "quick" | "deep" = "auto",
+  surface = "ask"
+): Promise<WorkspaceAskResponse> {
+  const response = await fetch("/workspace/ask", {
+    method: "POST",
+    headers: headers(serviceToken),
+    body: JSON.stringify({
+      query,
+      intent,
+      surface,
+      ...requestUserPayload(serviceToken),
+      top_k: 8
+    })
+  });
+  if (!response.ok) {
+    throw new Error(await responseError(response, "Ask PSKA 失败"));
+  }
+  return (await response.json()) as WorkspaceAskResponse;
 }
 
 async function responseError(response: Response, fallback: string) {

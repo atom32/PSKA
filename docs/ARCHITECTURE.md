@@ -149,7 +149,7 @@ instead of silently reporting an empty review queue.
 | Surface | Backend support |
 | --- | --- |
 | Today | `GET /workspace/today/data` |
-| PSKA Brain | `POST /workspace/search/query`, `GET /workspace/corpus/data` |
+| PSKA Brain / Ask PSKA | `POST /workspace/ask`, `POST /workspace/ask/stream`, `GET /workspace/corpus/data`; legacy `POST /workspace/search/query` remains for compatibility and diagnostics |
 | Writer evidence suggestion | `POST /workspace/writer/suggest` |
 | Review | `GET /console/reviews/data`, `/review-items/*` |
 | Corpus | `GET /workspace/corpus/data` |
