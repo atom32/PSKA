@@ -198,17 +198,9 @@ if [[ "$(config_value startup_bootstrap)" == "true" ]]; then
   fi
   "$ROOT/scripts/pska" --config "$CONFIG" db-init
   WORKSPACE_ROOT="$(config_value workspace_root)"
-  DEFAULT_NOTES_ROOT="$WORKSPACE_ROOT/notes"
-  mkdir -p "$DEFAULT_NOTES_ROOT"
-  "$ROOT/scripts/pska" --config "$CONFIG" knowledge-source add-folder \
-    --path "$DEFAULT_NOTES_ROOT" \
-    --name "Personal Notes" \
-    --mode manual >/dev/null
-  if ! "$ROOT/scripts/pska" --config "$CONFIG" files-sync; then
-    echo
-    echo "PSKA warning: initial Knowledge Source sync failed." >&2
-    echo "The app will still start; open the 语料库 page to inspect sources and sync status." >&2
-  fi
+  mkdir -p "$WORKSPACE_ROOT/_system/run" "$WORKSPACE_ROOT/_system/logs" "$WORKSPACE_ROOT/_system/imports" "$WORKSPACE_ROOT/_system/twitter_archive"
+  echo "PSKA workspace root: $WORKSPACE_ROOT"
+  echo "Tenant user content is synced explicitly from $WORKSPACE_ROOT/tenants/<tenant>/users/<user>/notes"
 else
   echo "Skipping bootstrap because startup.bootstrap=false in $CONFIG"
 fi
@@ -301,7 +293,7 @@ Useful commands:
   ./scripts/pska --config "$CONFIG" local-daemon status
 
 Logs:
-  $(config_value workspace_root)/logs/
+  $(config_value workspace_root)/_system/logs/
 
 Press Ctrl-C to stop this dev stack.
 EOF

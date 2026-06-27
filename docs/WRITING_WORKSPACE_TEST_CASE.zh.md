@@ -16,28 +16,20 @@
 
 PSKA 只能通过项目根目录 `./start.sh` 启动。不要单独启动前端或后端。
 
-启动后，给当前登录用户所在 tenant/user 种入 demo 语料和写作项目。默认本地 demo 用户可直接运行：
+启动后，优先使用真实 E2E 从 workspace 文件开始验证：
 
 ```bash
-./scripts/pska --config "/Users/xudawei/Documents/personal archive/.pska/config.json" writing-demo-seed
+./scripts/pska-writing-workspace-e2e \
+  --config "/Users/xudawei/Documents/personal archive/.pska/config.json"
 ```
 
-如果你登录的是 AuthNode 用户，必须把 demo 种到同一个 tenant/user 下，否则前端看不到：
+这条链路会把虚构资料写入：
 
-```bash
-./scripts/pska --config "/Users/xudawei/Documents/personal archive/.pska/config.json" writing-demo-seed \
-  --tenant-id "<AuthNode tenant_key>" \
-  --owner-user-id "<AuthNode user_key>" \
-  --space-id "private_<AuthNode user_key>"
+```text
+~/PSKA_workspaces/tenants/<tenant>/users/<user>/notes/e2e-writing-<run_id>/
 ```
 
-这个命令会创建：
-
-- Northstar Robotics 相关的公司、客户、财务、可靠性、反方 memo、市场和 reserve policy 语料。
-- 一个 `Northstar Robotics Q3 reserve-allocation memo` 写作项目。
-- 5 个可并行运行的初始 question 节点。
-- 1 个用于多轮收束的 diligence 追问节点。
-- 4 个 section 节点。
+然后显式执行 `knowledge-source add-folder`、`files-sync`、`digest-now`，再用浏览器登录 PSKA 并创建 Writing 项目。旧的 `writing-demo-seed` 只适合快速手动演示；完整验证应使用 E2E，因为它能覆盖“向 workspace 放数据 -> 登录后看见语料库 -> digest -> 写作”的真实路径。
 
 ## 推荐测试流程
 

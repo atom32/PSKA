@@ -12,6 +12,7 @@ def test_build_process_specs_includes_service_worker_and_digest_scheduler() -> N
         {
             "service": {"host": "127.0.0.1", "port": 8765},
             "database": {"url": "postgresql:///pska_test"},
+            "files": {"tenant_id": "tenant_daemon", "owner_user_id": "daemon_user"},
         }
     )
 
@@ -29,7 +30,10 @@ def test_build_process_specs_includes_service_worker_and_digest_scheduler() -> N
     assert "--exclude-job-type" in specs[1].command
     assert "digest_via_fastreact" in specs[1].command
     assert "digest-scheduler" in specs[2].command
+    assert "--tenant-id" in specs[2].command
+    assert "tenant_daemon" in specs[2].command
     assert "60" in specs[2].command
+    assert "daemon_user" in specs[2].command
 
 
 def test_build_process_specs_can_disable_background_processes() -> None:
@@ -103,7 +107,7 @@ def test_config_check_reports_missing_db_port_conflict_and_fastreact_warning() -
     assert report["ok"] is False
     assert report["checks"]["database_url"]["ok"] is False
     assert report["checks"]["workspace"]["ok"] is True
-    assert report["checks"]["workspace"]["root"].endswith("PSKA_workspaces/default")
+    assert report["checks"]["workspace"]["root"].endswith("PSKA_workspaces")
     assert report["checks"]["service_port"]["ok"] is False
     assert report["checks"]["fastreact"]["ok"] is True
     assert "No FastReAct service token configured for PSKA->FastReAct API calls" in report["checks"]["fastreact"]["warning"]

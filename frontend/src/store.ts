@@ -21,6 +21,7 @@ type WorkspaceStore = {
   setUserId: (userId: string) => void;
   setRepresentedUserId: (representedUserId: string) => void;
   setBrain: (brain: Partial<BrainState>) => void;
+  clearIdentity: () => void;
 };
 
 const initialBrain: BrainState = {
@@ -65,5 +66,17 @@ export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
     window.sessionStorage.setItem("pska_represented_user_id", representedUserId);
     set({ representedUserId });
   },
-  setBrain: (brain) => set((state) => ({ brain: { ...state.brain, ...brain } }))
+  setBrain: (brain) => set((state) => ({ brain: { ...state.brain, ...brain } })),
+  clearIdentity: () => {
+    window.sessionStorage.removeItem("pska_service_token");
+    window.sessionStorage.removeItem("pska_tenant_id");
+    window.sessionStorage.removeItem("pska_user_id");
+    window.sessionStorage.removeItem("pska_represented_user_id");
+    set({
+      serviceToken: "",
+      tenantId: "tenant_default",
+      userId: "user_primary",
+      representedUserId: ""
+    });
+  }
 }));

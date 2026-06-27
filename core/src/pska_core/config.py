@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
+from urllib.parse import quote
 
 from pska_core.keyfile import read_api_key_file
 from pska_core.models import DEFAULT_TENANT_ID
@@ -16,7 +17,7 @@ if TYPE_CHECKING:
 
 
 DEFAULT_DATABASE_URL = "postgresql:///pska"
-DEFAULT_WORKSPACE_ROOT = Path("~/PSKA_workspaces/default")
+DEFAULT_WORKSPACE_ROOT = Path("~/PSKA_workspaces")
 DEFAULT_JWT_TENANT_CLAIMS = ("tenant_id", "tenant_key", "tenant", "org_id")
 DEFAULT_TRUSTED_HEADER_USER_ID = "X-PSKA-User-Id"
 DEFAULT_TRUSTED_HEADER_TENANT_ID = "X-PSKA-Tenant-Id"
@@ -318,24 +319,44 @@ class WorkspaceConfig:
         return cls(root=expand_path(data.get("root") or DEFAULT_WORKSPACE_ROOT))
 
     @property
+    def system_dir(self) -> Path:
+        return self.root / "_system"
+
+    @property
     def imports_dir(self) -> Path:
-        return self.root / "imports"
+        return self.system_dir / "imports"
 
     @property
     def twitter_archive_dir(self) -> Path:
-        return self.root / "twitter_archive"
+        return self.system_dir / "twitter_archive"
 
     @property
     def run_dir(self) -> Path:
-        return self.root / "run"
+        return self.system_dir / "run"
 
     @property
     def log_dir(self) -> Path:
-        return self.root / "logs"
+        return self.system_dir / "logs"
 
     @property
     def cold_start_dir(self) -> Path:
-        return self.root / "cold_start"
+        return self.system_dir / "cold_start"
+
+    def tenant_dir(self, tenant_id: str) -> Path:
+        return self.root / "tenants" / _workspace_path_segment(tenant_id or DEFAULT_TENANT_ID)
+
+    def user_root(self, tenant_id: str, user_id: str) -> Path:
+        return self.tenant_dir(tenant_id) / "users" / _workspace_path_segment(user_id or "user_primary")
+
+    def user_notes_dir(self, tenant_id: str, user_id: str) -> Path:
+        return self.user_root(tenant_id, user_id) / "notes"
+
+    def assert_user_path(self, path: str | Path, *, tenant_id: str, user_id: str) -> Path:
+        resolved = expand_path(path).resolve()
+        user_root = self.user_root(tenant_id, user_id).expanduser().resolve()
+        if resolved != user_root and user_root not in resolved.parents:
+            raise ValueError(f"path is outside tenant/user workspace root: {resolved}")
+        return resolved
 
 
 @dataclass(frozen=True, slots=True)
@@ -516,6 +537,7 @@ class PSKAConfig:
                 owner_user_id=os.getenv("PSKA_FILES_OWNER_USER_ID", base.files.owner_user_id),
                 space_id=os.getenv("PSKA_FILES_SPACE_ID", base.files.space_id),
                 visibility=os.getenv("PSKA_FILES_VISIBILITY", base.files.visibility),
+                tenant_id=os.getenv("PSKA_FILES_TENANT_ID", base.files.tenant_id),
             ),
             workspace=WorkspaceConfig(
                 root=expand_path(os.getenv("PSKA_WORKSPACE_ROOT")) if os.getenv("PSKA_WORKSPACE_ROOT") else base.workspace.root,
@@ -626,3 +648,8 @@ def _optional_int(value: Any) -> int | None:
     if value in {None, ""}:
         return None
     return int(value)
+
+
+def _workspace_path_segment(value: str) -> str:
+    segment = quote(str(value or "").strip(), safe="._-@")
+    return segment or "_"

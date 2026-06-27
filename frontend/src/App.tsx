@@ -13,6 +13,7 @@ import {
   Hash,
   Image,
   Link2,
+  LogOut,
   Pin,
   PlayCircle,
   RefreshCw,
@@ -133,7 +134,8 @@ export default function App() {
     setTenantId,
     setUserId,
     setRepresentedUserId,
-    setBrain
+    setBrain,
+    clearIdentity
   } = useWorkspaceStore();
   const pskaIdentity = useMemo<PSKAIdentity>(
     () => ({
@@ -274,6 +276,11 @@ export default function App() {
     void runAnalysis("manual");
   }
 
+  function logoutGatewaySession() {
+    clearIdentity();
+    window.location.assign("/logout");
+  }
+
   async function logWorkspaceActivity(
     activityType: "opened" | "edited" | "viewed" | "pinned",
     surface: WorkspaceMode,
@@ -336,6 +343,7 @@ export default function App() {
           onTenantChange={setTenantId}
           onUserChange={setUserId}
           onRepresentedUserChange={setRepresentedUserId}
+          onLogout={logoutGatewaySession}
           onRefresh={refreshCurrentSurface}
         />
         {activeMode === "today" ? (
@@ -435,6 +443,7 @@ function TopBar({
   onTenantChange,
   onUserChange,
   onRepresentedUserChange,
+  onLogout,
   onRefresh
 }: {
   mode: WorkspaceMode;
@@ -448,6 +457,7 @@ function TopBar({
   onTenantChange: (tenantId: string) => void;
   onUserChange: (userId: string) => void;
   onRepresentedUserChange: (representedUserId: string) => void;
+  onLogout: () => void;
   onRefresh: () => void;
 }) {
   return (
@@ -497,6 +507,14 @@ function TopBar({
               placeholder="可选本地令牌"
             />
           </label>
+        </div>
+      ) : gatewayAuthenticated === true ? (
+        <div className="gateway-session" aria-label="当前登录身份" data-testid="gateway-session">
+          <span>{representedUserId || userId || "user_primary"}</span>
+          <small>{tenantId || "tenant_default"}</small>
+          <button className="icon-button logout-button" type="button" onClick={onLogout} title="退出登录" data-testid="logout-button">
+            <LogOut size={17} />
+          </button>
         </div>
       ) : null}
       <button className="icon-button top-refresh" type="button" onClick={onRefresh} title="刷新上下文">
@@ -2472,9 +2490,9 @@ function CorpusWorkspace({
             {filteredSources.length === 0 ? (
               <div className="review-empty compact">{normalizedQuery ? "当前没有匹配的资料。" : "还没有同步进来的资料。点击“同步资料”开始扫描。"}</div>
             ) : (
-              <div className="corpus-source-list">
+              <div className="corpus-source-list" data-testid="corpus-source-list">
                 {filteredSources.slice(0, 30).map((source, index) => (
-                  <article className="corpus-source-card" key={source.source_item_id || `corpus-source-${index}`}>
+                  <article className="corpus-source-card" key={source.source_item_id || `corpus-source-${index}`} data-testid="corpus-source-card">
                     <div className="card-row">
                       <span className="pill muted">{source.source_channel || "source"}</span>
                       <small>{formatSourceAge(source.created_at)}</small>
@@ -3382,15 +3400,15 @@ function WritingWorkspace({
   if (!activeBoardId || projectManagerOpen) {
     return (
       <section className="main-workspace writing-surface writing-project-manager" aria-label="Writing Workspace">
-        <div className="writing-start-panel">
+        <div className="writing-start-panel" data-testid="writing-start-panel">
           <div>
             <span className="eyebrow">Writing Workspace</span>
             <h1>写作项目</h1>
             <p>每个项目是一块独立画布。问题节点有独立 session，连接到它的节点会作为结构化上下文传给 Ask PSKA。</p>
           </div>
-          <textarea value={newGoal} onChange={(event) => setNewGoal(event.target.value)} placeholder="我要写一篇关于……的文章/备忘录/报告，需要先弄清楚……" />
+          <textarea data-testid="writing-new-goal" value={newGoal} onChange={(event) => setNewGoal(event.target.value)} placeholder="我要写一篇关于……的文章/备忘录/报告，需要先弄清楚……" />
           <div className="writing-start-actions">
-            <button className="primary" type="button" onClick={() => void createBoard()}>
+            <button className="primary" type="button" onClick={() => void createBoard()} data-testid="writing-create-board">
               新建空白画布
             </button>
             {activeBoardId ? <button type="button" onClick={() => setProjectManagerOpen(false)}>返回当前项目</button> : null}
@@ -3398,17 +3416,17 @@ function WritingWorkspace({
           {boardsQuery.isError ? <small>写作工作区暂时无法加载，请检查后端或登录状态。</small> : null}
           {workspaceMessage ? <small>{workspaceMessage}</small> : null}
         </div>
-        <div className="writing-project-list" aria-label="写作项目列表">
+        <div className="writing-project-list" aria-label="写作项目列表" data-testid="writing-project-list">
           {boards.length ? boards.map((item) => (
-            <article key={item.board_id} className={item.board_id === activeBoardId ? "active" : ""}>
+            <article key={item.board_id} className={item.board_id === activeBoardId ? "active" : ""} data-testid="writing-project" data-board-id={item.board_id}>
               <div>
                 <strong>{item.title || "未命名写作项目"}</strong>
                 <p>{item.goal || "没有填写目标。"}</p>
                 <small>{item.updated_at ? `更新于 ${formatReviewDate(item.updated_at)}` : item.board_id}</small>
               </div>
               <div className="writing-project-actions">
-                <button type="button" onClick={() => openBoard(item.board_id)}>打开</button>
-                <button type="button" className="danger" onClick={() => void removeBoard(item.board_id)}>删除</button>
+                <button type="button" onClick={() => openBoard(item.board_id)} data-testid="writing-open-board">打开</button>
+                <button type="button" className="danger" onClick={() => void removeBoard(item.board_id)} data-testid="writing-delete-board">删除</button>
               </div>
             </article>
           )) : <div className="review-empty compact">还没有写作项目。创建后会得到一块空白 Inquiry Graph 画布。</div>}
@@ -3419,26 +3437,26 @@ function WritingWorkspace({
 
   return (
     <section className="main-workspace writing-surface" aria-label="Writing Workspace">
-      <div className="writing-toolbar">
+      <div className="writing-toolbar" data-testid="writing-toolbar">
         <select value={activeBoardId} onChange={(event) => setActiveBoardId(event.target.value)} aria-label="写作网络">
           {boards.map((item) => (
             <option value={item.board_id} key={item.board_id}>{item.title || item.board_id}</option>
           ))}
         </select>
-        <button type="button" onClick={() => void addNode("question")}>问题</button>
-        <button type="button" onClick={() => void addNode("section")}>章节</button>
-        <button type="button" onClick={closeBoard}>关闭项目</button>
-        <button type="button" onClick={() => void copyBoardMarkdown()}>导出 Markdown</button>
+        <button type="button" onClick={() => void addNode("question")} data-testid="writing-add-question">问题</button>
+        <button type="button" onClick={() => void addNode("section")} data-testid="writing-add-section">章节</button>
+        <button type="button" onClick={closeBoard} data-testid="writing-close-board">关闭项目</button>
+        <button type="button" onClick={() => void copyBoardMarkdown()} data-testid="writing-export-markdown">导出 Markdown</button>
         <button type="button" onClick={onPinCurrent}>
           <Pin size={15} />
           {pinStatus === "saved" ? "已置顶" : pinStatus === "failed" ? "失败" : "置顶"}
         </button>
       </div>
-      <div className="writing-board-title">
-        <input value={board?.title || ""} onChange={(event) => void patchBoard({ title: event.target.value })} aria-label="标题" />
-        <input value={board?.goal || ""} onChange={(event) => void patchBoard({ goal: event.target.value })} aria-label="目标" placeholder="写作目标" />
+      <div className="writing-board-title" data-testid="writing-board-title">
+        <input value={board?.title || ""} onChange={(event) => void patchBoard({ title: event.target.value })} aria-label="标题" data-testid="writing-board-title-input" />
+        <input value={board?.goal || ""} onChange={(event) => void patchBoard({ goal: event.target.value })} aria-label="目标" placeholder="写作目标" data-testid="writing-board-goal-input" />
       </div>
-      <div className="writing-canvas-shell">
+      <div className="writing-canvas-shell" data-testid="writing-canvas">
         <ReactFlow nodes={xyNodes} edges={xyEdges} nodeTypes={nodeTypes} onConnect={onConnect} onNodeDragStop={onNodeDragStop} fitView>
           <Background gap={26} color="#ddd8cb" />
           <Controls />
@@ -3481,7 +3499,13 @@ function WritingCanvasNode({ data }: NodeProps<WritingFlowNode>) {
   }
 
   return (
-    <div className={`writing-node writing-node-${node.node_type} ${expanded ? "expanded" : ""} ${data.selected ? "selected" : ""}`}>
+    <div
+      className={`writing-node writing-node-${node.node_type} ${expanded ? "expanded" : ""} ${data.selected ? "selected" : ""}`}
+      data-testid="writing-node"
+      data-node-id={node.node_id}
+      data-node-type={node.node_type}
+      data-node-title={node.title}
+    >
       <Handle type="target" position={Position.Left} />
       <div className="writing-node-top">
         <span>{writingNodeLabel(node.node_type)}</span>
@@ -3489,11 +3513,11 @@ function WritingCanvasNode({ data }: NodeProps<WritingFlowNode>) {
       </div>
       {expanded ? (
         <div className="writing-node-editor nodrag">
-          <input value={draftTitle} onChange={(event) => setDraftTitle(event.target.value)} onBlur={save} />
-          <textarea value={draftBody} onChange={(event) => setDraftBody(event.target.value)} onBlur={save} placeholder="写下问题、答案、证据或章节草稿。" />
+          <input data-testid="writing-node-title-input" value={draftTitle} onChange={(event) => setDraftTitle(event.target.value)} onBlur={save} />
+          <textarea data-testid="writing-node-body-input" value={draftBody} onChange={(event) => setDraftBody(event.target.value)} onBlur={save} placeholder="写下问题、答案、证据或章节草稿。" />
           {draftBody ? <MarkdownAnswer content={draftBody} /> : null}
           {timelineResult?.agent_steps?.length || timelineRawEvents.length ? (
-            <div className="writing-node-timeline">
+            <div className="writing-node-timeline" data-testid="writing-node-timeline">
               <div className="writing-node-session">
                 <span>Session</span>
                 <code>{writingNodeSessionId(node)}</code>
@@ -3514,17 +3538,17 @@ function WritingCanvasNode({ data }: NodeProps<WritingFlowNode>) {
         </div>
       ) : null}
       <div className="writing-node-actions nodrag">
-        <button type="button" onClick={() => data.onToggleExpanded(node)}>{expanded ? "收起" : "展开"}</button>
-        {node.node_type === "question" ? <button type="button" onClick={() => data.onRunAsk(node)} disabled={data.running}>Ask</button> : null}
-        {node.node_type === "question" || node.node_type === "answer" ? <button type="button" onClick={() => data.onSuggest(node, "followup")}>追问</button> : null}
-        {node.node_type === "goal" || node.node_type === "question" ? <button type="button" onClick={() => data.onSuggest(node, "decompose")}>拆解</button> : null}
-        {node.node_type === "answer" && data.canAddToSection ? <button type="button" onClick={() => data.onAddToSection(node)}>入章节</button> : null}
-        <button type="button" onClick={() => data.onDelete(node)}>删除</button>
+        <button type="button" onClick={() => data.onToggleExpanded(node)} data-testid="writing-node-toggle">{expanded ? "收起" : "展开"}</button>
+        {node.node_type === "question" ? <button type="button" onClick={() => data.onRunAsk(node)} disabled={data.running} data-testid="writing-node-ask">Ask</button> : null}
+        {node.node_type === "question" || node.node_type === "answer" ? <button type="button" onClick={() => data.onSuggest(node, "followup")} data-testid="writing-node-followup">追问</button> : null}
+        {node.node_type === "goal" || node.node_type === "question" ? <button type="button" onClick={() => data.onSuggest(node, "decompose")} data-testid="writing-node-decompose">拆解</button> : null}
+        {node.node_type === "answer" && data.canAddToSection ? <button type="button" onClick={() => data.onAddToSection(node)} data-testid="writing-node-add-to-section">入章节</button> : null}
+        <button type="button" onClick={() => data.onDelete(node)} data-testid="writing-node-delete">删除</button>
       </div>
       {data.suggestions.length ? (
-        <div className="writing-suggestions nodrag">
+        <div className="writing-suggestions nodrag" data-testid="writing-suggestions">
           {data.suggestions.map((suggestion, index) => (
-            <button type="button" key={suggestion.suggestion_id || index} onClick={() => data.onAcceptSuggestion(node, suggestion)}>
+            <button type="button" key={suggestion.suggestion_id || index} onClick={() => data.onAcceptSuggestion(node, suggestion)} data-testid="writing-accept-suggestion">
               {suggestion.question}
             </button>
           ))}
@@ -3564,7 +3588,7 @@ function WritingComposer({
   const selectedAnswers = nodes.filter((node) => selectedAnswerIds.has(node.node_id));
   const drafts = nodes.filter((node) => node.node_type === "draft");
   return (
-    <aside className="writing-composer" aria-label="文章结构">
+    <aside className="writing-composer" aria-label="文章结构" data-testid="writing-composer">
       <div>
         <span className="eyebrow">Composer</span>
         <h2>{board?.title || "写作网络"}</h2>
@@ -3572,20 +3596,20 @@ function WritingComposer({
       </div>
       <label>
         <span>当前章节</span>
-        <select value={selectedSectionId} onChange={(event) => onSelectSection(event.target.value)}>
+        <select value={selectedSectionId} onChange={(event) => onSelectSection(event.target.value)} data-testid="writing-section-select">
           {sections.map((section) => (
             <option value={section.node_id} key={section.node_id}>{section.title}</option>
           ))}
         </select>
       </label>
       <div className="writing-composer-actions">
-        <button className="primary" type="button" onClick={onCompose}>生成章节草稿</button>
-        <button type="button" onClick={onCopy}>复制 Markdown</button>
+        <button className="primary" type="button" onClick={onCompose} data-testid="writing-compose-draft">生成章节草稿</button>
+        <button type="button" onClick={onCopy} data-testid="writing-copy-markdown">复制 Markdown</button>
       </div>
       <div className="writing-composer-section">
         <strong>已纳入答案</strong>
         {selectedAnswers.length ? selectedAnswers.map((answer) => (
-          <article key={answer.node_id}>
+          <article key={answer.node_id} data-testid="writing-composer-answer">
             <span>{answer.title}</span>
             <small>{(answer.citations || answer.source_refs || []).length} 引用</small>
           </article>
@@ -3605,7 +3629,7 @@ function WritingComposer({
       <div className="writing-composer-section">
         <strong>草稿节点</strong>
         {drafts.length ? drafts.slice(-3).map((draft) => (
-          <article key={draft.node_id}>
+          <article key={draft.node_id} data-testid="writing-composer-draft">
             <span>{draft.title}</span>
             <small>{trimText(draft.body_markdown || "", 90)}</small>
           </article>

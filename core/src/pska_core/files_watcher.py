@@ -8,6 +8,7 @@ from typing import Callable
 
 from pska_core.enums import Visibility
 from pska_core.files_connector import FilesScanReport, scan_files
+from pska_core.models import DEFAULT_TENANT_ID
 from pska_core.store import KnowledgeStore
 
 
@@ -24,6 +25,7 @@ def watch_files(
     *,
     roots: list[Path],
     owner_user_id: str = "user_primary",
+    tenant_id: str = DEFAULT_TENANT_ID,
     space_id: str = "private_primary",
     visibility: Visibility = Visibility.PRIVATE,
     ignore: list[str] | None = None,
@@ -57,6 +59,7 @@ def watch_files(
             store,
             root=root,
             owner_user_id=owner_user_id,
+            tenant_id=tenant_id,
             space_id=space_id,
             visibility=visibility,
             ignore=ignore or [],

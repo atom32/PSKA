@@ -24,7 +24,7 @@ from pska_core.config import DEFAULT_DATABASE_URL, DatabaseConfig, PSKAConfig, S
 from pska_core.connectors import connector_state_from_mapping, connector_record_to_payload
 from pska_core.discovery import DISCOVERY_TODAY_SCORE_THRESHOLD, DiscoveryService
 from pska_core.embeddings import EmbeddingConfig, build_embedding_provider
-from pska_core.enums import Visibility
+from pska_core.enums import UserRole, Visibility
 from pska_core.extraction import ExtractionService
 from pska_core.fastreact_protocol import compact_trace_for_context
 from pska_core.files_connector import scan_files
@@ -71,6 +71,15 @@ class PSKAApi:
         self.memory = MemoryService(self.store)
         self.candidates = CandidateWriteService(self.store)
         self.mcp = MCPServer(database_url or config.database.url, store=self.store, config=config)
+
+    def ensure_context_identity(self, context: RequestContext) -> None:
+        ensure_identity = getattr(self.store, "ensure_identity", None)
+        if not callable(ensure_identity):
+            return
+        role = UserRole.AGENT_SERVICE if context.caller == "agent_service" or context.user_id == "agent_service" else UserRole.USER
+        ensure_identity(tenant_id=context.tenant_id, user_id=context.user_id, role=role)
+        if context.represented_user_id and context.represented_user_id != context.user_id:
+            ensure_identity(tenant_id=context.tenant_id, user_id=context.represented_user_id, role=UserRole.USER)
 
     def health(self) -> dict[str, Any]:
         return {"ok": True, "database": getattr(self.store, "database_url", "in_memory")}
@@ -1432,12 +1441,13 @@ class PSKAApi:
         self,
         *,
         owner_user_id: str | None = None,
+        tenant_id: str | None = None,
         limit: int = 50,
         min_score: float = DISCOVERY_TODAY_SCORE_THRESHOLD,
         context: RequestContext | None = None,
     ) -> dict[str, Any]:
         owner_user_id = _workspace_owner_user_id(context, owner_user_id)
-        tenant_id = _tenant_id_for_request(context)
+        tenant_id = _tenant_id_for_request(context, tenant_id)
         DiscoveryService(self.store, owner_user_id=owner_user_id, tenant_id=tenant_id).produce()
         since = datetime.now(UTC) - timedelta(days=7)
         items = self.store.list_discovery_items(
@@ -1976,15 +1986,12 @@ class PSKAApi:
         limit: int = 50,
         context: RequestContext | None = None,
     ) -> dict[str, Any]:
-        tenant_id = _tenant_id_for_request(context)
-        owner = _workspace_owner_user_id(context, owner_user_id)
+        _, tenant_id, owner = _writing_request_scope(context, requested_owner_user_id=owner_user_id)
         boards = self.store.list_writing_boards(tenant_id=tenant_id, owner_user_id=owner, limit=limit)
         return {"ok": True, "boards": [_writing_board_payload(board) for board in boards]}
 
     def workspace_writing_create_board(self, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
-        payload = context.apply_to_payload(payload) if context else payload
-        tenant_id = str(payload.get("tenant_id") or DEFAULT_TENANT_ID)
-        owner = _workspace_owner_user_id(context, payload.get("owner_user_id") or payload.get("represented_user_id"))
+        payload, tenant_id, owner = _writing_request_scope(context, payload)
         title = str(payload.get("title") or "").strip() or "Untitled inquiry"
         goal = str(payload.get("goal") or "").strip()
         board = WritingBoard(
@@ -1999,8 +2006,7 @@ class PSKAApi:
         return {"ok": True, "board": _writing_board_payload(created)}
 
     def workspace_writing_board(self, board_id: str, *, context: RequestContext | None = None) -> dict[str, Any]:
-        tenant_id = _tenant_id_for_request(context)
-        owner = _workspace_owner_user_id(context, None)
+        _, tenant_id, owner = _writing_request_scope(context)
         board = self.store.get_writing_board(board_id, tenant_id=tenant_id, owner_user_id=owner)
         nodes = self.store.list_writing_nodes(board_id, tenant_id=tenant_id, owner_user_id=owner)
         edges = self.store.list_writing_edges(board_id, tenant_id=tenant_id, owner_user_id=owner)
@@ -2012,9 +2018,7 @@ class PSKAApi:
         }
 
     def workspace_writing_update_board(self, board_id: str, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
-        payload = context.apply_to_payload(payload) if context else payload
-        tenant_id = str(payload.get("tenant_id") or DEFAULT_TENANT_ID)
-        owner = _workspace_owner_user_id(context, payload.get("owner_user_id") or payload.get("represented_user_id"))
+        payload, tenant_id, owner = _writing_request_scope(context, payload)
         board = self.store.update_writing_board(
             board_id,
             tenant_id=tenant_id,
@@ -2026,16 +2030,12 @@ class PSKAApi:
         return {"ok": True, "board": _writing_board_payload(board)}
 
     def workspace_writing_delete_board(self, board_id: str, payload: dict[str, Any] | None = None, context: RequestContext | None = None) -> dict[str, Any]:
-        payload = context.apply_to_payload(payload or {}) if context else (payload or {})
-        tenant_id = str(payload.get("tenant_id") or DEFAULT_TENANT_ID)
-        owner = _workspace_owner_user_id(context, payload.get("owner_user_id") or payload.get("represented_user_id"))
+        _, tenant_id, owner = _writing_request_scope(context, payload)
         self.store.delete_writing_board(board_id, tenant_id=tenant_id, owner_user_id=owner)
         return {"ok": True, "deleted": {"board_id": board_id}}
 
     def workspace_writing_create_node(self, board_id: str, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
-        payload = context.apply_to_payload(payload) if context else payload
-        tenant_id = str(payload.get("tenant_id") or DEFAULT_TENANT_ID)
-        owner = _workspace_owner_user_id(context, payload.get("owner_user_id") or payload.get("represented_user_id"))
+        payload, tenant_id, owner = _writing_request_scope(context, payload)
         node_type = _writing_node_type(str(payload.get("node_type") or payload.get("type") or "question"))
         node = WritingNode(
             node_id=str(payload.get("node_id") or f"wnode_{uuid4().hex}"),
@@ -2057,9 +2057,7 @@ class PSKAApi:
         return {"ok": True, "node": _writing_node_payload(created)}
 
     def workspace_writing_update_node(self, board_id: str, node_id: str, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
-        payload = context.apply_to_payload(payload) if context else payload
-        tenant_id = str(payload.get("tenant_id") or DEFAULT_TENANT_ID)
-        owner = _workspace_owner_user_id(context, payload.get("owner_user_id") or payload.get("represented_user_id"))
+        payload, tenant_id, owner = _writing_request_scope(context, payload)
         if node_id not in {node.node_id for node in self.store.list_writing_nodes(board_id, tenant_id=tenant_id, owner_user_id=owner)}:
             raise KeyError(node_id)
         node = self.store.update_writing_node(
@@ -2081,18 +2079,14 @@ class PSKAApi:
         return {"ok": True, "node": _writing_node_payload(node)}
 
     def workspace_writing_delete_node(self, board_id: str, node_id: str, payload: dict[str, Any] | None = None, context: RequestContext | None = None) -> dict[str, Any]:
-        payload = context.apply_to_payload(payload or {}) if context else (payload or {})
-        tenant_id = str(payload.get("tenant_id") or DEFAULT_TENANT_ID)
-        owner = _workspace_owner_user_id(context, payload.get("owner_user_id") or payload.get("represented_user_id"))
+        _, tenant_id, owner = _writing_request_scope(context, payload)
         if node_id not in {node.node_id for node in self.store.list_writing_nodes(board_id, tenant_id=tenant_id, owner_user_id=owner)}:
             raise KeyError(node_id)
         self.store.delete_writing_node(node_id, tenant_id=tenant_id, owner_user_id=owner)
         return {"ok": True, "deleted": {"node_id": node_id}}
 
     def workspace_writing_create_edge(self, board_id: str, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
-        payload = context.apply_to_payload(payload) if context else payload
-        tenant_id = str(payload.get("tenant_id") or DEFAULT_TENANT_ID)
-        owner = _workspace_owner_user_id(context, payload.get("owner_user_id") or payload.get("represented_user_id"))
+        payload, tenant_id, owner = _writing_request_scope(context, payload)
         edge = WritingEdge(
             edge_id=str(payload.get("edge_id") or f"wedge_{uuid4().hex}"),
             board_id=board_id,
@@ -2108,18 +2102,14 @@ class PSKAApi:
         return {"ok": True, "edge": _writing_edge_payload(created)}
 
     def workspace_writing_delete_edge(self, board_id: str, edge_id: str, payload: dict[str, Any] | None = None, context: RequestContext | None = None) -> dict[str, Any]:
-        payload = context.apply_to_payload(payload or {}) if context else (payload or {})
-        tenant_id = str(payload.get("tenant_id") or DEFAULT_TENANT_ID)
-        owner = _workspace_owner_user_id(context, payload.get("owner_user_id") or payload.get("represented_user_id"))
+        _, tenant_id, owner = _writing_request_scope(context, payload)
         if edge_id not in {edge.edge_id for edge in self.store.list_writing_edges(board_id, tenant_id=tenant_id, owner_user_id=owner)}:
             raise KeyError(edge_id)
         self.store.delete_writing_edge(edge_id, tenant_id=tenant_id, owner_user_id=owner)
         return {"ok": True, "deleted": {"edge_id": edge_id}}
 
     def workspace_writing_suggest_questions(self, board_id: str, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
-        payload = context.apply_to_payload(payload) if context else payload
-        tenant_id = str(payload.get("tenant_id") or DEFAULT_TENANT_ID)
-        owner = _workspace_owner_user_id(context, payload.get("owner_user_id") or payload.get("represented_user_id"))
+        payload, tenant_id, owner = _writing_request_scope(context, payload)
         board = self.store.get_writing_board(board_id, tenant_id=tenant_id, owner_user_id=owner)
         nodes = self.store.list_writing_nodes(board_id, tenant_id=tenant_id, owner_user_id=owner)
         focus_node_id = str(payload.get("node_id") or "")
@@ -2135,9 +2125,7 @@ class PSKAApi:
         }
 
     def workspace_writing_compose(self, board_id: str, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
-        payload = context.apply_to_payload(payload) if context else payload
-        tenant_id = str(payload.get("tenant_id") or DEFAULT_TENANT_ID)
-        owner = _workspace_owner_user_id(context, payload.get("owner_user_id") or payload.get("represented_user_id"))
+        payload, tenant_id, owner = _writing_request_scope(context, payload)
         board = self.store.get_writing_board(board_id, tenant_id=tenant_id, owner_user_id=owner)
         nodes = self.store.list_writing_nodes(board_id, tenant_id=tenant_id, owner_user_id=owner)
         node_by_id = {node.node_id: node for node in nodes}
@@ -2983,6 +2971,7 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
         except AuthError as exc:
             self._json(401, {"error": str(exc)})
             return None
+        self.api.ensure_context_identity(context)
         self._request_context = context
         return context
 
@@ -4942,6 +4931,19 @@ def _workspace_owner_user_id(context: RequestContext | None, requested_owner_use
     if context.caller == "agent_service":
         return context.represented_user_id or "agent_service"
     return requested_owner_user_id or context.represented_user_id or context.user_id
+
+
+def _writing_request_scope(
+    context: RequestContext | None,
+    payload: dict[str, Any] | None = None,
+    *,
+    requested_owner_user_id: str | None = None,
+) -> tuple[dict[str, Any], str, str]:
+    payload = dict(payload or {})
+    if context:
+        return context.apply_to_payload(payload), context.tenant_id, _workspace_owner_user_id(context, None)
+    owner = requested_owner_user_id or payload.get("owner_user_id") or payload.get("represented_user_id") or payload.get("user_id")
+    return payload, str(payload.get("tenant_id") or DEFAULT_TENANT_ID), str(owner or "user_primary")
 
 
 def _tenant_id_for_request(context: RequestContext | None, requested_tenant_id: str | None = None) -> str:

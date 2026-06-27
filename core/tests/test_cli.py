@@ -17,6 +17,7 @@ from pska_core.cli import (
     _digest_now_candidate_summary,
     _digest_now_diagnostics,
     _digest_now_fallback_review,
+    _digest_schedule_payload,
     _job_run_diagnostics,
     _daily_status_payload,
     _memory_list_payload,
@@ -32,6 +33,7 @@ from pska_core.cli import (
     _review_batch_payload,
     _review_items_payload,
     _service_check_url,
+    _assert_workspace_sync_root_allowed,
 )
 from pska_core.enums import MemoryLayer, ReviewType, Visibility
 from pska_core.fastreact_client import FastreactError
@@ -209,10 +211,10 @@ def test_cli_accepts_search_and_smoke() -> None:
     embed = build_parser().parse_args(["embed-backfill", "--embedding-provider", "bge-m3", "--limit", "10"])
     mcp = build_parser().parse_args(["mcp-server"])
     connector = build_parser().parse_args(["connector-ingest-record", "record.json"])
-    knowledge_source = build_parser().parse_args(["knowledge-source", "add-folder", "--path", "notes", "--mode", "manual"])
-    files_scan = build_parser().parse_args(["files-scan", "--root", "notes", "--ignore", "*.tmp"])
-    files_sync = build_parser().parse_args(["files-sync", "--root", "notes", "--ignore", "*.tmp", "--skip-twitter-archives"])
-    files_watch = build_parser().parse_args(["files-watch", "--root", "notes", "--initial-sync", "--max-events", "1"])
+    knowledge_source = build_parser().parse_args(["knowledge-source", "add-folder", "--tenant-id", "tenant_a", "--path", "notes", "--mode", "manual"])
+    files_scan = build_parser().parse_args(["files-scan", "--tenant-id", "tenant_a", "--root", "notes", "--ignore", "*.tmp"])
+    files_sync = build_parser().parse_args(["files-sync", "--tenant-id", "tenant_a", "--root", "notes", "--ignore", "*.tmp", "--skip-twitter-archives"])
+    files_watch = build_parser().parse_args(["files-watch", "--tenant-id", "tenant_a", "--root", "notes", "--initial-sync", "--max-events", "1"])
 
     assert search.command == "search"
     assert search.query == "hello"
@@ -290,15 +292,19 @@ def test_cli_accepts_search_and_smoke() -> None:
     assert str(connector.record) == "record.json"
     assert knowledge_source.command == "knowledge-source"
     assert knowledge_source.action == "add-folder"
+    assert knowledge_source.tenant_id == "tenant_a"
     assert str(knowledge_source.path) == "notes"
     assert files_scan.command == "files-scan"
+    assert files_scan.tenant_id == "tenant_a"
     assert str(files_scan.root) == "notes"
     assert files_scan.ignore == ["*.tmp"]
     assert files_sync.command == "files-sync"
+    assert files_sync.tenant_id == "tenant_a"
     assert str(files_sync.root[0]) == "notes"
     assert files_sync.ignore == ["*.tmp"]
     assert files_sync.skip_twitter_archives is True
     assert files_watch.command == "files-watch"
+    assert files_watch.tenant_id == "tenant_a"
     assert str(files_watch.root[0]) == "notes"
     assert files_watch.initial_sync is True
     assert files_watch.max_events == 1
@@ -580,18 +586,32 @@ def test_workspace_defaults_are_applied_after_config_load(tmp_path) -> None:
     for args in [import_args, files_sync_args, digest_now_args, mvp_args, smoke_args, daemon_args]:
         _apply_workspace_defaults(args, workspace)
 
-    assert import_args.input == workspace / "twitter_archive"
-    assert import_args.archive_root == workspace / "imports"
-    assert files_sync_args.twitter_archive == workspace / "twitter_archive"
-    assert files_sync_args.archive_root == workspace / "imports"
-    assert digest_now_args.twitter_archive == workspace / "twitter_archive"
-    assert digest_now_args.archive_root == workspace / "imports"
-    assert mvp_args.twitter_archive == workspace / "twitter_archive"
-    assert mvp_args.archive_root == workspace / "imports"
-    assert smoke_args.input == workspace / "twitter_archive"
-    assert smoke_args.archive_root == workspace / "imports"
-    assert daemon_args.run_dir == workspace / "run"
-    assert daemon_args.log_dir == workspace / "logs"
+    assert import_args.input == workspace / "_system" / "twitter_archive"
+    assert import_args.archive_root == workspace / "_system" / "imports"
+    assert files_sync_args.twitter_archive == workspace / "_system" / "twitter_archive"
+    assert files_sync_args.archive_root == workspace / "_system" / "imports"
+    assert digest_now_args.twitter_archive == workspace / "_system" / "twitter_archive"
+    assert digest_now_args.archive_root == workspace / "_system" / "imports"
+    assert mvp_args.twitter_archive == workspace / "_system" / "twitter_archive"
+    assert mvp_args.archive_root == workspace / "_system" / "imports"
+    assert smoke_args.input == workspace / "_system" / "twitter_archive"
+    assert smoke_args.archive_root == workspace / "_system" / "imports"
+    assert daemon_args.run_dir == workspace / "_system" / "run"
+    assert daemon_args.log_dir == workspace / "_system" / "logs"
+
+
+def test_workspace_sync_guard_rejects_cross_tenant_root(tmp_path: Path) -> None:
+    config = PSKAConfig.from_dict({"workspace": {"root": str(tmp_path / "workspace")}})
+    allowed = config.workspace.user_notes_dir("tenant_a", "alice")
+    rejected = config.workspace.user_notes_dir("tenant_b", "bob")
+
+    assert _assert_workspace_sync_root_allowed(config, allowed, tenant_id="tenant_a", owner_user_id="alice") == allowed
+    try:
+        _assert_workspace_sync_root_allowed(config, rejected, tenant_id="tenant_a", owner_user_id="alice")
+    except ValueError as exc:
+        assert "outside tenant/user workspace root" in str(exc)
+    else:
+        raise AssertionError("expected cross-tenant sync root to be rejected")
 
 
 def test_cli_accepts_connector_state_commands() -> None:
@@ -1075,6 +1095,8 @@ def test_cli_accepts_digest_schedule() -> None:
     args = build_parser().parse_args(
         [
             "digest-schedule",
+            "--tenant-id",
+            "tenant_a",
             "--owner-user-id",
             "user_primary",
             "--source-item-id",
@@ -1100,6 +1122,7 @@ def test_cli_accepts_digest_schedule() -> None:
     )
 
     assert args.command == "digest-schedule"
+    assert args.tenant_id == "tenant_a"
     assert args.owner_user_id == "user_primary"
     assert args.source_item_ids == ["src_1"]
     assert args.limit == 3
@@ -1111,12 +1134,15 @@ def test_cli_accepts_digest_schedule() -> None:
     assert args.max_jobs_per_window == 2
     assert args.force is True
     assert args.reason == "new import"
+    assert _digest_schedule_payload(args)["tenant_id"] == "tenant_a"
 
 
 def test_cli_accepts_digest_now() -> None:
     args = build_parser().parse_args(
         [
             "digest-now",
+            "--tenant-id",
+            "tenant_a",
             "--owner-user-id",
             "user_primary",
             "--source-item-id",
@@ -1141,6 +1167,7 @@ def test_cli_accepts_digest_now() -> None:
     )
 
     assert args.command == "digest-now"
+    assert args.tenant_id == "tenant_a"
     assert args.owner_user_id == "user_primary"
     assert args.source_item_ids == ["src_1"]
     assert args.limit == 3
@@ -1337,6 +1364,8 @@ def test_cli_accepts_digest_scheduler() -> None:
     args = build_parser().parse_args(
         [
             "digest-scheduler",
+            "--tenant-id",
+            "tenant_a",
             "--owner-user-id",
             "user_primary",
             "--interval-seconds",
@@ -1363,6 +1392,7 @@ def test_cli_accepts_digest_scheduler() -> None:
     )
 
     assert args.command == "digest-scheduler"
+    assert args.tenant_id == "tenant_a"
     assert args.owner_user_id == "user_primary"
     assert args.interval_seconds == 0
     assert args.max_cycles == 1
@@ -1962,6 +1992,8 @@ def test_fastreact_digest_worker_command_payload_uses_config_urls() -> None:
         "/tmp/Fast React/fastreact-nano",
         "--batch-limit",
         "7",
+        "--tenant-id",
+        "tenant_a",
         "--represented-user-id",
         "user_primary",
     ])
@@ -1979,6 +2011,8 @@ def test_fastreact_digest_worker_command_payload_uses_config_urls() -> None:
     assert payload["pska_url"] == "http://127.0.0.1:8765"
     assert payload["fastreact_url"] == "http://127.0.0.1:8000"
     assert "--batch-limit" in payload["command"]
+    assert "--tenant-id" in payload["command"]
+    assert "tenant_a" in payload["command"]
     assert "'/tmp/Fast React/fastreact-nano'" in payload["shell"]
 
 

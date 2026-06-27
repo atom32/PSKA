@@ -91,8 +91,10 @@ def build_process_specs(
                 [
                     *base,
                     "digest-scheduler",
+                    "--tenant-id",
+                    config.files.tenant_id,
                     "--owner-user-id",
-                    "user_primary",
+                    config.files.owner_user_id,
                     "--interval-seconds",
                     str(digest_interval_seconds),
                     "--limit",

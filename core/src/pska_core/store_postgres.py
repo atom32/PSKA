@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import timedelta
+import hashlib
+import re
 from typing import Any, Iterator
 
 import psycopg
@@ -67,6 +69,69 @@ class PostgresKnowledgeStore:
                     updated_at = now()
                 """,
                 (user.user_id, user.handle, user.role.value, user.status.value, user.tenant_id),
+            )
+
+    def ensure_identity(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+        role: UserRole = UserRole.USER,
+        space_id: str | None = None,
+    ) -> None:
+        tenant_id = tenant_id or DEFAULT_TENANT_ID
+        user_id = user_id or "user_primary"
+        handle = _identity_handle(user_id)
+        space_id = space_id or f"private_{_identity_handle(user_id, max_length=84)}"
+        with self.connect() as conn:
+            conn.execute(
+                """
+                insert into tenants(tenant_id, slug, name)
+                values (%s, %s, %s)
+                on conflict (tenant_id) do nothing
+                """,
+                (tenant_id, tenant_id, tenant_id),
+            )
+            existing_user = conn.execute("select tenant_id from users where user_id = %s", (user_id,)).fetchone()
+            if existing_user and str(existing_user.get("tenant_id") or DEFAULT_TENANT_ID) != tenant_id:
+                raise ValueError(
+                    f"user_id {user_id!r} already belongs to tenant {existing_user.get('tenant_id')!r}; "
+                    "use a tenant-scoped user key"
+                )
+            if existing_user:
+                conn.execute(
+                    """
+                    update users
+                    set status = 'active',
+                        updated_at = now()
+                    where user_id = %s and tenant_id = %s
+                    """,
+                    (user_id, tenant_id),
+                )
+            else:
+                conn.execute(
+                    """
+                    insert into users(user_id, handle, role, status, tenant_id)
+                    values (%s, %s, %s, 'active', %s)
+                    """,
+                    (user_id, handle, role.value, tenant_id),
+                )
+            existing_space = conn.execute("select tenant_id from spaces where space_id = %s", (space_id,)).fetchone()
+            if existing_space and str(existing_space.get("tenant_id") or DEFAULT_TENANT_ID) != tenant_id:
+                raise ValueError(
+                    f"space_id {space_id!r} already belongs to tenant {existing_space.get('tenant_id')!r}; "
+                    "use a tenant-scoped space id"
+                )
+            conn.execute(
+                """
+                insert into spaces(space_id, slug, kind, owner_user_id, tenant_id)
+                values (%s, %s, 'private', %s, %s)
+                on conflict (space_id) do update
+                set owner_user_id = excluded.owner_user_id,
+                    tenant_id = excluded.tenant_id,
+                    updated_at = now()
+                """,
+                (space_id, space_id, user_id, tenant_id),
             )
 
     def get_user(self, user_id: str, *, tenant_id: str | None = None) -> User:
@@ -2662,6 +2727,14 @@ def _vector_literal(vector: list[float] | None) -> str | None:
 
 def _visibility_version(owner_user_id: str, visibility: str, visible_team_ids: list[str]) -> str:
     return "|".join([owner_user_id, visibility, ",".join(sorted(visible_team_ids))])
+
+
+def _identity_handle(value: str, *, max_length: int = 80) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._@-]+", "_", value).strip("._-") or "user"
+    if len(cleaned) <= max_length:
+        return cleaned
+    digest = hashlib.sha1(value.encode("utf-8")).hexdigest()[:10]
+    return f"{cleaned[: max(1, max_length - 11)]}_{digest}"
 
 
 def _retry_delay_seconds(payload: dict[str, Any], attempts: int) -> int:

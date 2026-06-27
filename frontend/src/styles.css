@@ -230,11 +230,43 @@ button {
   min-width: 0;
 }
 
+.gateway-session {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--ink);
+}
+
+.gateway-session span {
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.gateway-session small {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.logout-button {
+  flex: 0 0 auto;
+}
+
 .top-refresh {
   margin-left: auto;
 }
 
-.identity-fields + .top-refresh {
+.identity-fields + .top-refresh,
+.gateway-session + .top-refresh {
   margin-left: 0;
 }
 

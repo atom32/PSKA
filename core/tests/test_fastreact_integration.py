@@ -1865,6 +1865,15 @@ def test_writing_workspace_is_tenant_scoped_and_composes_selected_answers() -> N
 
     board_a = api.workspace_writing_create_board({"title": "Reserve memo", "goal": "Decide the memo structure"}, context=tenant_a)["board"]
     board_b = api.workspace_writing_create_board({"title": "Reserve memo", "goal": "Different tenant"}, context=tenant_b)["board"]
+    spoofed = api.workspace_writing_create_board(
+        {
+            "title": "Spoofed tenant",
+            "tenant_id": "tenant_b",
+            "owner_user_id": "other_user",
+            "represented_user_id": "other_user",
+        },
+        context=tenant_a,
+    )["board"]
     section = api.workspace_writing_create_node(
         board_a["board_id"],
         {"node_type": "section", "title": "Recommendation", "position": {"x": 120, "y": 120}},
@@ -1897,17 +1906,26 @@ def test_writing_workspace_is_tenant_scoped_and_composes_selected_answers() -> N
     list_b = api.workspace_writing_boards(context=tenant_b)["boards"]
     composed = api.workspace_writing_compose(
         board_a["board_id"],
-        {"section_node_id": section["node_id"], "answer_node_ids": [answer["node_id"]]},
+        {
+            "section_node_id": section["node_id"],
+            "answer_node_ids": [answer["node_id"]],
+            "tenant_id": "tenant_b",
+            "owner_user_id": "other_user",
+        },
         context=tenant_a,
     )
 
-    assert [board["board_id"] for board in list_a] == [board_a["board_id"]]
+    assert spoofed["tenant_id"] == "tenant_a"
+    assert spoofed["owner_user_id"] == "user_primary"
+    assert {board["board_id"] for board in list_a} == {board_a["board_id"], spoofed["board_id"]}
     assert [board["board_id"] for board in list_b] == [board_b["board_id"]]
     assert composed["retrieval_used"] is False
     assert "Evidence-backed answer" in composed["draft_markdown"]
     assert "src_a" in composed["draft_markdown"]
     with pytest.raises(KeyError):
         api.workspace_writing_board(board_a["board_id"], context=tenant_b)
+    with pytest.raises(KeyError):
+        api.workspace_writing_board(spoofed["board_id"], context=tenant_b)
     deleted = api.workspace_writing_delete_board(board_b["board_id"], context=tenant_b)
     assert deleted["deleted"]["board_id"] == board_b["board_id"]
     assert api.workspace_writing_boards(context=tenant_b)["boards"] == []

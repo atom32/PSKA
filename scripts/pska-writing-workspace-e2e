@@ -1,0 +1,557 @@
+#!/usr/bin/env python3
+"""Run the live PSKA writing workspace E2E.
+
+This script assumes PSKA was started with ./start.sh. It prepares an isolated
+tenant/user workspace, syncs file data into PSKA, runs digest work, then invokes
+the Playwright browser test for the authenticated writing flow.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import time
+from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+from uuid import uuid4
+
+
+ROOT = Path(__file__).resolve().parents[1]
+CORE_SRC = ROOT / "core" / "src"
+if str(CORE_SRC) not in sys.path:
+    sys.path.insert(0, str(CORE_SRC))
+
+from pska_core.cli import _ensure_writing_demo_identity  # noqa: E402
+from pska_core.config import PSKAConfig  # noqa: E402
+from pska_core.enums import Visibility  # noqa: E402
+from pska_core.store_postgres import PostgresKnowledgeStore  # noqa: E402
+
+
+DEFAULT_CONFIG = ROOT / ".pska" / "config.json"
+DEFAULT_AUTHNODE_URL = "http://127.0.0.1:8788"
+DEFAULT_PSKA_URL = "http://127.0.0.1:8765"
+DEFAULT_FRONTEND_URL = "http://127.0.0.1:5173"
+DEFAULT_FASTREACT_URL = "http://127.0.0.1:8000"
+DEFAULT_FASTREACT_ROOT = next(
+    (path for path in [Path.home() / "FastReAct" / "fastreact-nano", Path.home() / "Fastreact" / "fastreact-nano"] if path.exists()),
+    Path.home() / "FastReAct" / "fastreact-nano",
+)
+
+
+class E2EFailure(RuntimeError):
+    pass
+
+
+def main() -> int:
+    args = parse_args()
+    started_at = time.monotonic()
+    try:
+        report = run(args)
+    except E2EFailure as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False, indent=2), file=sys.stderr)
+        return 1
+    report["elapsed_ms"] = int((time.monotonic() - started_at) * 1000)
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
+    parser.add_argument("--database-url", default=None)
+    parser.add_argument("--pska-url", default=os.getenv("PSKA_URL", DEFAULT_PSKA_URL))
+    parser.add_argument("--frontend-url", default=os.getenv("PSKA_FRONTEND_URL", DEFAULT_FRONTEND_URL))
+    parser.add_argument("--authnode-url", default=os.getenv("AUTHNODE_URL", DEFAULT_AUTHNODE_URL))
+    parser.add_argument("--fastreact-url", default=os.getenv("FASTREACT_URL") or os.getenv("PSKA_FASTREACT_URL") or DEFAULT_FASTREACT_URL)
+    parser.add_argument("--fastreact-root", type=Path, default=Path(os.getenv("FASTREACT_ROOT", str(DEFAULT_FASTREACT_ROOT))))
+    parser.add_argument("--run-id", default=f"{int(time.time())}-{uuid4().hex[:8]}")
+    parser.add_argument("--tenant-id", default=None)
+    parser.add_argument("--owner-user-id", default=None)
+    parser.add_argument("--space-id", default=None)
+    parser.add_argument("--timeout-seconds", type=float, default=180.0)
+    parser.add_argument("--digest-limit", type=int, default=2)
+    parser.add_argument("--digest-batch-size", type=int, default=2)
+    parser.add_argument("--digest-worker-timeout-seconds", type=float, default=600.0)
+    parser.add_argument("--max-worker-runs", type=int, default=2)
+    parser.add_argument("--skip-browser", action="store_true")
+    parser.add_argument("--keep-artifacts", action="store_true", default=True)
+    return parser.parse_args()
+
+
+def run(args: argparse.Namespace) -> dict[str, Any]:
+    config = PSKAConfig.from_env(PSKAConfig.load(args.config))
+    database_url = args.database_url or config.database.url
+    run_id = safe_id(args.run_id)
+    tenant_id = args.tenant_id or f"tenant_pska_writing_e2e_{run_id}"
+    owner_user_id = args.owner_user_id or f"writer_e2e_{run_id}"
+    space_id = args.space_id or f"private_{owner_user_id}"
+    marker = f"pska-writing-e2e-{run_id}"
+
+    services = check_services(args, config)
+    check_authnode_identity_policy(services["authnode_ready"], tenant_id=tenant_id, user_id=owner_user_id)
+    _ensure_writing_demo_identity(
+        PostgresKnowledgeStore(database_url),
+        tenant_id=tenant_id,
+        owner_user_id=owner_user_id,
+        space_id=space_id,
+    )
+
+    notes_dir = config.workspace.user_notes_dir(tenant_id, owner_user_id) / f"e2e-writing-{run_id}"
+    notes_dir.mkdir(parents=True, exist_ok=True)
+    written_files = write_fixture_files(notes_dir, marker=marker)
+
+    pska_report = sync_and_digest(
+        args,
+        tenant_id=tenant_id,
+        owner_user_id=owner_user_id,
+        space_id=space_id,
+        notes_dir=notes_dir,
+    )
+
+    browser_report: dict[str, Any] = {}
+    if not args.skip_browser:
+        browser_report = run_playwright(
+            args,
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            marker=marker,
+            source_title="helio-company-brief.md",
+            notes_dir=notes_dir,
+        )
+
+    return {
+        "ok": True,
+        "run_id": run_id,
+        "tenant_id": tenant_id,
+        "owner_user_id": owner_user_id,
+        "space_id": space_id,
+        "marker": marker,
+        "workspace_path": str(notes_dir),
+        "written_files": [str(path) for path in written_files],
+        "services": {
+            "pska_url": args.pska_url.rstrip("/"),
+            "frontend_url": args.frontend_url.rstrip("/"),
+            "authnode_url": args.authnode_url.rstrip("/"),
+            "fastreact_url": args.fastreact_url.rstrip("/"),
+        },
+        "sync": pska_report["sync"],
+        "digest": pska_report["digest"],
+        "browser": browser_report,
+        "artifacts_kept": bool(args.keep_artifacts),
+        "startup_note": "PSKA must be started by ./start.sh; this script only verifies and drives the running stack.",
+    }
+
+
+def check_services(args: argparse.Namespace, config: PSKAConfig) -> dict[str, Any]:
+    authnode_ready = request_json(f"{args.authnode_url.rstrip('/')}/ready", timeout=args.timeout_seconds)
+    require(authnode_ready.get("ok") is True, "AuthNode /ready is not ok")
+    pska_ready = request_json(
+        f"{args.pska_url.rstrip('/')}/ready",
+        timeout=args.timeout_seconds,
+        headers=_pska_ready_headers(config),
+    )
+    require(pska_ready.get("ok") is True, "PSKA /ready is not ok. Start PSKA with ./start.sh before running this E2E.")
+    fastreact_ready = request_json(
+        f"{args.fastreact_url.rstrip('/')}/ready",
+        timeout=args.timeout_seconds,
+        headers=_fastreact_ready_headers(config),
+    )
+    require(
+        fastreact_ready.get("ok") is True or fastreact_ready.get("status") == "ready",
+        "FastReAct /ready is not ready",
+    )
+    try:
+        open_url(f"{args.frontend_url.rstrip('/')}/auth/session", timeout=args.timeout_seconds)
+    except HTTPError as exc:
+        require(exc.code in {401, 302}, f"PSKA frontend gateway returned HTTP {exc.code}")
+    return {
+        "authnode_ready": authnode_ready,
+        "pska_ready": pska_ready,
+        "fastreact_ready": fastreact_ready,
+    }
+
+
+def check_authnode_identity_policy(ready: dict[str, Any], *, tenant_id: str, user_id: str) -> None:
+    if ready.get("allow_unknown_users") is False or ready.get("allow_unknown_tenants") is False:
+        raise E2EFailure(
+            "AuthNode is running with strict catalog identity. Add "
+            f"tenant={tenant_id!r} user_key={'pska:' + user_id!r} before running this E2E."
+        )
+
+
+def sync_and_digest(
+    args: argparse.Namespace,
+    *,
+    tenant_id: str,
+    owner_user_id: str,
+    space_id: str,
+    notes_dir: Path,
+) -> dict[str, Any]:
+    run_pska(
+        args,
+        [
+            "knowledge-source",
+            "add-folder",
+            "--tenant-id",
+            tenant_id,
+            "--owner-user-id",
+            owner_user_id,
+            "--space-id",
+            space_id,
+            "--visibility",
+            Visibility.PRIVATE.value,
+            "--path",
+            str(notes_dir),
+            "--name",
+            f"Writing E2E {owner_user_id}",
+            "--mode",
+            "manual",
+        ],
+    )
+    sync = run_pska(
+        args,
+        [
+            "files-sync",
+            "--tenant-id",
+            tenant_id,
+            "--owner-user-id",
+            owner_user_id,
+            "--space-id",
+            space_id,
+            "--visibility",
+            Visibility.PRIVATE.value,
+            "--root",
+            str(notes_dir),
+        ],
+    )
+    require((sync.get("totals") or {}).get("ingested", 0) >= 1, "files-sync did not ingest any workspace files")
+    digest = run_pska(
+        args,
+        [
+            "digest-now",
+            "--tenant-id",
+            tenant_id,
+            "--owner-user-id",
+            owner_user_id,
+            "--space-id",
+            space_id,
+            "--visibility",
+            Visibility.PRIVATE.value,
+            "--root",
+            str(notes_dir),
+            "--force",
+            "--limit",
+            str(args.digest_limit),
+            "--batch-size",
+            str(args.digest_batch_size),
+            "--max-worker-runs",
+            str(args.max_worker_runs),
+            "--worker-timeout-seconds",
+            str(args.digest_worker_timeout_seconds),
+            "--pska-url",
+            args.pska_url.rstrip("/"),
+            "--fastreact-url",
+            args.fastreact_url.rstrip("/"),
+            "--fastreact-root",
+            str(args.fastreact_root),
+        ],
+        timeout=digest_command_timeout(args),
+    )
+    assert_digest_has_real_work(digest)
+    return {"sync": summarize_sync(sync), "digest": summarize_digest(digest)}
+
+
+def run_playwright(
+    args: argparse.Namespace,
+    *,
+    tenant_id: str,
+    owner_user_id: str,
+    marker: str,
+    source_title: str,
+    notes_dir: Path,
+) -> dict[str, Any]:
+    npm = shutil.which("npm")
+    require(npm is not None, "npm is required to run the Playwright E2E")
+    report_path = notes_dir / "playwright-writing-report.json"
+    env = {
+        **os.environ,
+        "PSKA_E2E_FRONTEND_URL": args.frontend_url.rstrip("/"),
+        "PSKA_E2E_AUTHNODE_URL": args.authnode_url.rstrip("/"),
+        "PSKA_E2E_TENANT_ID": tenant_id,
+        "PSKA_E2E_USER_ID": owner_user_id,
+        "PSKA_E2E_MARKER": marker,
+        "PSKA_E2E_SOURCE_TITLE": source_title,
+        "PSKA_E2E_REPORT_PATH": str(report_path),
+    }
+    completed = subprocess.run(
+        [npm, "--prefix", str(ROOT / "frontend"), "run", "e2e:writing", "--", "--reporter=line"],
+        cwd=str(ROOT),
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=args.timeout_seconds + 120,
+    )
+    if completed.returncode != 0:
+        raise E2EFailure(
+            "Playwright writing E2E failed.\n"
+            f"stdout:\n{completed.stdout[-4000:]}\n"
+            f"stderr:\n{completed.stderr[-4000:]}"
+        )
+    if report_path.exists():
+        return json.loads(report_path.read_text(encoding="utf-8"))
+    return {"ok": True, "playwright_stdout": completed.stdout[-2000:]}
+
+
+def write_fixture_files(root: Path, *, marker: str) -> list[Path]:
+    fixtures = {
+        "helio-company-brief.md": f"""---
+title: Helio Forge Systems company brief
+type: company_brief
+marker: {marker}
+---
+# Helio Forge Systems
+
+Helio Forge Systems builds factory orchestration software for high-mix robotics cells.
+The company is in late seed stage and sells to industrial teams that need shorter
+changeover time, safer robot supervision, and better production traceability.
+
+Current state:
+- 14 production pilots across electronics, aerospace components, and medical devices.
+- Annualized pilot revenue is 1.8M USD, with two paid expansions scheduled for Q3.
+- The founder team is strong in controls engineering but light on enterprise sales leadership.
+""",
+        "q3-reserve-policy.md": f"""---
+title: Q3 reserve allocation policy
+type: policy
+marker: {marker}
+---
+# Q3 reserve allocation policy
+
+Shortlist candidates must show credible expansion revenue, proof that technical risk is
+decreasing, and a plan that fits the reserve budget. A candidate does not need perfect
+metrics, but the memo must separate support evidence from gaps.
+
+Decision dimensions:
+- Customer proof: at least three paid or expansion-ready deployments.
+- Financial discipline: burn multiple below 2.5x or a clear path to get there.
+- Technical risk: reliability issues must be tracked with owner, date, and mitigation.
+- Financing fit: reserve should improve negotiating leverage rather than bridge an avoidable delay.
+""",
+        "customer-pilots.md": f"""---
+title: Helio customer pilots and commercial signal
+type: customer_note
+marker: {marker}
+---
+# Customer pilots and commercial signal
+
+Helio has six active paid pilots and eight technical validation pilots. Three paid pilots
+have moved from proof-of-concept to line-level deployment. Two customers requested paid
+Q3 expansions after uptime improved in May and June.
+
+Risk notes:
+- One aerospace customer paused deployment until safety audit logs are easier to export.
+- The top two customers represent 58 percent of current pilot revenue.
+- Procurement cycle length remains uncertain for regulated manufacturing customers.
+""",
+        "unit-economics.md": f"""---
+title: Helio unit economics and runway note
+type: finance_note
+marker: {marker}
+---
+# Unit economics and runway
+
+Gross margin improved from 38 percent in Q1 to 53 percent in June after deployment tooling
+reduced onsite integration days. Payback on implementation services is estimated at
+7.5 months for paid pilots that expand to two lines.
+
+Concerns:
+- Burn is 620K USD per month.
+- Cash runway is about 11 months without a reserve allocation.
+- Hardware-adjacent support work may suppress margins if the customer success team is not scaled carefully.
+""",
+        "reliability-notes.md": f"""---
+title: Helio reliability incident notes
+type: reliability_note
+marker: {marker}
+---
+# Reliability incident notes
+
+The May release reduced unplanned robot-cell pauses from 9.2 per week to 2.7 per week
+across monitored pilots. The most common remaining issue is sensor drift after tool changes.
+
+Open technical gaps:
+- Safety audit export needs product owner assignment before Q3 expansion.
+- Sensor drift mitigation is tested in two cells but not proven across all customer environments.
+- Data retention policy is not yet documented for European manufacturing sites.
+""",
+        "counter-memo.md": f"""---
+title: Counter memo against Helio shortlist inclusion
+type: counter_memo
+marker: {marker}
+---
+# Counter memo
+
+The strongest case against putting Helio on the Q3 shortlist is that commercial pull may
+be concentrated in a narrow early adopter segment. Customer concentration is high, and the
+team has not yet shown repeatable procurement motion outside founder-led sales.
+
+If Helio is included, the memo should require conditions:
+- Confirm one expansion from a non-top-two customer.
+- Assign ownership for safety audit export.
+- Show that gross margin can stay above 50 percent after customer success hiring.
+""",
+        "board-prep.md": f"""---
+title: Helio board prep questions
+type: board_prep
+marker: {marker}
+---
+# Board prep questions
+
+Questions to answer before a reserve decision:
+1. Which pilots are expansion-ready without founder intervention?
+2. What reliability issue would most likely block a Q3 enterprise expansion?
+3. Would a reserve allocation change financing leverage, or simply extend runway?
+4. What evidence would make the partnership reject the shortlist proposal?
+""",
+        "pipeline.csv": f"""company,lead,status,arr,next_step,marker
+Helio Forge Systems,Mira Chen,active,1800000,Prepare Q3 reserve memo,{marker}
+ArborGrid Labs,Samir Patel,watch,600000,Wait for renewal data,{marker}
+Northline Motion,Jo Rivera,paused,420000,Resolve product gap,{marker}
+""",
+    }
+    written = []
+    for filename, content in fixtures.items():
+        path = root / filename
+        path.write_text(content.strip() + "\n", encoding="utf-8")
+        written.append(path)
+    return written
+
+
+def run_pska(args: argparse.Namespace, command: list[str], *, timeout: float | None = None) -> dict[str, Any]:
+    completed = subprocess.run(
+        [str(ROOT / "scripts" / "pska"), "--config", str(args.config), *command],
+        cwd=str(ROOT),
+        text=True,
+        capture_output=True,
+        timeout=timeout or args.timeout_seconds,
+    )
+    if completed.returncode != 0:
+        raise E2EFailure(
+            f"PSKA command failed: {' '.join(command)}\n"
+            f"stdout:\n{completed.stdout[-3000:]}\n"
+            f"stderr:\n{completed.stderr[-3000:]}"
+        )
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise E2EFailure(f"PSKA command returned non-JSON output for {' '.join(command)}: {completed.stdout[-2000:]}") from exc
+
+
+def digest_command_timeout(args: argparse.Namespace) -> float:
+    batch_size = max(1, int(args.digest_batch_size or 1))
+    limit = max(1, int(args.digest_limit or batch_size))
+    expected_worker_runs = min(max(1, int(args.max_worker_runs or 1)), (limit + batch_size - 1) // batch_size + 1)
+    return max(float(args.timeout_seconds), expected_worker_runs * float(args.digest_worker_timeout_seconds) + 120.0)
+
+
+def assert_digest_has_real_work(payload: dict[str, Any]) -> None:
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    worker_runs = payload.get("worker_runs") if isinstance(payload.get("worker_runs"), list) else []
+    fastreact_run_count = 0
+    for run in worker_runs:
+        if isinstance(run, dict):
+            fastreact_run_count += len((run.get("result") or {}).get("fastreact_runs") or [])
+    scheduled = int(summary.get("scheduled_source_items") or 0)
+    processed = int(summary.get("worker_processed") or 0)
+    candidate_write = summary.get("candidate_write") if isinstance(summary.get("candidate_write"), dict) else {}
+    tool_calls = int(candidate_write.get("tool_calls") or 0)
+    require(
+        scheduled > 0 and (processed > 0 or fastreact_run_count > 0 or tool_calls > 0),
+        "digest-now did not show scheduled source items plus FastReAct/digest activity: "
+        + json.dumps(
+            {
+                "scheduled": scheduled,
+                "processed": processed,
+                "fastreact_run_count": fastreact_run_count,
+                "tool_calls": tool_calls,
+                "summary": summary,
+                "worker_runs": payload.get("worker_runs"),
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+
+def summarize_sync(payload: dict[str, Any]) -> dict[str, Any]:
+    totals = payload.get("totals") if isinstance(payload.get("totals"), dict) else {}
+    return {
+        "ok": payload.get("ok") is not False,
+        "roots": totals.get("roots"),
+        "scanned": totals.get("scanned"),
+        "ingested": totals.get("ingested"),
+        "failed": totals.get("failed"),
+        "source_item_ids": [
+            source_item_id
+            for report in payload.get("reports") or []
+            for source_item_id in (report.get("source_item_ids") if isinstance(report, dict) else []) or []
+        ],
+    }
+
+
+def summarize_digest(payload: dict[str, Any]) -> dict[str, Any]:
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    return {
+        "ok": payload.get("ok") is not False,
+        "scheduled_source_items": summary.get("scheduled_source_items"),
+        "worker_processed": summary.get("worker_processed"),
+        "candidate_write": summary.get("candidate_write"),
+        "failed_digest_jobs": summary.get("failed_digest_jobs"),
+    }
+
+
+def request_json(url: str, *, timeout: float, headers: dict[str, str] | None = None) -> dict[str, Any]:
+    with open_url(url, timeout=timeout, headers=headers) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def open_url(url: str, *, timeout: float, headers: dict[str, str] | None = None):
+    request_headers = {"Accept": "application/json", **(headers or {})}
+    request = Request(url, headers=request_headers)
+    try:
+        return urlopen(request, timeout=timeout)
+    except HTTPError:
+        raise
+    except URLError as exc:
+        raise E2EFailure(f"Service unavailable at {url}: {exc}") from exc
+
+
+def require(condition: Any, message: str) -> None:
+    if not condition:
+        raise E2EFailure(message)
+
+
+def safe_id(value: str) -> str:
+    return "".join(ch.lower() if ch.isalnum() else "_" for ch in value).strip("_")[:48] or uuid4().hex[:8]
+
+
+def _pska_ready_headers(config: PSKAConfig) -> dict[str, str]:
+    if config.service.service_token:
+        return {"X-PSKA-Service-Token": config.service.service_token}
+    return {}
+
+
+def _fastreact_ready_headers(config: PSKAConfig) -> dict[str, str]:
+    token = config.fastreact.service_token or config.agentic_service.service_token
+    if token:
+        return {"X-FastReAct-Service-Token": token}
+    return {}
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

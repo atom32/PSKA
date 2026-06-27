@@ -4,7 +4,7 @@
     "url": "postgresql:///pska"
   },
   "workspace": {
-    "root": "~/PSKA_workspaces/default"
+    "root": "~/PSKA_workspaces"
   },
   "startup": {
     "bootstrap": true,
@@ -47,14 +47,13 @@
     "chunk_overlap": 0
   },
   "files": {
-    "roots": [
-      "~/PSKA_workspaces/default/notes"
-    ],
+    "roots": [],
     "ignore": [
       "*.tmp",
       "*.bak"
     ],
     "max_bytes": 1000000,
+    "tenant_id": "tenant_default",
     "owner_user_id": "user_primary",
     "space_id": "private_primary",
     "visibility": "private"

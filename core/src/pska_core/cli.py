@@ -36,7 +36,7 @@ from pska_core.knowledge_sources import KnowledgeSourceService
 from pska_core.local_daemon import build_process_specs, config_check, daemon_status, run_supervisor, supervisor_config
 from pska_core.memory import MemoryService
 from pska_core.mcp_server import MCPServer
-from pska_core.models import AgentMemory, ChannelIngestPayload, ReviewItem, SourceItem, SourceRef, UserProfileCard, WritingBoard, WritingEdge, WritingNode, utc_now
+from pska_core.models import DEFAULT_TENANT_ID, AgentMemory, ChannelIngestPayload, ReviewItem, SourceItem, SourceRef, UserProfileCard, WritingBoard, WritingEdge, WritingNode, utc_now
 from pska_core.retrieval import RetrievalService
 from pska_core.retrieval_eval import DEFAULT_RETRIEVAL_EVAL_FIXTURE, run_retrieval_eval
 from pska_core.review import ReviewService
@@ -46,6 +46,17 @@ from pska_core.store_postgres import PostgresKnowledgeStore
 
 SMOKE_DATABASE_URL = "postgresql:///pska_smoke"
 REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def _default_fastreact_root() -> Path:
+    candidates = [
+        Path.home() / "FastReAct" / "fastreact-nano",
+        Path.home() / "Fastreact" / "fastreact-nano",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -117,6 +128,7 @@ def build_parser() -> argparse.ArgumentParser:
     knowledge_source_parser.add_argument("action", choices=["list", "add-folder"], nargs="?", default="list")
     knowledge_source_parser.add_argument("--path", type=Path, default=None)
     knowledge_source_parser.add_argument("--name", default=None)
+    knowledge_source_parser.add_argument("--tenant-id", default=DEFAULT_TENANT_ID)
     knowledge_source_parser.add_argument("--owner-user-id", default="user_primary")
     knowledge_source_parser.add_argument("--space-id", default="private_primary")
     knowledge_source_parser.add_argument("--visibility", choices=[item.value for item in Visibility], default=Visibility.PRIVATE.value)
@@ -126,6 +138,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     files_scan_parser = subparsers.add_parser("files-scan", help="Scan an authorized local directory through the Files connector")
     files_scan_parser.add_argument("--root", type=Path, required=True)
+    files_scan_parser.add_argument("--tenant-id", default=DEFAULT_TENANT_ID)
     files_scan_parser.add_argument("--owner-user-id", default="user_primary")
     files_scan_parser.add_argument("--space-id", default="private_primary")
     files_scan_parser.add_argument("--visibility", choices=[item.value for item in Visibility], default=Visibility.PRIVATE.value)
@@ -136,6 +149,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     files_sync_parser = subparsers.add_parser("files-sync", help="Scan configured Files connector roots from PSKA config")
     files_sync_parser.add_argument("--root", type=Path, action="append", default=[], help="Additional or override root to scan")
+    files_sync_parser.add_argument("--tenant-id", default=None)
     files_sync_parser.add_argument("--owner-user-id", default=None)
     files_sync_parser.add_argument("--space-id", default=None)
     files_sync_parser.add_argument("--visibility", choices=[item.value for item in Visibility], default=None)
@@ -148,6 +162,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     files_watch_parser = subparsers.add_parser("files-watch", help="Watch configured Files connector roots and sync changes")
     files_watch_parser.add_argument("--root", type=Path, action="append", default=[], help="Additional or override root to watch")
+    files_watch_parser.add_argument("--tenant-id", default=None)
     files_watch_parser.add_argument("--owner-user-id", default=None)
     files_watch_parser.add_argument("--space-id", default=None)
     files_watch_parser.add_argument("--visibility", choices=[item.value for item in Visibility], default=None)
@@ -282,11 +297,12 @@ def build_parser() -> argparse.ArgumentParser:
         "fastreact-digest-worker-command",
         help="Print the Fastreact-side PSKA digest worker command for this PSKA config",
     )
-    digest_worker_command_parser.add_argument("--fastreact-root", type=Path, default=Path.home() / "Fastreact" / "fastreact-nano")
+    digest_worker_command_parser.add_argument("--fastreact-root", type=Path, default=_default_fastreact_root())
     digest_worker_command_parser.add_argument("--python", default="python3")
     digest_worker_command_parser.add_argument("--pska-url", default=None)
     digest_worker_command_parser.add_argument("--fastreact-url", default=None)
     digest_worker_command_parser.add_argument("--batch-limit", type=int, default=20)
+    digest_worker_command_parser.add_argument("--tenant-id", default=DEFAULT_TENANT_ID)
     digest_worker_command_parser.add_argument("--represented-user-id", default="user_primary")
 
     service_check_parser = subparsers.add_parser("service-check", help="Check a running PSKA online service contract")
@@ -363,6 +379,7 @@ def build_parser() -> argparse.ArgumentParser:
     recover_parser.add_argument("--max-age-seconds", type=int, default=3600)
 
     digest_schedule_parser = subparsers.add_parser("digest-schedule", help="Schedule digest_via_fastreact jobs from source backlog")
+    digest_schedule_parser.add_argument("--tenant-id", default=DEFAULT_TENANT_ID)
     digest_schedule_parser.add_argument("--owner-user-id", default="user_primary")
     digest_schedule_parser.add_argument("--source-item-id", action="append", dest="source_item_ids", default=[])
     digest_schedule_parser.add_argument("--limit", type=int, default=20)
@@ -376,6 +393,7 @@ def build_parser() -> argparse.ArgumentParser:
     digest_schedule_parser.add_argument("--reason", default="")
 
     digest_now_parser = subparsers.add_parser("digest-now", help="Sync files, schedule digest work, run the Fastreact digest worker, and print a summary")
+    digest_now_parser.add_argument("--tenant-id", default=None)
     digest_now_parser.add_argument("--owner-user-id", default="user_primary")
     digest_now_parser.add_argument("--source-item-id", action="append", dest="source_item_ids", default=[])
     digest_now_parser.add_argument("--limit", type=int, default=20)
@@ -394,14 +412,16 @@ def build_parser() -> argparse.ArgumentParser:
     digest_now_parser.add_argument("--twitter-archive", type=Path, default=None, help="Twitter/X zip inbox to import before digest")
     digest_now_parser.add_argument("--archive-root", type=Path, default=None, help="Archive extraction root for imported Twitter/X zips")
     digest_now_parser.add_argument("--skip-twitter-archives", action="store_true")
-    digest_now_parser.add_argument("--fastreact-root", type=Path, default=Path.home() / "Fastreact" / "fastreact-nano")
+    digest_now_parser.add_argument("--fastreact-root", type=Path, default=_default_fastreact_root())
     digest_now_parser.add_argument("--python", default="python3")
     digest_now_parser.add_argument("--pska-url", default=None)
     digest_now_parser.add_argument("--fastreact-url", default=None)
     digest_now_parser.add_argument("--max-worker-runs", type=int, default=10)
+    digest_now_parser.add_argument("--worker-timeout-seconds", type=float, default=300.0)
     _add_embedding_args(digest_now_parser, default_provider="disabled")
 
     digest_scheduler_parser = subparsers.add_parser("digest-scheduler", help="Foreground periodic digest backlog scheduler")
+    digest_scheduler_parser.add_argument("--tenant-id", default=DEFAULT_TENANT_ID)
     digest_scheduler_parser.add_argument("--owner-user-id", default="user_primary")
     digest_scheduler_parser.add_argument("--interval-seconds", type=float, default=60.0)
     digest_scheduler_parser.add_argument("--max-cycles", type=int, default=0, help="Stop after this many scheduler cycles; 0 means no limit")
@@ -526,9 +546,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "connector-state":
         return connector_state(args)
     if args.command == "knowledge-source":
-        return knowledge_source(args)
+        return knowledge_source(args, config)
     if args.command == "files-scan":
-        return files_scan(args)
+        return files_scan(args, config)
     if args.command == "files-sync":
         return files_sync(args, config)
     if args.command == "files-watch":
@@ -653,16 +673,25 @@ def _resolve_workspace_root(args: argparse.Namespace, config: PSKAConfig) -> Pat
 def _apply_workspace_defaults(args: argparse.Namespace, workspace_root: Path) -> None:
     if args.command in {"import-twitter-zips", "mvp-bootstrap", "smoke-twitter-import", "files-sync", "digest-now"}:
         if getattr(args, "input", None) is None:
-            args.input = workspace_root / "twitter_archive"
+            args.input = workspace_root / "_system" / "twitter_archive"
         if getattr(args, "twitter_archive", None) is None:
-            args.twitter_archive = workspace_root / "twitter_archive"
+            args.twitter_archive = workspace_root / "_system" / "twitter_archive"
         if getattr(args, "archive_root", None) is None:
-            args.archive_root = workspace_root / "imports"
+            args.archive_root = workspace_root / "_system" / "imports"
     if args.command == "local-daemon":
         if args.run_dir is None:
-            args.run_dir = workspace_root / "run"
+            args.run_dir = workspace_root / "_system" / "run"
         if args.log_dir is None:
-            args.log_dir = workspace_root / "logs"
+            args.log_dir = workspace_root / "_system" / "logs"
+
+
+def _assert_workspace_sync_root_allowed(config: PSKAConfig, root: Path, *, tenant_id: str, owner_user_id: str) -> Path:
+    resolved = root.expanduser().resolve()
+    workspace_root = config.workspace.root.expanduser().resolve()
+    tenants_root = workspace_root / "tenants"
+    if resolved == tenants_root or tenants_root in resolved.parents:
+        return config.workspace.assert_user_path(resolved, tenant_id=tenant_id, user_id=owner_user_id)
+    return resolved
 
 
 def db_check(database_url: str) -> int:
@@ -881,16 +910,19 @@ def connector_state(args: argparse.Namespace) -> int:
     return 0
 
 
-def knowledge_source(args: argparse.Namespace) -> int:
+def knowledge_source(args: argparse.Namespace, config: PSKAConfig) -> int:
     store = PostgresKnowledgeStore(args.database_url)
     service = KnowledgeSourceService(store)
+    tenant_id = str(args.tenant_id or DEFAULT_TENANT_ID)
     if args.action == "add-folder":
         if not args.path:
             print("knowledge-source add-folder requires --path", file=sys.stderr)
             return 2
+        root = _assert_workspace_sync_root_allowed(config, args.path, tenant_id=tenant_id, owner_user_id=args.owner_user_id)
         source = service.add_folder_source(
-            args.path,
+            root,
             owner_user_id=args.owner_user_id,
+            tenant_id=tenant_id,
             name=args.name,
             mode=args.mode,
             space_id=args.space_id,
@@ -900,7 +932,7 @@ def knowledge_source(args: argparse.Namespace) -> int:
         )
         print(dumps({"knowledge_source": source}))
         return 0
-    sources = service.list_sources(owner_user_id=args.owner_user_id)
+    sources = service.list_sources(tenant_id=tenant_id, owner_user_id=args.owner_user_id)
     runs = {
         source.knowledge_source_id: store.list_sync_runs(knowledge_source_id=source.knowledge_source_id, limit=1)
         for source in sources
@@ -909,12 +941,14 @@ def knowledge_source(args: argparse.Namespace) -> int:
     return 0
 
 
-def files_scan(args: argparse.Namespace) -> int:
+def files_scan(args: argparse.Namespace, config: PSKAConfig) -> int:
     store = PostgresKnowledgeStore(args.database_url)
+    root = _assert_workspace_sync_root_allowed(config, args.root, tenant_id=args.tenant_id, owner_user_id=args.owner_user_id)
     report = scan_files(
         store,
-        root=args.root,
+        root=root,
         owner_user_id=args.owner_user_id,
+        tenant_id=args.tenant_id,
         space_id=args.space_id,
         visibility=Visibility(args.visibility),
         visible_team_ids=[item.strip() for item in args.visible_team_ids.split(",") if item.strip()],
@@ -935,15 +969,24 @@ def files_sync(args: argparse.Namespace, config: PSKAConfig) -> int:
 def _files_sync_payload(args: argparse.Namespace, config: PSKAConfig) -> dict[str, Any]:
     store = PostgresKnowledgeStore(args.database_url)
     source_service = KnowledgeSourceService(store)
+    tenant_id = str(getattr(args, "tenant_id", None) or config.files.tenant_id)
+    owner_user_id = str(args.owner_user_id or config.files.owner_user_id)
     try:
         seeded = source_service.seed_from_config(config)
-        configured_roots = [root.expanduser().resolve() for root in config.files.roots]
-        requested_roots = [root.expanduser().resolve() for root in args.root or []]
+        configured_roots = [
+            _assert_workspace_sync_root_allowed(config, root, tenant_id=config.files.tenant_id, owner_user_id=config.files.owner_user_id)
+            for root in config.files.roots
+        ]
+        requested_roots = [
+            _assert_workspace_sync_root_allowed(config, root, tenant_id=tenant_id, owner_user_id=owner_user_id)
+            for root in args.root or []
+        ]
         for root in args.root or []:
             seeded.append(
                 source_service.add_folder_source(
-                    root,
-                    owner_user_id=args.owner_user_id or config.files.owner_user_id,
+                    _assert_workspace_sync_root_allowed(config, root, tenant_id=tenant_id, owner_user_id=owner_user_id),
+                    owner_user_id=owner_user_id,
+                    tenant_id=tenant_id,
                     space_id=args.space_id or config.files.space_id,
                     visibility=Visibility(args.visibility or config.files.visibility),
                     ignore=[*config.files.ignore, *(args.ignore or [])],
@@ -953,7 +996,7 @@ def _files_sync_payload(args: argparse.Namespace, config: PSKAConfig) -> dict[st
         active_uris = {root.as_uri() for root in [*configured_roots, *requested_roots]}
         sources = [
             source
-            for source in source_service.list_sources(owner_user_id=args.owner_user_id or config.files.owner_user_id, source_type="folder")
+            for source in source_service.list_sources(tenant_id=tenant_id, owner_user_id=owner_user_id, source_type="folder")
             if source.mode != "paused" and source.status != "paused"
             and source.uri in active_uris
         ]
@@ -984,6 +1027,7 @@ def _files_sync_payload(args: argparse.Namespace, config: PSKAConfig) -> dict[st
                 store,
                 root=root,
                 owner_user_id=source.owner_user_id,
+                tenant_id=source.tenant_id,
                 space_id=source.space_id,
                 visibility=source.visibility,
                 visible_team_ids=source.visible_team_ids,
@@ -1066,7 +1110,12 @@ def _files_sync_twitter_archives(args: argparse.Namespace, config: PSKAConfig, s
 
 
 def files_watch(args: argparse.Namespace, config: PSKAConfig) -> int:
-    roots = list(args.root or []) or list(config.files.roots)
+    tenant_id = str(args.tenant_id or config.files.tenant_id)
+    owner_user_id = str(args.owner_user_id or config.files.owner_user_id)
+    roots = [
+        _assert_workspace_sync_root_allowed(config, root, tenant_id=tenant_id, owner_user_id=owner_user_id)
+        for root in (list(args.root or []) or list(config.files.roots))
+    ]
     if not roots:
         print(dumps({
             "ok": False,
@@ -1107,7 +1156,8 @@ def files_watch(args: argparse.Namespace, config: PSKAConfig) -> int:
         summary = watch_files(
             store,
             roots=roots,
-            owner_user_id=args.owner_user_id or config.files.owner_user_id,
+            owner_user_id=owner_user_id,
+            tenant_id=tenant_id,
             space_id=args.space_id or config.files.space_id,
             visibility=Visibility(args.visibility or config.files.visibility),
             ignore=[*config.files.ignore, *(args.ignore or [])],
@@ -2272,6 +2322,8 @@ def digest_schedule(args: argparse.Namespace) -> int:
 
 def digest_now(args: argparse.Namespace, config: PSKAConfig) -> int:
     api = _build_api(args.database_url, config)
+    tenant_id = str(getattr(args, "tenant_id", None) or config.files.tenant_id)
+    args.tenant_id = tenant_id
     sync_payload = None
     if not args.skip_sync:
         sync_payload = _files_sync_payload(args, config)
@@ -2285,13 +2337,14 @@ def digest_now(args: argparse.Namespace, config: PSKAConfig) -> int:
     fallback_review = _digest_now_fallback_review(
         api.store,
         owner_user_id=args.owner_user_id,
+        tenant_id=tenant_id,
         scheduled_source_item_ids=scheduled.get("scheduled_source_item_ids") or [],
         diagnostics=diagnostics,
         worker_runs=worker_runs,
     )
     stats = api.job_stats()["stats"]
-    discoveries = api.workspace_discoveries(owner_user_id=args.owner_user_id, limit=50)
-    all_new_discoveries = api.workspace_discoveries(owner_user_id=args.owner_user_id, limit=50, min_score=0)
+    discoveries = api.workspace_discoveries(owner_user_id=args.owner_user_id, tenant_id=tenant_id, limit=50)
+    all_new_discoveries = api.workspace_discoveries(owner_user_id=args.owner_user_id, tenant_id=tenant_id, limit=50, min_score=0)
     pending_reviews = _review_items_payload(
         api.store.list_review_items(),
         status="pending",
@@ -2301,7 +2354,7 @@ def digest_now(args: argparse.Namespace, config: PSKAConfig) -> int:
     )
     failed_digest_jobs = [
         job
-        for job in api.store.list_jobs(status="failed", job_type=DIGEST_VIA_FASTREACT, limit=10)
+        for job in api.store.list_jobs(tenant_id=tenant_id, status="failed", job_type=DIGEST_VIA_FASTREACT, limit=10)
     ]
     candidate_summary = _digest_now_candidate_summary(worker_runs)
     candidate_summary["review_items"] += int(fallback_review.get("review_items") or 0)
@@ -2479,6 +2532,7 @@ def _run_fastreact_digest_worker(args: argparse.Namespace, config: PSKAConfig) -
         fastreact_root=args.fastreact_root,
         python=args.python,
         batch_limit=args.batch_size,
+        tenant_id=args.tenant_id,
         represented_user_id=args.owner_user_id,
     )
     command_payload = _fastreact_digest_worker_command_payload(command_args, config)
@@ -2503,7 +2557,7 @@ def _run_fastreact_digest_worker(args: argparse.Namespace, config: PSKAConfig) -
                 check=False,
                 capture_output=True,
                 text=True,
-                timeout=180,
+                timeout=max(1.0, float(getattr(args, "worker_timeout_seconds", 300.0) or 300.0)),
             )
         except subprocess.TimeoutExpired as exc:
             runs.append(
@@ -4408,6 +4462,8 @@ def _fastreact_digest_worker_command_payload(args: argparse.Namespace, config: P
         fastreact_url,
         "--batch-limit",
         str(args.batch_limit),
+        "--tenant-id",
+        str(getattr(args, "tenant_id", None) or config.files.tenant_id or DEFAULT_TENANT_ID),
         "--represented-user-id",
         str(args.represented_user_id),
     ]
@@ -4506,6 +4562,7 @@ def _job_source_item_ids(job) -> set[str]:
 
 def _digest_schedule_payload(args: argparse.Namespace) -> dict[str, Any]:
     payload = {
+        "tenant_id": getattr(args, "tenant_id", None) or DEFAULT_TENANT_ID,
         "owner_user_id": args.owner_user_id,
         "source_item_ids": getattr(args, "source_item_ids", []),
         "limit": args.limit,
