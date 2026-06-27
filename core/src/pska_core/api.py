@@ -972,8 +972,9 @@ class PSKAApi:
         user = self.store.get_user(user_id, tenant_id=tenant_id)
         if selected_intent == "deep":
             try:
-                deep = self._agentic_service_search(
-                    _ask_deep_query(query=query, surface=surface, scope=scope),
+                deep_query = _ask_deep_query(query=query, surface=surface, scope=scope)
+                deep = self._workspace_ask_deep_agentic(
+                    deep_query,
                     user,
                     represented_user_id=represented_user_id,
                     max_iterations=max(1, min(int(payload.get("max_iterations") or 4), 8)),
@@ -1025,6 +1026,51 @@ class PSKAApi:
                 top_k=top_k,
                 started_at=started_at,
             )
+        )
+
+    def _workspace_ask_deep_agentic(
+        self,
+        query: str,
+        user: Any,
+        *,
+        represented_user_id: str | None,
+        max_iterations: int,
+        skills: list[str],
+        tool_policy: dict[str, Any],
+        session_id: str | None,
+    ) -> dict[str, Any]:
+        if hasattr(self.agentic_service, "search_event_stream"):
+            raw_events: list[dict[str, Any]] = []
+            event_stream = self.agentic_service.search_event_stream(
+                query,
+                user,
+                represented_user_id=represented_user_id,
+                max_iterations=max_iterations,
+                skills=skills,
+                tool_policy=tool_policy,
+                session_id=session_id,
+            )
+            for raw_event in event_stream:
+                if not isinstance(raw_event, dict):
+                    continue
+                if _ask_is_stream_done_event(raw_event):
+                    continue
+                raw_events.append(raw_event)
+            return normalize_agentic_event_response(
+                raw_events,
+                provider=getattr(getattr(self.agentic_service, "config", None), "provider", "fastreact"),
+                adapter="fastreact",
+                url=getattr(getattr(self.agentic_service, "config", None), "url", ""),
+                metadata={"event_count": len(raw_events), "collected_by": "workspace_ask"},
+            )
+        return self._agentic_service_search(
+            query,
+            user,
+            represented_user_id=represented_user_id,
+            max_iterations=max_iterations,
+            skills=skills,
+            tool_policy=tool_policy,
+            session_id=session_id,
         )
 
     def workspace_ask_event_stream(self, payload: dict[str, Any], context: RequestContext | None = None):
@@ -3964,10 +4010,9 @@ def _ask_deep_response(
     if not _list_of_dicts(retrieval.get("results")):
         retrieval = _ask_retrieval_from_agentic_trace(trace)
     evidence = _ask_evidence_from_retrieval(retrieval)
-    declared_refs = [
-        *_ask_source_ref_dicts(agentic.get("source_refs"), string_field="source_item_id"),
-        *_ask_source_ref_dicts(agentic.get("citations"), string_field="title"),
-    ]
+    declared_source_refs = _ask_source_ref_dicts(agentic.get("source_refs"), string_field="source_item_id")
+    declared_citation_refs = _ask_source_ref_dicts(agentic.get("citations"), string_field="title")
+    declared_refs = declared_source_refs or declared_citation_refs
     fallback_refs = [
         *_list_of_dicts(retrieval.get("citations") if retrieval else []),
         *_list_of_dicts(evidence.get("citations")),

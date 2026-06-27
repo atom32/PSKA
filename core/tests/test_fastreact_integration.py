@@ -2221,6 +2221,7 @@ def test_workspace_ask_deep_uses_final_declared_refs_and_redacts_trace_events() 
                 "answer": "Deep answer uses the relevant final citation.",
                 "retrieval": retrieval,
                 "source_refs": [{"source_item_id": relevant.source_item_id}],
+                "citations": ["Relevant dossier title alias"],
                 "trace": {
                     "events": [
                         {"type": "session_start", "content": "SECRET_ROUTING_PROMPT", "event_id": "evt_0"},
@@ -2255,6 +2256,7 @@ def test_workspace_ask_deep_uses_final_declared_refs_and_redacts_trace_events() 
     assert payload["source_refs"][0]["title"] == "Relevant Deep Note"
     assert "Relevant evidence" in payload["source_refs"][0]["snippet"]
     assert payload["evidence"]["results"][0]["source_item_id"] == relevant.source_item_id
+    assert "dropped_source_refs" not in payload["quality_signals"]["flags"]
     payload_text = json.dumps(payload, ensure_ascii=False)
     assert "SECRET_ROUTING_PROMPT" not in payload_text
     assert "Irrelevant evidence should remain only in the retrieval trace." not in payload_text
