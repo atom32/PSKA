@@ -134,6 +134,45 @@ def test_mcp_search_compacts_long_results_for_fastreact() -> None:
     assert payload["omitted"]["reason"] == "MCP compact output keeps FastReAct tool results parser-safe."
 
 
+def test_mcp_search_surfaces_follow_up_keys_for_agentic_research() -> None:
+    store = InMemoryKnowledgeStore()
+    store.add_user(User("user_primary", "primary"))
+    IngestService(store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "mcp-follow-up-key-note",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "Research intake",
+            "content": {
+                "text": (
+                    "Research intake for a generic question. Evidence keys: `RENEWAL-482`, "
+                    "`INCIDENT-17B`, `CASHRUN-93`, and `MARGIN-ALPHA`."
+                )
+            },
+        }
+    )
+
+    response = MCPServer("postgresql:///unused", store=store).handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 21,
+            "method": "tools/call",
+            "params": {
+                "name": "pska_search",
+                "arguments": {"query": "generic research intake", "user_id": "user_primary", "max_snippet_chars": 260},
+            },
+        }
+    )
+    payload = json.loads(response["result"]["content"][0]["text"])
+
+    assert {"RENEWAL-482", "INCIDENT-17B", "CASHRUN-93", "MARGIN-ALPHA"} <= set(payload["follow_up_keys"])
+    assert {"RENEWAL-482", "INCIDENT-17B"} <= set(payload["results"][0]["follow_up_keys"])
+
+
 def test_mcp_job_context_defaults_to_compact_output() -> None:
     store = InMemoryKnowledgeStore()
     store.add_user(User("user_primary", "primary"))

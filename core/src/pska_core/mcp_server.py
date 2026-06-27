@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from typing import Any
 
@@ -455,12 +456,25 @@ def _compact_search_response(payload: dict[str, Any], *, max_results: int, max_s
     results = payload.get("results") if isinstance(payload.get("results"), list) else []
     citations = payload.get("citations") if isinstance(payload.get("citations"), list) else []
     graph_paths = payload.get("graph_paths") if isinstance(payload.get("graph_paths"), list) else []
+    compact_results = [_compact_search_result(item, max_snippet_chars=max_snippet_chars) for item in results[:max_results] if isinstance(item, dict)]
+    compact_citations = [_compact_citation(item, max_snippet_chars=max_snippet_chars) for item in citations[:max_results] if isinstance(item, dict)]
+    follow_up_keys = _dedupe_follow_up_keys(
+        key
+        for item in [*compact_results, *compact_citations]
+        for key in _extract_follow_up_keys(
+            " ".join(
+                str(item.get(field) or "")
+                for field in ("source_item_id", "chunk_id", "title", "snippet")
+            )
+        )
+    )
     return {
         "query": payload.get("query"),
         "request_user_id": payload.get("request_user_id"),
         "visible_spaces": payload.get("visible_spaces") if isinstance(payload.get("visible_spaces"), list) else [],
-        "results": [_compact_search_result(item, max_snippet_chars=max_snippet_chars) for item in results[:max_results] if isinstance(item, dict)],
-        "citations": [_compact_citation(item, max_snippet_chars=max_snippet_chars) for item in citations[:max_results] if isinstance(item, dict)],
+        "results": compact_results,
+        "citations": compact_citations,
+        "follow_up_keys": follow_up_keys[:12],
         "graph_paths": [_compact_graph_path(item, max_snippet_chars=max_snippet_chars) for item in graph_paths[:5] if isinstance(item, dict)],
         "diagnostics": _compact_diagnostics(payload.get("diagnostics")),
         "omitted": {
@@ -519,15 +533,27 @@ def _clean_string(value: Any) -> str:
 
 
 def _compact_search_result(item: dict[str, Any], *, max_snippet_chars: int) -> dict[str, Any]:
-    return {
+    snippet = _truncate(str(item.get("snippet") or ""), max_snippet_chars)
+    compact = {
         "result_id": item.get("result_id"),
         "source_item_id": item.get("source_item_id"),
         "source": item.get("source"),
         "title": item.get("title"),
-        "snippet": _truncate(str(item.get("snippet") or ""), max_snippet_chars),
+        "snippet": snippet,
         "score": item.get("score"),
         "citation": _compact_citation(item.get("citation"), max_snippet_chars=max_snippet_chars),
     }
+    follow_up_keys = _dedupe_follow_up_keys(
+        _extract_follow_up_keys(
+            " ".join(
+                str(value or "")
+                for value in (compact.get("source_item_id"), compact.get("title"), compact.get("snippet"))
+            )
+        )
+    )
+    if follow_up_keys:
+        compact["follow_up_keys"] = follow_up_keys[:8]
+    return compact
 
 
 def _compact_citation(item: Any, *, max_snippet_chars: int) -> dict[str, Any]:
@@ -540,7 +566,41 @@ def _compact_citation(item: Any, *, max_snippet_chars: int) -> dict[str, Any]:
     }
     if item.get("snippet"):
         compact["snippet"] = _truncate(str(item.get("snippet") or ""), max_snippet_chars)
+    follow_up_keys = _dedupe_follow_up_keys(
+        _extract_follow_up_keys(
+            " ".join(
+                str(value or "")
+                for value in (compact.get("source_item_id"), compact.get("chunk_id"), compact.get("title"), compact.get("snippet"))
+            )
+        )
+    )
+    if follow_up_keys:
+        compact["follow_up_keys"] = follow_up_keys[:8]
     return compact
+
+
+def _extract_follow_up_keys(text: str) -> list[str]:
+    value = str(text or "")
+    keys: list[str] = []
+    keys.extend(match.strip() for match in re.findall(r"`([^`\n]{2,80})`", value))
+    keys.extend(re.findall(r"\b[A-Z][A-Z0-9]{1,20}(?:-[A-Z0-9]{1,20})+\b", value))
+    keys.extend(re.findall(r"\b(?:src|chk|doc|pw)_[a-zA-Z0-9_]{8,80}\b", value))
+    return _dedupe_follow_up_keys(keys)
+
+
+def _dedupe_follow_up_keys(keys: Any) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for raw_key in keys or []:
+        key = str(raw_key or "").strip(" \t\r\n,.;:()[]{}<>\"'")
+        if len(key) < 3 or len(key) > 96:
+            continue
+        normalized = key.lower()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        deduped.append(key)
+    return deduped
 
 
 def _compact_graph_path(item: dict[str, Any], *, max_snippet_chars: int) -> dict[str, Any]:
