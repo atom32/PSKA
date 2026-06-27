@@ -109,9 +109,10 @@ used by Today, Corpus, and Graph surfaces.
 ```
 
 `intent=quick` lets PSKA own retrieval. `intent=deep` delegates retrieval to
-FastReAct through PSKA read-only MCP tools. `intent=auto` chooses between those
-routes and returns `route.retrieval_owner` as either `pska` or
-`fastreact_pska_mcp`.
+FastReAct through PSKA read-only MCP tools. `intent=auto` first runs the PSKA
+planner (`route.routing_owner=pska_planner`) to extract query terms and choose
+between those routes. `route.retrieval_owner` is still the hard evidence owner:
+either `pska` or `fastreact_pska_mcp`.
 
 Response includes:
 
@@ -126,10 +127,12 @@ Response includes:
 - `timing.time_to_first_answer_ms`
 - `timing.time_to_first_agent_event_ms`
 
-`agent_steps` is the product-safe agentic search timeline. It contains concise
-steps such as understanding, searching, reading results, and forming the answer.
-`trace.events` may retain raw FastReAct events for diagnostics, but product UI
-must keep them behind a debug foldout and must not copy them into the answer.
+`agent_steps` is the product-safe agentic search timeline. Quick answers include
+PSKA planner and GraphRAG steps such as understanding, route selection, searching,
+reading results, and forming the answer. Deep answers start with the PSKA planner
+route step, then include translated FastReAct events. `trace.events` may retain
+raw FastReAct events for diagnostics, but product UI must keep them behind a
+debug foldout and must not copy them into the answer.
 
 ### `POST /workspace/ask/stream`
 

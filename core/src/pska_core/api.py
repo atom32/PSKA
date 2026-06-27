@@ -1047,6 +1047,61 @@ class PSKAApi:
         selected_intent = _ask_route_intent(query, intent=intent)
         user = self.store.get_user(user_id, tenant_id=tenant_id)
         if selected_intent != "deep" or not hasattr(self.agentic_service, "search_event_stream"):
+            if selected_intent != "deep":
+                route = _ask_route_payload(
+                    intent=intent,
+                    selected_intent="quick",
+                    retrieval_owner="pska",
+                    surface=surface,
+                    requires_agentic_service_online=False,
+                    tool_policy={"mode": "none"},
+                    query=query,
+                )
+                yield ("route", {"route": route, "timing": {}})
+                query_terms = _ask_query_terms(query)
+                emitted_steps = _ask_route_planner_steps(
+                    query=query,
+                    intent=intent,
+                    selected_intent="quick",
+                    query_terms=query_terms,
+                    started_at=started_at,
+                    start_sequence=1,
+                    include_understand=True,
+                )
+                emitted_steps.append(
+                    _ask_quick_search_step(
+                        sequence=len(emitted_steps) + 1,
+                        query_terms=query_terms,
+                        top_k=top_k,
+                        started_at=started_at,
+                    )
+                )
+                time_to_first_agent_event_ms = emitted_steps[0].get("elapsed_ms") if emitted_steps else None
+                for step in emitted_steps:
+                    yield ("agent_step", {"step": step, "timing": {"time_to_first_agent_event_ms": time_to_first_agent_event_ms}})
+                final_payload = _ask_with_quality_signals(
+                    self._workspace_ask_quick(
+                        query=query,
+                        intent=intent,
+                        surface=surface,
+                        tenant_id=tenant_id,
+                        owner_user_id=owner_user_id,
+                        represented_user_id=represented_user_id,
+                        user=user,
+                        top_k=top_k,
+                        started_at=started_at,
+                        agent_steps=emitted_steps,
+                        query_terms=query_terms,
+                    )
+                )
+                final_payload["timing"]["time_to_first_agent_event_ms"] = time_to_first_agent_event_ms
+                for step in _list_of_dicts(final_payload.get("agent_steps"))[len(emitted_steps) :]:
+                    yield ("agent_step", {"step": step, "timing": final_payload.get("timing") or {}})
+                for event_name, event_payload in _ask_sse_events(final_payload):
+                    if event_name in {"route", "agent_step"}:
+                        continue
+                    yield (event_name, event_payload)
+                return
             final_payload = self.workspace_ask(payload, context=context)
             yield from _ask_sse_events(final_payload)
             return
@@ -1058,11 +1113,25 @@ class PSKAApi:
             "surface": surface,
             "requires_agentic_service_online": True,
             "tool_policy": {"mode": "allowlist", "allowed_tools": ASK_READ_ONLY_TOOLS},
+            "routing_owner": "pska_planner",
+            "query_terms": _ask_query_terms(query),
         }
         yield ("route", {"route": route, "timing": {}})
         raw_events: list[dict[str, Any]] = []
-        agent_steps: list[dict[str, Any]] = []
+        agent_steps: list[dict[str, Any]] = _ask_route_planner_steps(
+            query=query,
+            intent=intent,
+            selected_intent=selected_intent,
+            query_terms=_ask_query_terms(query),
+            started_at=started_at,
+            start_sequence=1,
+            include_understand=False,
+        )
         time_to_first_agent_event_ms: float | None = None
+        if agent_steps:
+            time_to_first_agent_event_ms = agent_steps[0].get("elapsed_ms")
+            for step in agent_steps:
+                yield ("agent_step", {"step": step, "timing": {"time_to_first_agent_event_ms": time_to_first_agent_event_ms}})
         try:
             event_stream = self.agentic_service.search_event_stream(
                 _ask_deep_query(query=query, surface=surface, scope=scope),
@@ -1162,11 +1231,46 @@ class PSKAApi:
         user: Any,
         top_k: int,
         started_at: float,
+        agent_steps: list[dict[str, Any]] | None = None,
+        query_terms: list[str] | None = None,
     ) -> dict[str, Any]:
+        query_terms = query_terms or _ask_query_terms(query)
+        steps = list(agent_steps or [])
+        if not steps:
+            steps.extend(
+                _ask_route_planner_steps(
+                    query=query,
+                    intent=intent,
+                    selected_intent="quick",
+                    query_terms=query_terms,
+                    started_at=started_at,
+                    start_sequence=1,
+                    include_understand=True,
+                )
+            )
+            steps.append(
+                _ask_quick_search_step(
+                    sequence=len(steps) + 1,
+                    query_terms=query_terms,
+                    top_k=top_k,
+                    started_at=started_at,
+                )
+            )
         retrieval_result = self.retrieval.search(query, user, represented_user_id=represented_user_id, top_k=top_k)
         retrieval = _console_search_summary(to_jsonable(retrieval_result))
         evidence = _ask_evidence_from_retrieval(retrieval)
+        steps.append(_ask_quick_read_step(sequence=len(steps) + 1, evidence=evidence, started_at=started_at))
         answer = _ask_quick_answer(query, retrieval)
+        steps.append(
+            _ask_agent_step(
+                sequence=len(steps) + 1,
+                phase="answer",
+                status="complete",
+                title="形成回答",
+                detail="已完成证据归纳和引用校验。",
+                started_at=started_at,
+            )
+        )
         elapsed_ms = _elapsed_ms(started_at)
         return {
             "ok": True,
@@ -1179,18 +1283,24 @@ class PSKAApi:
                 "surface": surface,
                 "requires_agentic_service_online": False,
                 "tool_policy": {"mode": "none"},
+                "routing_owner": "pska_planner",
+                "query_terms": query_terms,
             },
             "evidence": evidence,
             "citations": evidence["citations"],
             "source_refs": evidence["source_refs"],
+            "agent_steps": steps,
             "trace": {
                 "mode": "quick",
+                "query_terms": query_terms,
+                "retrieval_owner": "pska",
                 "retrieval": retrieval,
                 "diagnostics": retrieval.get("diagnostics") if isinstance(retrieval.get("diagnostics"), dict) else {},
             },
             "timing": {
                 "total_ms": elapsed_ms,
                 "time_to_first_answer_ms": elapsed_ms,
+                "time_to_first_agent_event_ms": steps[0].get("elapsed_ms") if steps else None,
             },
             "tenant_id": tenant_id,
             "owner_user_id": owner_user_id,
@@ -3466,6 +3576,120 @@ def _ask_route_intent(query: str, *, intent: str) -> str:
     return "deep"
 
 
+def _ask_query_terms(query: str) -> list[str]:
+    terms = _graph_query_terms(query)
+    if terms:
+        return terms[:6]
+    words = [part.strip() for part in re.split(r"\s+", str(query or "")) if part.strip()]
+    return words[:6]
+
+
+def _ask_route_payload(
+    *,
+    intent: str,
+    selected_intent: str,
+    retrieval_owner: str,
+    surface: str,
+    requires_agentic_service_online: bool,
+    tool_policy: dict[str, Any],
+    query: str,
+    fallback_from: str | None = None,
+) -> dict[str, Any]:
+    payload = {
+        "intent": intent,
+        "selected_intent": selected_intent,
+        "retrieval_owner": retrieval_owner,
+        "surface": surface,
+        "requires_agentic_service_online": requires_agentic_service_online,
+        "tool_policy": tool_policy,
+        "routing_owner": "pska_planner",
+        "query_terms": _ask_query_terms(query),
+    }
+    if fallback_from:
+        payload["fallback_from"] = fallback_from
+    return payload
+
+
+def _ask_route_planner_steps(
+    *,
+    query: str,
+    intent: str,
+    selected_intent: str,
+    query_terms: list[str],
+    started_at: float,
+    start_sequence: int,
+    include_understand: bool,
+) -> list[dict[str, Any]]:
+    steps: list[dict[str, Any]] = []
+    sequence = start_sequence
+    if include_understand:
+        steps.append(
+            _ask_agent_step(
+                sequence=sequence,
+                phase="understand",
+                status="complete",
+                title="理解问题",
+                detail=_ask_understand_step_detail(query_terms),
+                started_at=started_at,
+            )
+        )
+        sequence += 1
+    steps.append(
+        _ask_agent_step(
+            sequence=sequence,
+            phase="route",
+            status="complete",
+            title="选择回答路线",
+            detail=_ask_route_step_detail(intent=intent, selected_intent=selected_intent, query_terms=query_terms),
+            started_at=started_at,
+        )
+    )
+    return steps
+
+
+def _ask_understand_step_detail(query_terms: list[str]) -> str:
+    if query_terms:
+        return f"已抽取检索关键词：{'、'.join(query_terms[:6])}。"
+    return "已确认问题和当前租户范围。"
+
+
+def _ask_route_step_detail(*, intent: str, selected_intent: str, query_terms: list[str]) -> str:
+    route_label = "深入分析" if selected_intent == "deep" else "快速回答"
+    intent_label = "自动路由" if intent == "auto" else f"用户指定 {intent}"
+    term_text = f"关键词：{'、'.join(query_terms[:6])}；" if query_terms else ""
+    if selected_intent == "deep":
+        return f"{term_text}{intent_label} 判定需要 {route_label}，由 FastReAct 通过 PSKA 只读工具检索。"
+    return f"{term_text}{intent_label} 判定可先走 {route_label}，由 PSKA GraphRAG 直接检索。"
+
+
+def _ask_quick_search_step(*, sequence: int, query_terms: list[str], top_k: int, started_at: float) -> dict[str, Any]:
+    term_text = f"关键词：{'、'.join(query_terms[:6])}；" if query_terms else ""
+    return _ask_agent_step(
+        sequence=sequence,
+        phase="search",
+        status="running",
+        title="执行 PSKA GraphRAG 检索",
+        detail=f"{term_text}top_k={top_k}。检索 lexical/vector/graph 证据。",
+        started_at=started_at,
+    )
+
+
+def _ask_quick_read_step(*, sequence: int, evidence: dict[str, Any], started_at: float) -> dict[str, Any]:
+    results = _list_of_dicts(evidence.get("results"))
+    citations = _list_of_dicts(evidence.get("citations"))
+    graph_paths = _list_of_dicts(evidence.get("graph_paths"))
+    return _ask_agent_step(
+        sequence=sequence,
+        phase="read",
+        status="complete",
+        title="读取 GraphRAG 证据",
+        detail=f"返回 {len(results)} 条证据，{len(citations)} 条引用，{len(graph_paths)} 条图谱路径。",
+        evidence_count=len(results),
+        source_ref_count=len(citations),
+        started_at=started_at,
+    )
+
+
 def _ask_deep_query(*, query: str, surface: str, scope: dict[str, Any]) -> str:
     scope_text = json.dumps(scope or {}, ensure_ascii=False)
     return (
@@ -3614,6 +3838,9 @@ def _ask_clean_evidence_text(text: str) -> str:
         end = text.find("\n---", 3)
         if end != -1:
             text = text[end + 4 :]
+        else:
+            text = re.sub(r"^\s*---\s+.*?\s+---\s*", "", text, count=1)
+    text = re.sub(r"(?<!#)#{1,6}\s+", "", text)
     cleaned_lines: list[str] = []
     for raw_line in text.splitlines():
         line = raw_line.strip()
@@ -3704,6 +3931,8 @@ def _ask_deep_response(
             "surface": surface,
             "requires_agentic_service_online": True,
             "tool_policy": {"mode": "allowlist", "allowed_tools": allowed_tools},
+            "routing_owner": "pska_planner",
+            "query_terms": _ask_query_terms(query),
         },
         "evidence": evidence,
         "citations": evidence["citations"],

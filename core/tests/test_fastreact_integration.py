@@ -19,6 +19,7 @@ from pska_core.api import (
     PSKARequestHandler,
     _ask_agent_steps_from_events,
     _ask_answer_quality_flags,
+    _ask_clean_evidence_text,
     _ask_is_stream_done_event,
     _ask_retrieval_from_agentic_trace,
 )
@@ -324,6 +325,17 @@ def test_ask_quality_allows_report_markdown_headings() -> None:
     answer = "## 结论\n\n- acme-example 是一家垂直 AI 公司。[来源：companies-acme-example.md]"
 
     assert _ask_answer_quality_flags(answer) == []
+
+
+def test_ask_quick_clean_evidence_removes_inline_frontmatter_and_headings() -> None:
+    cleaned = _ask_clean_evidence_text(
+        "--- title: acme-example type: company --- # acme-example Founded 2024. ## State - Active."
+    )
+
+    assert "---" not in cleaned
+    assert "#" not in cleaned
+    assert "title:" not in cleaned
+    assert "acme-example Founded 2024" in cleaned
 
 
 def test_fastreact_ready_reports_missing_pska_tools(monkeypatch) -> None:
@@ -1959,6 +1971,10 @@ def test_workspace_ask_quick_returns_report_ready_answer_and_evidence() -> None:
     assert payload["ok"] is True
     assert payload["route"]["retrieval_owner"] == "pska"
     assert payload["route"]["tool_policy"] == {"mode": "none"}
+    assert payload["route"]["routing_owner"] == "pska_planner"
+    assert "acme" in [term.lower() for term in payload["route"]["query_terms"]]
+    assert [step["phase"] for step in payload["agent_steps"]] == ["understand", "route", "search", "read", "answer"]
+    assert payload["agent_steps"][2]["title"] == "执行 PSKA GraphRAG 检索"
     assert payload["answer"].startswith("关键结论")
     assert "status is active" in payload["answer"]
     assert "Ask Quick Note" not in payload["answer"]
@@ -1972,6 +1988,7 @@ def test_workspace_ask_quick_returns_report_ready_answer_and_evidence() -> None:
     assert payload["quality_signals"]["citation_count"] >= 1
     assert payload["quality_signals"]["evidence_result_count"] >= 1
     assert payload["quality_signals"]["retrieval_owner"] == "pska"
+    assert payload["quality_signals"]["time_to_first_agent_event_ms"] >= 0
 
 
 def test_workspace_ask_quick_marks_raw_dump_answers_as_needing_review() -> None:
@@ -2193,6 +2210,46 @@ def test_workspace_ask_stream_emits_product_events() -> None:
     assert "time_to_first_agent_event_ms" in body
     assert "quality_signals" in body
     assert "pska_pska_search" in body
+
+
+def test_workspace_ask_stream_quick_emits_planner_and_graphrag_steps() -> None:
+    api = _api()
+    IngestService(api.store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "workspace-ask-stream-quick-note",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "Ask Stream Quick Note",
+            "content": {"text": "Acme quick stream status is active."},
+        }
+    )
+
+    with _http_server(api) as base_url:
+        status, headers, body = _http_text(
+            base_url,
+            "POST",
+            "/workspace/ask/stream",
+            payload={
+                "query": "Acme quick stream 状态是什么？",
+                "intent": "quick",
+                "user_id": "user_primary",
+                "represented_user_id": "user_primary",
+            },
+        )
+
+    assert status == 200
+    assert headers["content-type"].startswith("text/event-stream")
+    assert "event: route" in body
+    assert "event: agent_step" in body
+    assert "执行 PSKA GraphRAG 检索" in body
+    assert "\"retrieval_owner\": \"pska\"" in body
+    assert "\"routing_owner\": \"pska_planner\"" in body
+    assert "time_to_first_agent_event_ms" in body
+    assert "pska_pska_search" not in body
 
 
 def test_user_workspace_agentic_failure_reports_direct_fallback() -> None:

@@ -43,6 +43,13 @@ agentic 检索过程和可复制 Markdown；`trace.events` 只用于调试、eva
 - `deep`：PSKA 不先预检索正文证据，只把问题、tenant/user/scope 交给 Fastreact。Fastreact 只能通过 PSKA read-only MCP 工具查库，PSKA 最后校验 citations/source refs 是否属于当前 tenant/user。
 - `auto`：PSKA 根据问题形态选择 `quick` 或 `deep`，旧 direct/agentic/GraphRAG 模式不再暴露给主 UI。
 
+Ask Router 先运行本地 PSKA planner，返回 `route.routing_owner=pska_planner`
+和 `route.query_terms`，并在 stream 中发出“理解问题/选择回答路线”类
+`agent_step`。这个 planner 只做关键词、路线和 GraphRAG 策略判断，不读取正文证据，
+因此不算 retrieval owner，也不会造成 PSKA 和 Fastreact 双重检索。
+`quick` 路径随后由 PSKA GraphRAG 检索并继续发出“检索/读取/形成回答”事件；
+`deep` 路径则进入 Fastreact 事件流。
+
 `/workspace/ask/stream` 会把 Fastreact 原始 `think/tool_call/tool_result/session_end`
 事件转译为 PSKA `agent_step`：理解问题、搜索 PSKA、读取结果、继续判断、形成回答。
 `agent_step` 可展示给用户；原始 Fastreact 事件仍保留在 `trace.events`，只供调试展开。
