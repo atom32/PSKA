@@ -252,6 +252,7 @@ export type WorkspaceAskResponse = {
     total_ms?: number;
     time_to_first_answer_ms?: number;
   };
+  quality_signals?: Record<string, unknown>;
   agentic_service?: Record<string, unknown>;
   tenant_id?: string;
   owner_user_id?: string;

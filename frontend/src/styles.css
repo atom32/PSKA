@@ -464,6 +464,24 @@ button {
   opacity: 0.55;
 }
 
+.ask-quality-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 10px;
+}
+
+.ask-quality-strip span {
+  border: 1px solid rgba(35, 90, 77, 0.18);
+  border-radius: 999px;
+  background: #f5faf7;
+  color: #235a4d;
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
 .answer-text {
   margin: 0;
   color: var(--ink);

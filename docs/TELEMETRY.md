@@ -28,6 +28,7 @@ Initial event vocabulary:
 | `review_applied` | User applies an approved review item |
 | `brain_context_refreshed` | User manually refreshes PSKA Brain |
 | `workspace_search_executed` | User runs workspace search |
+| `workspace_ask_executed` | User runs Ask PSKA |
 
 ## Event Shape
 
@@ -61,8 +62,31 @@ Rules:
 
 - Never log document body text.
 - Never log raw prompt or selected text.
-- IDs, event names, surface names, counts, and review types are OK.
+- IDs, event names, surface names, counts, route labels, latency, and review
+  types are OK.
 - Respect existing PSKA service token/auth behavior.
+
+## Ask PSKA Quality Signals
+
+`POST /workspace/ask` returns `quality_signals` and the HTTP service logger
+adds the same objective counters to the `pska.http_request` record. This is the
+first quality-capture loop for comparing PSKA answers and sidecar RAG answers.
+
+The response and log deliberately avoid raw question text. They include:
+
+- `quality_band`: `grounded`, `no_answerable_evidence`, `needs_review`,
+  `needs_citation_review`, or `failed`
+- `report_readiness`: `ready_with_citations`, `needs_human_review`,
+  `needs_citation_review`, `not_ready`, or `failed`
+- `retrieval_owner`, `selected_intent`, `surface`, `fallback_from`
+- `citation_count`, `source_ref_count`, `evidence_result_count`,
+  `graph_path_count`, `gap_count`, `conflict_count`
+- `tool_call_count`, `denied_tool_call_count`
+- `query_chars`, `answer_chars`, `total_ms`, `time_to_first_answer_ms`
+
+For stream responses, `quality_signals` appears in the `evidence` and `done`
+SSE events. The first visible answer latency is still measured from
+`answer_delta`, not route or evidence events.
 
 ## Later Storage Option
 

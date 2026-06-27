@@ -1897,6 +1897,12 @@ def test_workspace_ask_quick_returns_report_ready_answer_and_evidence() -> None:
     assert payload["citations"][0]["title"] == "Ask Quick Note"
     assert payload["evidence"]["source_refs"] == payload["citations"]
     assert payload["timing"]["time_to_first_answer_ms"] >= 0
+    assert payload["quality_signals"]["schema"] == "pska.ask_quality_signals.v1"
+    assert payload["quality_signals"]["quality_band"] == "grounded"
+    assert payload["quality_signals"]["report_readiness"] == "ready_with_citations"
+    assert payload["quality_signals"]["citation_count"] >= 1
+    assert payload["quality_signals"]["evidence_result_count"] >= 1
+    assert payload["quality_signals"]["retrieval_owner"] == "pska"
 
 
 def test_workspace_ask_deep_uses_fastreact_readonly_tool_policy() -> None:
@@ -2046,6 +2052,9 @@ def test_workspace_ask_deep_falls_back_to_quick_when_fastreact_is_unavailable() 
     assert payload["route"]["fallback_from"] == "deep"
     assert payload["trace"]["fallback_reason"] == "agentic_service_unavailable"
     assert "Ask Fallback Note" in payload["answer"]
+    assert payload["quality_signals"]["quality_band"] == "needs_review"
+    assert payload["quality_signals"]["report_readiness"] == "needs_human_review"
+    assert "fallback" in payload["quality_signals"]["flags"]
 
 
 def test_workspace_ask_stream_emits_product_events() -> None:
@@ -2085,6 +2094,7 @@ def test_workspace_ask_stream_emits_product_events() -> None:
     assert "event: trace" in body
     assert "event: done" in body
     assert "time_to_first_answer_ms" in body
+    assert "quality_signals" in body
 
 
 def test_user_workspace_agentic_failure_reports_direct_fallback() -> None:

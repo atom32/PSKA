@@ -980,6 +980,7 @@ function AskResult({ result }: { result: WorkspaceAskResponse | WorkspaceSearchR
   const askEvidence = (result as WorkspaceAskResponse).evidence;
   const route = (result as WorkspaceAskResponse).route;
   const timing = (result as WorkspaceAskResponse).timing;
+  const qualitySignals = (result as WorkspaceAskResponse).quality_signals;
   const workspaceEvidence = (result as WorkspaceSearchResponse).workspace?.evidence;
   const retrieval = (result as WorkspaceSearchResponse).retrieval;
   const fallback = (result as WorkspaceSearchResponse).fallback;
@@ -1028,6 +1029,7 @@ function AskResult({ result }: { result: WorkspaceAskResponse | WorkspaceSearchR
           {copyStatus === "copied" ? "已复制" : copyStatus === "failed" ? "复制失败" : "复制 Markdown"}
         </button>
       </div>
+      {qualitySignals ? <AskQualitySignals signals={qualitySignals} /> : null}
       {answer ? <p className="answer-text">{displayText(answer)}</p> : null}
       {fallbackReason ? <small className="search-note">{askFallbackLabel(fallbackReason)}</small> : null}
       {refs.length > 0 ? (
@@ -1062,6 +1064,71 @@ function EvidenceNoteList({ title, values }: { title: string; values: string[] }
       </ul>
     </div>
   );
+}
+
+function AskQualitySignals({ signals }: { signals: Record<string, unknown> }) {
+  const qualityBand = displayText(signals.quality_band, "");
+  const evidenceStatus = displayText(signals.evidence_status, "");
+  const reportReadiness = displayText(signals.report_readiness, "");
+  const citations = numberSignal(signals.citation_count);
+  const results = numberSignal(signals.evidence_result_count);
+  const gaps = numberSignal(signals.gap_count);
+  const conflicts = numberSignal(signals.conflict_count);
+  const chips = [
+    qualityBand ? askQualityBandLabel(qualityBand) : "",
+    evidenceStatus ? askEvidenceStatusLabel(evidenceStatus) : "",
+    reportReadiness ? askReportReadinessLabel(reportReadiness) : "",
+    `引用 ${citations}`,
+    `证据 ${results}`,
+    gaps ? `缺口 ${gaps}` : "",
+    conflicts ? `冲突 ${conflicts}` : ""
+  ].filter(Boolean);
+  if (!chips.length) {
+    return null;
+  }
+  return (
+    <div className="ask-quality-strip" aria-label="Ask quality signals">
+      {chips.map((chip) => (
+        <span key={chip}>{chip}</span>
+      ))}
+    </div>
+  );
+}
+
+function numberSignal(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function askQualityBandLabel(value: string) {
+  const labels: Record<string, string> = {
+    grounded: "有引用",
+    no_answerable_evidence: "无可答证据",
+    needs_review: "需复核",
+    needs_citation_review: "需补引用",
+    failed: "失败"
+  };
+  return labels[value] || value;
+}
+
+function askEvidenceStatusLabel(value: string) {
+  const labels: Record<string, string> = {
+    grounded: "证据已引用",
+    retrieved_without_citations: "检索未引用",
+    no_evidence: "未检索到证据",
+    insufficient_evidence: "证据不足"
+  };
+  return labels[value] || value;
+}
+
+function askReportReadinessLabel(value: string) {
+  const labels: Record<string, string> = {
+    ready_with_citations: "可入报告",
+    needs_human_review: "人工复核",
+    needs_citation_review: "引用复核",
+    not_ready: "不可入报告",
+    failed: "不可用"
+  };
+  return labels[value] || value;
 }
 
 type AgenticEventSummary = {

@@ -981,17 +981,19 @@ class PSKAApi:
                     tool_policy={"mode": "allowlist", "allowed_tools": ASK_READ_ONLY_TOOLS},
                     session_id=session_id,
                 )
-                return _ask_deep_response(
-                    query=query,
-                    intent=intent,
-                    surface=surface,
-                    tenant_id=tenant_id,
-                    owner_user_id=owner_user_id,
-                    selected_intent=selected_intent,
-                    agentic=deep,
-                    started_at=started_at,
-                    allowed_tools=ASK_READ_ONLY_TOOLS,
-                    store=self.store,
+                return _ask_with_quality_signals(
+                    _ask_deep_response(
+                        query=query,
+                        intent=intent,
+                        surface=surface,
+                        tenant_id=tenant_id,
+                        owner_user_id=owner_user_id,
+                        selected_intent=selected_intent,
+                        agentic=deep,
+                        started_at=started_at,
+                        allowed_tools=ASK_READ_ONLY_TOOLS,
+                        store=self.store,
+                    )
                 )
             except AgenticServiceError as exc:
                 quick = self._workspace_ask_quick(
@@ -1010,17 +1012,19 @@ class PSKAApi:
                 quick["route"]["fallback_from"] = "deep"
                 quick["trace"]["fallback_reason"] = "agentic_service_unavailable"
                 quick["trace"]["error"] = str(exc)
-                return quick
-        return self._workspace_ask_quick(
-            query=query,
-            intent=intent,
-            surface=surface,
-            tenant_id=tenant_id,
-            owner_user_id=owner_user_id,
-            represented_user_id=represented_user_id,
-            user=user,
-            top_k=top_k,
-            started_at=started_at,
+                return _ask_with_quality_signals(quick)
+        return _ask_with_quality_signals(
+            self._workspace_ask_quick(
+                query=query,
+                intent=intent,
+                surface=surface,
+                tenant_id=tenant_id,
+                owner_user_id=owner_user_id,
+                represented_user_id=represented_user_id,
+                user=user,
+                top_k=top_k,
+                started_at=started_at,
+            )
         )
 
     def _workspace_ask_quick(
@@ -2481,6 +2485,22 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
             "response_event_count": meta.get("response_event_count"),
             "response_tool_call_count": meta.get("response_tool_call_count"),
             "response_display_mode": meta.get("response_display_mode"),
+            "ask_quality_band": meta.get("ask_quality_band"),
+            "ask_evidence_status": meta.get("ask_evidence_status"),
+            "ask_report_readiness": meta.get("ask_report_readiness"),
+            "ask_retrieval_owner": meta.get("ask_retrieval_owner"),
+            "ask_selected_intent": meta.get("ask_selected_intent"),
+            "ask_surface": meta.get("ask_surface"),
+            "ask_fallback_from": meta.get("ask_fallback_from"),
+            "ask_citation_count": meta.get("ask_citation_count"),
+            "ask_source_ref_count": meta.get("ask_source_ref_count"),
+            "ask_evidence_result_count": meta.get("ask_evidence_result_count"),
+            "ask_graph_path_count": meta.get("ask_graph_path_count"),
+            "ask_gap_count": meta.get("ask_gap_count"),
+            "ask_conflict_count": meta.get("ask_conflict_count"),
+            "ask_query_chars": meta.get("ask_query_chars"),
+            "ask_total_ms": meta.get("ask_total_ms"),
+            "ask_time_to_first_answer_ms": meta.get("ask_time_to_first_answer_ms"),
         }
         print(json.dumps(record, ensure_ascii=False, sort_keys=True), file=sys.stderr, flush=True)
         self._request_meta["logged"] = True
@@ -2539,12 +2559,35 @@ def _response_metrics(payload: dict[str, Any]) -> dict[str, Any]:
     trace = payload.get("trace") if isinstance(payload.get("trace"), dict) else {}
     events = trace.get("events") if isinstance(trace.get("events"), list) else []
     tool_calls = trace.get("tool_calls") if isinstance(trace.get("tool_calls"), list) else []
-    return {
+    metrics = {
         "response_answer_chars": len(str(payload.get("answer") or "")),
         "response_event_count": trace.get("event_count") or len(events) or None,
         "response_tool_call_count": len(tool_calls) if tool_calls else None,
         "response_display_mode": payload.get("display_mode"),
     }
+    quality = payload.get("quality_signals") if isinstance(payload.get("quality_signals"), dict) else {}
+    if quality:
+        metrics.update(
+            {
+                "ask_quality_band": quality.get("quality_band"),
+                "ask_evidence_status": quality.get("evidence_status"),
+                "ask_report_readiness": quality.get("report_readiness"),
+                "ask_retrieval_owner": quality.get("retrieval_owner"),
+                "ask_selected_intent": quality.get("selected_intent"),
+                "ask_surface": quality.get("surface"),
+                "ask_fallback_from": quality.get("fallback_from"),
+                "ask_citation_count": quality.get("citation_count"),
+                "ask_source_ref_count": quality.get("source_ref_count"),
+                "ask_evidence_result_count": quality.get("evidence_result_count"),
+                "ask_graph_path_count": quality.get("graph_path_count"),
+                "ask_gap_count": quality.get("gap_count"),
+                "ask_conflict_count": quality.get("conflict_count"),
+                "ask_query_chars": quality.get("query_chars"),
+                "ask_total_ms": quality.get("total_ms"),
+                "ask_time_to_first_answer_ms": quality.get("time_to_first_answer_ms"),
+            }
+        )
+    return metrics
 
 
 def _digest_log_entry(job: Any, events: list[Any], claims: list[Any], notes: list[Any], source_ids: set[str]) -> dict[str, Any]:
@@ -3384,6 +3427,115 @@ def _ask_deep_response(
     }
 
 
+def _ask_with_quality_signals(payload: dict[str, Any]) -> dict[str, Any]:
+    enriched = dict(payload)
+    enriched["quality_signals"] = _ask_quality_signals(enriched)
+    return enriched
+
+
+def _ask_quality_signals(payload: dict[str, Any]) -> dict[str, Any]:
+    evidence = payload.get("evidence") if isinstance(payload.get("evidence"), dict) else {}
+    route = payload.get("route") if isinstance(payload.get("route"), dict) else {}
+    trace = payload.get("trace") if isinstance(payload.get("trace"), dict) else {}
+    timing = payload.get("timing") if isinstance(payload.get("timing"), dict) else {}
+    citations = _list_of_dicts(payload.get("citations")) or _list_of_dicts(evidence.get("citations"))
+    source_refs = _list_of_dicts(payload.get("source_refs")) or _list_of_dicts(evidence.get("source_refs"))
+    results = _list_of_dicts(evidence.get("results"))
+    graph_paths = _list_of_dicts(evidence.get("graph_paths"))
+    memory_context = _list_of_dicts(evidence.get("memory_context"))
+    profile_context = _list_of_dicts(evidence.get("profile_context"))
+    gaps = _ask_note_list(evidence.get("gaps"))
+    conflicts = _ask_note_list(evidence.get("conflicts"))
+    tool_calls = trace.get("tool_calls") if isinstance(trace.get("tool_calls"), list) else []
+    denied_tool_calls = trace.get("denied_tool_calls") if isinstance(trace.get("denied_tool_calls"), list) else []
+    dropped_source_refs = trace.get("dropped_source_refs") if isinstance(trace.get("dropped_source_refs"), list) else []
+    answer_chars = len(str(payload.get("answer") or ""))
+    flags: list[str] = []
+    if not answer_chars:
+        flags.append("empty_answer")
+    if not citations and not results:
+        flags.append("no_evidence")
+    if not citations and results:
+        flags.append("missing_citations")
+    if any("insufficient" in gap or "缺" in gap for gap in gaps):
+        flags.append("insufficient_evidence")
+    if conflicts:
+        flags.append("evidence_conflict")
+    if route.get("fallback_from") or trace.get("fallback_reason"):
+        flags.append("fallback")
+    if dropped_source_refs:
+        flags.append("dropped_source_refs")
+
+    evidence_status = "grounded" if citations else "retrieved_without_citations" if results else "no_evidence"
+    if "insufficient_evidence" in flags:
+        evidence_status = "insufficient_evidence"
+    if "empty_answer" in flags:
+        quality_band = "failed"
+    elif evidence_status in {"no_evidence", "insufficient_evidence"}:
+        quality_band = "no_answerable_evidence"
+    elif "evidence_conflict" in flags or "fallback" in flags or "dropped_source_refs" in flags:
+        quality_band = "needs_review"
+    elif citations:
+        quality_band = "grounded"
+    else:
+        quality_band = "needs_citation_review"
+
+    return {
+        "schema": "pska.ask_quality_signals.v1",
+        "quality_band": quality_band,
+        "evidence_status": evidence_status,
+        "report_readiness": _ask_report_readiness(quality_band),
+        "flags": flags,
+        "query_chars": len(str(payload.get("query") or "")),
+        "answer_chars": answer_chars,
+        "citation_count": len(citations),
+        "source_ref_count": len(source_refs),
+        "evidence_result_count": len(results),
+        "graph_path_count": len(graph_paths),
+        "memory_context_count": len(memory_context),
+        "profile_context_count": len(profile_context),
+        "gap_count": len(gaps),
+        "conflict_count": len(conflicts),
+        "tool_call_count": len(tool_calls),
+        "denied_tool_call_count": len(denied_tool_calls),
+        "retrieval_owner": route.get("retrieval_owner"),
+        "selected_intent": route.get("selected_intent") or route.get("intent"),
+        "surface": route.get("surface"),
+        "fallback_from": route.get("fallback_from"),
+        "total_ms": timing.get("total_ms"),
+        "time_to_first_answer_ms": timing.get("time_to_first_answer_ms"),
+    }
+
+
+def _ask_report_readiness(quality_band: str) -> str:
+    if quality_band == "grounded":
+        return "ready_with_citations"
+    if quality_band == "needs_review":
+        return "needs_human_review"
+    if quality_band == "needs_citation_review":
+        return "needs_citation_review"
+    if quality_band == "failed":
+        return "failed"
+    return "not_ready"
+
+
+def _ask_note_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    notes: list[str] = []
+    for item in value:
+        if isinstance(item, str):
+            text = item
+        elif isinstance(item, dict):
+            text = str(item.get("reason") or item.get("message") or item.get("detail") or item)
+        else:
+            text = str(item)
+        text = text.strip().lower()
+        if text:
+            notes.append(text)
+    return notes
+
+
 def _ask_validate_source_refs(
     refs: list[dict[str, Any]],
     *,
@@ -3421,7 +3573,14 @@ def _ask_sse_events(payload: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]
     timing = payload.get("timing") if isinstance(payload.get("timing"), dict) else {}
     return [
         ("route", {"route": payload.get("route") or {}, "timing": timing}),
-        ("evidence", {"evidence": payload.get("evidence") or {}, "citations": payload.get("citations") or []}),
+        (
+            "evidence",
+            {
+                "evidence": payload.get("evidence") or {},
+                "citations": payload.get("citations") or [],
+                "quality_signals": payload.get("quality_signals") or {},
+            },
+        ),
         (
             "answer_delta",
             {
@@ -3430,7 +3589,7 @@ def _ask_sse_events(payload: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]
             },
         ),
         ("trace", {"trace": payload.get("trace") or {}, "agentic_service": payload.get("agentic_service") or {}}),
-        ("done", {"ok": payload.get("ok") is not False, "timing": timing}),
+        ("done", {"ok": payload.get("ok") is not False, "timing": timing, "quality_signals": payload.get("quality_signals") or {}}),
     ]
 
 
