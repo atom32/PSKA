@@ -498,6 +498,106 @@ button {
   margin: 0;
   color: var(--ink);
   line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+
+.answer-text > :first-child {
+  margin-top: 0;
+}
+
+.answer-text > :last-child {
+  margin-bottom: 0;
+}
+
+.answer-text p {
+  margin: 0 0 10px;
+}
+
+.answer-text .answer-heading {
+  margin: 12px 0 6px;
+  color: var(--ink);
+  font-weight: 800;
+  line-height: 1.35;
+  letter-spacing: 0;
+}
+
+.answer-text h3.answer-heading {
+  font-size: 16px;
+}
+
+.answer-text h4.answer-heading,
+.answer-text h5.answer-heading {
+  font-size: 14px;
+}
+
+.answer-text ul,
+.answer-text ol {
+  margin: 0 0 10px;
+  padding-left: 22px;
+}
+
+.answer-text li {
+  margin: 3px 0;
+}
+
+.answer-text code {
+  border: 1px solid rgba(35, 90, 77, 0.14);
+  border-radius: 5px;
+  background: #f5faf7;
+  color: #235a4d;
+  padding: 1px 4px;
+  font-size: 0.92em;
+  overflow-wrap: anywhere;
+}
+
+.answer-text .answer-code-block {
+  margin: 0 0 10px;
+  border: 1px solid rgba(35, 90, 77, 0.14);
+  border-radius: 8px;
+  background: #f7fbf8;
+  padding: 10px;
+  overflow-x: auto;
+}
+
+.answer-text .answer-code-block code {
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  padding: 0;
+  white-space: pre;
+}
+
+.answer-text a {
+  color: #235a4d;
+  font-weight: 700;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+.answer-table-wrap {
+  margin: 0 0 10px;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.answer-table-wrap table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.answer-table-wrap th,
+.answer-table-wrap td {
+  border: 1px solid rgba(35, 90, 77, 0.16);
+  padding: 6px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.answer-table-wrap th {
+  background: #f5faf7;
+  color: #235a4d;
+  font-weight: 800;
 }
 
 .search-note {
