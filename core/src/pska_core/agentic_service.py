@@ -402,7 +402,11 @@ def _agentic_messages(query: str, *, tenant_id: str | None = None, user_id: str 
 def _normalize_agentic_response(response: dict[str, Any], *, provider: str, adapter: str, url: str) -> dict[str, Any]:
     payload = _response_payload(response)
     retrieval = _dict_value(payload.get("retrieval")) or _dict_value(payload.get("direct_agentic_search", {}).get("retrieval")) or {}
-    citations = _list_value(payload.get("citations")) or _list_value(payload.get("source_refs")) or _list_value(retrieval.get("citations"))
+    declared_source_refs = _agentic_ref_dicts(payload.get("source_refs"), string_field="source_item_id")
+    declared_citations = _agentic_ref_dicts(payload.get("citations"), string_field="title")
+    retrieval_citations = _agentic_ref_dicts(retrieval.get("citations"), string_field="title")
+    source_refs = declared_source_refs or declared_citations or retrieval_citations
+    citations = declared_citations or declared_source_refs or retrieval_citations
     if citations and not retrieval.get("citations"):
         retrieval = {**retrieval, "citations": citations}
     events_answer = _final_answer_from_events(_list_value(response.get("events")))
@@ -418,7 +422,8 @@ def _normalize_agentic_response(response: dict[str, Any], *, provider: str, adap
         "answer": payload_answer or raw_answer,
         "retrieval": retrieval,
         "trace": _trace_summary(payload, response),
-        "source_refs": citations,
+        "source_refs": source_refs,
+        "citations": citations,
         "raw_response": response,
         "agentic_service": {
             "provider": provider,
@@ -453,6 +458,34 @@ def normalize_agentic_event_response(
         },
     }
     return _normalize_agentic_response(response, provider=provider, adapter=adapter, url=url)
+
+
+def _agentic_ref_dicts(value: Any, *, string_field: str) -> list[dict[str, Any]]:
+    refs: list[dict[str, Any]] = []
+    for item in _list_value(value):
+        if isinstance(item, dict):
+            ref = {
+                key: item.get(key)
+                for key in [
+                    "source_item_id",
+                    "document_id",
+                    "chunk_id",
+                    "passage_window_id",
+                    "message_id",
+                    "path",
+                    "url",
+                    "title",
+                    "snippet",
+                    "score",
+                ]
+                if item.get(key)
+            }
+            if ref:
+                refs.append(ref)
+            continue
+        if isinstance(item, str) and item.strip():
+            refs.append({string_field: item.strip()})
+    return refs
 
 
 def _response_payload(response: dict[str, Any]) -> dict[str, Any]:

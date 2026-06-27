@@ -13,7 +13,7 @@ import threading
 from http.server import ThreadingHTTPServer
 
 from pska_core.acl import ACLService
-from pska_core.agentic_service import AgenticServiceError, _agentic_messages
+from pska_core.agentic_service import AgenticServiceError, _agentic_messages, normalize_agentic_event_response
 from pska_core.api import (
     PSKAApi,
     PSKARequestHandler,
@@ -355,6 +355,31 @@ def test_ask_auto_routes_deep_research_queries_to_deep() -> None:
     query = "请深入调研 Northstar Robotics 是否应该进入 Q3 reserve-allocation shortlist。先判断需要查哪些证据，再给出可引用结论。"
 
     assert _ask_route_intent(query, intent="auto") == "deep"
+
+
+def test_agentic_event_response_prefers_final_source_ref_ids() -> None:
+    response = normalize_agentic_event_response(
+        [
+            {
+                "type": "session_end",
+                "content": json.dumps(
+                    {
+                        "answer": "最终回答。",
+                        "citations": ["Relevant Deep Note"],
+                        "source_refs": ["src_relevant"],
+                    },
+                    ensure_ascii=False,
+                ),
+            }
+        ],
+        provider="fastreact",
+        adapter="fastreact",
+        url="http://fastreact.test",
+    )
+
+    assert response["answer"] == "最终回答。"
+    assert response["source_refs"] == [{"source_item_id": "src_relevant"}]
+    assert response["citations"] == [{"title": "Relevant Deep Note"}]
 
 
 def test_fastreact_ready_reports_missing_pska_tools(monkeypatch) -> None:
@@ -2135,6 +2160,104 @@ def test_workspace_ask_deep_drops_source_refs_outside_current_owner_scope() -> N
         {"source_item_id": "src_other_tenant", "reason": "tenant_or_owner_mismatch"},
         {"reason": "missing_source_item_id"},
     ]
+
+
+def test_workspace_ask_deep_uses_final_declared_refs_and_redacts_trace_events() -> None:
+    api = _api()
+    ingest = IngestService(api.store)
+    ingest.ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "ask-deep-irrelevant-note",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "Irrelevant Deep Note",
+            "content": {"text": "Irrelevant evidence should remain only in the retrieval trace."},
+        }
+    )
+    ingest.ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "ask-deep-relevant-note",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "Relevant Deep Note",
+            "content": {"text": "Relevant evidence is the only final citation for the deep answer."},
+        }
+    )
+    sources = {item.title: item for item in api.store.list_source_items()}
+    irrelevant = sources["Irrelevant Deep Note"]
+    relevant = sources["Relevant Deep Note"]
+
+    class FinalRefAgenticService:
+        def ready(self):
+            return {"ok": True}
+
+        def search(self, *_args, **_kwargs):
+            retrieval = {
+                "results": [
+                    {
+                        "source_item_id": irrelevant.source_item_id,
+                        "title": irrelevant.title,
+                        "snippet": irrelevant.content_text,
+                        "citation": {"source_item_id": irrelevant.source_item_id, "title": irrelevant.title},
+                    },
+                    {
+                        "source_item_id": relevant.source_item_id,
+                        "title": relevant.title,
+                        "snippet": relevant.content_text,
+                        "citation": {"source_item_id": relevant.source_item_id, "title": relevant.title},
+                    },
+                ],
+                "citations": [{"source_item_id": irrelevant.source_item_id, "title": irrelevant.title}],
+            }
+            return {
+                "answer": "Deep answer uses the relevant final citation.",
+                "retrieval": retrieval,
+                "source_refs": [{"source_item_id": relevant.source_item_id}],
+                "trace": {
+                    "events": [
+                        {"type": "session_start", "content": "SECRET_ROUTING_PROMPT", "event_id": "evt_0"},
+                        {
+                            "type": "tool_result",
+                            "tool_name": "pska_pska_search",
+                            "content": json.dumps(retrieval, ensure_ascii=False),
+                            "event_id": "evt_1",
+                        },
+                    ]
+                },
+                "agentic_service": {"provider": "test"},
+            }
+
+    api.agentic_service = FinalRefAgenticService()
+
+    with _http_server(api) as base_url:
+        status, payload = _http_json(
+            base_url,
+            "POST",
+            "/workspace/ask",
+            {
+                "query": "请深入分析 final refs。",
+                "intent": "deep",
+                "user_id": "user_primary",
+                "represented_user_id": "user_primary",
+            },
+        )
+
+    assert status == 200
+    assert [ref["source_item_id"] for ref in payload["source_refs"]] == [relevant.source_item_id]
+    assert payload["source_refs"][0]["title"] == "Relevant Deep Note"
+    assert "Relevant evidence" in payload["source_refs"][0]["snippet"]
+    assert payload["evidence"]["results"][0]["source_item_id"] == relevant.source_item_id
+    payload_text = json.dumps(payload, ensure_ascii=False)
+    assert "SECRET_ROUTING_PROMPT" not in payload_text
+    assert "Irrelevant evidence should remain only in the retrieval trace." not in payload_text
 
 
 def test_workspace_ask_deep_falls_back_to_quick_when_fastreact_is_unavailable() -> None:

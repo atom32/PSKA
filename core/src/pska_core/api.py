@@ -3964,13 +3964,19 @@ def _ask_deep_response(
     if not _list_of_dicts(retrieval.get("results")):
         retrieval = _ask_retrieval_from_agentic_trace(trace)
     evidence = _ask_evidence_from_retrieval(retrieval)
-    raw_refs = [
-        *_list_of_dicts(agentic.get("source_refs")),
+    declared_refs = [
+        *_ask_source_ref_dicts(agentic.get("source_refs"), string_field="source_item_id"),
+        *_ask_source_ref_dicts(agentic.get("citations"), string_field="title"),
+    ]
+    fallback_refs = [
         *_list_of_dicts(retrieval.get("citations") if retrieval else []),
         *_list_of_dicts(evidence.get("citations")),
     ]
+    raw_refs = declared_refs or fallback_refs
     refs, dropped_refs = _ask_validate_source_refs(raw_refs, store=store, tenant_id=tenant_id, owner_user_id=owner_user_id)
     if refs:
+        if declared_refs:
+            evidence = _ask_filter_evidence_to_refs(evidence, refs)
         evidence["citations"] = refs
         evidence["source_refs"] = refs
     trace = {
@@ -3982,6 +3988,7 @@ def _ask_deep_response(
     agent_steps = _ask_agent_steps_from_events(trace.get("events") if isinstance(trace.get("events"), list) else [])
     if dropped_refs:
         trace["dropped_source_refs"] = dropped_refs
+    trace = _ask_public_trace(trace)
     elapsed_ms = _elapsed_ms(started_at)
     return {
         "ok": True,
@@ -4357,6 +4364,65 @@ def _ask_note_list(value: Any) -> list[str]:
     return notes
 
 
+def _ask_source_ref_dicts(value: Any, *, string_field: str) -> list[dict[str, Any]]:
+    refs: list[dict[str, Any]] = []
+    for item in value if isinstance(value, list) else []:
+        if isinstance(item, dict):
+            ref = {
+                key: item.get(key)
+                for key in [
+                    "source_item_id",
+                    "document_id",
+                    "chunk_id",
+                    "passage_window_id",
+                    "message_id",
+                    "path",
+                    "url",
+                    "title",
+                    "snippet",
+                    "score",
+                ]
+                if item.get(key)
+            }
+            if ref:
+                refs.append(ref)
+            continue
+        if isinstance(item, str) and item.strip():
+            refs.append({string_field: item.strip()})
+    return refs
+
+
+def _ask_filter_evidence_to_refs(evidence: dict[str, Any], refs: list[dict[str, Any]]) -> dict[str, Any]:
+    source_ids = {str(ref.get("source_item_id")) for ref in refs if ref.get("source_item_id")}
+    if not source_ids:
+        return evidence
+    filtered = dict(evidence)
+    results = [
+        result
+        for result in _list_of_dicts(evidence.get("results"))
+        if str(result.get("source_item_id") or (result.get("citation") if isinstance(result.get("citation"), dict) else {}).get("source_item_id") or "")
+        in source_ids
+    ]
+    if results:
+        filtered["results"] = results
+    graph_paths = [
+        path
+        for path in _list_of_dicts(evidence.get("graph_paths"))
+        if _ask_graph_path_has_source_ref(path, source_ids)
+    ]
+    if graph_paths:
+        filtered["graph_paths"] = graph_paths
+    return filtered
+
+
+def _ask_graph_path_has_source_ref(path: dict[str, Any], source_ids: set[str]) -> bool:
+    for edge in _list_of_dicts(path.get("edges")):
+        for ref in _list_of_dicts(edge.get("source_refs")):
+            if str(ref.get("source_item_id") or "") in source_ids:
+                return True
+    return False
+
+
 def _ask_validate_source_refs(
     refs: list[dict[str, Any]],
     *,
@@ -4366,28 +4432,92 @@ def _ask_validate_source_refs(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     if not refs:
         return [], []
-    allowed_source_ids = {
-        item.source_item_id
+    allowed_items = {
+        item.source_item_id: item
         for item in store.list_source_items(tenant_id=tenant_id)
         if getattr(item, "owner_user_id", "") == owner_user_id
     }
+    items_by_title = {
+        str(getattr(item, "title", "") or "").strip().lower(): item
+        for item in allowed_items.values()
+        if str(getattr(item, "title", "") or "").strip()
+    }
+    chunks_by_id = {}
+    first_chunk_by_source: dict[str, Any] = {}
+    if allowed_items:
+        for chunk in store.list_chunks_for_sources(set(allowed_items)):
+            chunks_by_id[getattr(chunk, "chunk_id", "")] = chunk
+            first_chunk_by_source.setdefault(getattr(chunk, "source_item_id", ""), chunk)
     kept: list[dict[str, Any]] = []
     dropped: list[dict[str, Any]] = []
     seen: set[str] = set()
     for ref in refs:
         source_item_id = str(ref.get("source_item_id") or "").strip()
+        if not source_item_id and ref.get("title"):
+            item_by_title = items_by_title.get(str(ref.get("title") or "").strip().lower())
+            if item_by_title:
+                source_item_id = item_by_title.source_item_id
         if not source_item_id:
             dropped.append({"reason": "missing_source_item_id"})
             continue
-        if source_item_id not in allowed_source_ids:
+        item = allowed_items.get(source_item_id)
+        if item is None:
             dropped.append({"source_item_id": source_item_id, "reason": "tenant_or_owner_mismatch"})
             continue
-        key = "|".join(str(ref.get(name) or "") for name in ["source_item_id", "chunk_id", "title", "url", "snippet"])
+        chunk_id = str(ref.get("chunk_id") or "").strip()
+        chunk = chunks_by_id.get(chunk_id) or first_chunk_by_source.get(source_item_id)
+        hydrated = {
+            **ref,
+            "source_item_id": source_item_id,
+            "title": ref.get("title") or getattr(item, "title", None),
+            "url": ref.get("url") or getattr(item, "url", None),
+        }
+        if not hydrated.get("snippet"):
+            snippet_source = getattr(chunk, "text", None) if chunk else getattr(item, "content_text", "")
+            hydrated["snippet"] = _ask_clean_evidence_text(str(snippet_source or ""))[:260]
+        key = "|".join(str(hydrated.get(name) or "") for name in ["source_item_id", "chunk_id", "title", "url", "snippet"])
         if key in seen:
             continue
         seen.add(key)
-        kept.append(ref)
+        kept.append({key: value for key, value in hydrated.items() if value is not None})
     return kept, dropped
+
+
+def _ask_public_trace(trace: dict[str, Any]) -> dict[str, Any]:
+    public = dict(trace)
+    events = trace.get("events")
+    if isinstance(events, list):
+        public["events"] = [_ask_public_trace_event(event) for event in _list_of_dicts(events)]
+    return public
+
+
+def _ask_public_trace_event(event: dict[str, Any]) -> dict[str, Any]:
+    event_type = str(event.get("type") or event.get("event_type") or "").strip().lower()
+    public = {
+        key: event.get(key)
+        for key in ["schema", "type", "event_id", "sequence", "parent_event_id", "run_id", "tool_name", "tool_call_id", "duration_ms"]
+        if event.get(key) is not None
+    }
+    metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+    safe_metadata = {
+        key: metadata.get(key)
+        for key in ["action", "duration_ms", "has_tool_calls", "llm_usage", "model", "decision_level", "approved"]
+        if metadata.get(key) is not None
+    }
+    if safe_metadata:
+        public["metadata"] = safe_metadata
+    if event_type == "tool_call":
+        args = event.get("tool_args") if isinstance(event.get("tool_args"), dict) else {}
+        public["tool_args"] = {key: args.get(key) for key in ["query", "top_k", "max_results"] if args.get(key) is not None}
+    elif event_type == "tool_result":
+        public["result_summary"] = _ask_tool_result_counts(event)
+    elif event_type == "think":
+        public["content"] = _ask_think_step_detail(event)
+    elif event_type == "session_end":
+        public["content"] = "Final answer returned."
+    elif event_type == "error":
+        public["content"] = "Agentic analysis failed."
+    return public
 
 
 def _ask_sse_events(payload: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:

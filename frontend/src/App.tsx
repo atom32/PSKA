@@ -1072,17 +1072,36 @@ type AskAgentStepView = {
 };
 
 function AskProcessTimeline({ steps, rawEvents }: { steps: AskAgentStepView[]; rawEvents: Array<Record<string, unknown>> }) {
-  const visibleSteps = steps.slice(0, 8);
+  const visibleHead = steps.slice(0, 6);
+  const visibleTail = steps.length > 12 ? steps.slice(-6) : steps.slice(6, 12);
+  const omittedCount = Math.max(0, steps.length - visibleHead.length - visibleTail.length);
+  const eventSummaries = rawEvents
+    .slice(0, 40)
+    .map((event) => summarizeAgenticEvent(event))
+    .filter((event): event is AgenticEventSummary => Boolean(event));
   return (
     <div className="ask-process">
-      {visibleSteps.length ? (
+      {steps.length ? (
         <details open>
           <summary>
             <span>检索过程</span>
             <small>{steps.length} 步</small>
           </summary>
           <ol className="ask-process-list">
-            {visibleSteps.map((step) => (
+            {visibleHead.map((step) => (
+              <li key={step.id} data-phase={step.phase} data-status={step.status}>
+                <strong>{step.title}</strong>
+                {step.detail ? <p>{step.detail}</p> : null}
+                {step.meta ? <small>{step.meta}</small> : null}
+              </li>
+            ))}
+            {omittedCount ? (
+              <li data-phase="omitted" data-status="complete">
+                <strong>中间过程已折叠</strong>
+                <p>已省略 {omittedCount} 步检索与读取事件，保留开头规划和最终收口。</p>
+              </li>
+            ) : null}
+            {visibleTail.map((step) => (
               <li key={step.id} data-phase={step.phase} data-status={step.status}>
                 <strong>{step.title}</strong>
                 {step.detail ? <p>{step.detail}</p> : null}
@@ -1092,13 +1111,20 @@ function AskProcessTimeline({ steps, rawEvents }: { steps: AskAgentStepView[]; r
           </ol>
         </details>
       ) : null}
-      {rawEvents.length ? (
+      {eventSummaries.length ? (
         <details className="ask-raw-events">
           <summary>
-            <span>Raw events</span>
+            <span>事件摘要</span>
             <small>{rawEvents.length}</small>
           </summary>
-          <pre>{JSON.stringify(rawEvents.slice(0, 40), null, 2)}</pre>
+          <ol className="ask-process-list">
+            {eventSummaries.map((event, index) => (
+              <li key={`${event.type}-${index}`} data-phase={event.type} data-status="complete">
+                <strong>{event.type}</strong>
+                {event.message ? <p>{event.message}</p> : null}
+              </li>
+            ))}
+          </ol>
         </details>
       ) : null}
     </div>
@@ -1388,6 +1414,9 @@ function summarizeAgenticEvents(result: WorkspaceAskResponse | WorkspaceSearchRe
 
 function summarizeAgenticEvent(event: Record<string, unknown>): AgenticEventSummary | null {
   const type = displayText(asString(event.type || event.event_type), "event");
+  if (type === "session_start") {
+    return { type, message: "已创建当前用户与租户范围内的分析会话。" };
+  }
   if (type === "tool_call") {
     return {
       type: displayText(asString(event.tool_name), "tool_call"),
@@ -1397,19 +1426,26 @@ function summarizeAgenticEvent(event: Record<string, unknown>): AgenticEventSumm
   if (type === "tool_result") {
     return {
       type: `${displayText(asString(event.tool_name), "tool_result")} result`,
-      message: compactJson(event.content || event.result || event.output)
+      message: toolResultSummary(event)
     };
   }
   if (type === "session_end") {
-    const metadata = isRecord(event.metadata) ? event.metadata : {};
     return {
       type: "session_end",
-      message: trimText(firstString(event.content, event.final_content, event.answer, metadata.final_content, metadata.final, metadata.answer), 260) || "Agentic run completed."
+      message: "已形成最终回答。"
     };
   }
   const metadata = isRecord(event.metadata) ? event.metadata : {};
   const message = firstString(event.message, event.content, metadata.message, metadata.status, metadata.detail);
   return message ? { type, message: trimText(message, 260) } : null;
+}
+
+function toolResultSummary(event: Record<string, unknown>) {
+  const summary = isRecord(event.result_summary) ? event.result_summary : {};
+  const evidence = typeof summary.evidence_count === "number" ? `证据 ${summary.evidence_count}` : "";
+  const refs = typeof summary.source_ref_count === "number" ? `引用 ${summary.source_ref_count}` : "";
+  const pieces = [evidence, refs].filter(Boolean);
+  return pieces.length ? pieces.join(" · ") : "已返回工具结果。";
 }
 
 function firstString(...values: unknown[]) {
