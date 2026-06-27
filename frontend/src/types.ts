@@ -1,4 +1,4 @@
-export type WorkspaceMode = "today" | "document" | "canvas" | "graph" | "corpus" | "review";
+export type WorkspaceMode = "today" | "writing" | "document" | "canvas" | "graph" | "corpus" | "review";
 
 export type KnowledgeItem = {
   id: string;
@@ -30,6 +30,83 @@ export type BrainState = {
   lastTrigger: "pause" | "blur" | "significant-change" | "manual";
   updatedAt: number | null;
   error?: string | null;
+};
+
+export type WritingNodeType = "goal" | "question" | "answer" | "evidence" | "gap" | "section" | "draft";
+
+export type WritingBoard = {
+  board_id: string;
+  tenant_id?: string;
+  owner_user_id?: string;
+  title: string;
+  goal?: string;
+  metadata?: Record<string, unknown>;
+  created_at?: string;
+  updated_at?: string;
+};
+
+export type WritingNode = {
+  node_id: string;
+  board_id: string;
+  tenant_id?: string;
+  owner_user_id?: string;
+  node_type: WritingNodeType;
+  title: string;
+  body_markdown?: string;
+  position?: { x?: number; y?: number };
+  size?: { width?: number; height?: number };
+  status?: string;
+  source_refs?: Array<Record<string, unknown>>;
+  citations?: Array<Record<string, unknown>>;
+  quality_signals?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+  created_at?: string;
+  updated_at?: string;
+};
+
+export type WritingEdge = {
+  edge_id: string;
+  board_id: string;
+  tenant_id?: string;
+  owner_user_id?: string;
+  source_node_id: string;
+  target_node_id: string;
+  edge_type: "decomposes_to" | "answered_by" | "supported_by" | "raises" | "conflicts_with" | "included_in" | "follows" | string;
+  label?: string;
+  metadata?: Record<string, unknown>;
+  created_at?: string;
+  updated_at?: string;
+};
+
+export type WritingBoardResponse = {
+  ok?: boolean;
+  board?: WritingBoard;
+  nodes?: WritingNode[];
+  edges?: WritingEdge[];
+};
+
+export type WritingBoardsResponse = {
+  ok?: boolean;
+  boards?: WritingBoard[];
+};
+
+export type WritingQuestionSuggestion = {
+  suggestion_id?: string;
+  title?: string;
+  question: string;
+  direction?: string;
+  rationale?: string;
+};
+
+export type WritingComposeResponse = {
+  ok?: boolean;
+  board_id?: string;
+  section_node_id?: string | null;
+  answer_node_ids?: string[];
+  draft_markdown?: string;
+  source_refs?: Array<Record<string, unknown>>;
+  citations?: Array<Record<string, unknown>>;
+  retrieval_used?: boolean;
 };
 
 export type WorkspaceCorpusSource = {

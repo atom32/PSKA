@@ -34,6 +34,9 @@ from pska_core.models import (
     User,
     UserProfileCard,
     WorkspaceActivityEvent,
+    WritingBoard,
+    WritingEdge,
+    WritingNode,
     utc_now,
 )
 from pska_core.serde import to_jsonable
@@ -1466,6 +1469,279 @@ class PostgresKnowledgeStore:
             ).fetchall()
         return [self._workspace_activity_event_from_row(row) for row in rows]
 
+    def create_writing_board(self, board: WritingBoard) -> WritingBoard:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                insert into writing_boards(board_id, tenant_id, owner_user_id, title, goal, metadata, created_at, updated_at)
+                values (%s, %s, %s, %s, %s, %s, %s, %s)
+                returning *
+                """,
+                (
+                    board.board_id,
+                    board.tenant_id,
+                    board.owner_user_id,
+                    board.title,
+                    board.goal,
+                    Jsonb(to_jsonable(board.metadata)),
+                    board.created_at,
+                    board.updated_at,
+                ),
+            ).fetchone()
+        return self._writing_board_from_row(row)
+
+    def update_writing_board(
+        self,
+        board_id: str,
+        *,
+        tenant_id: str,
+        owner_user_id: str,
+        title: str | None = None,
+        goal: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> WritingBoard:
+        current = self.get_writing_board(board_id, tenant_id=tenant_id, owner_user_id=owner_user_id)
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                update writing_boards
+                set title = %s,
+                    goal = %s,
+                    metadata = %s,
+                    updated_at = now()
+                where tenant_id = %s and owner_user_id = %s and board_id = %s
+                returning *
+                """,
+                (
+                    current.title if title is None else title,
+                    current.goal if goal is None else goal,
+                    Jsonb(to_jsonable(current.metadata if metadata is None else metadata)),
+                    tenant_id,
+                    owner_user_id,
+                    board_id,
+                ),
+            ).fetchone()
+        if not row:
+            raise KeyError(board_id)
+        return self._writing_board_from_row(row)
+
+    def get_writing_board(self, board_id: str, *, tenant_id: str, owner_user_id: str) -> WritingBoard:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                select *
+                from writing_boards
+                where tenant_id = %s and owner_user_id = %s and board_id = %s
+                """,
+                (tenant_id, owner_user_id, board_id),
+            ).fetchone()
+        if not row:
+            raise KeyError(board_id)
+        return self._writing_board_from_row(row)
+
+    def list_writing_boards(self, *, tenant_id: str, owner_user_id: str, limit: int = 50) -> list[WritingBoard]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                select *
+                from writing_boards
+                where tenant_id = %s and owner_user_id = %s
+                order by updated_at desc, board_id desc
+                limit %s
+                """,
+                (tenant_id, owner_user_id, max(0, limit)),
+            ).fetchall()
+        return [self._writing_board_from_row(row) for row in rows]
+
+    def upsert_writing_node(self, node: WritingNode) -> WritingNode:
+        self.get_writing_board(node.board_id, tenant_id=node.tenant_id, owner_user_id=node.owner_user_id)
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                insert into writing_nodes(
+                    node_id, board_id, tenant_id, owner_user_id, node_type, title, body_markdown,
+                    position, size, status, source_refs, citations, quality_signals, metadata,
+                    created_at, updated_at
+                )
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                on conflict (node_id) do update
+                set title = excluded.title,
+                    body_markdown = excluded.body_markdown,
+                    position = excluded.position,
+                    size = excluded.size,
+                    status = excluded.status,
+                    source_refs = excluded.source_refs,
+                    citations = excluded.citations,
+                    quality_signals = excluded.quality_signals,
+                    metadata = excluded.metadata,
+                    updated_at = now()
+                where writing_nodes.tenant_id = excluded.tenant_id
+                  and writing_nodes.owner_user_id = excluded.owner_user_id
+                returning *
+                """,
+                (
+                    node.node_id,
+                    node.board_id,
+                    node.tenant_id,
+                    node.owner_user_id,
+                    node.node_type,
+                    node.title,
+                    node.body_markdown,
+                    Jsonb(to_jsonable(node.position)),
+                    Jsonb(to_jsonable(node.size)),
+                    node.status,
+                    Jsonb(to_jsonable(node.source_refs)),
+                    Jsonb(to_jsonable(node.citations)),
+                    Jsonb(to_jsonable(node.quality_signals)),
+                    Jsonb(to_jsonable(node.metadata)),
+                    node.created_at,
+                    node.updated_at,
+                ),
+            ).fetchone()
+        if not row:
+            raise KeyError(node.node_id)
+        return self._writing_node_from_row(row)
+
+    def update_writing_node(
+        self,
+        node_id: str,
+        *,
+        tenant_id: str,
+        owner_user_id: str,
+        title: str | None = None,
+        body_markdown: str | None = None,
+        position: dict[str, Any] | None = None,
+        size: dict[str, Any] | None = None,
+        status: str | None = None,
+        source_refs: list[dict[str, Any]] | None = None,
+        citations: list[dict[str, Any]] | None = None,
+        quality_signals: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> WritingNode:
+        current = self._get_writing_node(node_id, tenant_id=tenant_id, owner_user_id=owner_user_id)
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                update writing_nodes
+                set title = %s,
+                    body_markdown = %s,
+                    position = %s,
+                    size = %s,
+                    status = %s,
+                    source_refs = %s,
+                    citations = %s,
+                    quality_signals = %s,
+                    metadata = %s,
+                    updated_at = now()
+                where tenant_id = %s and owner_user_id = %s and node_id = %s
+                returning *
+                """,
+                (
+                    current.title if title is None else title,
+                    current.body_markdown if body_markdown is None else body_markdown,
+                    Jsonb(to_jsonable(current.position if position is None else position)),
+                    Jsonb(to_jsonable(current.size if size is None else size)),
+                    current.status if status is None else status,
+                    Jsonb(to_jsonable(current.source_refs if source_refs is None else source_refs)),
+                    Jsonb(to_jsonable(current.citations if citations is None else citations)),
+                    Jsonb(to_jsonable(current.quality_signals if quality_signals is None else quality_signals)),
+                    Jsonb(to_jsonable(current.metadata if metadata is None else metadata)),
+                    tenant_id,
+                    owner_user_id,
+                    node_id,
+                ),
+            ).fetchone()
+        if not row:
+            raise KeyError(node_id)
+        return self._writing_node_from_row(row)
+
+    def delete_writing_node(self, node_id: str, *, tenant_id: str, owner_user_id: str) -> None:
+        with self.connect() as conn:
+            result = conn.execute(
+                "delete from writing_nodes where tenant_id = %s and owner_user_id = %s and node_id = %s",
+                (tenant_id, owner_user_id, node_id),
+            )
+        if result.rowcount == 0:
+            raise KeyError(node_id)
+
+    def list_writing_nodes(self, board_id: str, *, tenant_id: str, owner_user_id: str) -> list[WritingNode]:
+        self.get_writing_board(board_id, tenant_id=tenant_id, owner_user_id=owner_user_id)
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                select *
+                from writing_nodes
+                where tenant_id = %s and owner_user_id = %s and board_id = %s
+                order by created_at, node_id
+                """,
+                (tenant_id, owner_user_id, board_id),
+            ).fetchall()
+        return [self._writing_node_from_row(row) for row in rows]
+
+    def upsert_writing_edge(self, edge: WritingEdge) -> WritingEdge:
+        self.get_writing_board(edge.board_id, tenant_id=edge.tenant_id, owner_user_id=edge.owner_user_id)
+        self._get_writing_node(edge.source_node_id, tenant_id=edge.tenant_id, owner_user_id=edge.owner_user_id)
+        self._get_writing_node(edge.target_node_id, tenant_id=edge.tenant_id, owner_user_id=edge.owner_user_id)
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                insert into writing_edges(
+                    edge_id, board_id, tenant_id, owner_user_id, source_node_id, target_node_id,
+                    edge_type, label, metadata, created_at, updated_at
+                )
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                on conflict (edge_id) do update
+                set source_node_id = excluded.source_node_id,
+                    target_node_id = excluded.target_node_id,
+                    edge_type = excluded.edge_type,
+                    label = excluded.label,
+                    metadata = excluded.metadata,
+                    updated_at = now()
+                where writing_edges.tenant_id = excluded.tenant_id
+                  and writing_edges.owner_user_id = excluded.owner_user_id
+                returning *
+                """,
+                (
+                    edge.edge_id,
+                    edge.board_id,
+                    edge.tenant_id,
+                    edge.owner_user_id,
+                    edge.source_node_id,
+                    edge.target_node_id,
+                    edge.edge_type,
+                    edge.label,
+                    Jsonb(to_jsonable(edge.metadata)),
+                    edge.created_at,
+                    edge.updated_at,
+                ),
+            ).fetchone()
+        if not row:
+            raise KeyError(edge.edge_id)
+        return self._writing_edge_from_row(row)
+
+    def delete_writing_edge(self, edge_id: str, *, tenant_id: str, owner_user_id: str) -> None:
+        with self.connect() as conn:
+            result = conn.execute(
+                "delete from writing_edges where tenant_id = %s and owner_user_id = %s and edge_id = %s",
+                (tenant_id, owner_user_id, edge_id),
+            )
+        if result.rowcount == 0:
+            raise KeyError(edge_id)
+
+    def list_writing_edges(self, board_id: str, *, tenant_id: str, owner_user_id: str) -> list[WritingEdge]:
+        self.get_writing_board(board_id, tenant_id=tenant_id, owner_user_id=owner_user_id)
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                select *
+                from writing_edges
+                where tenant_id = %s and owner_user_id = %s and board_id = %s
+                order by created_at, edge_id
+                """,
+                (tenant_id, owner_user_id, board_id),
+            ).fetchall()
+        return [self._writing_edge_from_row(row) for row in rows]
+
     def upsert_discovery_item(self, item: DiscoveryItem) -> DiscoveryItem:
         with self.connect() as conn:
             existing_id = conn.execute(
@@ -1992,6 +2268,9 @@ class PostgresKnowledgeStore:
             "connector_states",
             "offline_index_states",
             "workspace_activity_events",
+            "writing_boards",
+            "writing_nodes",
+            "writing_edges",
             "discovery_items",
         }:
             raise ValueError(f"Unsupported table: {table}")
@@ -2053,6 +2332,67 @@ class PostgresKnowledgeStore:
             created_at=row["created_at"],
             tenant_id=row.get("tenant_id") or DEFAULT_TENANT_ID,
         )
+
+    def _writing_board_from_row(self, row: dict[str, Any]) -> WritingBoard:
+        return WritingBoard(
+            board_id=row["board_id"],
+            owner_user_id=row["owner_user_id"],
+            title=row["title"],
+            goal=row["goal"],
+            metadata=dict(row.get("metadata") or {}),
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+            tenant_id=row.get("tenant_id") or DEFAULT_TENANT_ID,
+        )
+
+    def _writing_node_from_row(self, row: dict[str, Any]) -> WritingNode:
+        return WritingNode(
+            node_id=row["node_id"],
+            board_id=row["board_id"],
+            owner_user_id=row["owner_user_id"],
+            node_type=row["node_type"],
+            title=row["title"],
+            body_markdown=row["body_markdown"],
+            position=dict(row.get("position") or {}),
+            size=dict(row.get("size") or {}),
+            status=row["status"],
+            source_refs=list(row.get("source_refs") or []),
+            citations=list(row.get("citations") or []),
+            quality_signals=dict(row.get("quality_signals") or {}),
+            metadata=dict(row.get("metadata") or {}),
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+            tenant_id=row.get("tenant_id") or DEFAULT_TENANT_ID,
+        )
+
+    def _writing_edge_from_row(self, row: dict[str, Any]) -> WritingEdge:
+        return WritingEdge(
+            edge_id=row["edge_id"],
+            board_id=row["board_id"],
+            owner_user_id=row["owner_user_id"],
+            source_node_id=row["source_node_id"],
+            target_node_id=row["target_node_id"],
+            edge_type=row["edge_type"],
+            label=row["label"],
+            metadata=dict(row.get("metadata") or {}),
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+            tenant_id=row.get("tenant_id") or DEFAULT_TENANT_ID,
+        )
+
+    def _get_writing_node(self, node_id: str, *, tenant_id: str, owner_user_id: str) -> WritingNode:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                select *
+                from writing_nodes
+                where tenant_id = %s and owner_user_id = %s and node_id = %s
+                """,
+                (tenant_id, owner_user_id, node_id),
+            ).fetchone()
+        if not row:
+            raise KeyError(node_id)
+        return self._writing_node_from_row(row)
 
     def _discovery_item_from_row(self, row: dict[str, Any]) -> DiscoveryItem:
         return DiscoveryItem(

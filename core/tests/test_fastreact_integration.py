@@ -10,6 +10,7 @@ from pathlib import Path
 import subprocess
 import threading
 
+import pytest
 from http.server import ThreadingHTTPServer
 
 from pska_core.acl import ACLService
@@ -1855,6 +1856,81 @@ def test_workspace_activity_http_endpoint_is_token_protected() -> None:
     assert authed["activity"]["activity_type"] == "viewed"
     assert data_status == 200
     assert data["continue_working"][0]["target_id"] == "review"
+
+
+def test_writing_workspace_is_tenant_scoped_and_composes_selected_answers() -> None:
+    api = _api()
+    tenant_a = context_from_headers({"X-PSKA-Tenant-Id": "tenant_a", "X-PSKA-User-Id": "user_primary"}, {})
+    tenant_b = context_from_headers({"X-PSKA-Tenant-Id": "tenant_b", "X-PSKA-User-Id": "user_primary"}, {})
+
+    board_a = api.workspace_writing_create_board({"title": "Reserve memo", "goal": "Decide the memo structure"}, context=tenant_a)["board"]
+    board_b = api.workspace_writing_create_board({"title": "Reserve memo", "goal": "Different tenant"}, context=tenant_b)["board"]
+    section = api.workspace_writing_create_node(
+        board_a["board_id"],
+        {"node_type": "section", "title": "Recommendation", "position": {"x": 120, "y": 120}},
+        context=tenant_a,
+    )["node"]
+    answer = api.workspace_writing_create_node(
+        board_a["board_id"],
+        {
+            "node_type": "answer",
+            "title": "Evidence-backed answer",
+            "body_markdown": "The selected evidence supports a cautious recommendation.",
+            "citations": [{"title": "Source A", "source_item_id": "src_a"}],
+            "source_refs": [{"source_item_id": "src_a"}],
+            "position": {"x": 420, "y": 120},
+        },
+        context=tenant_a,
+    )["node"]
+    api.workspace_writing_create_edge(
+        board_a["board_id"],
+        {
+            "source_node_id": answer["node_id"],
+            "target_node_id": section["node_id"],
+            "edge_type": "included_in",
+            "label": "纳入章节",
+        },
+        context=tenant_a,
+    )
+
+    list_a = api.workspace_writing_boards(context=tenant_a)["boards"]
+    list_b = api.workspace_writing_boards(context=tenant_b)["boards"]
+    composed = api.workspace_writing_compose(
+        board_a["board_id"],
+        {"section_node_id": section["node_id"], "answer_node_ids": [answer["node_id"]]},
+        context=tenant_a,
+    )
+
+    assert [board["board_id"] for board in list_a] == [board_a["board_id"]]
+    assert [board["board_id"] for board in list_b] == [board_b["board_id"]]
+    assert composed["retrieval_used"] is False
+    assert "Evidence-backed answer" in composed["draft_markdown"]
+    assert "src_a" in composed["draft_markdown"]
+    with pytest.raises(KeyError):
+        api.workspace_writing_board(board_a["board_id"], context=tenant_b)
+
+
+def test_writing_suggest_questions_does_not_persist_nodes() -> None:
+    api = _api()
+    context = context_from_headers({"X-PSKA-Tenant-Id": "tenant_a", "X-PSKA-User-Id": "user_primary"}, {})
+    board = api.workspace_writing_create_board({"title": "Inquiry", "goal": "Write a supported memo"}, context=context)["board"]
+    question = api.workspace_writing_create_node(
+        board["board_id"],
+        {"node_type": "question", "title": "What should this memo prove?", "body_markdown": "Clarify the central claim."},
+        context=context,
+    )["node"]
+
+    before = api.workspace_writing_board(board["board_id"], context=context)
+    suggestions = api.workspace_writing_suggest_questions(
+        board["board_id"],
+        {"node_id": question["node_id"], "direction": "evidence_gap"},
+        context=context,
+    )
+    after = api.workspace_writing_board(board["board_id"], context=context)
+
+    assert suggestions["persisted"] is False
+    assert suggestions["suggestions"]
+    assert len(after["nodes"]) == len(before["nodes"])
 
 
 def test_discovery_producers_drive_today_discoveries() -> None:

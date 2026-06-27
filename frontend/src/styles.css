@@ -54,6 +54,14 @@ button {
   grid-template-columns: 76px minmax(0, 1fr) clamp(350px, 28vw, 450px);
 }
 
+.app-shell.writing-mode {
+  grid-template-columns: 250px minmax(0, 1fr);
+}
+
+.app-shell.left-collapsed.writing-mode {
+  grid-template-columns: 76px minmax(0, 1fr);
+}
+
 .left-sidebar,
 .brain-sidebar,
 .workspace-column {
@@ -1740,6 +1748,364 @@ button {
 .editor-prose th {
   border: 1px solid var(--line-strong);
   padding: 8px;
+}
+
+.writing-surface {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 10px;
+  padding: 14px;
+  overflow: hidden;
+  background:
+    linear-gradient(90deg, rgba(222, 219, 208, 0.36) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(222, 219, 208, 0.36) 1px, transparent 1px),
+    #fbfaf5;
+  background-size: 28px 28px;
+}
+
+.writing-empty-state {
+  display: grid;
+  grid-template-columns: 1fr;
+  place-items: center;
+}
+
+.writing-start-panel {
+  width: min(680px, 92vw);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 254, 249, 0.96);
+  box-shadow: var(--shadow);
+  padding: 24px;
+}
+
+.writing-start-panel h1 {
+  margin: 6px 0 10px;
+  font-size: 26px;
+  line-height: 1.2;
+}
+
+.writing-start-panel textarea {
+  width: 100%;
+  min-height: 130px;
+  resize: vertical;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--ink);
+  padding: 12px;
+  line-height: 1.55;
+}
+
+.writing-start-panel button {
+  margin-top: 10px;
+}
+
+.writing-toolbar {
+  grid-column: 1 / 2;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+  border: 1px solid rgba(39, 37, 31, 0.1);
+  border-radius: 8px;
+  background: rgba(255, 254, 249, 0.94);
+  padding: 6px;
+  box-shadow: 0 10px 24px rgba(38, 34, 24, 0.08);
+}
+
+.writing-toolbar select,
+.writing-board-title input,
+.writing-composer select {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--paper);
+  color: var(--ink);
+  padding: 7px 9px;
+}
+
+.writing-toolbar select {
+  max-width: 280px;
+}
+
+.writing-toolbar button,
+.writing-composer button,
+.writing-node-actions button,
+.writing-suggestions button {
+  min-height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--paper);
+  color: var(--ink);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 5px 9px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.writing-toolbar button:hover,
+.writing-composer button:hover,
+.writing-node-actions button:hover,
+.writing-suggestions button:hover {
+  background: var(--accent-soft);
+}
+
+.writing-board-title {
+  grid-column: 1 / 2;
+  display: grid;
+  grid-template-columns: minmax(180px, 0.6fr) minmax(0, 1fr);
+  gap: 8px;
+}
+
+.writing-board-title input {
+  width: 100%;
+}
+
+.writing-canvas-shell {
+  grid-column: 1 / 2;
+  min-height: 0;
+  border: 1px solid rgba(39, 37, 31, 0.1);
+  border-radius: 8px;
+  background: rgba(255, 254, 249, 0.28);
+  overflow: hidden;
+}
+
+.writing-composer {
+  grid-column: 2 / 3;
+  grid-row: 1 / 4;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  border-left: 1px solid rgba(39, 37, 31, 0.12);
+  background: rgba(250, 249, 243, 0.92);
+  padding: 14px;
+  overflow: auto;
+}
+
+.writing-composer h2 {
+  margin: 4px 0 6px;
+  font-size: 18px;
+}
+
+.writing-composer p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.writing-composer label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.writing-composer-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px;
+}
+
+.writing-composer-section {
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.writing-composer-section strong {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
+.writing-composer-section article {
+  display: grid;
+  gap: 3px;
+  border: 1px solid rgba(39, 37, 31, 0.1);
+  border-radius: 8px;
+  background: var(--paper);
+  padding: 8px;
+  margin-bottom: 6px;
+}
+
+.writing-composer-section article span {
+  font-size: 13px;
+  font-weight: 760;
+}
+
+.writing-composer-section article small,
+.writing-message {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.writing-node {
+  width: 270px;
+  min-height: 132px;
+  border: 1px solid rgba(39, 37, 31, 0.18);
+  border-radius: 8px;
+  background: rgba(255, 254, 249, 0.97);
+  box-shadow: 0 14px 30px rgba(38, 34, 24, 0.12);
+  padding: 11px;
+}
+
+.writing-node.expanded {
+  width: 420px;
+  min-height: 280px;
+}
+
+.writing-node.selected {
+  border-color: #2e7564;
+  box-shadow: 0 0 0 3px rgba(46, 117, 100, 0.14), 0 14px 30px rgba(38, 34, 24, 0.12);
+}
+
+.writing-node-goal {
+  border-color: #315f7c;
+  background: #f4fafb;
+}
+
+.writing-node-question {
+  border-color: #c5963d;
+  background: #fffdf0;
+}
+
+.writing-node-answer {
+  border-color: #2e7564;
+  background: #f5fbf8;
+}
+
+.writing-node-evidence {
+  border-color: #8aa5b5;
+  background: #f4f9fb;
+}
+
+.writing-node-gap {
+  border-color: #b45f3c;
+  background: #fff7f3;
+}
+
+.writing-node-section,
+.writing-node-draft {
+  border-color: #7b8c53;
+  background: #fbfdf6;
+}
+
+.writing-node-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.writing-node-top span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.writing-node-top small {
+  color: #2e7564;
+  font-size: 11px;
+  font-weight: 720;
+}
+
+.writing-node h3 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 15px;
+  line-height: 1.35;
+}
+
+.writing-node p {
+  margin: 7px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.writing-node-editor {
+  display: grid;
+  gap: 8px;
+}
+
+.writing-node-editor input,
+.writing-node-editor textarea {
+  width: 100%;
+  border: 1px solid rgba(39, 37, 31, 0.14);
+  border-radius: 7px;
+  background: var(--paper);
+  color: var(--ink);
+  padding: 8px;
+}
+
+.writing-node-editor input {
+  font-weight: 800;
+}
+
+.writing-node-editor textarea {
+  min-height: 110px;
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.writing-node .answer-text {
+  max-height: 180px;
+  overflow: auto;
+  border-top: 1px solid rgba(39, 37, 31, 0.08);
+  padding-top: 8px;
+  font-size: 12px;
+}
+
+.writing-node-citation-bar {
+  margin-top: 8px;
+  color: #2e7564;
+  font-size: 11px;
+  font-weight: 740;
+}
+
+.writing-node-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 10px;
+}
+
+.writing-suggestions {
+  display: grid;
+  gap: 5px;
+  margin-top: 8px;
+}
+
+.writing-suggestions button {
+  justify-content: flex-start;
+  height: auto;
+  text-align: left;
+  white-space: normal;
+  line-height: 1.35;
+}
+
+.writing-edge {
+  stroke-width: 2;
+}
+
+.writing-edge-included_in {
+  stroke: #7b8c53;
+}
+
+.writing-edge-answered_by,
+.writing-edge-supported_by {
+  stroke: #2e7564;
 }
 
 .canvas-surface {

@@ -15,7 +15,13 @@ import type {
   WorkspaceGraphPathResponse,
   WorkspaceGraphResponse,
   WorkspaceMode,
-  WorkspaceSearchResponse
+  WorkspaceSearchResponse,
+  WritingBoardResponse,
+  WritingBoardsResponse,
+  WritingComposeResponse,
+  WritingEdge,
+  WritingNode,
+  WritingQuestionSuggestion
 } from "./types";
 
 export type PSKAIdentity = {
@@ -377,7 +383,8 @@ export async function askWorkspaceStream(
   serviceToken: PSKAAuth,
   intent: "auto" | "quick" | "deep" = "auto",
   surface = "ask",
-  onUpdate?: (update: WorkspaceAskStreamUpdate) => void
+  onUpdate?: (update: WorkspaceAskStreamUpdate) => void,
+  options: { scope?: Record<string, unknown>; topK?: number } = {}
 ): Promise<WorkspaceAskResponse> {
   const response = await fetch("/workspace/ask/stream", {
     method: "POST",
@@ -386,8 +393,9 @@ export async function askWorkspaceStream(
       query,
       intent,
       surface,
+      ...(options.scope ? { scope: options.scope } : {}),
       ...requestUserPayload(serviceToken),
-      top_k: 8
+      top_k: options.topK || 8
     })
   });
   if (!response.ok) {
@@ -431,6 +439,138 @@ export async function askWorkspaceStream(
     }
   }
   return result;
+}
+
+export async function listWritingBoards(serviceToken: PSKAAuth): Promise<WritingBoardsResponse> {
+  const identity = resolveIdentity(serviceToken);
+  const params = new URLSearchParams({ owner_user_id: identity.representedUserId, limit: "50" });
+  const response = await fetch(`/workspace/writing/boards?${params.toString()}`, { headers: headers(serviceToken) });
+  if (!response.ok) {
+    throw new Error(await responseError(response, "写作工作区加载失败"));
+  }
+  return (await response.json()) as WritingBoardsResponse;
+}
+
+export async function createWritingBoard(serviceToken: PSKAAuth, payload: { title: string; goal?: string; metadata?: Record<string, unknown> }): Promise<WritingBoardResponse> {
+  const response = await fetch("/workspace/writing/boards", {
+    method: "POST",
+    headers: headers(serviceToken),
+    body: JSON.stringify({ ...payload, ...requestUserPayload(serviceToken) })
+  });
+  if (!response.ok) {
+    throw new Error(await responseError(response, "创建写作工作区失败"));
+  }
+  return (await response.json()) as WritingBoardResponse;
+}
+
+export async function loadWritingBoard(serviceToken: PSKAAuth, boardId: string): Promise<WritingBoardResponse> {
+  const response = await fetch(`/workspace/writing/boards/${encodeURIComponent(boardId)}`, { headers: headers(serviceToken) });
+  if (!response.ok) {
+    throw new Error(await responseError(response, "写作工作区加载失败"));
+  }
+  return (await response.json()) as WritingBoardResponse;
+}
+
+export async function patchWritingBoard(serviceToken: PSKAAuth, boardId: string, payload: Partial<{ title: string; goal: string; metadata: Record<string, unknown> }>): Promise<WritingBoardResponse> {
+  const response = await fetch(`/workspace/writing/boards/${encodeURIComponent(boardId)}`, {
+    method: "PATCH",
+    headers: headers(serviceToken),
+    body: JSON.stringify({ ...payload, ...requestUserPayload(serviceToken) })
+  });
+  if (!response.ok) {
+    throw new Error(await responseError(response, "保存写作工作区失败"));
+  }
+  return (await response.json()) as WritingBoardResponse;
+}
+
+export async function createWritingNode(serviceToken: PSKAAuth, boardId: string, payload: Partial<WritingNode>): Promise<{ ok?: boolean; node?: WritingNode }> {
+  const response = await fetch(`/workspace/writing/boards/${encodeURIComponent(boardId)}/nodes`, {
+    method: "POST",
+    headers: headers(serviceToken),
+    body: JSON.stringify({ ...payload, ...requestUserPayload(serviceToken) })
+  });
+  if (!response.ok) {
+    throw new Error(await responseError(response, "创建写作节点失败"));
+  }
+  return (await response.json()) as { ok?: boolean; node?: WritingNode };
+}
+
+export async function patchWritingNode(serviceToken: PSKAAuth, boardId: string, nodeId: string, payload: Partial<WritingNode>): Promise<{ ok?: boolean; node?: WritingNode }> {
+  const response = await fetch(`/workspace/writing/boards/${encodeURIComponent(boardId)}/nodes/${encodeURIComponent(nodeId)}`, {
+    method: "PATCH",
+    headers: headers(serviceToken),
+    body: JSON.stringify({ ...payload, ...requestUserPayload(serviceToken) })
+  });
+  if (!response.ok) {
+    throw new Error(await responseError(response, "保存写作节点失败"));
+  }
+  return (await response.json()) as { ok?: boolean; node?: WritingNode };
+}
+
+export async function deleteWritingNode(serviceToken: PSKAAuth, boardId: string, nodeId: string): Promise<void> {
+  const response = await fetch(`/workspace/writing/boards/${encodeURIComponent(boardId)}/nodes/${encodeURIComponent(nodeId)}`, {
+    method: "DELETE",
+    headers: headers(serviceToken),
+    body: JSON.stringify(requestUserPayload(serviceToken))
+  });
+  if (!response.ok) {
+    throw new Error(await responseError(response, "删除写作节点失败"));
+  }
+}
+
+export async function createWritingEdge(serviceToken: PSKAAuth, boardId: string, payload: Partial<WritingEdge>): Promise<{ ok?: boolean; edge?: WritingEdge }> {
+  const response = await fetch(`/workspace/writing/boards/${encodeURIComponent(boardId)}/edges`, {
+    method: "POST",
+    headers: headers(serviceToken),
+    body: JSON.stringify({ ...payload, ...requestUserPayload(serviceToken) })
+  });
+  if (!response.ok) {
+    throw new Error(await responseError(response, "创建写作关系失败"));
+  }
+  return (await response.json()) as { ok?: boolean; edge?: WritingEdge };
+}
+
+export async function deleteWritingEdge(serviceToken: PSKAAuth, boardId: string, edgeId: string): Promise<void> {
+  const response = await fetch(`/workspace/writing/boards/${encodeURIComponent(boardId)}/edges/${encodeURIComponent(edgeId)}`, {
+    method: "DELETE",
+    headers: headers(serviceToken),
+    body: JSON.stringify(requestUserPayload(serviceToken))
+  });
+  if (!response.ok) {
+    throw new Error(await responseError(response, "删除写作关系失败"));
+  }
+}
+
+export async function suggestWritingQuestions(
+  serviceToken: PSKAAuth,
+  boardId: string,
+  payload: { node_id?: string; direction?: "decompose" | "followup" | "evidence_gap" | "counterpoint" }
+): Promise<{ ok?: boolean; suggestions?: WritingQuestionSuggestion[]; persisted?: boolean }> {
+  const response = await fetch(`/workspace/writing/boards/${encodeURIComponent(boardId)}/suggest-questions`, {
+    method: "POST",
+    headers: headers(serviceToken),
+    body: JSON.stringify({ ...payload, ...requestUserPayload(serviceToken) })
+  });
+  if (!response.ok) {
+    throw new Error(await responseError(response, "生成追问建议失败"));
+  }
+  return (await response.json()) as { ok?: boolean; suggestions?: WritingQuestionSuggestion[]; persisted?: boolean };
+}
+
+export async function composeWritingDraft(
+  serviceToken: PSKAAuth,
+  boardId: string,
+  payload: { section_node_id?: string; answer_node_ids: string[] }
+): Promise<WritingComposeResponse> {
+  const response = await fetch(`/workspace/writing/boards/${encodeURIComponent(boardId)}/compose`, {
+    method: "POST",
+    headers: headers(serviceToken),
+    body: JSON.stringify({ ...payload, ...requestUserPayload(serviceToken) })
+  });
+  if (!response.ok) {
+    throw new Error(await responseError(response, "生成章节草稿失败"));
+  }
+  return (await response.json()) as WritingComposeResponse;
 }
 
 function consumeAskSseBuffer(

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import CytoscapeComponent from "react-cytoscapejs";
 import {
   BookOpen,
@@ -13,7 +13,6 @@ import {
   Hash,
   Image,
   Link2,
-  Network,
   Pin,
   PlayCircle,
   RefreshCw,
@@ -23,7 +22,20 @@ import {
   Tags,
   TextCursorInput
 } from "lucide-react";
-import { Background, Controls, Handle, MiniMap, Position, ReactFlow, type NodeProps } from "reactflow";
+import {
+  Background,
+  Controls,
+  Handle,
+  MarkerType,
+  MiniMap,
+  Position,
+  ReactFlow,
+  type Connection,
+  type Edge,
+  type Node,
+  type OnNodeDrag,
+  type NodeProps
+} from "@xyflow/react";
 import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import Placeholder from "@tiptap/extension-placeholder";
@@ -39,6 +51,11 @@ import {
   applyReviewItem,
   approveReviewItem,
   cleanupKnowledgeSource,
+  composeWritingDraft,
+  createWritingBoard,
+  createWritingEdge,
+  createWritingNode,
+  deleteWritingNode,
   ignoreDiscovery,
   loadCorpusContext,
   loadCorpusData,
@@ -50,11 +67,16 @@ import {
   loadReviewCenter,
   loadSourcesConsole,
   loadToday,
+  loadWritingBoard,
+  listWritingBoards,
+  patchWritingBoard,
+  patchWritingNode,
   recordWorkspaceActivity,
   rejectReviewItem,
   runDigestNow,
   runFileSync,
-  snoozeDiscovery
+  snoozeDiscovery,
+  suggestWritingQuestions
 } from "./api";
 import type { PSKAAuth, PSKAIdentity } from "./api";
 import { useWorkspaceStore } from "./store";
@@ -78,10 +100,16 @@ import type {
   WorkspaceGraphPathResponse,
   WorkspaceGraphResponse,
   WorkspaceSearchResponse,
-  WorkspaceMode
+  WorkspaceMode,
+  WritingBoard,
+  WritingEdge,
+  WritingNode,
+  WritingNodeType,
+  WritingQuestionSuggestion
 } from "./types";
 
 const nodeTypes = {
+  writingNode: WritingCanvasNode,
   pskaCard: CanvasCardNode
 };
 
@@ -119,6 +147,7 @@ export default function App() {
   const lastEditedActivityAt = useRef(0);
   const [pinStatus, setPinStatus] = useState<"idle" | "saved" | "failed">("idle");
   const [gatewayAuthenticated, setGatewayAuthenticated] = useState<boolean | null>(null);
+  const activeMode: WorkspaceMode = mode === "document" || mode === "canvas" ? "writing" : mode;
 
   useEffect(() => {
     let cancelled = false;
@@ -147,7 +176,7 @@ export default function App() {
   const corpusQuery = useQuery({
     queryKey: ["corpus-context", pskaIdentity],
     queryFn: () => loadCorpusContext(pskaIdentity),
-    enabled: mode !== "today" && mode !== "review"
+    enabled: activeMode !== "today" && activeMode !== "review" && activeMode !== "writing"
   });
 
   useEffect(() => {
@@ -212,9 +241,9 @@ export default function App() {
   }, [documentText, pskaIdentity]);
 
   useEffect(() => {
-    void logWorkspaceActivity("opened", mode);
-    void logWorkspaceActivity("viewed", mode);
-  }, [mode, pskaIdentity]);
+    void logWorkspaceActivity("opened", activeMode);
+    void logWorkspaceActivity("viewed", activeMode);
+  }, [activeMode, pskaIdentity]);
 
   async function runAnalysis(trigger: BrainState["lastTrigger"], text = documentText) {
     const query = selectedText || text;
@@ -237,7 +266,7 @@ export default function App() {
   }
 
   function refreshCurrentSurface() {
-    if (mode === "today" || mode === "review" || mode === "graph") {
+    if (activeMode === "today" || activeMode === "review" || activeMode === "graph" || activeMode === "writing") {
       setBrain({ status: "idle", lastTrigger: "manual", updatedAt: Date.now() });
       return;
     }
@@ -279,7 +308,7 @@ export default function App() {
 
   function pinCurrentWorkspace() {
     setPinStatus("idle");
-    void logWorkspaceActivity("pinned", mode, { throwOnError: true })
+    void logWorkspaceActivity("pinned", activeMode, { throwOnError: true })
       .then(() => {
         setPinStatus("saved");
         window.setTimeout(() => setPinStatus("idle"), 1800);
@@ -291,11 +320,11 @@ export default function App() {
   }
 
   return (
-    <main className={`app-shell ${leftCollapsed ? "left-collapsed" : ""}`}>
-      <LeftSidebar collapsed={leftCollapsed} mode={mode} onModeChange={setMode} onToggle={toggleLeft} />
+    <main className={`app-shell ${leftCollapsed ? "left-collapsed" : ""} ${activeMode === "writing" ? "writing-mode" : ""}`}>
+      <LeftSidebar collapsed={leftCollapsed} mode={activeMode} onModeChange={setMode} onToggle={toggleLeft} />
       <section className="workspace-column">
         <TopBar
-          mode={mode}
+          mode={activeMode}
           serviceToken={serviceToken}
           tenantId={tenantId}
           userId={userId}
@@ -308,21 +337,21 @@ export default function App() {
           onRepresentedUserChange={setRepresentedUserId}
           onRefresh={refreshCurrentSurface}
         />
-        {mode === "today" ? (
+        {activeMode === "today" ? (
           <TodayWorkspace serviceToken={pskaIdentity} onOpenWorkspace={setMode} setBrain={setBrain} />
-        ) : mode === "review" ? (
+        ) : activeMode === "review" ? (
           <ReviewCenter serviceToken={pskaIdentity} onPinCurrent={pinCurrentWorkspace} pinStatus={pinStatus} />
-        ) : mode === "graph" ? (
+        ) : activeMode === "graph" ? (
           <GraphWorkspace serviceToken={pskaIdentity} onPinCurrent={pinCurrentWorkspace} pinStatus={pinStatus} />
-        ) : mode === "corpus" ? (
+        ) : activeMode === "corpus" ? (
           <CorpusWorkspace serviceToken={pskaIdentity} onPinCurrent={pinCurrentWorkspace} pinStatus={pinStatus} setBrain={setBrain} />
-        ) : mode === "document" ? (
-          <DocumentWorkspace editor={editor} selectedText={selectedText} onPinCurrent={pinCurrentWorkspace} pinStatus={pinStatus} />
+        ) : activeMode === "writing" ? (
+          <WritingWorkspace serviceToken={pskaIdentity} onPinCurrent={pinCurrentWorkspace} pinStatus={pinStatus} />
         ) : (
           <CanvasWorkspace brain={brain} onPinCurrent={pinCurrentWorkspace} pinStatus={pinStatus} />
         )}
       </section>
-      <BrainSidebar brain={brain} onRefresh={refreshCurrentSurface} />
+      {activeMode === "writing" ? null : <BrainSidebar brain={brain} onRefresh={refreshCurrentSurface} />}
     </main>
   );
 }
@@ -354,8 +383,7 @@ function LeftSidebar({
       </div>
       <nav className="nav-stack" aria-label="工作区导航">
         <NavItem collapsed={collapsed} icon={<CalendarDays size={18} />} label="Today" active={mode === "today"} onClick={() => onModeChange("today")} />
-        <NavItem collapsed={collapsed} icon={<TextCursorInput size={18} />} label="文档" active={mode === "document"} onClick={() => onModeChange("document")} />
-        <NavItem collapsed={collapsed} icon={<Network size={18} />} label="画布" active={mode === "canvas"} onClick={() => onModeChange("canvas")} />
+        <NavItem collapsed={collapsed} icon={<TextCursorInput size={18} />} label="写作" active={mode === "writing"} onClick={() => onModeChange("writing")} />
         <NavItem collapsed={collapsed} icon={<Hash size={18} />} label="Graph" active={mode === "graph"} onClick={() => onModeChange("graph")} />
         <NavItem collapsed={collapsed} icon={<Folder size={18} />} label="语料库" active={mode === "corpus"} onClick={() => onModeChange("corpus")} />
         <NavItem collapsed={collapsed} icon={<BookOpen size={18} />} label="项目" />
@@ -428,13 +456,9 @@ function TopBar({
           <CalendarDays size={17} />
           Today
         </button>
-        <button className={mode === "document" ? "active" : ""} type="button" onClick={() => onModeChange("document")}>
+        <button className={mode === "writing" ? "active" : ""} type="button" onClick={() => onModeChange("writing")}>
           <TextCursorInput size={17} />
-          文档
-        </button>
-        <button className={mode === "canvas" ? "active" : ""} type="button" onClick={() => onModeChange("canvas")}>
-          <Network size={17} />
-          画布
+          写作
         </button>
         <button className={mode === "graph" ? "active" : ""} type="button" onClick={() => onModeChange("graph")}>
           <Hash size={17} />
@@ -2900,6 +2924,680 @@ function channelLatest(value: ConsoleSourceChannelStats) {
   return [at, id].filter(Boolean).join(" / ");
 }
 
+type WritingNodeData = Record<string, unknown> & {
+  node: WritingNode;
+  selected: boolean;
+  running: boolean;
+  suggestions: WritingQuestionSuggestion[];
+  canAddToSection: boolean;
+  onPatch: (nodeId: string, patch: Partial<WritingNode>) => void;
+  onRunAsk: (node: WritingNode) => void;
+  onSuggest: (node: WritingNode, direction: "decompose" | "followup" | "evidence_gap" | "counterpoint") => void;
+  onAcceptSuggestion: (node: WritingNode, suggestion: WritingQuestionSuggestion) => void;
+  onAddToSection: (node: WritingNode) => void;
+  onDelete: (node: WritingNode) => void;
+  onToggleExpanded: (node: WritingNode) => void;
+};
+
+function WritingWorkspace({
+  serviceToken,
+  onPinCurrent,
+  pinStatus
+}: {
+  serviceToken: PSKAAuth;
+  onPinCurrent: () => void;
+  pinStatus: "idle" | "saved" | "failed";
+}) {
+  const [activeBoardId, setActiveBoardId] = useState("");
+  const [newGoal, setNewGoal] = useState("");
+  const [selectedSectionId, setSelectedSectionId] = useState("");
+  const [runningNodeId, setRunningNodeId] = useState("");
+  const [askPreviews, setAskPreviews] = useState<Record<string, WorkspaceAskResponse>>({});
+  const [suggestions, setSuggestions] = useState<Record<string, WritingQuestionSuggestion[]>>({});
+  const [workspaceMessage, setWorkspaceMessage] = useState("");
+
+  const boardsQuery = useQuery({
+    queryKey: ["writing-boards", serviceToken],
+    queryFn: () => listWritingBoards(serviceToken),
+    retry: 1
+  });
+  const boards = boardsQuery.data?.boards || [];
+
+  useEffect(() => {
+    if (!activeBoardId && boards.length) {
+      setActiveBoardId(boards[0].board_id);
+    }
+  }, [activeBoardId, boards]);
+
+  const boardQuery = useQuery({
+    queryKey: ["writing-board", serviceToken, activeBoardId],
+    queryFn: () => loadWritingBoard(serviceToken, activeBoardId),
+    enabled: Boolean(activeBoardId),
+    retry: 1
+  });
+  const board = boardQuery.data?.board;
+  const writingNodes = boardQuery.data?.nodes || [];
+  const writingEdges = boardQuery.data?.edges || [];
+  const sections = writingNodes.filter((node) => node.node_type === "section");
+  const answerNodes = writingNodes.filter((node) => node.node_type === "answer");
+
+  useEffect(() => {
+    if (!selectedSectionId && sections.length) {
+      setSelectedSectionId(sections[0].node_id);
+    }
+  }, [sections, selectedSectionId]);
+
+  async function refreshBoard() {
+    await boardsQuery.refetch();
+    await boardQuery.refetch();
+  }
+
+  async function createBoard() {
+    const goal = newGoal.trim() || "从一个问题开始，构造可引用的写作网络。";
+    setWorkspaceMessage("正在创建写作画布...");
+    try {
+      const created = await createWritingBoard(serviceToken, {
+        title: trimText(goal, 64) || "新写作网络",
+        goal,
+        metadata: { canvas: "xyflow", product: "inquiry_graph" }
+      });
+      const boardId = created.board?.board_id;
+      if (!boardId) {
+        throw new Error("missing board id");
+      }
+      setActiveBoardId(boardId);
+      await createWritingNode(serviceToken, boardId, {
+        node_type: "goal",
+        title: "写作目标",
+        body_markdown: goal,
+        position: { x: 80, y: 120 },
+        metadata: { expanded: true }
+      });
+      const section = await createWritingNode(serviceToken, boardId, {
+        node_type: "section",
+        title: "第一部分",
+        body_markdown: "把已验证的答案节点加入这里，再生成章节草稿。",
+        position: { x: 80, y: 390 },
+        metadata: { expanded: false }
+      });
+      if (section.node?.node_id) {
+        setSelectedSectionId(section.node.node_id);
+      }
+      setNewGoal("");
+      setWorkspaceMessage("写作网络已创建。");
+      await refreshBoard();
+    } catch (error) {
+      setWorkspaceMessage(error instanceof Error ? error.message : "创建写作网络失败。");
+    }
+  }
+
+  async function addNode(nodeType: WritingNodeType) {
+    if (!activeBoardId) {
+      return;
+    }
+    const baseY = 120 + writingNodes.length * 34;
+    const created = await createWritingNode(serviceToken, activeBoardId, {
+      node_type: nodeType,
+      title: writingNodeDefaultTitle(nodeType),
+      body_markdown: nodeType === "question" ? "把要追问的问题写在这里，然后运行 Ask PSKA。" : "",
+      position: { x: nodeType === "section" ? 100 : 420, y: baseY },
+      metadata: { expanded: nodeType === "question" }
+    });
+    if (nodeType === "section" && created.node?.node_id) {
+      setSelectedSectionId(created.node.node_id);
+    }
+    await boardQuery.refetch();
+  }
+
+  async function patchNode(nodeId: string, patch: Partial<WritingNode>) {
+    if (!activeBoardId) {
+      return;
+    }
+    await patchWritingNode(serviceToken, activeBoardId, nodeId, patch);
+    await boardQuery.refetch();
+  }
+
+  async function patchBoard(patch: Partial<Pick<WritingBoard, "title" | "goal" | "metadata">>) {
+    if (!activeBoardId) {
+      return;
+    }
+    await patchWritingBoard(serviceToken, activeBoardId, patch);
+    await boardsQuery.refetch();
+    await boardQuery.refetch();
+  }
+
+  async function removeNode(node: WritingNode) {
+    if (!activeBoardId) {
+      return;
+    }
+    await deleteWritingNode(serviceToken, activeBoardId, node.node_id);
+    await boardQuery.refetch();
+  }
+
+  const onNodeDragStop: OnNodeDrag<Node<WritingNodeData, "writingNode">> = useCallback(
+    (_event, node) => {
+      if (!activeBoardId) {
+        return;
+      }
+      void patchWritingNode(serviceToken, activeBoardId, node.id, { position: node.position }).then(() => boardQuery.refetch());
+    },
+    [activeBoardId, boardQuery, serviceToken]
+  );
+
+  const onConnect = useCallback(
+    (connection: Connection) => {
+      if (!activeBoardId || !connection.source || !connection.target) {
+        return;
+      }
+      void createWritingEdge(serviceToken, activeBoardId, {
+        source_node_id: connection.source,
+        target_node_id: connection.target,
+        edge_type: "raises",
+        label: "引出"
+      }).then(() => boardQuery.refetch());
+    },
+    [activeBoardId, boardQuery, serviceToken]
+  );
+
+  async function runAsk(node: WritingNode) {
+    if (!activeBoardId || runningNodeId) {
+      return;
+    }
+    const query = [node.title, node.body_markdown].filter(Boolean).join("\n").trim();
+    if (!query) {
+      setWorkspaceMessage("问题节点需要标题或正文。");
+      return;
+    }
+    setRunningNodeId(node.node_id);
+    setWorkspaceMessage("Ask PSKA 正在回答这个问题节点...");
+    setAskPreviews((current) => ({ ...current, [node.node_id]: pendingAskResult(query) }));
+    try {
+      const result = await askWorkspaceStream(
+        query,
+        serviceToken,
+        "auto",
+        "writing",
+        ({ result: partial }) => {
+          setAskPreviews((current) => ({ ...current, [node.node_id]: { ...partial } }));
+        },
+        { scope: { board_id: activeBoardId, node_id: node.node_id } }
+      );
+      const answer = cleanAgenticAnswer(result.answer || finalAnswerFromTraceEvents(result) || "");
+      const answerNode = await createWritingNode(serviceToken, activeBoardId, {
+        node_type: "answer",
+        title: `回答：${trimText(node.title || query, 42)}`,
+        body_markdown: answer || "PSKA 没有生成可见回答。",
+        position: {
+          x: Number(node.position?.x || 0) + 390,
+          y: Number(node.position?.y || 0)
+        },
+        status: result.error ? "error" : "complete",
+        citations: result.citations || [],
+        source_refs: result.source_refs || [],
+        quality_signals: result.quality_signals || {},
+        metadata: { route: result.route || {}, timing: result.timing || {}, expanded: true }
+      });
+      if (answerNode.node?.node_id) {
+        await createWritingEdge(serviceToken, activeBoardId, {
+          source_node_id: node.node_id,
+          target_node_id: answerNode.node.node_id,
+          edge_type: "answered_by",
+          label: "回答"
+        });
+      }
+      const refs = normalizeSearchRefs([...(result.citations || []), ...(result.source_refs || [])]);
+      if (refs.length && answerNode.node?.node_id) {
+        const evidenceNode = await createWritingNode(serviceToken, activeBoardId, {
+          node_type: "evidence",
+          title: `证据 ${refs.length}`,
+          body_markdown: refs.slice(0, 5).map((ref, index) => `${index + 1}. ${ref.title || ref.source_item_id}`).join("\n"),
+          position: {
+            x: Number(node.position?.x || 0) + 790,
+            y: Number(node.position?.y || 0) - 80
+          },
+          source_refs: result.source_refs || [],
+          citations: result.citations || [],
+          metadata: { expanded: false }
+        });
+        if (evidenceNode.node?.node_id) {
+          await createWritingEdge(serviceToken, activeBoardId, {
+            source_node_id: answerNode.node.node_id,
+            target_node_id: evidenceNode.node.node_id,
+            edge_type: "supported_by",
+            label: "证据"
+          });
+        }
+      }
+      const gaps = normalizeAskNotes(result.evidence?.gaps);
+      if (gaps.length && answerNode.node?.node_id) {
+        const gapNode = await createWritingNode(serviceToken, activeBoardId, {
+          node_type: "gap",
+          title: "证据缺口",
+          body_markdown: gaps.map((gap) => `- ${gap}`).join("\n"),
+          position: {
+            x: Number(node.position?.x || 0) + 790,
+            y: Number(node.position?.y || 0) + 130
+          },
+          metadata: { expanded: false }
+        });
+        if (gapNode.node?.node_id) {
+          await createWritingEdge(serviceToken, activeBoardId, {
+            source_node_id: answerNode.node.node_id,
+            target_node_id: gapNode.node.node_id,
+            edge_type: "raises",
+            label: "缺口"
+          });
+        }
+      }
+      await patchWritingNode(serviceToken, activeBoardId, node.node_id, { status: result.error ? "error" : "complete" });
+      setWorkspaceMessage("回答节点已加入写作网络。");
+      await boardQuery.refetch();
+    } catch (error) {
+      setWorkspaceMessage(error instanceof Error ? error.message : "Ask PSKA 节点运行失败。");
+    } finally {
+      setRunningNodeId("");
+    }
+  }
+
+  async function requestSuggestions(node: WritingNode, direction: "decompose" | "followup" | "evidence_gap" | "counterpoint") {
+    if (!activeBoardId) {
+      return;
+    }
+    const response = await suggestWritingQuestions(serviceToken, activeBoardId, { node_id: node.node_id, direction });
+    setSuggestions((current) => ({ ...current, [node.node_id]: response.suggestions || [] }));
+  }
+
+  async function acceptSuggestion(node: WritingNode, suggestion: WritingQuestionSuggestion) {
+    if (!activeBoardId) {
+      return;
+    }
+    const created = await createWritingNode(serviceToken, activeBoardId, {
+      node_type: "question",
+      title: suggestion.question,
+      body_markdown: suggestion.rationale || "",
+      position: {
+        x: Number(node.position?.x || 0) + 380,
+        y: Number(node.position?.y || 0) + 170
+      },
+      metadata: { expanded: true, suggestion }
+    });
+    if (created.node?.node_id) {
+      await createWritingEdge(serviceToken, activeBoardId, {
+        source_node_id: node.node_id,
+        target_node_id: created.node.node_id,
+        edge_type: suggestion.direction === "decompose" ? "decomposes_to" : "raises",
+        label: "追问"
+      });
+    }
+    setSuggestions((current) => ({ ...current, [node.node_id]: [] }));
+    await boardQuery.refetch();
+  }
+
+  async function addAnswerToSection(node: WritingNode) {
+    if (!activeBoardId || !selectedSectionId) {
+      setWorkspaceMessage("请先创建或选择一个章节节点。");
+      return;
+    }
+    await createWritingEdge(serviceToken, activeBoardId, {
+      source_node_id: node.node_id,
+      target_node_id: selectedSectionId,
+      edge_type: "included_in",
+      label: "纳入章节"
+    });
+    setWorkspaceMessage("答案已纳入当前章节。");
+    await boardQuery.refetch();
+  }
+
+  async function composeSection() {
+    if (!activeBoardId || !selectedSectionId) {
+      setWorkspaceMessage("请先选择一个章节。");
+      return;
+    }
+    const answerIds = writingEdges
+      .filter((edge) => edge.edge_type === "included_in" && edge.target_node_id === selectedSectionId)
+      .map((edge) => edge.source_node_id);
+    const section = writingNodes.find((node) => node.node_id === selectedSectionId);
+    const response = await composeWritingDraft(serviceToken, activeBoardId, {
+      section_node_id: selectedSectionId,
+      answer_node_ids: answerIds
+    });
+    const draft = await createWritingNode(serviceToken, activeBoardId, {
+      node_type: "draft",
+      title: `草稿：${section?.title || "章节"}`,
+      body_markdown: response.draft_markdown || "",
+      position: {
+        x: Number(section?.position?.x || 120) + 420,
+        y: Number(section?.position?.y || 120) + 220
+      },
+      source_refs: response.source_refs || [],
+      citations: response.citations || [],
+      metadata: { expanded: true, composed_from: answerIds, retrieval_used: response.retrieval_used === true }
+    });
+    if (draft.node?.node_id) {
+      await createWritingEdge(serviceToken, activeBoardId, {
+        source_node_id: selectedSectionId,
+        target_node_id: draft.node.node_id,
+        edge_type: "follows",
+        label: "生成草稿"
+      });
+    }
+    setWorkspaceMessage("章节草稿已生成。");
+    await boardQuery.refetch();
+  }
+
+  async function copyBoardMarkdown() {
+    const markdown = buildWritingExportMarkdown(board, writingNodes, writingEdges);
+    await navigator.clipboard.writeText(markdown);
+    setWorkspaceMessage("已复制写作网络 Markdown。");
+  }
+
+  const xyNodes: Node<WritingNodeData, "writingNode">[] = useMemo(
+    () =>
+      writingNodes.map((node) => ({
+        id: node.node_id,
+        type: "writingNode",
+        position: {
+          x: Number(node.position?.x || 80),
+          y: Number(node.position?.y || 80)
+        },
+        data: {
+          node,
+          selected: selectedSectionId === node.node_id,
+          running: runningNodeId === node.node_id,
+          suggestions: suggestions[node.node_id] || [],
+          canAddToSection: Boolean(selectedSectionId && node.node_type === "answer"),
+          onPatch: (nodeId, patch) => void patchNode(nodeId, patch),
+          onRunAsk: (target) => void runAsk(target),
+          onSuggest: (target, direction) => void requestSuggestions(target, direction),
+          onAcceptSuggestion: (target, suggestion) => void acceptSuggestion(target, suggestion),
+          onAddToSection: (target) => void addAnswerToSection(target),
+          onDelete: (target) => void removeNode(target),
+          onToggleExpanded: (target) => {
+            const metadata = { ...(target.metadata || {}), expanded: target.metadata?.expanded !== true };
+            void patchNode(target.node_id, { metadata });
+          }
+        }
+      })),
+    [selectedSectionId, runningNodeId, suggestions, writingNodes]
+  );
+  const xyEdges: Edge[] = useMemo(
+    () =>
+      writingEdges.map((edge) => ({
+        id: edge.edge_id,
+        source: edge.source_node_id,
+        target: edge.target_node_id,
+        label: edge.label || writingEdgeLabel(edge.edge_type),
+        type: "smoothstep",
+        markerEnd: { type: MarkerType.ArrowClosed, width: 15, height: 15 },
+        className: `writing-edge writing-edge-${edge.edge_type}`
+      })),
+    [writingEdges]
+  );
+
+  if (boardsQuery.isLoading) {
+    return <section className="main-workspace writing-surface"><div className="review-empty">正在加载写作网络...</div></section>;
+  }
+
+  if (!activeBoardId) {
+    return (
+      <section className="main-workspace writing-surface writing-empty-state" aria-label="Writing Workspace">
+        <div className="writing-start-panel">
+          <span className="eyebrow">Writing Workspace</span>
+          <h1>从一个问题开始，让文章自己长出来。</h1>
+          <textarea value={newGoal} onChange={(event) => setNewGoal(event.target.value)} placeholder="我要写一篇关于……的文章/备忘录/报告，需要先弄清楚……" />
+          <button className="primary" type="button" onClick={() => void createBoard()}>
+            创建问题网络
+          </button>
+          {boardsQuery.isError ? <small>写作工作区暂时无法加载，请检查后端或登录状态。</small> : null}
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section className="main-workspace writing-surface" aria-label="Writing Workspace">
+      <div className="writing-toolbar">
+        <select value={activeBoardId} onChange={(event) => setActiveBoardId(event.target.value)} aria-label="写作网络">
+          {boards.map((item) => (
+            <option value={item.board_id} key={item.board_id}>{item.title || item.board_id}</option>
+          ))}
+        </select>
+        <button type="button" onClick={() => void addNode("question")}>问题</button>
+        <button type="button" onClick={() => void addNode("section")}>章节</button>
+        <button type="button" onClick={() => void copyBoardMarkdown()}>导出 Markdown</button>
+        <button type="button" onClick={onPinCurrent}>
+          <Pin size={15} />
+          {pinStatus === "saved" ? "已置顶" : pinStatus === "failed" ? "失败" : "置顶"}
+        </button>
+      </div>
+      <div className="writing-board-title">
+        <input value={board?.title || ""} onChange={(event) => void patchBoard({ title: event.target.value })} aria-label="标题" />
+        <input value={board?.goal || ""} onChange={(event) => void patchBoard({ goal: event.target.value })} aria-label="目标" placeholder="写作目标" />
+      </div>
+      <div className="writing-canvas-shell">
+        <ReactFlow nodes={xyNodes} edges={xyEdges} nodeTypes={nodeTypes} onConnect={onConnect} onNodeDragStop={onNodeDragStop} fitView>
+          <Background gap={26} color="#ddd8cb" />
+          <Controls />
+          <MiniMap pannable zoomable />
+        </ReactFlow>
+      </div>
+      <WritingComposer
+        board={board}
+        nodes={writingNodes}
+        edges={writingEdges}
+        selectedSectionId={selectedSectionId}
+        onSelectSection={setSelectedSectionId}
+        onCompose={() => void composeSection()}
+        onCopy={() => void copyBoardMarkdown()}
+        message={workspaceMessage}
+        askPreview={runningNodeId ? askPreviews[runningNodeId] : undefined}
+      />
+    </section>
+  );
+}
+
+type WritingFlowNode = Node<WritingNodeData, "writingNode">;
+
+function WritingCanvasNode({ data }: NodeProps<WritingFlowNode>) {
+  const node = data.node;
+  const expanded = node.metadata?.expanded === true;
+  const [draftTitle, setDraftTitle] = useState(node.title);
+  const [draftBody, setDraftBody] = useState(node.body_markdown || "");
+
+  useEffect(() => {
+    setDraftTitle(node.title);
+    setDraftBody(node.body_markdown || "");
+  }, [node.node_id, node.title, node.body_markdown]);
+
+  function save() {
+    data.onPatch(node.node_id, { title: draftTitle, body_markdown: draftBody });
+  }
+
+  return (
+    <div className={`writing-node writing-node-${node.node_type} ${expanded ? "expanded" : ""} ${data.selected ? "selected" : ""}`}>
+      <Handle type="target" position={Position.Left} />
+      <div className="writing-node-top">
+        <span>{writingNodeLabel(node.node_type)}</span>
+        <small>{data.running ? "运行中" : node.status || "idle"}</small>
+      </div>
+      {expanded ? (
+        <div className="writing-node-editor nodrag">
+          <input value={draftTitle} onChange={(event) => setDraftTitle(event.target.value)} onBlur={save} />
+          <textarea value={draftBody} onChange={(event) => setDraftBody(event.target.value)} onBlur={save} placeholder="写下问题、答案、证据或章节草稿。" />
+          {draftBody ? <MarkdownAnswer content={draftBody} /> : null}
+        </div>
+      ) : (
+        <>
+          <h3>{displayText(node.title, writingNodeDefaultTitle(node.node_type))}</h3>
+          {node.body_markdown ? <p>{trimText(node.body_markdown, 170)}</p> : null}
+        </>
+      )}
+      {node.citations?.length || node.source_refs?.length ? (
+        <div className="writing-node-citation-bar">
+          <span>引用 {(node.citations || node.source_refs || []).length}</span>
+        </div>
+      ) : null}
+      <div className="writing-node-actions nodrag">
+        <button type="button" onClick={() => data.onToggleExpanded(node)}>{expanded ? "收起" : "展开"}</button>
+        {node.node_type === "question" ? <button type="button" onClick={() => data.onRunAsk(node)} disabled={data.running}>Ask</button> : null}
+        {node.node_type === "question" || node.node_type === "answer" ? <button type="button" onClick={() => data.onSuggest(node, "followup")}>追问</button> : null}
+        {node.node_type === "goal" || node.node_type === "question" ? <button type="button" onClick={() => data.onSuggest(node, "decompose")}>拆解</button> : null}
+        {node.node_type === "answer" && data.canAddToSection ? <button type="button" onClick={() => data.onAddToSection(node)}>入章节</button> : null}
+        <button type="button" onClick={() => data.onDelete(node)}>删除</button>
+      </div>
+      {data.suggestions.length ? (
+        <div className="writing-suggestions nodrag">
+          {data.suggestions.map((suggestion, index) => (
+            <button type="button" key={suggestion.suggestion_id || index} onClick={() => data.onAcceptSuggestion(node, suggestion)}>
+              {suggestion.question}
+            </button>
+          ))}
+        </div>
+      ) : null}
+      <Handle type="source" position={Position.Right} />
+    </div>
+  );
+}
+
+function WritingComposer({
+  board,
+  nodes,
+  edges,
+  selectedSectionId,
+  onSelectSection,
+  onCompose,
+  onCopy,
+  message,
+  askPreview
+}: {
+  board?: WritingBoard;
+  nodes: WritingNode[];
+  edges: WritingEdge[];
+  selectedSectionId: string;
+  onSelectSection: (nodeId: string) => void;
+  onCompose: () => void;
+  onCopy: () => void;
+  message: string;
+  askPreview?: WorkspaceAskResponse;
+}) {
+  const sections = nodes.filter((node) => node.node_type === "section");
+  const selectedEdges = edges.filter((edge) => edge.edge_type === "included_in" && edge.target_node_id === selectedSectionId);
+  const selectedAnswerIds = new Set(selectedEdges.map((edge) => edge.source_node_id));
+  const selectedAnswers = nodes.filter((node) => selectedAnswerIds.has(node.node_id));
+  const drafts = nodes.filter((node) => node.node_type === "draft");
+  return (
+    <aside className="writing-composer" aria-label="文章结构">
+      <div>
+        <span className="eyebrow">Composer</span>
+        <h2>{board?.title || "写作网络"}</h2>
+        <p>{board?.goal || "把问题网络收束为可引用草稿。"}</p>
+      </div>
+      <label>
+        <span>当前章节</span>
+        <select value={selectedSectionId} onChange={(event) => onSelectSection(event.target.value)}>
+          {sections.map((section) => (
+            <option value={section.node_id} key={section.node_id}>{section.title}</option>
+          ))}
+        </select>
+      </label>
+      <div className="writing-composer-actions">
+        <button className="primary" type="button" onClick={onCompose}>生成章节草稿</button>
+        <button type="button" onClick={onCopy}>复制 Markdown</button>
+      </div>
+      <div className="writing-composer-section">
+        <strong>已纳入答案</strong>
+        {selectedAnswers.length ? selectedAnswers.map((answer) => (
+          <article key={answer.node_id}>
+            <span>{answer.title}</span>
+            <small>{(answer.citations || answer.source_refs || []).length} 引用</small>
+          </article>
+        )) : <p>还没有答案节点进入当前章节。</p>}
+      </div>
+      {askPreview ? (
+        <div className="writing-composer-section">
+          <strong>正在运行</strong>
+          <AskProcessTimeline steps={normalizeAskAgentSteps(askPreview.agent_steps)} rawEvents={agenticTraceEvents(askPreview)} />
+        </div>
+      ) : null}
+      <div className="writing-composer-section">
+        <strong>草稿节点</strong>
+        {drafts.length ? drafts.slice(-3).map((draft) => (
+          <article key={draft.node_id}>
+            <span>{draft.title}</span>
+            <small>{trimText(draft.body_markdown || "", 90)}</small>
+          </article>
+        )) : <p>生成章节草稿后会出现在画布中。</p>}
+      </div>
+      {message ? <p className="writing-message">{message}</p> : null}
+    </aside>
+  );
+}
+
+function writingNodeDefaultTitle(type: WritingNodeType) {
+  const labels: Record<WritingNodeType, string> = {
+    goal: "写作目标",
+    question: "待回答问题",
+    answer: "证据回答",
+    evidence: "证据",
+    gap: "证据缺口",
+    section: "章节",
+    draft: "草稿"
+  };
+  return labels[type];
+}
+
+function writingNodeLabel(type: string) {
+  return writingNodeDefaultTitle((["goal", "question", "answer", "evidence", "gap", "section", "draft"].includes(type) ? type : "question") as WritingNodeType);
+}
+
+function writingEdgeLabel(type: string) {
+  const labels: Record<string, string> = {
+    decomposes_to: "拆解",
+    answered_by: "回答",
+    supported_by: "支持",
+    raises: "引出",
+    conflicts_with: "冲突",
+    included_in: "纳入",
+    follows: "承接"
+  };
+  return labels[type] || type;
+}
+
+function buildWritingExportMarkdown(board: WritingBoard | undefined, nodes: WritingNode[], edges: WritingEdge[]) {
+  const lines = [`# ${board?.title || "Writing Workspace"}`, ""];
+  if (board?.goal) {
+    lines.push(board.goal, "");
+  }
+  const sections = nodes.filter((node) => node.node_type === "section");
+  const nodeById = new Map(nodes.map((node) => [node.node_id, node]));
+  sections.forEach((section) => {
+    lines.push(`## ${section.title}`, "");
+    if (section.body_markdown) {
+      lines.push(section.body_markdown, "");
+    }
+    const answerIds = edges.filter((edge) => edge.edge_type === "included_in" && edge.target_node_id === section.node_id).map((edge) => edge.source_node_id);
+    answerIds.forEach((answerId) => {
+      const answer = nodeById.get(answerId);
+      if (!answer) {
+        return;
+      }
+      lines.push(`### ${answer.title}`, "", answer.body_markdown || "", "");
+      const refs = [...(answer.citations || []), ...(answer.source_refs || [])];
+      if (refs.length) {
+        lines.push("引用：");
+        refs.slice(0, 8).forEach((ref) => lines.push(`- ${displayText(ref.title || ref.source_item_id || ref.chunk_id, "来源")}`));
+        lines.push("");
+      }
+    });
+  });
+  const drafts = nodes.filter((node) => node.node_type === "draft");
+  if (drafts.length) {
+    lines.push("## Drafts", "");
+    drafts.forEach((draft) => lines.push(`### ${draft.title}`, "", draft.body_markdown || "", ""));
+  }
+  return lines.join("\n").trim();
+}
+
 function DocumentWorkspace({
   editor,
   selectedText,
@@ -4178,7 +4876,10 @@ function CanvasWorkspace({
   );
 }
 
-function CanvasCardNode({ data }: NodeProps<{ title: string; body: string; icon: "text" | "doc" | "image" | "link"; kind?: string }>) {
+type CanvasCardData = Record<string, unknown> & { title: string; body: string; icon: "text" | "doc" | "image" | "link"; kind?: string };
+type CanvasFlowNode = Node<CanvasCardData, "pskaCard">;
+
+function CanvasCardNode({ data }: NodeProps<CanvasFlowNode>) {
   const Icon = data.icon === "image" ? Image : data.icon === "link" ? Link2 : data.icon === "doc" ? FileText : TextCursorInput;
   return (
     <div className={`canvas-card ${data.kind ? `canvas-card-${data.kind}` : ""}`}>
@@ -4282,6 +4983,9 @@ function triggerLabel(trigger: BrainState["lastTrigger"]) {
 function workspaceActivityTarget(surface: WorkspaceMode) {
   if (surface === "review") {
     return { title: "Review Center", summary: "查看真实 Review 队列。" };
+  }
+  if (surface === "writing") {
+    return { title: "Writing Workspace", summary: "构造问题网络并组织可引用草稿。" };
   }
   if (surface === "canvas") {
     return { title: "画布工作区", summary: "查看画布工作区。" };

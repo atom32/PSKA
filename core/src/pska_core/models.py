@@ -278,6 +278,53 @@ class WorkspaceActivityEvent:
 
 
 @dataclass(slots=True)
+class WritingBoard:
+    board_id: str
+    owner_user_id: str
+    title: str
+    goal: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
+    tenant_id: str = DEFAULT_TENANT_ID
+
+
+@dataclass(slots=True)
+class WritingNode:
+    node_id: str
+    board_id: str
+    owner_user_id: str
+    node_type: str
+    title: str
+    body_markdown: str = ""
+    position: dict[str, Any] = field(default_factory=dict)
+    size: dict[str, Any] = field(default_factory=dict)
+    status: str = "idle"
+    source_refs: list[dict[str, Any]] = field(default_factory=list)
+    citations: list[dict[str, Any]] = field(default_factory=list)
+    quality_signals: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
+    tenant_id: str = DEFAULT_TENANT_ID
+
+
+@dataclass(slots=True)
+class WritingEdge:
+    edge_id: str
+    board_id: str
+    owner_user_id: str
+    source_node_id: str
+    target_node_id: str
+    edge_type: str
+    label: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
+    tenant_id: str = DEFAULT_TENANT_ID
+
+
+@dataclass(slots=True)
 class DiscoveryItem:
     discovery_id: str
     owner_user_id: str

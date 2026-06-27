@@ -32,6 +32,12 @@ Fastreact 不能直接访问 PSKA DB。PSKA 不 import Fastreact Python internal
 - 流式 API：`POST /workspace/ask/stream`
 - 兼容/诊断 API：`POST /workspace/search/query`、`POST /workspace/graph/path`
 
+Writing Workspace / Inquiry Graph 是 Ask PSKA 的组织层，而不是新的问答入口。
+问题节点运行时仍调用 `/workspace/ask/stream`，并传入
+`surface="writing"` 与 `scope={board_id,node_id}`；answer/evidence/gap 节点只保存
+Ask 的结果、引用和缺口。章节 `compose` 只使用已纳入的 answer 节点生成 Markdown，
+不得重新检索或绕过 Ask Router。
+
 `/workspace/ask` 返回 `answer`、`route`、`evidence`、`citations`、`source_refs`、
 `agent_steps`、`trace` 和 `timing`。UI 只展示结论、引用、证据、缺口/冲突、
 agentic 检索过程和可复制 Markdown；`trace.events` 只用于调试、eval 和证明工具边界，

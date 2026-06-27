@@ -10,3 +10,5 @@
 
 - PSKA is a domain-agnostic knowledge system. Do not improve answer quality with domain-specific hardcoded rules, fixture-specific shortcuts, or question-specific special cases.
 - If a behavior needs higher answer quality, implement it as a generic mechanism with cross-domain tests, not as logic keyed to sample entities, sample wording, or a single benchmark corpus.
+- Writing Workspace / Inquiry Graph is a generic writing system. Do not add sample-corpus shortcuts, sample-company routing, or question-specific expansion rules; question suggestions and draft composition must remain domain-agnostic.
+- PSKA dev verification must start the integrated system through `./start.sh`; do not start frontend/backend processes separately unless the user explicitly asks for isolated debugging.

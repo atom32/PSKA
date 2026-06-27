@@ -29,6 +29,9 @@ from pska_core.models import (
     User,
     UserProfileCard,
     WorkspaceActivityEvent,
+    WritingBoard,
+    WritingEdge,
+    WritingNode,
     utc_now,
 )
 from pska_core.enums import Visibility
@@ -165,6 +168,41 @@ class KnowledgeStore(Protocol):
         activity_types: set[str] | None = None,
         limit: int = 50,
     ) -> list[WorkspaceActivityEvent]: ...
+    def create_writing_board(self, board: WritingBoard) -> WritingBoard: ...
+    def update_writing_board(
+        self,
+        board_id: str,
+        *,
+        tenant_id: str,
+        owner_user_id: str,
+        title: str | None = None,
+        goal: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> WritingBoard: ...
+    def get_writing_board(self, board_id: str, *, tenant_id: str, owner_user_id: str) -> WritingBoard: ...
+    def list_writing_boards(self, *, tenant_id: str, owner_user_id: str, limit: int = 50) -> list[WritingBoard]: ...
+    def upsert_writing_node(self, node: WritingNode) -> WritingNode: ...
+    def update_writing_node(
+        self,
+        node_id: str,
+        *,
+        tenant_id: str,
+        owner_user_id: str,
+        title: str | None = None,
+        body_markdown: str | None = None,
+        position: dict[str, Any] | None = None,
+        size: dict[str, Any] | None = None,
+        status: str | None = None,
+        source_refs: list[dict[str, Any]] | None = None,
+        citations: list[dict[str, Any]] | None = None,
+        quality_signals: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> WritingNode: ...
+    def delete_writing_node(self, node_id: str, *, tenant_id: str, owner_user_id: str) -> None: ...
+    def list_writing_nodes(self, board_id: str, *, tenant_id: str, owner_user_id: str) -> list[WritingNode]: ...
+    def upsert_writing_edge(self, edge: WritingEdge) -> WritingEdge: ...
+    def delete_writing_edge(self, edge_id: str, *, tenant_id: str, owner_user_id: str) -> None: ...
+    def list_writing_edges(self, board_id: str, *, tenant_id: str, owner_user_id: str) -> list[WritingEdge]: ...
     def upsert_discovery_item(self, item: DiscoveryItem) -> DiscoveryItem: ...
     def update_discovery_item_status(self, discovery_id: str, status: str) -> DiscoveryItem: ...
     def list_discovery_items(
@@ -225,6 +263,9 @@ class InMemoryKnowledgeStore:
         self.job_events: list[JobEvent] = []
         self.offline_index_states: dict[tuple[str, str, str], OfflineIndexState] = {}
         self.workspace_activity_events: list[WorkspaceActivityEvent] = []
+        self.writing_boards: dict[str, WritingBoard] = {}
+        self.writing_nodes: dict[str, WritingNode] = {}
+        self.writing_edges: dict[str, WritingEdge] = {}
         self.discovery_items: dict[str, DiscoveryItem] = {}
 
     def add_user(self, user: User) -> None:
@@ -713,6 +754,145 @@ class InMemoryKnowledgeStore:
             events = [event for event in events if event.activity_type in activity_types]
         events = sorted(events, key=lambda event: (event.created_at, event.workspace_activity_event_id), reverse=True)
         return events[: max(0, limit)]
+
+    def create_writing_board(self, board: WritingBoard) -> WritingBoard:
+        self.writing_boards[board.board_id] = board
+        return board
+
+    def update_writing_board(
+        self,
+        board_id: str,
+        *,
+        tenant_id: str,
+        owner_user_id: str,
+        title: str | None = None,
+        goal: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> WritingBoard:
+        board = self.get_writing_board(board_id, tenant_id=tenant_id, owner_user_id=owner_user_id)
+        if title is not None:
+            board.title = title
+        if goal is not None:
+            board.goal = goal
+        if metadata is not None:
+            board.metadata = dict(metadata)
+        board.updated_at = utc_now()
+        return board
+
+    def get_writing_board(self, board_id: str, *, tenant_id: str, owner_user_id: str) -> WritingBoard:
+        board = self.writing_boards[board_id]
+        if board.tenant_id != tenant_id or board.owner_user_id != owner_user_id:
+            raise KeyError(board_id)
+        return board
+
+    def list_writing_boards(self, *, tenant_id: str, owner_user_id: str, limit: int = 50) -> list[WritingBoard]:
+        boards = [
+            board
+            for board in self.writing_boards.values()
+            if board.tenant_id == tenant_id and board.owner_user_id == owner_user_id
+        ]
+        return sorted(boards, key=lambda board: (board.updated_at, board.board_id), reverse=True)[: max(0, limit)]
+
+    def upsert_writing_node(self, node: WritingNode) -> WritingNode:
+        self.get_writing_board(node.board_id, tenant_id=node.tenant_id, owner_user_id=node.owner_user_id)
+        existing = self.writing_nodes.get(node.node_id)
+        if existing:
+            if existing.tenant_id != node.tenant_id or existing.owner_user_id != node.owner_user_id:
+                raise KeyError(node.node_id)
+            node.created_at = existing.created_at
+        node.updated_at = utc_now()
+        self.writing_nodes[node.node_id] = node
+        return node
+
+    def update_writing_node(
+        self,
+        node_id: str,
+        *,
+        tenant_id: str,
+        owner_user_id: str,
+        title: str | None = None,
+        body_markdown: str | None = None,
+        position: dict[str, Any] | None = None,
+        size: dict[str, Any] | None = None,
+        status: str | None = None,
+        source_refs: list[dict[str, Any]] | None = None,
+        citations: list[dict[str, Any]] | None = None,
+        quality_signals: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> WritingNode:
+        node = self.writing_nodes[node_id]
+        if node.tenant_id != tenant_id or node.owner_user_id != owner_user_id:
+            raise KeyError(node_id)
+        if title is not None:
+            node.title = title
+        if body_markdown is not None:
+            node.body_markdown = body_markdown
+        if position is not None:
+            node.position = dict(position)
+        if size is not None:
+            node.size = dict(size)
+        if status is not None:
+            node.status = status
+        if source_refs is not None:
+            node.source_refs = list(source_refs)
+        if citations is not None:
+            node.citations = list(citations)
+        if quality_signals is not None:
+            node.quality_signals = dict(quality_signals)
+        if metadata is not None:
+            node.metadata = dict(metadata)
+        node.updated_at = utc_now()
+        return node
+
+    def delete_writing_node(self, node_id: str, *, tenant_id: str, owner_user_id: str) -> None:
+        node = self.writing_nodes[node_id]
+        if node.tenant_id != tenant_id or node.owner_user_id != owner_user_id:
+            raise KeyError(node_id)
+        del self.writing_nodes[node_id]
+        self.writing_edges = {
+            edge_id: edge
+            for edge_id, edge in self.writing_edges.items()
+            if edge.source_node_id != node_id and edge.target_node_id != node_id
+        }
+
+    def list_writing_nodes(self, board_id: str, *, tenant_id: str, owner_user_id: str) -> list[WritingNode]:
+        self.get_writing_board(board_id, tenant_id=tenant_id, owner_user_id=owner_user_id)
+        nodes = [
+            node
+            for node in self.writing_nodes.values()
+            if node.board_id == board_id and node.tenant_id == tenant_id and node.owner_user_id == owner_user_id
+        ]
+        return sorted(nodes, key=lambda node: (node.created_at, node.node_id))
+
+    def upsert_writing_edge(self, edge: WritingEdge) -> WritingEdge:
+        self.get_writing_board(edge.board_id, tenant_id=edge.tenant_id, owner_user_id=edge.owner_user_id)
+        for node_id in [edge.source_node_id, edge.target_node_id]:
+            node = self.writing_nodes[node_id]
+            if node.board_id != edge.board_id or node.tenant_id != edge.tenant_id or node.owner_user_id != edge.owner_user_id:
+                raise KeyError(node_id)
+        existing = self.writing_edges.get(edge.edge_id)
+        if existing:
+            if existing.tenant_id != edge.tenant_id or existing.owner_user_id != edge.owner_user_id:
+                raise KeyError(edge.edge_id)
+            edge.created_at = existing.created_at
+        edge.updated_at = utc_now()
+        self.writing_edges[edge.edge_id] = edge
+        return edge
+
+    def delete_writing_edge(self, edge_id: str, *, tenant_id: str, owner_user_id: str) -> None:
+        edge = self.writing_edges[edge_id]
+        if edge.tenant_id != tenant_id or edge.owner_user_id != owner_user_id:
+            raise KeyError(edge_id)
+        del self.writing_edges[edge_id]
+
+    def list_writing_edges(self, board_id: str, *, tenant_id: str, owner_user_id: str) -> list[WritingEdge]:
+        self.get_writing_board(board_id, tenant_id=tenant_id, owner_user_id=owner_user_id)
+        edges = [
+            edge
+            for edge in self.writing_edges.values()
+            if edge.board_id == board_id and edge.tenant_id == tenant_id and edge.owner_user_id == owner_user_id
+        ]
+        return sorted(edges, key=lambda edge: (edge.created_at, edge.edge_id))
 
     def upsert_discovery_item(self, item: DiscoveryItem) -> DiscoveryItem:
         existing = self.discovery_items.get(item.discovery_id)

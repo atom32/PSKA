@@ -34,7 +34,17 @@ from pska_core.jobs import DIGEST_VIA_FASTREACT, JobService
 from pska_core.knowledge_sources import KnowledgeSourceService
 from pska_core.memory import MemoryService
 from pska_core.mcp_server import MCPServer, PROTOCOL_VERSION
-from pska_core.models import DEFAULT_TENANT_ID, ChannelIngestPayload, PassageWindow, ReviewItem, SourceRef, WorkspaceActivityEvent
+from pska_core.models import (
+    DEFAULT_TENANT_ID,
+    ChannelIngestPayload,
+    PassageWindow,
+    ReviewItem,
+    SourceRef,
+    WorkspaceActivityEvent,
+    WritingBoard,
+    WritingEdge,
+    WritingNode,
+)
 from pska_core.offline_index import OfflineIndexService
 from pska_core.retrieval import RetrievalService
 from pska_core.review import ReviewService
@@ -103,6 +113,9 @@ class PSKAApi:
             "review_items": self.store.count_table("review_items"),
             "jobs": self.store.count_table("jobs"),
             "offline_index_states": self.store.count_table("offline_index_states"),
+            "writing_boards": self.store.count_table("writing_boards"),
+            "writing_nodes": self.store.count_table("writing_nodes"),
+            "writing_edges": self.store.count_table("writing_edges"),
         }
 
     def _database_ready(self) -> dict[str, Any]:
@@ -131,6 +144,9 @@ class PSKAApi:
             "knowledge_sources",
             "sync_runs",
             "offline_index_states",
+            "writing_boards",
+            "writing_nodes",
+            "writing_edges",
         ]
         counts: dict[str, int] = {}
         missing: list[str] = []
@@ -1944,6 +1960,190 @@ class PSKAApi:
             },
         }
 
+    def workspace_writing_boards(
+        self,
+        *,
+        owner_user_id: str | None = None,
+        limit: int = 50,
+        context: RequestContext | None = None,
+    ) -> dict[str, Any]:
+        tenant_id = _tenant_id_for_request(context)
+        owner = _workspace_owner_user_id(context, owner_user_id)
+        boards = self.store.list_writing_boards(tenant_id=tenant_id, owner_user_id=owner, limit=limit)
+        return {"ok": True, "boards": [_writing_board_payload(board) for board in boards]}
+
+    def workspace_writing_create_board(self, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
+        payload = context.apply_to_payload(payload) if context else payload
+        tenant_id = str(payload.get("tenant_id") or DEFAULT_TENANT_ID)
+        owner = _workspace_owner_user_id(context, payload.get("owner_user_id") or payload.get("represented_user_id"))
+        title = str(payload.get("title") or "").strip() or "Untitled inquiry"
+        goal = str(payload.get("goal") or "").strip()
+        board = WritingBoard(
+            board_id=str(payload.get("board_id") or f"wboard_{uuid4().hex}"),
+            tenant_id=tenant_id,
+            owner_user_id=owner,
+            title=title,
+            goal=goal,
+            metadata=dict(payload.get("metadata") or {}),
+        )
+        created = self.store.create_writing_board(board)
+        return {"ok": True, "board": _writing_board_payload(created)}
+
+    def workspace_writing_board(self, board_id: str, *, context: RequestContext | None = None) -> dict[str, Any]:
+        tenant_id = _tenant_id_for_request(context)
+        owner = _workspace_owner_user_id(context, None)
+        board = self.store.get_writing_board(board_id, tenant_id=tenant_id, owner_user_id=owner)
+        nodes = self.store.list_writing_nodes(board_id, tenant_id=tenant_id, owner_user_id=owner)
+        edges = self.store.list_writing_edges(board_id, tenant_id=tenant_id, owner_user_id=owner)
+        return {
+            "ok": True,
+            "board": _writing_board_payload(board),
+            "nodes": [_writing_node_payload(node) for node in nodes],
+            "edges": [_writing_edge_payload(edge) for edge in edges],
+        }
+
+    def workspace_writing_update_board(self, board_id: str, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
+        payload = context.apply_to_payload(payload) if context else payload
+        tenant_id = str(payload.get("tenant_id") or DEFAULT_TENANT_ID)
+        owner = _workspace_owner_user_id(context, payload.get("owner_user_id") or payload.get("represented_user_id"))
+        board = self.store.update_writing_board(
+            board_id,
+            tenant_id=tenant_id,
+            owner_user_id=owner,
+            title=str(payload["title"]) if "title" in payload else None,
+            goal=str(payload["goal"]) if "goal" in payload else None,
+            metadata=dict(payload["metadata"]) if isinstance(payload.get("metadata"), dict) else None,
+        )
+        return {"ok": True, "board": _writing_board_payload(board)}
+
+    def workspace_writing_create_node(self, board_id: str, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
+        payload = context.apply_to_payload(payload) if context else payload
+        tenant_id = str(payload.get("tenant_id") or DEFAULT_TENANT_ID)
+        owner = _workspace_owner_user_id(context, payload.get("owner_user_id") or payload.get("represented_user_id"))
+        node_type = _writing_node_type(str(payload.get("node_type") or payload.get("type") or "question"))
+        node = WritingNode(
+            node_id=str(payload.get("node_id") or f"wnode_{uuid4().hex}"),
+            board_id=board_id,
+            tenant_id=tenant_id,
+            owner_user_id=owner,
+            node_type=node_type,
+            title=str(payload.get("title") or _writing_default_node_title(node_type)).strip(),
+            body_markdown=str(payload.get("body_markdown") or payload.get("body") or ""),
+            position=dict(payload.get("position") or {}),
+            size=dict(payload.get("size") or {}),
+            status=str(payload.get("status") or "idle"),
+            source_refs=list(payload.get("source_refs") or []),
+            citations=list(payload.get("citations") or []),
+            quality_signals=dict(payload.get("quality_signals") or {}),
+            metadata=dict(payload.get("metadata") or {}),
+        )
+        created = self.store.upsert_writing_node(node)
+        return {"ok": True, "node": _writing_node_payload(created)}
+
+    def workspace_writing_update_node(self, board_id: str, node_id: str, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
+        payload = context.apply_to_payload(payload) if context else payload
+        tenant_id = str(payload.get("tenant_id") or DEFAULT_TENANT_ID)
+        owner = _workspace_owner_user_id(context, payload.get("owner_user_id") or payload.get("represented_user_id"))
+        if node_id not in {node.node_id for node in self.store.list_writing_nodes(board_id, tenant_id=tenant_id, owner_user_id=owner)}:
+            raise KeyError(node_id)
+        node = self.store.update_writing_node(
+            node_id,
+            tenant_id=tenant_id,
+            owner_user_id=owner,
+            title=str(payload["title"]) if "title" in payload else None,
+            body_markdown=str(payload["body_markdown"]) if "body_markdown" in payload else None,
+            position=dict(payload["position"]) if isinstance(payload.get("position"), dict) else None,
+            size=dict(payload["size"]) if isinstance(payload.get("size"), dict) else None,
+            status=str(payload["status"]) if "status" in payload else None,
+            source_refs=list(payload["source_refs"]) if isinstance(payload.get("source_refs"), list) else None,
+            citations=list(payload["citations"]) if isinstance(payload.get("citations"), list) else None,
+            quality_signals=dict(payload["quality_signals"]) if isinstance(payload.get("quality_signals"), dict) else None,
+            metadata=dict(payload["metadata"]) if isinstance(payload.get("metadata"), dict) else None,
+        )
+        if node.board_id != board_id:
+            raise KeyError(node_id)
+        return {"ok": True, "node": _writing_node_payload(node)}
+
+    def workspace_writing_delete_node(self, board_id: str, node_id: str, payload: dict[str, Any] | None = None, context: RequestContext | None = None) -> dict[str, Any]:
+        payload = context.apply_to_payload(payload or {}) if context else (payload or {})
+        tenant_id = str(payload.get("tenant_id") or DEFAULT_TENANT_ID)
+        owner = _workspace_owner_user_id(context, payload.get("owner_user_id") or payload.get("represented_user_id"))
+        if node_id not in {node.node_id for node in self.store.list_writing_nodes(board_id, tenant_id=tenant_id, owner_user_id=owner)}:
+            raise KeyError(node_id)
+        self.store.delete_writing_node(node_id, tenant_id=tenant_id, owner_user_id=owner)
+        return {"ok": True, "deleted": {"node_id": node_id}}
+
+    def workspace_writing_create_edge(self, board_id: str, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
+        payload = context.apply_to_payload(payload) if context else payload
+        tenant_id = str(payload.get("tenant_id") or DEFAULT_TENANT_ID)
+        owner = _workspace_owner_user_id(context, payload.get("owner_user_id") or payload.get("represented_user_id"))
+        edge = WritingEdge(
+            edge_id=str(payload.get("edge_id") or f"wedge_{uuid4().hex}"),
+            board_id=board_id,
+            tenant_id=tenant_id,
+            owner_user_id=owner,
+            source_node_id=str(payload.get("source_node_id") or payload.get("source") or ""),
+            target_node_id=str(payload.get("target_node_id") or payload.get("target") or ""),
+            edge_type=_writing_edge_type(str(payload.get("edge_type") or payload.get("type") or "raises")),
+            label=str(payload.get("label") or ""),
+            metadata=dict(payload.get("metadata") or {}),
+        )
+        created = self.store.upsert_writing_edge(edge)
+        return {"ok": True, "edge": _writing_edge_payload(created)}
+
+    def workspace_writing_delete_edge(self, board_id: str, edge_id: str, payload: dict[str, Any] | None = None, context: RequestContext | None = None) -> dict[str, Any]:
+        payload = context.apply_to_payload(payload or {}) if context else (payload or {})
+        tenant_id = str(payload.get("tenant_id") or DEFAULT_TENANT_ID)
+        owner = _workspace_owner_user_id(context, payload.get("owner_user_id") or payload.get("represented_user_id"))
+        if edge_id not in {edge.edge_id for edge in self.store.list_writing_edges(board_id, tenant_id=tenant_id, owner_user_id=owner)}:
+            raise KeyError(edge_id)
+        self.store.delete_writing_edge(edge_id, tenant_id=tenant_id, owner_user_id=owner)
+        return {"ok": True, "deleted": {"edge_id": edge_id}}
+
+    def workspace_writing_suggest_questions(self, board_id: str, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
+        payload = context.apply_to_payload(payload) if context else payload
+        tenant_id = str(payload.get("tenant_id") or DEFAULT_TENANT_ID)
+        owner = _workspace_owner_user_id(context, payload.get("owner_user_id") or payload.get("represented_user_id"))
+        board = self.store.get_writing_board(board_id, tenant_id=tenant_id, owner_user_id=owner)
+        nodes = self.store.list_writing_nodes(board_id, tenant_id=tenant_id, owner_user_id=owner)
+        focus_node_id = str(payload.get("node_id") or "")
+        focus = next((node for node in nodes if node.node_id == focus_node_id), None)
+        direction = str(payload.get("direction") or "followup")
+        return {
+            "ok": True,
+            "board_id": board_id,
+            "node_id": focus_node_id or None,
+            "direction": direction,
+            "persisted": False,
+            "suggestions": _writing_question_suggestions(board, nodes, focus, direction=direction),
+        }
+
+    def workspace_writing_compose(self, board_id: str, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
+        payload = context.apply_to_payload(payload) if context else payload
+        tenant_id = str(payload.get("tenant_id") or DEFAULT_TENANT_ID)
+        owner = _workspace_owner_user_id(context, payload.get("owner_user_id") or payload.get("represented_user_id"))
+        board = self.store.get_writing_board(board_id, tenant_id=tenant_id, owner_user_id=owner)
+        nodes = self.store.list_writing_nodes(board_id, tenant_id=tenant_id, owner_user_id=owner)
+        node_by_id = {node.node_id: node for node in nodes}
+        section_node_id = str(payload.get("section_node_id") or "")
+        answer_node_ids = [str(value) for value in payload.get("answer_node_ids") or [] if str(value)]
+        section = node_by_id.get(section_node_id)
+        answer_nodes = [
+            node
+            for node_id in answer_node_ids
+            if (node := node_by_id.get(node_id)) and node.node_type == "answer"
+        ]
+        return {
+            "ok": True,
+            "board_id": board_id,
+            "section_node_id": section_node_id or None,
+            "answer_node_ids": [node.node_id for node in answer_nodes],
+            "draft_markdown": _writing_compose_markdown(board=board, section=section, answer_nodes=answer_nodes),
+            "source_refs": _dedupe_writing_refs([ref for node in answer_nodes for ref in node.source_refs]),
+            "citations": _dedupe_writing_refs([ref for node in answer_nodes for ref in node.citations]),
+            "retrieval_used": False,
+        }
+
     def console_memory(self, *, owner_user_id: str = "user_primary", tenant_id: str | None = None, limit: int = 50) -> dict[str, Any]:
         limit = max(0, limit)
         tenant_id = tenant_id or DEFAULT_TENANT_ID
@@ -2510,6 +2710,19 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
                     context=context,
                 ),
             )
+        if path == "/workspace/writing/boards":
+            return self._json(
+                200,
+                self.api.workspace_writing_boards(
+                    owner_user_id=_first(query.get("owner_user_id")),
+                    limit=_int_first(query.get("limit")) or 50,
+                    context=context,
+                ),
+            )
+        if path.startswith("/workspace/writing/boards/"):
+            parts = _writing_path_parts(path)
+            if len(parts) == 1:
+                return self._json(200, self.api.workspace_writing_board(unquote(parts[0]), context=context))
         if path == "/review-items":
             return self._json(200, self.api.review_items(tenant_id=context.tenant_id))
         if path == "/connectors/states":
@@ -2583,6 +2796,18 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
                 return self._json(200, self.api.workspace_writer_suggest(payload, context=context))
             if path == "/workspace/activity":
                 return self._json(200, self.api.record_workspace_activity(payload, context=context))
+            if path == "/workspace/writing/boards":
+                return self._json(200, self.api.workspace_writing_create_board(payload, context=context))
+            if path.startswith("/workspace/writing/boards/"):
+                parts = _writing_path_parts(path)
+                if len(parts) == 2 and parts[1] == "nodes":
+                    return self._json(200, self.api.workspace_writing_create_node(unquote(parts[0]), payload, context=context))
+                if len(parts) == 2 and parts[1] == "edges":
+                    return self._json(200, self.api.workspace_writing_create_edge(unquote(parts[0]), payload, context=context))
+                if len(parts) == 2 and parts[1] == "suggest-questions":
+                    return self._json(200, self.api.workspace_writing_suggest_questions(unquote(parts[0]), payload, context=context))
+                if len(parts) == 2 and parts[1] == "compose":
+                    return self._json(200, self.api.workspace_writing_compose(unquote(parts[0]), payload, context=context))
             if path.startswith("/workspace/discoveries/") and path.endswith("/accept"):
                 discovery_id = path.removeprefix("/workspace/discoveries/").removesuffix("/accept")
                 return self._json(200, self.api.accept_discovery_item(discovery_id, payload))
@@ -2642,6 +2867,70 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
                 job_id = path.removeprefix("/jobs/").removesuffix("/retry")
                 return self._json(200, self.api.retry_job(job_id, context=context))
             self._json(404, {"error": f"not found: {path}"})
+        except KeyError as exc:
+            if not hasattr(self, "_request_meta"):
+                self._begin_request(path=path, payload={})
+            self._json(404, {"error": f"not found: {exc}"})
+        except PermissionError as exc:
+            if not hasattr(self, "_request_meta"):
+                self._begin_request(path=path, payload={})
+            self._json(403, {"error": str(exc)})
+        except Exception as exc:  # noqa: BLE001 - local API should report JSON errors.
+            if not hasattr(self, "_request_meta"):
+                self._begin_request(path=path, payload={})
+            self._json(500, {"error": f"{type(exc).__name__}: {exc}"})
+
+    def do_PATCH(self) -> None:  # noqa: N802 - stdlib handler API
+        path = urlparse(self.path).path
+        try:
+            payload = self._read_json()
+            self._begin_request(path=path, payload=payload)
+            context = self._context(payload)
+            if context is None:
+                return
+            if path.startswith("/workspace/writing/boards/"):
+                parts = _writing_path_parts(path)
+                if len(parts) == 1:
+                    return self._json(200, self.api.workspace_writing_update_board(unquote(parts[0]), payload, context=context))
+                if len(parts) == 3 and parts[1] == "nodes":
+                    return self._json(200, self.api.workspace_writing_update_node(unquote(parts[0]), unquote(parts[2]), payload, context=context))
+            self._json(404, {"error": f"not found: {path}"})
+        except KeyError as exc:
+            if not hasattr(self, "_request_meta"):
+                self._begin_request(path=path, payload={})
+            self._json(404, {"error": f"not found: {exc}"})
+        except PermissionError as exc:
+            if not hasattr(self, "_request_meta"):
+                self._begin_request(path=path, payload={})
+            self._json(403, {"error": str(exc)})
+        except Exception as exc:  # noqa: BLE001 - local API should report JSON errors.
+            if not hasattr(self, "_request_meta"):
+                self._begin_request(path=path, payload={})
+            self._json(500, {"error": f"{type(exc).__name__}: {exc}"})
+
+    def do_DELETE(self) -> None:  # noqa: N802 - stdlib handler API
+        path = urlparse(self.path).path
+        try:
+            payload = self._read_json()
+            self._begin_request(path=path, payload=payload)
+            context = self._context(payload)
+            if context is None:
+                return
+            if path.startswith("/workspace/writing/boards/"):
+                parts = _writing_path_parts(path)
+                if len(parts) == 3 and parts[1] == "nodes":
+                    return self._json(200, self.api.workspace_writing_delete_node(unquote(parts[0]), unquote(parts[2]), payload, context=context))
+                if len(parts) == 3 and parts[1] == "edges":
+                    return self._json(200, self.api.workspace_writing_delete_edge(unquote(parts[0]), unquote(parts[2]), payload, context=context))
+            self._json(404, {"error": f"not found: {path}"})
+        except KeyError as exc:
+            if not hasattr(self, "_request_meta"):
+                self._begin_request(path=path, payload={})
+            self._json(404, {"error": f"not found: {exc}"})
+        except PermissionError as exc:
+            if not hasattr(self, "_request_meta"):
+                self._begin_request(path=path, payload={})
+            self._json(403, {"error": str(exc)})
         except Exception as exc:  # noqa: BLE001 - local API should report JSON errors.
             if not hasattr(self, "_request_meta"):
                 self._begin_request(path=path, payload={})
@@ -6355,6 +6644,188 @@ def _workspace_writer_query(selected_text: str, draft_text: str, instruction: st
     return " ".join(part for part in [basis[:260], instruction[:160]] if part).strip()
 
 
+def _writing_board_payload(board: WritingBoard) -> dict[str, Any]:
+    return {
+        "board_id": board.board_id,
+        "tenant_id": board.tenant_id,
+        "owner_user_id": board.owner_user_id,
+        "title": board.title,
+        "goal": board.goal,
+        "metadata": board.metadata,
+        "created_at": board.created_at.isoformat(),
+        "updated_at": board.updated_at.isoformat(),
+    }
+
+
+def _writing_node_payload(node: WritingNode) -> dict[str, Any]:
+    return {
+        "node_id": node.node_id,
+        "board_id": node.board_id,
+        "tenant_id": node.tenant_id,
+        "owner_user_id": node.owner_user_id,
+        "node_type": node.node_type,
+        "title": node.title,
+        "body_markdown": node.body_markdown,
+        "position": node.position,
+        "size": node.size,
+        "status": node.status,
+        "source_refs": node.source_refs,
+        "citations": node.citations,
+        "quality_signals": node.quality_signals,
+        "metadata": node.metadata,
+        "created_at": node.created_at.isoformat(),
+        "updated_at": node.updated_at.isoformat(),
+    }
+
+
+def _writing_edge_payload(edge: WritingEdge) -> dict[str, Any]:
+    return {
+        "edge_id": edge.edge_id,
+        "board_id": edge.board_id,
+        "tenant_id": edge.tenant_id,
+        "owner_user_id": edge.owner_user_id,
+        "source_node_id": edge.source_node_id,
+        "target_node_id": edge.target_node_id,
+        "edge_type": edge.edge_type,
+        "label": edge.label,
+        "metadata": edge.metadata,
+        "created_at": edge.created_at.isoformat(),
+        "updated_at": edge.updated_at.isoformat(),
+    }
+
+
+def _writing_node_type(value: str) -> str:
+    allowed = {"goal", "question", "answer", "evidence", "gap", "section", "draft"}
+    return value if value in allowed else "question"
+
+
+def _writing_edge_type(value: str) -> str:
+    allowed = {"decomposes_to", "answered_by", "supported_by", "raises", "conflicts_with", "included_in", "follows"}
+    return value if value in allowed else "raises"
+
+
+def _writing_default_node_title(node_type: str) -> str:
+    labels = {
+        "goal": "写作目标",
+        "question": "待回答问题",
+        "answer": "证据回答",
+        "evidence": "证据",
+        "gap": "缺口",
+        "section": "章节",
+        "draft": "草稿",
+    }
+    return labels.get(node_type, "写作节点")
+
+
+def _writing_question_suggestions(
+    board: WritingBoard,
+    nodes: list[WritingNode],
+    focus: WritingNode | None,
+    *,
+    direction: str,
+) -> list[dict[str, Any]]:
+    basis = " ".join(part for part in [focus.title if focus else "", focus.body_markdown if focus else "", board.goal, board.title] if part).strip()
+    topic = _trim_words(basis, 28) or "当前写作目标"
+    existing_questions = {
+        _normalize_question_text(node.title or node.body_markdown)
+        for node in nodes
+        if node.node_type == "question"
+    }
+    templates = {
+        "decompose": [
+            ("结构拆解", "要把“{topic}”写清楚，至少需要回答哪几个部分？"),
+            ("核心判断", "这篇内容最终需要证明或判断的中心命题是什么？"),
+            ("读者路径", "读者理解“{topic}”之前，必须先知道哪些背景？"),
+        ],
+        "evidence_gap": [
+            ("证据缺口", "围绕“{topic}”，目前最需要补证据的是哪一处？"),
+            ("可引用来源", "哪些来源可以直接支撑“{topic}”，哪些只能作为背景？"),
+            ("反证检查", "有哪些证据可能削弱或反驳当前判断？"),
+        ],
+        "counterpoint": [
+            ("相反观点", "如果反对“{topic}”的结论，最强理由会是什么？"),
+            ("边界条件", "在什么条件下，当前结论需要降级或改写？"),
+            ("冲突梳理", "现有资料之间是否存在冲突、时间差或口径差？"),
+        ],
+        "followup": [
+            ("继续追问", "这个回答还引出了哪一个最值得继续查的问题？"),
+            ("章节定位", "这个答案适合放进文章的哪一部分，为什么？"),
+            ("行动结论", "基于“{topic}”，可以形成什么谨慎、可引用的下一步结论？"),
+        ],
+    }
+    selected = templates.get(direction, templates["followup"])
+    suggestions: list[dict[str, Any]] = []
+    for index, (title, question_template) in enumerate(selected):
+        question = question_template.format(topic=topic)
+        if _normalize_question_text(question) in existing_questions:
+            continue
+        suggestions.append(
+            {
+                "suggestion_id": f"suggest_{index + 1}",
+                "title": title,
+                "question": question,
+                "direction": direction,
+                "rationale": "这是通用写作追问，用于扩展论点、证据、反证或章节结构。",
+            }
+        )
+    return suggestions
+
+
+def _writing_compose_markdown(
+    *,
+    board: WritingBoard,
+    section: WritingNode | None,
+    answer_nodes: list[WritingNode],
+) -> str:
+    title = section.title if section else board.title
+    lines = [f"## {title or '写作草稿'}", ""]
+    if section and section.body_markdown.strip():
+        lines.extend([section.body_markdown.strip(), ""])
+    if not answer_nodes:
+        lines.extend(["当前章节还没有纳入答案节点。请先把有证据的 answer 节点加入章节。"])
+        return "\n".join(lines).strip()
+    for index, node in enumerate(answer_nodes, start=1):
+        if node.title:
+            lines.append(f"### {index}. {node.title}")
+        body = node.body_markdown.strip() or "该答案节点还没有正文。"
+        lines.extend([body, ""])
+        refs = _dedupe_writing_refs([*node.citations, *node.source_refs])
+        if refs:
+            lines.append("引用：")
+            for ref_index, ref in enumerate(refs[:6], start=1):
+                title_ref = str(ref.get("title") or ref.get("source_item_id") or ref.get("chunk_id") or f"来源 {ref_index}")
+                source_id = str(ref.get("source_item_id") or "")
+                suffix = f" ({source_id})" if source_id and source_id != title_ref else ""
+                lines.append(f"- {title_ref}{suffix}")
+            lines.append("")
+    return "\n".join(lines).strip()
+
+
+def _dedupe_writing_refs(refs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    result: list[dict[str, Any]] = []
+    for ref in refs:
+        if not isinstance(ref, dict):
+            continue
+        key = "|".join(str(ref.get(part) or "") for part in ["source_item_id", "chunk_id", "title", "url"])
+        if not key.strip("|") or key in seen:
+            continue
+        seen.add(key)
+        result.append(dict(ref))
+    return result
+
+
+def _normalize_question_text(value: str) -> str:
+    return re.sub(r"\s+", "", value.strip().lower())
+
+
+def _trim_words(value: str, max_words: int) -> str:
+    words = re.split(r"\s+", value.strip())
+    if len(words) <= max_words:
+        return value.strip()
+    return " ".join(words[:max_words])
+
+
 def _workspace_writer_suggestion(
     *,
     selected_text: str,
@@ -7080,6 +7551,13 @@ def _allowed_tools_for_job(job) -> list[str]:
 
 def _first(values: list[str] | None) -> str | None:
     return values[0] if values else None
+
+
+def _writing_path_parts(path: str) -> list[str]:
+    prefix = "/workspace/writing/boards/"
+    if not path.startswith(prefix):
+        return []
+    return [part for part in path.removeprefix(prefix).split("/") if part]
 
 
 def _int_first(values: list[str] | None) -> int | None:

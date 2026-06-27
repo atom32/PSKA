@@ -76,9 +76,14 @@ PSKA 需要区分两个界面层次：
 
 1. Chat Workspace：用户能与 PSKA 对话，答案必须带 citations、graph evidence、memory/profile 使用说明、gaps/conflicts 和可保存的 conversation source material。
 2. Corpus / Wiki Explorer：用户能看懂 Postgres 里的 source、document、chunk、citation、entity、hyperedge、memory、profile 是什么样的，能按来源、时间、实体、引用和关系浏览。
-3. Writer Mode：用户能在富文本里写作、圈选文本，并请求 PSKA 基于已授权资料、记忆、profile、引用和图谱路径给出中文写作建议。
+3. Writing Workspace / Inquiry Graph：用户从写作目标出发构造问题-答案网络。问题节点调用 Ask PSKA，答案节点保留 citations/source refs、gaps/conflicts 和 agentic 过程；用户把答案节点纳入章节，再生成可编辑 Markdown 草稿。
 4. Evidence Inspector：任何回答、建议、memory、profile 或 graph edge 都应能展开出处、证据片段、置信度、review 状态和是否缺失 grounding。
 5. Retrieval Quality Loop：产品上必须承认当前是 HippoRAG-inspired GraphRAG v0，而不是成熟 HippoRAG 2/GNN；它已有离线 fact/entity/passage 图索引、fact/entity embedding linking、PPR 融合和普通 RAG fallback，下一步通过 fixture、expected citations、rerank、PPR 参数调优和真实问题回放提升质量。
+
+Writing Workspace 的 v1 画布底座使用 `@xyflow/react`，保存 PSKA 自己的
+`writing_boards`、`writing_nodes` 和 `writing_edges`。它不是新的 RAG 入口：
+节点运行仍统一走 Ask PSKA；`compose` 只基于已选 answer 节点生成草稿，不再二次检索。
+PSKA 是领域无关系统，写作建议和问题扩展不能依赖样例实体、样例语料或特定问题 shortcut。
 
 ### 产品验收门槛
 

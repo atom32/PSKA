@@ -179,6 +179,33 @@ Read-only selected-text evidence suggestion.
 
 This endpoint does not mutate memory, profile, or graph.
 
+### Writing Workspace / Inquiry Graph
+
+Tenant-scoped writing boards persist a question-answer network used to organize
+Ask PSKA results into document drafts. Writing APIs do not replace Ask PSKA:
+question nodes still call `POST /workspace/ask/stream` with
+`surface="writing"` and `scope={board_id,node_id}`.
+
+Core endpoints:
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /workspace/writing/boards` | List current user's writing boards. |
+| `POST /workspace/writing/boards` | Create a board with `title`, `goal`, and optional metadata. |
+| `GET /workspace/writing/boards/{board_id}` | Load one board with nodes and edges. |
+| `PATCH /workspace/writing/boards/{board_id}` | Update board title, goal, or metadata. |
+| `POST /workspace/writing/boards/{board_id}/nodes` | Create a `goal`, `question`, `answer`, `evidence`, `gap`, `section`, or `draft` node. |
+| `PATCH /workspace/writing/boards/{board_id}/nodes/{node_id}` | Update node title, Markdown body, position, status, citations, source refs, or metadata. |
+| `DELETE /workspace/writing/boards/{board_id}/nodes/{node_id}` | Delete a node and its connected edges. |
+| `POST /workspace/writing/boards/{board_id}/edges` | Create a typed relation such as `answered_by`, `supported_by`, `raises`, or `included_in`. |
+| `DELETE /workspace/writing/boards/{board_id}/edges/{edge_id}` | Delete one relation. |
+| `POST /workspace/writing/boards/{board_id}/suggest-questions` | Return generic follow-up question suggestions; does not persist nodes. |
+| `POST /workspace/writing/boards/{board_id}/compose` | Build Markdown from selected answer nodes; does not perform retrieval. |
+
+`compose` is intentionally retrieval-free. It only uses the selected answer
+nodes' Markdown, citations, and source refs, so the retrieval owner remains the
+original Ask PSKA run that produced those answer nodes.
+
 ## Review
 
 | Endpoint | Purpose |
