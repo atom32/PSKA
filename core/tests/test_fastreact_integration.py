@@ -346,6 +346,9 @@ def test_ask_query_terms_splits_mixed_english_chinese() -> None:
 
     assert terms[:2] == ["acme", "example"]
     assert "example是一个什么样公司" not in terms
+    deep_terms = _ask_query_terms("请深入分析 acme-example 的优势和风险，并给出可引用结论。")
+    assert deep_terms[:3] == ["acme-example", "优势", "风险"]
+    assert "请深入分析" not in deep_terms
 
 
 def test_ask_quick_polishes_common_company_facts() -> None:

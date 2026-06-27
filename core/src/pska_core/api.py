@@ -3606,11 +3606,18 @@ def _ask_query_terms(query: str) -> list[str]:
         "那个",
         "多少",
         "如何",
+        "请",
+        "深入分析",
+        "深入",
+        "分析",
+        "给出",
+        "可引用",
     }
     for chunk in re.findall(r"[\u4e00-\u9fff]+", text):
         normalized = chunk
         for stopword in chinese_stopwords:
             normalized = normalized.replace(stopword, " ")
+        normalized = re.sub(r"[的和与及并、]", " ", normalized)
         for term in re.findall(r"[\u4e00-\u9fff]{2,}", normalized):
             add(term)
 
