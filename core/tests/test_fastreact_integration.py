@@ -22,6 +22,7 @@ from pska_core.api import (
     _ask_clean_evidence_text,
     _ask_is_stream_done_event,
     _ask_query_terms,
+    _ask_route_intent,
     _ask_retrieval_from_agentic_trace,
 )
 from pska_core.auth import context_from_headers
@@ -348,6 +349,12 @@ def test_ask_query_terms_splits_mixed_english_chinese() -> None:
     deep_terms = _ask_query_terms("请深入分析 acme-example 的优势和风险，并给出可引用结论。")
     assert deep_terms[:3] == ["acme-example", "优势", "风险"]
     assert "请深入分析" not in deep_terms
+
+
+def test_ask_auto_routes_deep_research_queries_to_deep() -> None:
+    query = "请深入调研 Northstar Robotics 是否应该进入 Q3 reserve-allocation shortlist。先判断需要查哪些证据，再给出可引用结论。"
+
+    assert _ask_route_intent(query, intent="auto") == "deep"
 
 
 def test_fastreact_ready_reports_missing_pska_tools(monkeypatch) -> None:
