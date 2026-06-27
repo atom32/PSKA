@@ -366,6 +366,164 @@ export async function askWorkspace(
   return (await response.json()) as WorkspaceAskResponse;
 }
 
+export type WorkspaceAskStreamUpdate = {
+  event: string;
+  data: Record<string, unknown>;
+  result: WorkspaceAskResponse;
+};
+
+export async function askWorkspaceStream(
+  query: string,
+  serviceToken: PSKAAuth,
+  intent: "auto" | "quick" | "deep" = "auto",
+  surface = "ask",
+  onUpdate?: (update: WorkspaceAskStreamUpdate) => void
+): Promise<WorkspaceAskResponse> {
+  const response = await fetch("/workspace/ask/stream", {
+    method: "POST",
+    headers: headers(serviceToken),
+    body: JSON.stringify({
+      query,
+      intent,
+      surface,
+      ...requestUserPayload(serviceToken),
+      top_k: 8
+    })
+  });
+  if (!response.ok) {
+    const error = await responseError(response, "Ask PSKA 失败");
+    if (response.status === 404 && error.includes("/workspace/ask")) {
+      const fallback = await askWorkspace(query, serviceToken, intent, surface);
+      onUpdate?.({ event: "done", data: {}, result: fallback });
+      return fallback;
+    }
+    throw new Error(error);
+  }
+  if (!response.body) {
+    const fallback = await askWorkspace(query, serviceToken, intent, surface);
+    onUpdate?.({ event: "done", data: {}, result: fallback });
+    return fallback;
+  }
+
+  const result: WorkspaceAskResponse = {
+    ok: true,
+    query,
+    answer: "",
+    citations: [],
+    source_refs: [],
+    agent_steps: [],
+    timing: {},
+    evidence: {}
+  };
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (value) {
+      buffer += decoder.decode(value, { stream: !done });
+      buffer = consumeAskSseBuffer(buffer, result, onUpdate);
+    }
+    if (done) {
+      buffer += decoder.decode();
+      consumeAskSseBuffer(`${buffer}\n\n`, result, onUpdate);
+      break;
+    }
+  }
+  return result;
+}
+
+function consumeAskSseBuffer(
+  buffer: string,
+  result: WorkspaceAskResponse,
+  onUpdate?: (update: WorkspaceAskStreamUpdate) => void
+) {
+  let remaining = buffer;
+  let boundary = remaining.indexOf("\n\n");
+  while (boundary !== -1) {
+    const frame = remaining.slice(0, boundary);
+    remaining = remaining.slice(boundary + 2);
+    const parsed = parseAskSseFrame(frame);
+    if (parsed) {
+      applyAskSseEvent(result, parsed.event, parsed.data);
+      onUpdate?.({ event: parsed.event, data: parsed.data, result: { ...result, agent_steps: [...(result.agent_steps || [])] } });
+    }
+    boundary = remaining.indexOf("\n\n");
+  }
+  return remaining;
+}
+
+function parseAskSseFrame(frame: string): { event: string; data: Record<string, unknown> } | null {
+  const lines = frame.split(/\r?\n/);
+  let event = "message";
+  const dataLines: string[] = [];
+  lines.forEach((line) => {
+    if (line.startsWith("event:")) {
+      event = line.slice("event:".length).trim();
+    } else if (line.startsWith("data:")) {
+      dataLines.push(line.slice("data:".length).trim());
+    }
+  });
+  if (!dataLines.length) {
+    return null;
+  }
+  try {
+    const data = JSON.parse(dataLines.join("\n")) as Record<string, unknown>;
+    return { event, data };
+  } catch {
+    return { event: "error", data: { error: dataLines.join("\n") } };
+  }
+}
+
+function applyAskSseEvent(result: WorkspaceAskResponse, event: string, data: Record<string, unknown>) {
+  if (event === "route") {
+    result.route = isRecord(data.route) ? data.route as WorkspaceAskResponse["route"] : result.route;
+    result.timing = { ...(result.timing || {}), ...(isRecord(data.timing) ? data.timing as WorkspaceAskResponse["timing"] : {}) };
+    return;
+  }
+  if (event === "agent_step") {
+    const step = isRecord(data.step) ? data.step : null;
+    if (step) {
+      result.agent_steps = [...(result.agent_steps || []), step as NonNullable<WorkspaceAskResponse["agent_steps"]>[number]];
+    }
+    result.timing = { ...(result.timing || {}), ...(isRecord(data.timing) ? data.timing as WorkspaceAskResponse["timing"] : {}) };
+    return;
+  }
+  if (event === "evidence") {
+    result.evidence = isRecord(data.evidence) ? data.evidence as WorkspaceAskResponse["evidence"] : result.evidence;
+    result.citations = Array.isArray(data.citations) ? data.citations as Array<Record<string, unknown>> : result.citations;
+    result.source_refs = result.evidence?.source_refs || result.citations;
+    result.quality_signals = isRecord(data.quality_signals) ? data.quality_signals : result.quality_signals;
+    return;
+  }
+  if (event === "answer_delta") {
+    result.answer = `${result.answer || ""}${typeof data.delta === "string" ? data.delta : ""}`;
+    if (typeof data.time_to_first_answer_ms === "number") {
+      result.timing = { ...(result.timing || {}), time_to_first_answer_ms: data.time_to_first_answer_ms };
+    }
+    return;
+  }
+  if (event === "trace") {
+    result.trace = isRecord(data.trace) ? data.trace : result.trace;
+    result.agentic_service = isRecord(data.agentic_service) ? data.agentic_service : result.agentic_service;
+    return;
+  }
+  if (event === "done") {
+    result.ok = data.ok !== false;
+    result.timing = { ...(result.timing || {}), ...(isRecord(data.timing) ? data.timing as WorkspaceAskResponse["timing"] : {}) };
+    result.quality_signals = isRecord(data.quality_signals) ? data.quality_signals : result.quality_signals;
+    return;
+  }
+  if (event === "error") {
+    result.ok = false;
+    result.error = typeof data.error === "string" ? data.error : "Ask PSKA stream failed";
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
 function legacySearchToAskResponse(
   legacy: WorkspaceSearchResponse,
   query: string,

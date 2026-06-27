@@ -120,15 +120,24 @@ Response includes:
 - `evidence`
 - `citations`
 - `source_refs`
+- `agent_steps`
 - `trace`
 - `timing.total_ms`
 - `timing.time_to_first_answer_ms`
+- `timing.time_to_first_agent_event_ms`
+
+`agent_steps` is the product-safe agentic search timeline. It contains concise
+steps such as understanding, searching, reading results, and forming the answer.
+`trace.events` may retain raw FastReAct events for diagnostics, but product UI
+must keep them behind a debug foldout and must not copy them into the answer.
 
 ### `POST /workspace/ask/stream`
 
-SSE version of Ask PSKA. Events are `route`, `evidence`, `answer_delta`,
-`trace`, `done`, and `error`. `time_to_first_answer_ms` starts when the first
-user-visible answer character is emitted, not when route or trace events start.
+SSE version of Ask PSKA. Events are `route`, `agent_step`, `evidence`,
+`answer_delta`, `trace`, `done`, and `error`. `agent_step` is safe to show as a
+user-facing search timeline. `time_to_first_agent_event_ms` starts at the first
+`agent_step`; `time_to_first_answer_ms` starts when the first user-visible
+answer character is emitted, not when route, agent, or trace events start.
 
 ### `POST /workspace/search/query`
 

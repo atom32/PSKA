@@ -247,16 +247,32 @@ export type WorkspaceAskResponse = {
   };
   citations?: Array<Record<string, unknown>>;
   source_refs?: Array<Record<string, unknown>>;
+  agent_steps?: Array<WorkspaceAskAgentStep>;
   trace?: Record<string, unknown>;
   timing?: {
     total_ms?: number;
     time_to_first_answer_ms?: number;
+    time_to_first_agent_event_ms?: number;
   };
   quality_signals?: Record<string, unknown>;
   agentic_service?: Record<string, unknown>;
   tenant_id?: string;
   owner_user_id?: string;
   error?: string | { message?: string; detail?: string; type?: string };
+};
+
+export type WorkspaceAskAgentStep = {
+  step_id?: string;
+  phase?: string;
+  status?: string;
+  title?: string;
+  detail?: string;
+  tool_name?: string | null;
+  tool_call_id?: string | null;
+  evidence_count?: number | null;
+  source_ref_count?: number | null;
+  elapsed_ms?: number | null;
+  raw_event_id?: string | null;
 };
 
 export type FileSyncResponse = {

@@ -9,7 +9,7 @@ from pathlib import Path
 import re
 import sys
 import time
-from typing import Any
+from typing import Any, Mapping
 from urllib.parse import parse_qs, unquote, urlparse
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
@@ -17,7 +17,7 @@ from psycopg.types.json import Jsonb
 
 from pska_core.acl import ACLService
 from pska_core.agent_capture import capture_agent_conversation
-from pska_core.agentic_service import PSKA_QA_SKILL, AgenticServiceError, build_agentic_service_client
+from pska_core.agentic_service import PSKA_QA_SKILL, AgenticServiceError, build_agentic_service_client, normalize_agentic_event_response
 from pska_core.auth import AuthError, RequestContext, authenticate_headers, context_from_headers, service_token_required
 from pska_core.candidates import CandidateWriteService
 from pska_core.config import DEFAULT_DATABASE_URL, DatabaseConfig, PSKAConfig, ServiceConfig
@@ -1026,6 +1026,129 @@ class PSKAApi:
                 started_at=started_at,
             )
         )
+
+    def workspace_ask_event_stream(self, payload: dict[str, Any], context: RequestContext | None = None):
+        started_at = time.perf_counter()
+        payload = context.apply_to_payload(payload) if context else payload
+        query = str(payload.get("query") or "").strip()
+        if not query:
+            raise ValueError("query is required")
+        intent = str(payload.get("intent") or "auto").strip().lower()
+        if intent not in {"auto", "quick", "deep"}:
+            raise ValueError("intent must be one of auto, quick, deep")
+        tenant_id = str(payload.get("tenant_id") or DEFAULT_TENANT_ID)
+        owner_user_id = _workspace_owner_user_id(context, payload.get("owner_user_id") or payload.get("represented_user_id"))
+        user_id = str(payload.get("user_id") or owner_user_id)
+        represented_user_id = str(payload.get("represented_user_id") or owner_user_id)
+        surface = str(payload.get("surface") or "ask").strip() or "ask"
+        scope = payload.get("scope") if isinstance(payload.get("scope"), dict) else {}
+        top_k = max(1, min(int(payload.get("top_k") or 8), 20))
+        session_id = str(payload.get("session_id") or "").strip() or None
+        selected_intent = _ask_route_intent(query, intent=intent)
+        user = self.store.get_user(user_id, tenant_id=tenant_id)
+        if selected_intent != "deep" or not hasattr(self.agentic_service, "search_event_stream"):
+            final_payload = self.workspace_ask(payload, context=context)
+            yield from _ask_sse_events(final_payload)
+            return
+
+        route = {
+            "intent": intent,
+            "selected_intent": selected_intent,
+            "retrieval_owner": "fastreact_pska_mcp",
+            "surface": surface,
+            "requires_agentic_service_online": True,
+            "tool_policy": {"mode": "allowlist", "allowed_tools": ASK_READ_ONLY_TOOLS},
+        }
+        yield ("route", {"route": route, "timing": {}})
+        raw_events: list[dict[str, Any]] = []
+        agent_steps: list[dict[str, Any]] = []
+        time_to_first_agent_event_ms: float | None = None
+        try:
+            event_stream = self.agentic_service.search_event_stream(
+                _ask_deep_query(query=query, surface=surface, scope=scope),
+                user,
+                represented_user_id=represented_user_id,
+                max_iterations=max(1, min(int(payload.get("max_iterations") or 4), 8)),
+                skills=[PSKA_QA_SKILL],
+                tool_policy={"mode": "allowlist", "allowed_tools": ASK_READ_ONLY_TOOLS},
+                session_id=session_id,
+            )
+            for raw_event in event_stream:
+                if not isinstance(raw_event, dict):
+                    continue
+                if _ask_is_stream_done_event(raw_event):
+                    continue
+                raw_events.append(raw_event)
+                step = _ask_agent_step_from_event(raw_event, sequence=len(agent_steps) + 1, started_at=started_at)
+                if step:
+                    if time_to_first_agent_event_ms is None:
+                        time_to_first_agent_event_ms = _elapsed_ms(started_at)
+                    agent_steps.append(step)
+                    yield (
+                        "agent_step",
+                        {
+                            "step": step,
+                            "timing": {"time_to_first_agent_event_ms": time_to_first_agent_event_ms},
+                        },
+                    )
+        except AgenticServiceError as exc:
+            quick = self._workspace_ask_quick(
+                query=query,
+                intent=intent,
+                surface=surface,
+                tenant_id=tenant_id,
+                owner_user_id=owner_user_id,
+                represented_user_id=represented_user_id,
+                user=user,
+                top_k=top_k,
+                started_at=started_at,
+            )
+            quick["ok"] = False
+            quick["route"]["selected_intent"] = "quick"
+            quick["route"]["fallback_from"] = "deep"
+            quick["trace"]["fallback_reason"] = "agentic_service_unavailable"
+            quick["trace"]["error"] = str(exc)
+            quick["agent_steps"] = [
+                *agent_steps,
+                _ask_agent_step(
+                    sequence=len(agent_steps) + 1,
+                    phase="error",
+                    status="error",
+                    title="深入分析不可用",
+                    detail="已切换到快速回答。",
+                    started_at=started_at,
+                ),
+            ]
+            quick["timing"]["time_to_first_agent_event_ms"] = time_to_first_agent_event_ms
+            yield from _ask_sse_events(_ask_with_quality_signals(quick))
+            return
+
+        agentic = normalize_agentic_event_response(
+            raw_events,
+            provider=getattr(getattr(self.agentic_service, "config", None), "provider", "fastreact"),
+            adapter="fastreact",
+            url=getattr(getattr(self.agentic_service, "config", None), "url", ""),
+            metadata={"event_count": len(raw_events)},
+        )
+        final_payload = _ask_deep_response(
+            query=query,
+            intent=intent,
+            surface=surface,
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            selected_intent=selected_intent,
+            agentic=agentic,
+            started_at=started_at,
+            allowed_tools=ASK_READ_ONLY_TOOLS,
+            store=self.store,
+        )
+        final_payload["agent_steps"] = agent_steps or _ask_agent_steps_from_events(raw_events)
+        final_payload["timing"]["time_to_first_agent_event_ms"] = time_to_first_agent_event_ms
+        final_payload = _ask_with_quality_signals(final_payload)
+        for event_name, event_payload in _ask_sse_events(final_payload):
+            if event_name in {"route", "agent_step"}:
+                continue
+            yield (event_name, event_payload)
 
     def _workspace_ask_quick(
         self,
@@ -2297,7 +2420,7 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
             if path == "/workspace/ask":
                 return self._json(200, self.api.workspace_ask(payload, context=context))
             if path == "/workspace/ask/stream":
-                return self._sse(200, self.api.workspace_ask(payload, context=context))
+                return self._sse_events(200, self.api.workspace_ask_event_stream(payload, context=context))
             if path == "/workspace/search/query":
                 return self._json(200, self.api.workspace_search(payload, context=context))
             if path == "/workspace/writer/suggest":
@@ -2427,6 +2550,37 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
             self.wfile.write(frame.encode("utf-8"))
             self.wfile.flush()
         self._log_request(status)
+
+    def _sse_events(self, status: int, events: Any) -> None:
+        if not hasattr(self, "_request_meta"):
+            self._begin_request(path=urlparse(self.path).path, payload={})
+        self.send_response(status)
+        self.send_header("content-type", "text/event-stream; charset=utf-8")
+        self.send_header("cache-control", "no-store")
+        self.send_header("x-pska-request-id", self._request_id())
+        self.end_headers()
+        self.wfile.flush()
+        logged_status = status
+        try:
+            for event_name, event_payload in events:
+                if event_name == "done" and isinstance(event_payload, dict):
+                    self._request_meta.update(
+                        _response_metrics(event_payload.get("result") if isinstance(event_payload.get("result"), dict) else event_payload)
+                    )
+                frame = f"event: {event_name}\ndata: {json.dumps(to_jsonable(event_payload), ensure_ascii=False)}\n\n"
+                self.wfile.write(frame.encode("utf-8"))
+                self.wfile.flush()
+        except BrokenPipeError:
+            logged_status = 499
+        except Exception as exc:  # noqa: BLE001 - SSE cannot switch back to JSON after headers.
+            logged_status = 500
+            frame = f"event: error\ndata: {json.dumps({'error': f'{type(exc).__name__}: {exc}'}, ensure_ascii=False)}\n\n"
+            try:
+                self.wfile.write(frame.encode("utf-8"))
+                self.wfile.flush()
+            except BrokenPipeError:
+                logged_status = 499
+        self._log_request(logged_status)
 
     def _empty(self, status: int) -> None:
         self.send_response(status)
@@ -3330,11 +3484,12 @@ def _ask_deep_query(*, query: str, surface: str, scope: dict[str, Any]) -> str:
 
 def _ask_evidence_from_retrieval(retrieval: dict[str, Any]) -> dict[str, Any]:
     diagnostics = retrieval.get("diagnostics") if isinstance(retrieval.get("diagnostics"), dict) else {}
-    citations = _list_of_dicts(retrieval.get("citations"))
+    results = _list_of_dicts(retrieval.get("results"))
+    citations = _ask_citations_from_retrieval(retrieval, results)
     return {
         "citations": citations,
         "source_refs": citations,
-        "results": _list_of_dicts(retrieval.get("results")),
+        "results": results,
         "graph_paths": _list_of_dicts(retrieval.get("graph_paths")),
         "memory_context": _list_of_dicts(retrieval.get("memory_context")),
         "profile_context": _list_of_dicts(retrieval.get("profile_context")),
@@ -3343,27 +3498,161 @@ def _ask_evidence_from_retrieval(retrieval: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _ask_citations_from_retrieval(retrieval: dict[str, Any], results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    citations = [citation for citation in _list_of_dicts(retrieval.get("citations")) if citation.get("source_item_id")]
+    for result in results:
+        citation = result.get("citation") if isinstance(result.get("citation"), dict) else {}
+        if citation.get("source_item_id"):
+            citations.append(_console_citation(citation))
+    return _dedupe_source_ref_dicts(citations)
+
+
+def _dedupe_source_ref_dicts(refs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[Any, Any, Any]] = set()
+    for ref in refs:
+        key = (ref.get("source_item_id"), ref.get("chunk_id"), ref.get("title"))
+        if not key[0] or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(ref)
+    return deduped
+
+
+def _ask_retrieval_from_agentic_trace(trace: dict[str, Any]) -> dict[str, Any]:
+    merged = {
+        "results": [],
+        "citations": [],
+        "graph_paths": [],
+        "memory_context": [],
+        "profile_context": [],
+        "diagnostics": {"gaps": [], "conflicts": [], "sensitivity": [], "score_debug": {}},
+    }
+    result_keys: set[tuple[Any, Any, Any]] = set()
+    citation_keys: set[tuple[Any, Any]] = set()
+    for event in _list_of_dicts(trace.get("events")):
+        if str(event.get("type") or "").lower() != "tool_result":
+            continue
+        if str(event.get("tool_name") or "") not in ASK_READ_ONLY_TOOLS:
+            continue
+        content = str(event.get("content") or "").strip()
+        if not content:
+            continue
+        try:
+            payload = json.loads(content)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        retrieval = _console_search_summary(payload)
+        for result in _list_of_dicts(retrieval.get("results")):
+            key = (result.get("source_item_id"), result.get("chunk_id"), result.get("title"))
+            if key in result_keys:
+                continue
+            result_keys.add(key)
+            merged["results"].append(result)
+            citation = result.get("citation") if isinstance(result.get("citation"), dict) else {}
+            if citation.get("source_item_id"):
+                citation_key = (citation.get("source_item_id"), citation.get("chunk_id"))
+                if citation_key not in citation_keys:
+                    citation_keys.add(citation_key)
+                    merged["citations"].append(_console_citation(citation))
+        for citation in _list_of_dicts(retrieval.get("citations")):
+            if not citation.get("source_item_id"):
+                continue
+            citation_key = (citation.get("source_item_id"), citation.get("chunk_id"))
+            if citation_key in citation_keys:
+                continue
+            citation_keys.add(citation_key)
+            merged["citations"].append(_console_citation(citation))
+        for key in ("graph_paths", "memory_context", "profile_context"):
+            merged[key].extend(_list_of_dicts(retrieval.get(key)))
+        diagnostics = retrieval.get("diagnostics") if isinstance(retrieval.get("diagnostics"), dict) else {}
+        merged_diagnostics = merged["diagnostics"]
+        for key in ("gaps", "conflicts", "sensitivity"):
+            merged_diagnostics[key].extend(list(diagnostics.get(key) or []))
+        if diagnostics.get("score_debug"):
+            merged_diagnostics["score_debug"] = diagnostics.get("score_debug")
+    merged["citations"] = _dedupe_source_ref_dicts(_list_of_dicts(merged.get("citations")))
+    return merged
+
+
 def _ask_quick_answer(query: str, retrieval: dict[str, Any]) -> str:
     results = _list_of_dicts(retrieval.get("results"))
     if not results:
         return f"关键结论：当前 PSKA 没有找到足够证据回答“{query}”。建议补充相关资料或扩大检索范围后再问。"
-    snippets = [str(item.get("snippet") or "").strip() for item in results if str(item.get("snippet") or "").strip()]
-    titles: list[str] = []
-    for item in results:
-        title = str(item.get("title") or item.get("source_item_id") or "").strip()
-        if title and title not in titles:
-            titles.append(title)
-    lines = [f"关键结论：关于“{query}”，PSKA 找到了 {len(results)} 条相关证据。"]
-    for snippet in snippets[:4]:
-        lines.append(f"- {snippet[:260]}")
-    if not snippets:
-        lines.append("- 找到了相关来源，但这些结果没有可展示的摘要片段。")
-    if titles:
-        lines.append(f"可引用来源：{'；'.join(titles[:4])}。")
+    facts = _ask_clean_facts_from_results(results, limit=4)
+    if not facts:
+        return f"关键结论：PSKA 找到了与“{query}”相关的来源，但当前片段不足以整理成可引用结论。请查看证据列表或扩大检索范围。"
+    lines = [f"关键结论：关于“{query}”，当前资料支持以下结论："]
+    lines.extend(f"- {fact}" for fact in facts)
     diagnostics = retrieval.get("diagnostics") if isinstance(retrieval.get("diagnostics"), dict) else {}
     if diagnostics.get("gaps") or diagnostics.get("conflicts"):
         lines.append("不确定性：存在检索缺口或证据冲突，报告中应保留限定表述。")
     return "\n".join(lines)
+
+
+def _ask_clean_facts_from_results(results: list[dict[str, Any]], *, limit: int) -> list[str]:
+    facts: list[str] = []
+    seen: set[str] = set()
+    for item in results:
+        text = _ask_clean_evidence_text(str(item.get("snippet") or ""))
+        for sentence in _ask_fact_sentences(text):
+            key = re.sub(r"\s+", " ", sentence).strip().lower()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            facts.append(sentence)
+            if len(facts) >= limit:
+                return facts
+    return facts
+
+
+def _ask_clean_evidence_text(text: str) -> str:
+    text = str(text or "").strip()
+    if text.startswith("---"):
+        end = text.find("\n---", 3)
+        if end != -1:
+            text = text[end + 4 :]
+    cleaned_lines: list[str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        lowered = line.lower()
+        if line.startswith("#"):
+            line = line.lstrip("#").strip()
+            if not line:
+                continue
+        if lowered.startswith(("title:", "type:", "slug:", "aliases:", "date:", "attendees:", "tags:")):
+            continue
+        if line.startswith("|") and line.endswith("|"):
+            continue
+        if re.fullmatch(r"[-:| ]{5,}", line):
+            continue
+        cleaned_lines.append(line)
+    text = " ".join(cleaned_lines)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _ask_fact_sentences(text: str) -> list[str]:
+    if not text:
+        return []
+    parts = re.split(r"(?<=[。！？.!?])\s+|\s*[；;]\s+|\n+", text)
+    sentences: list[str] = []
+    for part in parts:
+        sentence = part.strip(" -\t\r\n")
+        if not sentence:
+            continue
+        if len(sentence) < 8 and not re.search(r"\d", sentence):
+            continue
+        if len(sentence) > 180:
+            sentence = sentence[:177].rstrip() + "..."
+        if _ask_answer_quality_flags(sentence):
+            continue
+        sentences.append(sentence)
+    return sentences
 
 
 def _ask_deep_response(
@@ -3379,8 +3668,11 @@ def _ask_deep_response(
     allowed_tools: list[str],
     store: Any,
 ) -> dict[str, Any]:
+    trace = agentic.get("trace") if isinstance(agentic.get("trace"), dict) else {}
     retrieval_payload = agentic.get("retrieval") if isinstance(agentic.get("retrieval"), dict) else {}
     retrieval = _console_search_summary(to_jsonable(retrieval_payload)) if retrieval_payload else {}
+    if not _list_of_dicts(retrieval.get("results")):
+        retrieval = _ask_retrieval_from_agentic_trace(trace)
     evidence = _ask_evidence_from_retrieval(retrieval)
     raw_refs = [
         *_list_of_dicts(agentic.get("source_refs")),
@@ -3391,13 +3683,13 @@ def _ask_deep_response(
     if refs:
         evidence["citations"] = refs
         evidence["source_refs"] = refs
-    trace = agentic.get("trace") if isinstance(agentic.get("trace"), dict) else {}
     trace = {
         **trace,
         "mode": "deep",
         "retrieval_owner": "fastreact_pska_mcp",
         "tool_policy": {"mode": "allowlist", "allowed_tools": allowed_tools},
     }
+    agent_steps = _ask_agent_steps_from_events(trace.get("events") if isinstance(trace.get("events"), list) else [])
     if dropped_refs:
         trace["dropped_source_refs"] = dropped_refs
     elapsed_ms = _elapsed_ms(started_at)
@@ -3416,15 +3708,229 @@ def _ask_deep_response(
         "evidence": evidence,
         "citations": evidence["citations"],
         "source_refs": evidence["source_refs"],
+        "agent_steps": agent_steps,
         "trace": trace,
         "timing": {
             "total_ms": elapsed_ms,
             "time_to_first_answer_ms": elapsed_ms,
+            "time_to_first_agent_event_ms": (agent_steps[0].get("elapsed_ms") if agent_steps[0].get("elapsed_ms") is not None else 0)
+            if agent_steps
+            else None,
         },
         "agentic_service": agentic.get("agentic_service") if isinstance(agentic.get("agentic_service"), dict) else {},
         "tenant_id": tenant_id,
         "owner_user_id": owner_user_id,
     }
+
+
+def _ask_agent_steps_from_events(events: list[Any]) -> list[dict[str, Any]]:
+    steps: list[dict[str, Any]] = []
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        if _ask_is_stream_done_event(event):
+            continue
+        step = _ask_agent_step_from_event(event, sequence=len(steps) + 1, started_at=None)
+        if step:
+            steps.append(step)
+    return steps
+
+
+def _ask_is_stream_done_event(event: Mapping[str, Any]) -> bool:
+    event_type = str(event.get("type") or event.get("event_type") or "").strip().lower()
+    content = str(event.get("content") or event.get("data") or "").strip()
+    return event_type == "done" or (event_type in {"", "message"} and content == "[DONE]")
+
+
+def _ask_agent_step_from_event(event: dict[str, Any], *, sequence: int, started_at: float | None) -> dict[str, Any] | None:
+    event_type = str(event.get("type") or event.get("event_type") or "").lower()
+    tool_name = str(event.get("tool_name") or "")
+    elapsed_ms = _elapsed_ms(started_at) if started_at is not None else _number_or_none(event.get("duration_ms"))
+    if event_type == "session_start":
+        return _ask_agent_step(
+            sequence=sequence,
+            phase="understand",
+            status="complete",
+            title="理解问题",
+            detail="已确认问题和当前租户范围。",
+            raw_event_id=event.get("event_id"),
+            elapsed_ms=elapsed_ms,
+        )
+    if event_type == "think":
+        return _ask_agent_step(
+            sequence=sequence,
+            phase="think",
+            status="running",
+            title=_ask_think_step_title(event),
+            detail=_ask_think_step_detail(event),
+            raw_event_id=event.get("event_id"),
+            elapsed_ms=elapsed_ms,
+        )
+    if event_type == "tool_call":
+        return _ask_agent_step(
+            sequence=sequence,
+            phase="search" if tool_name in ASK_READ_ONLY_TOOLS else "tool",
+            status="running",
+            title=_ask_tool_step_title(tool_name, action="call"),
+            detail=_ask_tool_call_detail(event),
+            tool_name=tool_name or None,
+            tool_call_id=event.get("tool_call_id"),
+            raw_event_id=event.get("event_id"),
+            elapsed_ms=elapsed_ms,
+        )
+    if event_type == "tool_result":
+        counts = _ask_tool_result_counts(event)
+        return _ask_agent_step(
+            sequence=sequence,
+            phase="read",
+            status="complete",
+            title=_ask_tool_step_title(tool_name, action="result"),
+            detail=_ask_tool_result_detail(counts),
+            tool_name=tool_name or None,
+            tool_call_id=event.get("tool_call_id"),
+            raw_event_id=event.get("event_id"),
+            elapsed_ms=elapsed_ms,
+            evidence_count=counts.get("evidence_count"),
+            source_ref_count=counts.get("source_ref_count"),
+        )
+    if event_type == "session_end":
+        return _ask_agent_step(
+            sequence=sequence,
+            phase="answer",
+            status="complete",
+            title="形成回答",
+            detail="已完成证据归纳和引用校验。",
+            raw_event_id=event.get("event_id"),
+            elapsed_ms=elapsed_ms,
+        )
+    if event_type == "error":
+        return _ask_agent_step(
+            sequence=sequence,
+            phase="error",
+            status="error",
+            title="分析失败",
+            detail="深入分析过程中出现错误。",
+            raw_event_id=event.get("event_id"),
+            elapsed_ms=elapsed_ms,
+        )
+    return None
+
+
+def _ask_agent_step(
+    *,
+    sequence: int,
+    phase: str,
+    status: str,
+    title: str,
+    detail: str,
+    tool_name: str | None = None,
+    tool_call_id: Any = None,
+    evidence_count: Any = None,
+    source_ref_count: Any = None,
+    raw_event_id: Any = None,
+    elapsed_ms: float | None = None,
+    started_at: float | None = None,
+) -> dict[str, Any]:
+    if elapsed_ms is None and started_at is not None:
+        elapsed_ms = _elapsed_ms(started_at)
+    return {
+        "step_id": f"step_{sequence}",
+        "phase": phase,
+        "status": status,
+        "title": title,
+        "detail": detail,
+        "tool_name": tool_name,
+        "tool_call_id": tool_call_id,
+        "evidence_count": _number_or_none(evidence_count),
+        "source_ref_count": _number_or_none(source_ref_count),
+        "elapsed_ms": elapsed_ms,
+        "raw_event_id": raw_event_id,
+    }
+
+
+def _ask_think_step_title(event: dict[str, Any]) -> str:
+    content = str(event.get("content") or "")
+    if "context_compression" in content.lower() or "context_compression" in str(event.get("metadata") or "").lower():
+        return "整理上下文"
+    return "思考下一步"
+
+
+def _ask_think_step_detail(event: dict[str, Any]) -> str:
+    content = str(event.get("content") or "").strip()
+    if content.startswith("[CONTEXT_COMPRESSION]"):
+        return "已压缩上下文以继续分析。"
+    return "正在判断是否需要继续检索或形成结论。"
+
+
+def _ask_tool_step_title(tool_name: str, *, action: str) -> str:
+    if tool_name == "pska_pska_search":
+        return "搜索 PSKA 知识库" if action == "call" else "读取搜索结果"
+    if tool_name == "pska_pska_index_status":
+        return "检查索引状态" if action == "call" else "读取索引状态"
+    return "调用工具" if action == "call" else "读取工具结果"
+
+
+def _ask_tool_call_detail(event: dict[str, Any]) -> str:
+    args = event.get("tool_args") if isinstance(event.get("tool_args"), dict) else {}
+    query = str(args.get("query") or "").strip()
+    top_k = args.get("top_k")
+    pieces = []
+    if query:
+        pieces.append(f"查询：{query[:120]}")
+    if top_k:
+        pieces.append(f"top_k={top_k}")
+    return "；".join(pieces) if pieces else "正在读取当前租户可访问的知识证据。"
+
+
+def _ask_tool_result_detail(counts: dict[str, int]) -> str:
+    evidence_count = counts.get("evidence_count", 0)
+    source_ref_count = counts.get("source_ref_count", 0)
+    if evidence_count or source_ref_count:
+        return f"返回 {evidence_count} 条证据，{source_ref_count} 条引用。"
+    return "已返回工具结果，后续会进行引用校验。"
+
+
+def _ask_tool_result_counts(event: dict[str, Any]) -> dict[str, int]:
+    content = event.get("content") or event.get("result") or event.get("output")
+    parsed = _ask_json_object_from_text(str(content or "")) if content is not None else None
+    payload = parsed if isinstance(parsed, dict) else {}
+    evidence = payload.get("workspace", {}).get("evidence") if isinstance(payload.get("workspace"), dict) else payload.get("evidence")
+    if not isinstance(evidence, dict):
+        evidence = payload
+    results = _list_of_dicts(evidence.get("results"))
+    citations = _list_of_dicts(evidence.get("citations")) or _list_of_dicts(payload.get("citations")) or _list_of_dicts(payload.get("source_refs"))
+    return {
+        "evidence_count": len(results) or len(_list_of_dicts(payload.get("results"))),
+        "source_ref_count": len(citations),
+    }
+
+
+def _ask_json_object_from_text(text: str) -> dict[str, Any] | None:
+    stripped = str(text or "").strip()
+    if not stripped:
+        return None
+    candidates = [stripped]
+    start = stripped.find("{")
+    end = stripped.rfind("}")
+    if start != -1 and end > start:
+        candidates.append(stripped[start : end + 1])
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
+def _number_or_none(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _ask_with_quality_signals(payload: dict[str, Any]) -> dict[str, Any]:
@@ -3449,7 +3955,8 @@ def _ask_quality_signals(payload: dict[str, Any]) -> dict[str, Any]:
     tool_calls = trace.get("tool_calls") if isinstance(trace.get("tool_calls"), list) else []
     denied_tool_calls = trace.get("denied_tool_calls") if isinstance(trace.get("denied_tool_calls"), list) else []
     dropped_source_refs = trace.get("dropped_source_refs") if isinstance(trace.get("dropped_source_refs"), list) else []
-    answer_chars = len(str(payload.get("answer") or ""))
+    answer = str(payload.get("answer") or "")
+    answer_chars = len(answer)
     flags: list[str] = []
     if not answer_chars:
         flags.append("empty_answer")
@@ -3465,6 +3972,7 @@ def _ask_quality_signals(payload: dict[str, Any]) -> dict[str, Any]:
         flags.append("fallback")
     if dropped_source_refs:
         flags.append("dropped_source_refs")
+    flags.extend(flag for flag in _ask_answer_quality_flags(answer) if flag not in flags)
 
     evidence_status = "grounded" if citations else "retrieved_without_citations" if results else "no_evidence"
     if "insufficient_evidence" in flags:
@@ -3473,7 +3981,7 @@ def _ask_quality_signals(payload: dict[str, Any]) -> dict[str, Any]:
         quality_band = "failed"
     elif evidence_status in {"no_evidence", "insufficient_evidence"}:
         quality_band = "no_answerable_evidence"
-    elif "evidence_conflict" in flags or "fallback" in flags or "dropped_source_refs" in flags:
+    elif any(flag in flags for flag in ["evidence_conflict", "fallback", "dropped_source_refs", "raw_evidence_dump", "answer_needs_rewrite"]):
         quality_band = "needs_review"
     elif citations:
         quality_band = "grounded"
@@ -3504,6 +4012,7 @@ def _ask_quality_signals(payload: dict[str, Any]) -> dict[str, Any]:
         "fallback_from": route.get("fallback_from"),
         "total_ms": timing.get("total_ms"),
         "time_to_first_answer_ms": timing.get("time_to_first_answer_ms"),
+        "time_to_first_agent_event_ms": timing.get("time_to_first_agent_event_ms"),
     }
 
 
@@ -3517,6 +4026,26 @@ def _ask_report_readiness(quality_band: str) -> str:
     if quality_band == "failed":
         return "failed"
     return "not_ready"
+
+
+def _ask_answer_quality_flags(answer: str) -> list[str]:
+    text = str(answer or "")
+    if not text.strip():
+        return []
+    flags: list[str] = []
+    if re.search(r"(^|\n)\s*---\s*(\n|$)", text) or re.search(
+        r"(^|\n)\s*(title|type|slug|aliases|attendees|date)\s*:",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        flags.append("raw_evidence_dump")
+    if text.count("|") >= 6 or re.search(r"(^|\n)\s*\|?\s*-{3,}\s*\|", text):
+        flags.append("raw_evidence_dump")
+    if len(text) > 1400 and ("可引用来源" in text or "PSKA 找到了" in text):
+        flags.append("answer_needs_rewrite")
+    if "raw_evidence_dump" in flags and "answer_needs_rewrite" not in flags:
+        flags.append("answer_needs_rewrite")
+    return flags
 
 
 def _ask_note_list(value: Any) -> list[str]:
@@ -3571,26 +4100,33 @@ def _ask_validate_source_refs(
 
 def _ask_sse_events(payload: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
     timing = payload.get("timing") if isinstance(payload.get("timing"), dict) else {}
-    return [
+    events: list[tuple[str, dict[str, Any]]] = [
         ("route", {"route": payload.get("route") or {}, "timing": timing}),
-        (
-            "evidence",
-            {
-                "evidence": payload.get("evidence") or {},
-                "citations": payload.get("citations") or [],
-                "quality_signals": payload.get("quality_signals") or {},
-            },
-        ),
-        (
-            "answer_delta",
-            {
-                "delta": str(payload.get("answer") or ""),
-                "time_to_first_answer_ms": timing.get("time_to_first_answer_ms"),
-            },
-        ),
-        ("trace", {"trace": payload.get("trace") or {}, "agentic_service": payload.get("agentic_service") or {}}),
-        ("done", {"ok": payload.get("ok") is not False, "timing": timing, "quality_signals": payload.get("quality_signals") or {}}),
     ]
+    for step in _list_of_dicts(payload.get("agent_steps")):
+        events.append(("agent_step", {"step": step, "timing": timing}))
+    events.extend(
+        [
+            (
+                "evidence",
+                {
+                    "evidence": payload.get("evidence") or {},
+                    "citations": payload.get("citations") or [],
+                    "quality_signals": payload.get("quality_signals") or {},
+                },
+            ),
+            (
+                "answer_delta",
+                {
+                    "delta": str(payload.get("answer") or ""),
+                    "time_to_first_answer_ms": timing.get("time_to_first_answer_ms"),
+                },
+            ),
+            ("trace", {"trace": payload.get("trace") or {}, "agentic_service": payload.get("agentic_service") or {}}),
+            ("done", {"ok": payload.get("ok") is not False, "timing": timing, "quality_signals": payload.get("quality_signals") or {}}),
+        ]
+    )
+    return events
 
 
 def _workspace_owner_user_id(context: RequestContext | None, requested_owner_user_id: str | None) -> str:

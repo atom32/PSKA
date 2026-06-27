@@ -32,15 +32,20 @@ Fastreact 不能直接访问 PSKA DB。PSKA 不 import Fastreact Python internal
 - 流式 API：`POST /workspace/ask/stream`
 - 兼容/诊断 API：`POST /workspace/search/query`、`POST /workspace/graph/path`
 
-`/workspace/ask` 返回 `answer`、`route`、`evidence`、`citations`、`source_refs`、`trace`
-和 `timing`。UI 只展示结论、引用、证据、缺口/冲突和可复制 Markdown；`trace`
-用于调试、eval 和证明工具边界，不作为主回答正文。
+`/workspace/ask` 返回 `answer`、`route`、`evidence`、`citations`、`source_refs`、
+`agent_steps`、`trace` 和 `timing`。UI 只展示结论、引用、证据、缺口/冲突、
+agentic 检索过程和可复制 Markdown；`trace.events` 只用于调试、eval 和证明工具边界，
+必须放在折叠调试区，不作为主回答正文。
 
 一次用户问题只能有一个 retrieval owner：
 
 - `quick`：PSKA 自己检索、组装证据和回答。若后续只需要 LLM 合成，调用 Fastreact 时必须使用 `tool_policy={"mode":"none"}`。
 - `deep`：PSKA 不先预检索正文证据，只把问题、tenant/user/scope 交给 Fastreact。Fastreact 只能通过 PSKA read-only MCP 工具查库，PSKA 最后校验 citations/source refs 是否属于当前 tenant/user。
 - `auto`：PSKA 根据问题形态选择 `quick` 或 `deep`，旧 direct/agentic/GraphRAG 模式不再暴露给主 UI。
+
+`/workspace/ask/stream` 会把 Fastreact 原始 `think/tool_call/tool_result/session_end`
+事件转译为 PSKA `agent_step`：理解问题、搜索 PSKA、读取结果、继续判断、形成回答。
+`agent_step` 可展示给用户；原始 Fastreact 事件仍保留在 `trace.events`，只供调试展开。
 
 deep 路径使用的 Fastreact tool policy：
 

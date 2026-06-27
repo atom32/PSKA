@@ -8,6 +8,9 @@ from pska_core.gateway import (
     GatewayConfig,
     decode_session,
     encode_session,
+    _is_event_stream_headers,
+    _is_streaming_api_path,
+    _proxy_timeout_for_path,
     proxy_request_headers,
     request_authnode_code_exchange,
     request_authnode_token,
@@ -194,6 +197,20 @@ def test_gateway_proxy_headers_strip_caller_identity_and_inject_session() -> Non
     assert "Cookie" not in headers
     assert "X-FastReAct-User-Key" not in headers
     assert headers["X-PSKA-Roles"] == "admin"
+
+
+def test_gateway_detects_sse_response_headers_case_insensitively() -> None:
+    assert _is_event_stream_headers({"Content-Type": "text/event-stream; charset=utf-8"}) is True
+    assert _is_event_stream_headers({"content-type": "application/json"}) is False
+
+
+def test_gateway_forces_ask_stream_to_streaming_timeout() -> None:
+    config = GatewayConfig(request_timeout_seconds=15)
+
+    assert _is_streaming_api_path("/workspace/ask/stream") is True
+    assert _is_streaming_api_path("/workspace/ask") is False
+    assert _proxy_timeout_for_path("/workspace/ask/stream", config) == 300.0
+    assert _proxy_timeout_for_path("/workspace/ask", config) == 15.0
 
 
 class FakeResponse:

@@ -14,7 +14,14 @@ from http.server import ThreadingHTTPServer
 
 from pska_core.acl import ACLService
 from pska_core.agentic_service import AgenticServiceError, _agentic_messages
-from pska_core.api import PSKAApi, PSKARequestHandler
+from pska_core.api import (
+    PSKAApi,
+    PSKARequestHandler,
+    _ask_agent_steps_from_events,
+    _ask_answer_quality_flags,
+    _ask_is_stream_done_event,
+    _ask_retrieval_from_agentic_trace,
+)
 from pska_core.auth import context_from_headers
 from pska_core.candidates import CandidateWriteService
 from pska_core.cli import service_check
@@ -257,6 +264,66 @@ def test_agentic_search_prompt_includes_pska_tenant_identity() -> None:
     assert "tenant_id='tenant_acme'" in system
     assert "user_id='alice'" in system
     assert "Every PSKA MCP tool call must include exactly these tenant_id and user_id" in system
+
+
+def test_ask_agent_steps_ignore_sse_done_frames() -> None:
+    assert _ask_is_stream_done_event({"type": "done", "content": "[DONE]"}) is True
+    assert _ask_is_stream_done_event({"type": "message", "content": "[DONE]"}) is True
+
+    steps = _ask_agent_steps_from_events(
+        [
+            {"type": "session_start", "event_id": "run:1"},
+            {"type": "message", "content": "[DONE]"},
+            {"type": "done", "content": "[DONE]"},
+        ]
+    )
+
+    assert [step["phase"] for step in steps] == ["understand"]
+
+
+def test_ask_deep_retrieval_extracts_pska_tool_result_citations() -> None:
+    trace = {
+        "events": [
+            {
+                "type": "tool_result",
+                "tool_name": "pska_pska_search",
+                "content": json.dumps(
+                    {
+                        "results": [
+                            {
+                                "title": "companies-acme-example.md",
+                                "snippet": "Founded by Alice.",
+                                "citation": {
+                                    "source_item_id": "src_acme",
+                                    "chunk_id": "chk_acme_0",
+                                    "title": "companies-acme-example.md",
+                                },
+                            }
+                        ]
+                    }
+                ),
+            }
+        ]
+    }
+
+    retrieval = _ask_retrieval_from_agentic_trace(trace)
+
+    assert retrieval["results"][0]["source_item_id"] == "src_acme"
+    assert retrieval["citations"] == [
+        {
+            "source_item_id": "src_acme",
+            "chunk_id": "chk_acme_0",
+            "title": "companies-acme-example.md",
+            "url": None,
+            "snippet": None,
+        }
+    ]
+
+
+def test_ask_quality_allows_report_markdown_headings() -> None:
+    answer = "## 结论\n\n- acme-example 是一家垂直 AI 公司。[来源：companies-acme-example.md]"
+
+    assert _ask_answer_quality_flags(answer) == []
 
 
 def test_fastreact_ready_reports_missing_pska_tools(monkeypatch) -> None:
@@ -1893,7 +1960,9 @@ def test_workspace_ask_quick_returns_report_ready_answer_and_evidence() -> None:
     assert payload["route"]["retrieval_owner"] == "pska"
     assert payload["route"]["tool_policy"] == {"mode": "none"}
     assert payload["answer"].startswith("关键结论")
-    assert "Ask Quick Note" in payload["answer"]
+    assert "status is active" in payload["answer"]
+    assert "Ask Quick Note" not in payload["answer"]
+    assert "---" not in payload["answer"]
     assert payload["citations"][0]["title"] == "Ask Quick Note"
     assert payload["evidence"]["source_refs"] == payload["citations"]
     assert payload["timing"]["time_to_first_answer_ms"] >= 0
@@ -1903,6 +1972,28 @@ def test_workspace_ask_quick_returns_report_ready_answer_and_evidence() -> None:
     assert payload["quality_signals"]["citation_count"] >= 1
     assert payload["quality_signals"]["evidence_result_count"] >= 1
     assert payload["quality_signals"]["retrieval_owner"] == "pska"
+
+
+def test_workspace_ask_quick_marks_raw_dump_answers_as_needing_review() -> None:
+    api = _api()
+    payload = {
+        "ok": True,
+        "query": "raw",
+        "answer": "---\ntitle: Raw Note\n---\n# Raw Note\n| a | b |\n| --- | --- |\n| 1 | 2 |",
+        "route": {"selected_intent": "quick", "retrieval_owner": "pska", "surface": "today"},
+        "evidence": {"citations": [{"source_item_id": "src_1", "title": "Raw Note"}], "results": [{"title": "Raw Note"}]},
+        "citations": [{"source_item_id": "src_1", "title": "Raw Note"}],
+        "source_refs": [{"source_item_id": "src_1", "title": "Raw Note"}],
+        "trace": {},
+        "timing": {"total_ms": 1, "time_to_first_answer_ms": 1},
+    }
+
+    enriched = __import__("pska_core.api", fromlist=["_ask_with_quality_signals"])._ask_with_quality_signals(payload)
+
+    assert "raw_evidence_dump" in enriched["quality_signals"]["flags"]
+    assert "answer_needs_rewrite" in enriched["quality_signals"]["flags"]
+    assert enriched["quality_signals"]["quality_band"] == "needs_review"
+    assert enriched["quality_signals"]["report_readiness"] == "needs_human_review"
 
 
 def test_workspace_ask_deep_uses_fastreact_readonly_tool_policy() -> None:
@@ -1944,6 +2035,8 @@ def test_workspace_ask_deep_uses_fastreact_readonly_tool_policy() -> None:
         "allowed_tools": ["pska_pska_search", "pska_pska_index_status"],
     }
     assert payload["answer"] == "Fake external agentic answer."
+    assert [step["phase"] for step in payload["agent_steps"][:4]] == ["understand", "think", "search", "read"]
+    assert payload["timing"]["time_to_first_agent_event_ms"] >= 0
     call = api.agentic_service.calls[0]
     assert call["skills"] == ["pska_answer_with_citations"]
     assert call["tool_policy"] == payload["route"]["tool_policy"]
@@ -2051,7 +2144,9 @@ def test_workspace_ask_deep_falls_back_to_quick_when_fastreact_is_unavailable() 
     assert payload["route"]["retrieval_owner"] == "pska"
     assert payload["route"]["fallback_from"] == "deep"
     assert payload["trace"]["fallback_reason"] == "agentic_service_unavailable"
-    assert "Ask Fallback Note" in payload["answer"]
+    assert "PSKA evidence" in payload["answer"]
+    assert "Ask Fallback Note" not in payload["answer"]
+    assert payload["citations"][0]["title"] == "Ask Fallback Note"
     assert payload["quality_signals"]["quality_band"] == "needs_review"
     assert payload["quality_signals"]["report_readiness"] == "needs_human_review"
     assert "fallback" in payload["quality_signals"]["flags"]
@@ -2079,8 +2174,8 @@ def test_workspace_ask_stream_emits_product_events() -> None:
             "POST",
             "/workspace/ask/stream",
             payload={
-                "query": "Ask stream 事件有哪些？",
-                "intent": "quick",
+                "query": "请分析 Ask stream 事件有哪些？",
+                "intent": "deep",
                 "user_id": "user_primary",
                 "represented_user_id": "user_primary",
             },
@@ -2089,12 +2184,15 @@ def test_workspace_ask_stream_emits_product_events() -> None:
     assert status == 200
     assert headers["content-type"].startswith("text/event-stream")
     assert "event: route" in body
+    assert "event: agent_step" in body
     assert "event: evidence" in body
     assert "event: answer_delta" in body
     assert "event: trace" in body
     assert "event: done" in body
     assert "time_to_first_answer_ms" in body
+    assert "time_to_first_agent_event_ms" in body
     assert "quality_signals" in body
+    assert "pska_pska_search" in body
 
 
 def test_user_workspace_agentic_failure_reports_direct_fallback() -> None:
@@ -3314,10 +3412,12 @@ class FakeAgenticService:
             }
         )
         retrieval = self.retrieval.search(query, user, represented_user_id=represented_user_id)
+        events = self._events(query, retrieval)
         return {
             "answer": "Fake external agentic answer.",
             "retrieval": to_jsonable(retrieval),
             "trace": {
+                "events": events,
                 "query_understanding": {"intent": "test", "privacy_boundary": "acl_first"},
                 "retrieval_plan": ["external_agentic_service", "pska_search"],
                 "iterations": [{"iteration": "1", "query": query}],
@@ -3325,6 +3425,61 @@ class FakeAgenticService:
             },
             "agentic_service": {"provider": "test", "adapter": "fake"},
         }
+
+    def search_event_stream(
+        self,
+        query,
+        user,
+        *,
+        represented_user_id=None,
+        max_iterations=3,
+        skills=None,
+        tool_policy=None,
+        session_id=None,
+    ):
+        self.calls.append(
+            {
+                "query": query,
+                "user_id": user.user_id,
+                "tenant_id": user.tenant_id,
+                "represented_user_id": represented_user_id,
+                "max_iterations": max_iterations,
+                "skills": skills,
+                "tool_policy": tool_policy,
+                "session_id": session_id,
+            }
+        )
+        retrieval = self.retrieval.search(query, user, represented_user_id=represented_user_id)
+        yield from self._events(query, retrieval, session_id=session_id)
+        yield {"type": "done", "content": "[DONE]"}
+
+    def _events(self, query, retrieval, *, session_id=None):
+        return [
+            {"type": "session_start", "content": query, "session_id": session_id or "fake-session", "event_id": "fake:0"},
+            {"type": "think", "content": "Plan the search", "session_id": session_id or "fake-session", "event_id": "fake:1"},
+            {
+                "type": "tool_call",
+                "tool_name": "pska_pska_search",
+                "tool_args": {"query": query, "top_k": 8},
+                "tool_call_id": "call-1",
+                "session_id": session_id or "fake-session",
+                "event_id": "fake:2",
+            },
+            {
+                "type": "tool_result",
+                "tool_name": "pska_pska_search",
+                "content": json.dumps(to_jsonable(retrieval), ensure_ascii=False),
+                "tool_call_id": "call-1",
+                "session_id": session_id or "fake-session",
+                "event_id": "fake:3",
+            },
+            {
+                "type": "session_end",
+                "content": json.dumps({"answer": "Fake external agentic answer.", "source_refs": to_jsonable(retrieval.citations)}, ensure_ascii=False),
+                "session_id": session_id or "fake-session",
+                "event_id": "fake:4",
+            },
+        ]
 
 
 def _store() -> InMemoryKnowledgeStore:

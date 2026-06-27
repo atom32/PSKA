@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 import json
 import os
 import time
-from typing import Any, Protocol
+from typing import Any, Iterator, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -34,6 +34,24 @@ class FastreactClient(Protocol):
         top_p: float | None = None,
         max_tokens: int | None = None,
     ) -> dict[str, Any]: ...
+
+    def chat_completion_stream(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        user_id: str,
+        tenant_id: str | None = None,
+        purpose: str,
+        job_id: str | None = None,
+        scope: dict[str, Any] | None = None,
+        session_id: str | None = None,
+        skills: list[str] | None = None,
+        tool_policy: dict[str, Any] | None = None,
+        model: str | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        max_tokens: int | None = None,
+    ) -> Iterator[dict[str, Any]]: ...
 
     def create_run(
         self,
@@ -136,29 +154,58 @@ class HttpFastreactClient:
         top_p: float | None = None,
         max_tokens: int | None = None,
     ) -> dict[str, Any]:
-        metadata = _pska_metadata(user_id=user_id, tenant_id=tenant_id, purpose=purpose, job_id=job_id, scope=scope)
-        payload = {
-            "messages": messages,
-            "stream": stream,
-            "user_key": f"pska:{user_id}",
-            "metadata": metadata,
-        }
-        payload.update(
-            _generation_options_payload(
-                self.config,
-                model=model,
-                temperature=temperature,
-                top_p=top_p,
-                max_tokens=max_tokens,
-            )
+        payload = self._chat_payload(
+            messages=messages,
+            user_id=user_id,
+            tenant_id=tenant_id,
+            purpose=purpose,
+            stream=stream,
+            job_id=job_id,
+            scope=scope,
+            session_id=session_id,
+            skills=skills,
+            tool_policy=tool_policy,
+            model=model,
+            temperature=temperature,
+            top_p=top_p,
+            max_tokens=max_tokens,
         )
-        if session_id:
-            payload["session_id"] = session_id
-        if skills is not None:
-            payload["skills"] = skills
-        if tool_policy is not None:
-            payload["tool_policy"] = tool_policy
         return self._request_json("POST", "/v1/chat/completions", payload)
+
+    def chat_completion_stream(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        user_id: str,
+        tenant_id: str | None = None,
+        purpose: str,
+        job_id: str | None = None,
+        scope: dict[str, Any] | None = None,
+        session_id: str | None = None,
+        skills: list[str] | None = None,
+        tool_policy: dict[str, Any] | None = None,
+        model: str | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        max_tokens: int | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        payload = self._chat_payload(
+            messages=messages,
+            user_id=user_id,
+            tenant_id=tenant_id,
+            purpose=purpose,
+            stream=True,
+            job_id=job_id,
+            scope=scope,
+            session_id=session_id,
+            skills=skills,
+            tool_policy=tool_policy,
+            model=model,
+            temperature=temperature,
+            top_p=top_p,
+            max_tokens=max_tokens,
+        )
+        yield from self._request_sse("POST", "/v1/chat/completions", payload)
 
     def create_run(
         self,
@@ -214,6 +261,48 @@ class HttpFastreactClient:
     def run_events(self, run_id: str) -> dict[str, Any]:
         return self._request_json("GET", f"/v1/runs/{run_id}/events?limit=500", authorization=self._run_authorizations.get(run_id))
 
+    def _chat_payload(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        user_id: str,
+        tenant_id: str | None,
+        purpose: str,
+        stream: bool,
+        job_id: str | None = None,
+        scope: dict[str, Any] | None = None,
+        session_id: str | None = None,
+        skills: list[str] | None = None,
+        tool_policy: dict[str, Any] | None = None,
+        model: str | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        max_tokens: int | None = None,
+    ) -> dict[str, Any]:
+        metadata = _pska_metadata(user_id=user_id, tenant_id=tenant_id, purpose=purpose, job_id=job_id, scope=scope)
+        payload: dict[str, Any] = {
+            "messages": messages,
+            "stream": stream,
+            "user_key": f"pska:{user_id}",
+            "metadata": metadata,
+        }
+        payload.update(
+            _generation_options_payload(
+                self.config,
+                model=model,
+                temperature=temperature,
+                top_p=top_p,
+                max_tokens=max_tokens,
+            )
+        )
+        if session_id:
+            payload["session_id"] = session_id
+        if skills is not None:
+            payload["skills"] = skills
+        if tool_policy is not None:
+            payload["tool_policy"] = tool_policy
+        return payload
+
     def _request_json(
         self,
         method: str,
@@ -254,6 +343,42 @@ class HttpFastreactClient:
             if run_id and bearer:
                 self._run_authorizations[run_id] = bearer
         return parsed
+
+    def _request_sse(self, method: str, path: str, payload: dict[str, Any]) -> Iterator[dict[str, Any]]:
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        request = Request(
+            f"{self.config.url}{path}",
+            data=data,
+            method=method,
+            headers=self._headers(True, payload=payload),
+        )
+        try:
+            with urlopen(request, timeout=self.config.timeout_seconds) as response:
+                event_name: str | None = None
+                data_lines: list[str] = []
+                for raw_line in response:
+                    line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
+                    if not line:
+                        event = _sse_payload(event_name, data_lines)
+                        if event is not None:
+                            yield event
+                        event_name = None
+                        data_lines = []
+                        continue
+                    if line.startswith("event:"):
+                        event_name = line.removeprefix("event:").strip()
+                    elif line.startswith("data:"):
+                        data_lines.append(line.removeprefix("data:").strip())
+                event = _sse_payload(event_name, data_lines)
+                if event is not None:
+                    yield event
+        except HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise FastreactError(f"Fastreact {method} {path} failed with HTTP {exc.code}: {detail}") from exc
+        except URLError as exc:
+            raise FastreactError(f"Fastreact {method} {path} unavailable: {exc.reason}") from exc
+        except TimeoutError as exc:
+            raise FastreactError(f"Fastreact {method} {path} timed out") from exc
 
     def _headers(self, has_body: bool, *, payload: dict[str, Any] | None = None) -> dict[str, str]:
         headers: dict[str, str] = {"accept": "application/json"}
@@ -379,6 +504,24 @@ def _tool_names(tools_payload: dict[str, Any]) -> set[str]:
         elif isinstance(tool, dict) and tool.get("name"):
             names.add(str(tool["name"]))
     return names
+
+
+def _sse_payload(event_name: str | None, data_lines: list[str]) -> dict[str, Any] | None:
+    if not data_lines:
+        return None
+    data = "\n".join(data_lines)
+    if data == "[DONE]":
+        return {"schema": "fastreact.agent_event.v1", "type": "done", "content": "[DONE]"}
+    try:
+        parsed = json.loads(data)
+    except json.JSONDecodeError:
+        parsed = {"schema": "fastreact.agent_event.v1", "type": "invalid_sse_json", "content": data}
+    if not isinstance(parsed, dict):
+        parsed = {"schema": "fastreact.agent_event.v1", "type": "invalid_sse_payload", "content": data}
+    if event_name and not parsed.get("type"):
+        parsed["type"] = event_name
+    parsed.setdefault("schema", "fastreact.agent_event.v1")
+    return parsed
 
 
 def _normalized_pska_tool_names(tool_names: set[str]) -> set[str]:

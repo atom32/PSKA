@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 import json
 import os
 import re
-from typing import Any, Protocol
+from typing import Any, Iterator, Protocol
 
 from pska_core.fastreact_client import FastreactConfig, FastreactError, HttpFastreactClient
 from pska_core.models import User
@@ -31,6 +31,18 @@ class AgenticServiceClient(Protocol):
         tool_policy: dict[str, Any] | None = None,
         session_id: str | None = None,
     ) -> dict[str, Any]: ...
+
+    def search_event_stream(
+        self,
+        query: str,
+        user: User,
+        *,
+        represented_user_id: str | None = None,
+        max_iterations: int = 3,
+        skills: list[str] | None = None,
+        tool_policy: dict[str, Any] | None = None,
+        session_id: str | None = None,
+    ) -> Iterator[dict[str, Any]]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,6 +126,19 @@ class UnsupportedAgenticService:
     ) -> dict[str, Any]:
         raise AgenticServiceError(f"Unsupported agentic service provider: {self.config.provider}")
 
+    def search_event_stream(
+        self,
+        query: str,
+        user: User,
+        *,
+        represented_user_id: str | None = None,
+        max_iterations: int = 3,
+        skills: list[str] | None = None,
+        tool_policy: dict[str, Any] | None = None,
+        session_id: str | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        raise AgenticServiceError(f"Unsupported agentic service provider: {self.config.provider}")
+
 
 @dataclass(slots=True)
 class FastreactAgenticServiceAdapter:
@@ -178,6 +203,41 @@ class FastreactAgenticServiceAdapter:
             adapter="fastreact",
             url=self.config.url,
         )
+
+    def search_event_stream(
+        self,
+        query: str,
+        user: User,
+        *,
+        represented_user_id: str | None = None,
+        max_iterations: int = 3,
+        skills: list[str] | None = None,
+        tool_policy: dict[str, Any] | None = None,
+        session_id: str | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        messages = _agentic_messages(query, tenant_id=user.tenant_id, user_id=user.user_id)
+        scope = {
+            "query": query,
+            "tenant_id": user.tenant_id,
+            "represented_user_id": represented_user_id,
+            "max_iterations": max_iterations,
+            "agentic_boundary": "external_service",
+        }
+        run_skills = [PSKA_QA_SKILL] if skills is None else skills
+        try:
+            yield from self._client().chat_completion_stream(
+                messages=messages,
+                user_id=user.user_id,
+                tenant_id=user.tenant_id,
+                purpose="agentic_search",
+                scope=scope,
+                session_id=session_id,
+                skills=run_skills,
+                tool_policy=tool_policy,
+                **self._generation_options(),
+            )
+        except FastreactError as exc:
+            raise AgenticServiceError(str(exc)) from exc
 
     def _run_agentic_search(
         self,
@@ -368,6 +428,31 @@ def _normalize_agentic_response(response: dict[str, Any], *, provider: str, adap
             "session_id": response.get("session_id"),
         },
     }
+
+
+def normalize_agentic_event_response(
+    events: list[dict[str, Any]],
+    *,
+    provider: str = "fastreact",
+    adapter: str = "fastreact",
+    url: str = "",
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    first_event = next((event for event in events if isinstance(event, dict)), {})
+    response = {
+        "type": "chat.completion",
+        "run_id": first_event.get("run_id"),
+        "session_id": first_event.get("session_id"),
+        "content": _final_answer_from_events(events),
+        "events": events,
+        "tool_calls": _tool_calls_from_events(events),
+        "metadata": {
+            **(metadata or {}),
+            "event_count": len(events),
+            "run_protocol": "chat_completion_stream",
+        },
+    }
+    return _normalize_agentic_response(response, provider=provider, adapter=adapter, url=url)
 
 
 def _response_payload(response: dict[str, Any]) -> dict[str, Any]:

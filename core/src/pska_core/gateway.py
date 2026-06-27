@@ -613,8 +613,11 @@ class PSKAGatewayHandler(BaseHTTPRequestHandler):
             headers=proxy_request_headers(self.headers, session, self.config),
             method=self.command,
         )
+        upstream_timeout = _proxy_timeout_for_path(self.path, self.config)
         try:
-            with urlopen(request, timeout=self.config.request_timeout_seconds) as response:
+            with urlopen(request, timeout=upstream_timeout) as response:
+                if _is_event_stream_headers(response.headers) or _is_streaming_api_path(urlparse(self.path).path):
+                    return self._relay_streaming_response(response.status, response.headers, response)
                 return self._relay_response(response.status, response.headers, response.read())
         except HTTPError as exc:
             return self._relay_response(exc.code, exc.headers, exc.read())
@@ -693,6 +696,26 @@ class PSKAGatewayHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _relay_streaming_response(self, status: int, headers: Mapping[str, str], response: Any) -> None:
+        self.send_response(status)
+        for name, value in headers.items():
+            lowered = name.lower()
+            if lowered in HOP_BY_HOP_HEADERS or lowered == "content-length":
+                continue
+            self.send_header(name, value)
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.wfile.flush()
+        while True:
+            chunk = response.read(8192)
+            if not chunk:
+                break
+            try:
+                self.wfile.write(chunk)
+                self.wfile.flush()
+            except BrokenPipeError:
+                return
+
     def _session_cookie(self, value: str, *, max_age: int) -> str:
         parts = [
             f"{self.config.cookie_name}={quote(value)}",
@@ -742,6 +765,30 @@ def _is_api_path(path: str) -> bool:
             "/candidates",
         )
     )
+
+
+def _is_event_stream_headers(headers: Mapping[str, str]) -> bool:
+    content_type = ""
+    try:
+        content_type = str(headers.get("Content-Type") or headers.get("content-type") or "")
+    except AttributeError:
+        content_type = ""
+    if not content_type and hasattr(headers, "items"):
+        for name, value in headers.items():
+            if str(name).lower() == "content-type":
+                content_type = str(value)
+                break
+    return "text/event-stream" in content_type.lower()
+
+
+def _is_streaming_api_path(path: str) -> bool:
+    return path in {"/workspace/ask/stream"}
+
+
+def _proxy_timeout_for_path(path: str, config: GatewayConfig) -> float:
+    if _is_streaming_api_path(urlparse(path).path):
+        return max(float(config.request_timeout_seconds), 300.0)
+    return float(config.request_timeout_seconds)
 
 
 def _static_target(dist: Path, request_path: str) -> Path | None:

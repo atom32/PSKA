@@ -35,7 +35,7 @@ import { useQuery } from "@tanstack/react-query";
 import {
   analyzeWorkspaceContext,
   acceptDiscovery,
-  askWorkspace,
+  askWorkspaceStream,
   applyReviewItem,
   approveReviewItem,
   cleanupKnowledgeSource,
@@ -537,7 +537,9 @@ function TodayWorkspace({
     setSearching(true);
     setSearchError(null);
     try {
-      const result = await askWorkspace(query, serviceToken, "auto", "today");
+      const result = await askWorkspaceStream(query, serviceToken, "auto", "today", ({ result: partial }) => {
+        setSearchResult({ ...partial });
+      });
       setSearchResult(result);
       setBrain(searchToBrain(result, query));
       if (result.error) {
@@ -1002,6 +1004,8 @@ function AskResult({ result }: { result: WorkspaceAskResponse | WorkspaceSearchR
   ]);
   const gaps = normalizeAskNotes(askEvidence?.gaps);
   const conflicts = normalizeAskNotes(askEvidence?.conflicts);
+  const agentSteps = normalizeAskAgentSteps((result as WorkspaceAskResponse).agent_steps);
+  const rawEvents = agenticTraceEvents(result);
   const markdown = buildAskMarkdown((result as WorkspaceAskResponse).query || "", answer, refs, gaps, conflicts);
 
   async function handleCopyMarkdown() {
@@ -1022,6 +1026,7 @@ function AskResult({ result }: { result: WorkspaceAskResponse | WorkspaceSearchR
       <div className="ask-result-header">
         <small className="search-note">
           {route ? askRouteLabel(route) : "Ask PSKA"}
+          {timing?.time_to_first_agent_event_ms !== undefined ? ` · 首过程 ${Math.round(timing.time_to_first_agent_event_ms)} ms` : ""}
           {timing?.time_to_first_answer_ms !== undefined ? ` · 首字 ${Math.round(timing.time_to_first_answer_ms)} ms` : ""}
           {timing?.total_ms !== undefined ? ` · 总耗时 ${Math.round(timing.total_ms)} ms` : ""}
         </small>
@@ -1029,7 +1034,6 @@ function AskResult({ result }: { result: WorkspaceAskResponse | WorkspaceSearchR
           {copyStatus === "copied" ? "已复制" : copyStatus === "failed" ? "复制失败" : "复制 Markdown"}
         </button>
       </div>
-      {qualitySignals ? <AskQualitySignals signals={qualitySignals} /> : null}
       {answer ? <p className="answer-text">{displayText(answer)}</p> : null}
       {fallbackReason ? <small className="search-note">{askFallbackLabel(fallbackReason)}</small> : null}
       {refs.length > 0 ? (
@@ -1043,6 +1047,8 @@ function AskResult({ result }: { result: WorkspaceAskResponse | WorkspaceSearchR
           ))}
         </div>
       ) : null}
+      {qualitySignals ? <AskQualitySignals signals={qualitySignals} /> : null}
+      {agentSteps.length || rawEvents.length ? <AskProcessTimeline steps={agentSteps} rawEvents={rawEvents} /> : null}
       {gaps.length || conflicts.length ? (
         <div className="ask-gap-list">
           {gaps.length ? <EvidenceNoteList title="缺口" values={gaps} /> : null}
@@ -1050,6 +1056,49 @@ function AskResult({ result }: { result: WorkspaceAskResponse | WorkspaceSearchR
         </div>
       ) : null}
     </article>
+  );
+}
+
+type AskAgentStepView = {
+  id: string;
+  phase: string;
+  status: string;
+  title: string;
+  detail: string;
+  meta: string;
+};
+
+function AskProcessTimeline({ steps, rawEvents }: { steps: AskAgentStepView[]; rawEvents: Array<Record<string, unknown>> }) {
+  const visibleSteps = steps.slice(0, 8);
+  return (
+    <div className="ask-process">
+      {visibleSteps.length ? (
+        <details open>
+          <summary>
+            <span>检索过程</span>
+            <small>{steps.length} 步</small>
+          </summary>
+          <ol className="ask-process-list">
+            {visibleSteps.map((step) => (
+              <li key={step.id} data-phase={step.phase} data-status={step.status}>
+                <strong>{step.title}</strong>
+                {step.detail ? <p>{step.detail}</p> : null}
+                {step.meta ? <small>{step.meta}</small> : null}
+              </li>
+            ))}
+          </ol>
+        </details>
+      ) : null}
+      {rawEvents.length ? (
+        <details className="ask-raw-events">
+          <summary>
+            <span>Raw events</span>
+            <small>{rawEvents.length}</small>
+          </summary>
+          <pre>{JSON.stringify(rawEvents.slice(0, 40), null, 2)}</pre>
+        </details>
+      ) : null}
+    </div>
   );
 }
 
@@ -1216,6 +1265,37 @@ function normalizeAskNotes(values: unknown): string[] {
       return trimText(String(value), 220);
     })
     .filter(Boolean);
+}
+
+function normalizeAskAgentSteps(values: unknown): AskAgentStepView[] {
+  if (!Array.isArray(values)) {
+    return [];
+  }
+  return values
+    .map((value, index) => {
+      if (!isRecord(value)) {
+        return null;
+      }
+      const elapsed = typeof value.elapsed_ms === "number" && Number.isFinite(value.elapsed_ms)
+        ? `${Math.round(value.elapsed_ms)} ms`
+        : "";
+      const evidence = typeof value.evidence_count === "number" && value.evidence_count > 0
+        ? `证据 ${value.evidence_count}`
+        : "";
+      const refs = typeof value.source_ref_count === "number" && value.source_ref_count > 0
+        ? `引用 ${value.source_ref_count}`
+        : "";
+      const tool = displayText(value.tool_name, "");
+      return {
+        id: displayText(value.step_id, `step-${index}`),
+        phase: displayText(value.phase, "step"),
+        status: displayText(value.status, "complete"),
+        title: displayText(value.title, "处理中"),
+        detail: trimText(displayText(value.detail, ""), 180),
+        meta: [tool, evidence, refs, elapsed].filter(Boolean).join(" · ")
+      };
+    })
+    .filter((step): step is AskAgentStepView => Boolean(step));
 }
 
 function askRouteLabel(route?: WorkspaceAskResponse["route"]) {
@@ -1829,7 +1909,9 @@ function CorpusWorkspace({
     setAskStatus("loading");
     setAskError("");
     try {
-      const payload = await askWorkspace(prompt, serviceToken, "auto", "corpus");
+      const payload = await askWorkspaceStream(prompt, serviceToken, "auto", "corpus", ({ result: partial }) => {
+        setAskResult({ ...partial });
+      });
       setAskResult(payload);
       setAskStatus(payload.ok === false ? "error" : "success");
       setAskError(payload.error ? displaySearchError(payload.error) : "");
@@ -2490,7 +2572,9 @@ function GraphWorkspace({
     setPathError("");
     setGraphAskResult(null);
     try {
-      const payload = await askWorkspace(query, serviceToken, "auto", "graph");
+      const payload = await askWorkspaceStream(query, serviceToken, "auto", "graph", ({ result: partial }) => {
+        setGraphAskResult({ ...partial });
+      });
       setGraphAskResult(payload);
       setPathResult(null);
       setPathStatus(payload.ok === false ? "error" : "success");

@@ -82,11 +82,16 @@ The response and log deliberately avoid raw question text. They include:
 - `citation_count`, `source_ref_count`, `evidence_result_count`,
   `graph_path_count`, `gap_count`, `conflict_count`
 - `tool_call_count`, `denied_tool_call_count`
-- `query_chars`, `answer_chars`, `total_ms`, `time_to_first_answer_ms`
+- `query_chars`, `answer_chars`, `total_ms`, `time_to_first_agent_event_ms`,
+  `time_to_first_answer_ms`
+- `flags`, including `raw_evidence_dump` and `answer_needs_rewrite` when an
+  answer looks like raw markdown/frontmatter/table evidence instead of
+  report-ready prose
 
-For stream responses, `quality_signals` appears in the `evidence` and `done`
-SSE events. The first visible answer latency is still measured from
-`answer_delta`, not route or evidence events.
+For stream responses, `agent_step` carries the product-safe agentic timeline,
+while `quality_signals` appears in the `evidence` and `done` SSE events. The
+first visible answer latency is still measured from `answer_delta`, not route,
+agent, or evidence events.
 
 ## Later Storage Option
 
