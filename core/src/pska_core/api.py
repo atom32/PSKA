@@ -3472,8 +3472,11 @@ def _digest_schedule_quota(store: PostgresKnowledgeStore, *, owner_user_id: str,
 def _files_sync_twitter_archives(store: PostgresKnowledgeStore, config: PSKAConfig, payload: dict[str, Any]) -> dict[str, Any]:
     if payload.get("skip_twitter_archives"):
         return {"ok": True, "enabled": False, "reason": "skip_twitter_archives", "imported": 0, "skipped": 0, "failed": []}
-    input_dir = Path(str(payload.get("twitter_archive") or config.workspace.twitter_archive_dir)).expanduser()
-    archive_root = Path(str(payload.get("archive_root") or config.workspace.imports_dir)).expanduser()
+    tenant_id = str(payload.get("tenant_id") or config.files.tenant_id or DEFAULT_TENANT_ID)
+    owner_user_id = str(payload.get("owner_user_id") or config.files.owner_user_id)
+    user_sources = config.workspace.user_sources_dir(tenant_id, owner_user_id)
+    input_dir = Path(str(payload.get("twitter_archive") or user_sources / "archives" / "twitter")).expanduser()
+    archive_root = Path(str(payload.get("archive_root") or user_sources / "imports")).expanduser()
     if not input_dir.exists():
         return {
             "ok": True,
@@ -3490,8 +3493,8 @@ def _files_sync_twitter_archives(store: PostgresKnowledgeStore, config: PSKAConf
         result = TwitterZipImporter(
             store,
             archive_root=archive_root,
-            owner_user_id=str(payload.get("owner_user_id") or config.files.owner_user_id),
-            tenant_id=str(payload.get("tenant_id") or config.files.tenant_id or DEFAULT_TENANT_ID),
+            owner_user_id=owner_user_id,
+            tenant_id=tenant_id,
             space_id=str(payload.get("space_id") or config.files.space_id),
             visibility=Visibility(str(payload.get("visibility") or config.files.visibility)),
             visible_team_ids=[],
@@ -7217,7 +7220,7 @@ def _console_input_sources(config: PSKAConfig, source_cards: list[dict[str, Any]
                 "configured": True,
             }
         )
-    twitter_dir = config.workspace.twitter_archive_dir.expanduser()
+    twitter_dir = (config.workspace.user_sources_dir(config.files.tenant_id, config.files.owner_user_id) / "archives" / "twitter").expanduser()
     inputs.append(
         {
             "kind": "twitter_archive",
@@ -7234,7 +7237,6 @@ def _console_input_sources(config: PSKAConfig, source_cards: list[dict[str, Any]
 
 def _workspace_excluded_paths(config: PSKAConfig) -> list[Path]:
     return [
-        config.workspace.imports_dir.expanduser(),
         config.workspace.run_dir.expanduser(),
         config.workspace.log_dir.expanduser(),
     ]

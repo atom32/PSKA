@@ -20,7 +20,7 @@ from pska_core.agent_capture import capture_agent_conversation
 from pska_core.agentic_service import AgenticServiceError, build_agentic_service_client
 from pska_core.api import PSKAApi, serve
 from pska_core.candidates import CandidateWriteService
-from pska_core.config import DEFAULT_DATABASE_URL, PSKAConfig, expand_path
+from pska_core.config import DEFAULT_DATABASE_URL, PSKAConfig, WorkspaceConfig, expand_path
 from pska_core.connectors import connector_state_from_mapping, connector_record_to_payload
 from pska_core.discovery import DiscoveryService
 from pska_core.embeddings import EmbeddingConfig, EmbeddingService, build_embedding_provider
@@ -81,6 +81,7 @@ def build_parser() -> argparse.ArgumentParser:
     import_parser = subparsers.add_parser("import-twitter-zips", help="Import Twitter/X archive zip files")
     import_parser.add_argument("--input", type=Path, default=None)
     import_parser.add_argument("--archive-root", type=Path, default=None)
+    import_parser.add_argument("--tenant-id", default=DEFAULT_TENANT_ID)
     import_parser.add_argument("--owner-user-id", default="user_primary")
     import_parser.add_argument("--space-id", default="private_primary")
     import_parser.add_argument("--visibility", choices=[item.value for item in Visibility], default=Visibility.PRIVATE.value)
@@ -220,6 +221,7 @@ def build_parser() -> argparse.ArgumentParser:
     mvp_bootstrap_parser.add_argument("--twitter-archive", type=Path, default=None)
     mvp_bootstrap_parser.add_argument("--notes-root", type=Path, action="append", default=[])
     mvp_bootstrap_parser.add_argument("--archive-root", type=Path, default=None)
+    mvp_bootstrap_parser.add_argument("--tenant-id", default=DEFAULT_TENANT_ID)
     mvp_bootstrap_parser.add_argument("--owner-user-id", default="user_primary")
     mvp_bootstrap_parser.add_argument("--space-id", default="private_primary")
     mvp_bootstrap_parser.add_argument("--skip-twitter", action="store_true")
@@ -316,6 +318,8 @@ def build_parser() -> argparse.ArgumentParser:
     smoke_parser = subparsers.add_parser("smoke-twitter-import", help="Reset pska_smoke, import zips, and run a search smoke")
     smoke_parser.add_argument("--input", type=Path, default=None)
     smoke_parser.add_argument("--archive-root", type=Path, default=None)
+    smoke_parser.add_argument("--tenant-id", default=DEFAULT_TENANT_ID)
+    smoke_parser.add_argument("--owner-user-id", default="user_primary")
     smoke_parser.add_argument("--query", default="")
     _add_embedding_args(smoke_parser, default_provider="disabled")
 
@@ -518,7 +522,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     workspace_root = _resolve_workspace_root(args, config)
     args.pska_config = config
     args.database_url = args.database_url or config.database.url
-    _apply_workspace_defaults(args, workspace_root)
+    _apply_workspace_defaults(args, workspace_root, config)
     if args.command == "service-check":
         args.url = args.url or _service_check_url(config.service.host, config.service.port)
         args.service_token = args.service_token or config.service.service_token
@@ -670,14 +674,21 @@ def _resolve_workspace_root(args: argparse.Namespace, config: PSKAConfig) -> Pat
     return expand_path(config.workspace.root)
 
 
-def _apply_workspace_defaults(args: argparse.Namespace, workspace_root: Path) -> None:
+def _workspace_user_sources_root(args: argparse.Namespace, workspace_root: Path, config: PSKAConfig | None = None) -> Path:
+    tenant_id = str(getattr(args, "tenant_id", None) or (config.files.tenant_id if config else None) or DEFAULT_TENANT_ID)
+    owner_user_id = str(getattr(args, "owner_user_id", None) or (config.files.owner_user_id if config else None) or "user_primary")
+    return WorkspaceConfig(root=workspace_root).user_sources_dir(tenant_id, owner_user_id)
+
+
+def _apply_workspace_defaults(args: argparse.Namespace, workspace_root: Path, config: PSKAConfig | None = None) -> None:
     if args.command in {"import-twitter-zips", "mvp-bootstrap", "smoke-twitter-import", "files-sync", "digest-now"}:
+        user_sources = _workspace_user_sources_root(args, workspace_root, config)
         if getattr(args, "input", None) is None:
-            args.input = workspace_root / "_system" / "twitter_archive"
+            args.input = user_sources / "archives" / "twitter"
         if getattr(args, "twitter_archive", None) is None:
-            args.twitter_archive = workspace_root / "_system" / "twitter_archive"
+            args.twitter_archive = user_sources / "archives" / "twitter"
         if getattr(args, "archive_root", None) is None:
-            args.archive_root = workspace_root / "_system" / "imports"
+            args.archive_root = user_sources / "imports"
     if args.command == "local-daemon":
         if args.run_dir is None:
             args.run_dir = workspace_root / "_system" / "run"
@@ -1075,8 +1086,11 @@ def _files_sync_payload(args: argparse.Namespace, config: PSKAConfig) -> dict[st
 def _files_sync_twitter_archives(args: argparse.Namespace, config: PSKAConfig, store: PostgresKnowledgeStore) -> dict[str, Any]:
     if getattr(args, "skip_twitter_archives", False):
         return {"ok": True, "enabled": False, "reason": "skip_twitter_archives", "imported": 0, "skipped": 0, "failed": []}
-    input_dir = expand_path(getattr(args, "twitter_archive", None) or config.workspace.twitter_archive_dir)
-    archive_root = expand_path(getattr(args, "archive_root", None) or config.workspace.imports_dir)
+    tenant_id = str(getattr(args, "tenant_id", None) or config.files.tenant_id)
+    owner_user_id = str(getattr(args, "owner_user_id", None) or config.files.owner_user_id)
+    user_sources = config.workspace.user_sources_dir(tenant_id, owner_user_id)
+    input_dir = expand_path(getattr(args, "twitter_archive", None) or user_sources / "archives" / "twitter")
+    archive_root = expand_path(getattr(args, "archive_root", None) or user_sources / "imports")
     if not input_dir.exists():
         return {
             "ok": True,
@@ -1091,8 +1105,8 @@ def _files_sync_twitter_archives(args: argparse.Namespace, config: PSKAConfig, s
     importer = TwitterZipImporter(
         store,
         archive_root=archive_root,
-        owner_user_id=getattr(args, "owner_user_id", None) or config.files.owner_user_id,
-        tenant_id=getattr(args, "tenant_id", None) or config.files.tenant_id,
+        owner_user_id=owner_user_id,
+        tenant_id=tenant_id,
         space_id=getattr(args, "space_id", None) or config.files.space_id,
         visibility=Visibility(getattr(args, "visibility", None) or config.files.visibility),
         visible_team_ids=[],
@@ -1301,6 +1315,7 @@ def mvp_bootstrap(args: argparse.Namespace) -> int:
             store,
             archive_root=args.archive_root,
             owner_user_id=args.owner_user_id,
+            tenant_id=args.tenant_id,
             space_id=args.space_id,
             visibility=Visibility.PRIVATE,
             embedding_provider=embedding_provider,
@@ -4494,9 +4509,9 @@ def _mvp_next_actions(payload: dict[str, Any], *, connectors: dict[str, Any]) ->
     if not ready.get("ok"):
         actions.append("Run ./scripts/pska db-init, then ./scripts/pska service-check after starting local-daemon.")
     if source_items == 0:
-        actions.append("Run ./scripts/pska mvp-bootstrap to import Twitter/X archive or scan a notes root.")
+        actions.append("Run ./scripts/pska mvp-bootstrap to import Twitter/X archive or scan a sources root.")
     if not connectors.get("state_count"):
-        actions.append("Authorize a local notes root with ./scripts/pska files-sync or ./scripts/pska files-scan --root <path>.")
+        actions.append("Authorize a local sources root with ./scripts/pska files-sync or ./scripts/pska files-scan --root <path>.")
     entities = int(index.get("entities") or 0)
     hyperedges = int(index.get("hyperedges") or 0)
     if source_items and (entities == 0 or hyperedges == 0):

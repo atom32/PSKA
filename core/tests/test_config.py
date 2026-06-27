@@ -57,13 +57,13 @@ def test_pska_config_loads_json_and_keyfile_token(tmp_path: Path, monkeypatch) -
     assert config.files.ignore == ("*.tmp",)
     assert config.files.max_bytes == 1234
     assert config.workspace.root == tmp_path / "workspace"
-    assert config.workspace.imports_dir == tmp_path / "workspace" / "_system" / "imports"
-    assert config.workspace.twitter_archive_dir == tmp_path / "workspace" / "_system" / "twitter_archive"
-    assert config.workspace.user_notes_dir("tenant/acme", "pska:ada") == (
-        tmp_path / "workspace" / "tenants" / "tenant%2Facme" / "users" / "pska%3Aada" / "notes"
+    assert config.workspace.run_dir == tmp_path / "workspace" / "_system" / "run"
+    assert config.workspace.log_dir == tmp_path / "workspace" / "_system" / "logs"
+    assert config.workspace.user_sources_dir("tenant/acme", "pska:ada") == (
+        tmp_path / "workspace" / "tenants" / "tenant%2Facme" / "users" / "pska%3Aada" / "sources"
     )
     assert config.workspace.assert_user_path(
-        tmp_path / "workspace" / "tenants" / "tenant%2Facme" / "users" / "pska%3Aada" / "notes" / "memo.md",
+        tmp_path / "workspace" / "tenants" / "tenant%2Facme" / "users" / "pska%3Aada" / "sources" / "memo.md",
         tenant_id="tenant/acme",
         user_id="pska:ada",
     )
@@ -98,7 +98,7 @@ def test_pska_config_default_workspace_root(monkeypatch) -> None:
 
 def test_pska_config_workspace_guard_rejects_cross_tenant(tmp_path: Path) -> None:
     config = PSKAConfig.from_dict({"workspace": {"root": str(tmp_path / "workspace")}})
-    cross_path = config.workspace.user_notes_dir("tenant_b", "bob") / "memo.md"
+    cross_path = config.workspace.user_sources_dir("tenant_b", "bob") / "memo.md"
 
     try:
         config.workspace.assert_user_path(cross_path, tenant_id="tenant_a", user_id="alice")

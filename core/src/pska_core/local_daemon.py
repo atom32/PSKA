@@ -383,14 +383,14 @@ def _workspace_check(workspace_root: Path) -> dict[str, Any]:
     legacy_repo_workspace = Path.cwd().resolve(strict=False) / "workspaces" / "default"
     warning = None
     if resolved == legacy_repo_workspace or legacy_repo_workspace in resolved.parents:
-        warning = "Workspace root is inside repo workspaces/default; use ~/PSKA_workspaces/default for runtime data."
+        warning = "Workspace root is inside repo workspaces/default; use ~/PSKA_workspaces for runtime data."
     return {
         "ok": True,
         "root": str(root),
-        "imports_dir": str(root / "imports"),
-        "twitter_archive_dir": str(root / "twitter_archive"),
-        "run_dir": str(root / "run"),
-        "log_dir": str(root / "logs"),
+        "system_dir": str(root / "_system"),
+        "run_dir": str(root / "_system" / "run"),
+        "log_dir": str(root / "_system" / "logs"),
+        "tenant_sources_pattern": str(root / "tenants" / "<tenant>" / "users" / "<user>" / "sources"),
         "warning": warning,
     }
 

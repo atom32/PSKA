@@ -13,24 +13,22 @@ PSKA 的本地 workspace 根目录默认是：
 ```text
 ~/PSKA_workspaces/_system/run
 ~/PSKA_workspaces/_system/logs
-~/PSKA_workspaces/_system/imports
-~/PSKA_workspaces/_system/twitter_archive
-~/PSKA_workspaces/tenants/<tenant_id>/users/<user_id>/notes
+~/PSKA_workspaces/tenants/<tenant_id>/users/<user_id>/sources
 ```
 
-`./start.sh` 只负责启动 PSKA stack 和准备 `_system` 目录；它不会再自动创建或同步 `default/notes`。用户资料必须显式用 tenant/user 导入：
+`./start.sh` 只负责启动 PSKA stack 和准备 `_system/run`、`_system/logs`；它不会再自动创建或同步 `default/notes`，也不会创建系统级 `twitter_archive` inbox。用户资料必须显式用 tenant/user 导入：
 
 ```bash
 ./scripts/pska --config ".pska/config.json" knowledge-source add-folder \
   --tenant-id "tenant_default" \
   --owner-user-id "user_primary" \
   --space-id "private_primary" \
-  --path "$HOME/PSKA_workspaces/tenants/tenant_default/users/user_primary/notes"
+  --path "$HOME/PSKA_workspaces/tenants/tenant_default/users/user_primary/sources"
 
 ./scripts/pska --config ".pska/config.json" files-sync \
   --tenant-id "tenant_default" \
   --owner-user-id "user_primary" \
-  --root "$HOME/PSKA_workspaces/tenants/tenant_default/users/user_primary/notes"
+  --root "$HOME/PSKA_workspaces/tenants/tenant_default/users/user_primary/sources"
 ```
 
 如果同步路径位于 `~/PSKA_workspaces/tenants/...` 下，CLI 会校验该路径属于传入的 `tenant_id/owner_user_id`。外部显式授权目录仍可作为 knowledge source，但数据库对象会按传入 tenant/user 写入。
@@ -67,7 +65,7 @@ FastReAct: http://127.0.0.1:8000
 脚本会：
 
 - 创建隔离 tenant/user。
-- 写入一组虚构资料到该用户的 workspace notes 目录。
+- 写入一组虚构资料到该用户的 workspace sources 目录。
 - 执行 `knowledge-source add-folder`、`files-sync`、`digest-now`。
 - 用 Playwright 通过 AuthNode code callback 登录 PSKA Gateway。
 - 在 Corpus 页面验证当前用户能看到刚导入的资料。

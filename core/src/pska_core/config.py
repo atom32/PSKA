@@ -348,8 +348,11 @@ class WorkspaceConfig:
     def user_root(self, tenant_id: str, user_id: str) -> Path:
         return self.tenant_dir(tenant_id) / "users" / _workspace_path_segment(user_id or "user_primary")
 
+    def user_sources_dir(self, tenant_id: str, user_id: str) -> Path:
+        return self.user_root(tenant_id, user_id) / "sources"
+
     def user_notes_dir(self, tenant_id: str, user_id: str) -> Path:
-        return self.user_root(tenant_id, user_id) / "notes"
+        return self.user_sources_dir(tenant_id, user_id)
 
     def assert_user_path(self, path: str | Path, *, tenant_id: str, user_id: str) -> Path:
         resolved = expand_path(path).resolve()

@@ -198,9 +198,9 @@ if [[ "$(config_value startup_bootstrap)" == "true" ]]; then
   fi
   "$ROOT/scripts/pska" --config "$CONFIG" db-init
   WORKSPACE_ROOT="$(config_value workspace_root)"
-  mkdir -p "$WORKSPACE_ROOT/_system/run" "$WORKSPACE_ROOT/_system/logs" "$WORKSPACE_ROOT/_system/imports" "$WORKSPACE_ROOT/_system/twitter_archive"
+  mkdir -p "$WORKSPACE_ROOT/_system/run" "$WORKSPACE_ROOT/_system/logs"
   echo "PSKA workspace root: $WORKSPACE_ROOT"
-  echo "Tenant user content is synced explicitly from $WORKSPACE_ROOT/tenants/<tenant>/users/<user>/notes"
+  echo "Tenant user content is synced explicitly from $WORKSPACE_ROOT/tenants/<tenant>/users/<user>/sources"
 else
   echo "Skipping bootstrap because startup.bootstrap=false in $CONFIG"
 fi

@@ -48,6 +48,12 @@ def _default_workspace_root() -> Path:
     return WorkspaceConfig().root
 
 
+def _job_user_sources_root(workspace_root: Path, payload: dict[str, Any], *, tenant_id: str | None = None) -> Path:
+    resolved_tenant_id = str(payload.get("tenant_id") or tenant_id or DEFAULT_TENANT_ID)
+    owner_user_id = str(payload.get("owner_user_id") or "user_primary")
+    return WorkspaceConfig(root=workspace_root).user_sources_dir(resolved_tenant_id, owner_user_id)
+
+
 @dataclass(slots=True)
 class JobRunReport:
     processed: int
@@ -163,9 +169,10 @@ class JobService:
     def _import_twitter_zips(self, payload: dict[str, Any]) -> dict[str, Any]:
         embedding_provider = self._embedding_provider(payload)
         workspace_root = self.workspace_root
+        user_sources = _job_user_sources_root(workspace_root, payload, tenant_id=self.tenant_id)
         importer = TwitterZipImporter(
             self.store,
-            archive_root=Path(payload.get("archive_root") or workspace_root / "imports"),
+            archive_root=Path(payload.get("archive_root") or user_sources / "imports"),
             owner_user_id=str(payload.get("owner_user_id") or "user_primary"),
             tenant_id=str(payload.get("tenant_id") or self.tenant_id or DEFAULT_TENANT_ID),
             space_id=str(payload.get("space_id") or "private_primary"),
@@ -173,7 +180,7 @@ class JobService:
             visible_team_ids=_visible_team_ids(payload.get("visible_team_ids")),
             embedding_provider=embedding_provider,
         )
-        result = importer.import_directory(Path(payload.get("input") or workspace_root / "twitter_archive"))
+        result = importer.import_directory(Path(payload.get("input") or user_sources / "archives" / "twitter"))
         return to_jsonable(result)
 
     def _extract_all(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -391,17 +398,18 @@ class JobService:
             json_output_path = payload.get("json_output")
         else:
             workspace_root = self.workspace_root
+            user_sources = _job_user_sources_root(workspace_root, payload, tenant_id=self.tenant_id)
             output_path = str(payload.get("output") or core_root / "reports" / f"job_{job.job_id}.html")
             json_output_path = str(payload.get("json_output") or core_root / "reports" / f"job_{job.job_id}.json")
             command = [
                 sys.executable,
                 str(script_path),
                 "--input",
-                str(payload.get("input") or workspace_root / "twitter_archive"),
+                str(payload.get("input") or user_sources / "archives" / "twitter"),
                 "--database-url",
                 str(payload.get("database_url") or getattr(self.store, "database_url", "postgresql:///pska_smoke")),
                 "--archive-root",
-                str(payload.get("archive_root") or workspace_root / "imports"),
+                str(payload.get("archive_root") or user_sources / "imports"),
                 "--output",
                 output_path,
                 "--json-output",

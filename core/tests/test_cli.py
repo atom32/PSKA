@@ -586,24 +586,25 @@ def test_workspace_defaults_are_applied_after_config_load(tmp_path) -> None:
     for args in [import_args, files_sync_args, digest_now_args, mvp_args, smoke_args, daemon_args]:
         _apply_workspace_defaults(args, workspace)
 
-    assert import_args.input == workspace / "_system" / "twitter_archive"
-    assert import_args.archive_root == workspace / "_system" / "imports"
-    assert files_sync_args.twitter_archive == workspace / "_system" / "twitter_archive"
-    assert files_sync_args.archive_root == workspace / "_system" / "imports"
-    assert digest_now_args.twitter_archive == workspace / "_system" / "twitter_archive"
-    assert digest_now_args.archive_root == workspace / "_system" / "imports"
-    assert mvp_args.twitter_archive == workspace / "_system" / "twitter_archive"
-    assert mvp_args.archive_root == workspace / "_system" / "imports"
-    assert smoke_args.input == workspace / "_system" / "twitter_archive"
-    assert smoke_args.archive_root == workspace / "_system" / "imports"
+    default_sources = workspace / "tenants" / "tenant_default" / "users" / "user_primary" / "sources"
+    assert import_args.input == default_sources / "archives" / "twitter"
+    assert import_args.archive_root == default_sources / "imports"
+    assert files_sync_args.twitter_archive == default_sources / "archives" / "twitter"
+    assert files_sync_args.archive_root == default_sources / "imports"
+    assert digest_now_args.twitter_archive == default_sources / "archives" / "twitter"
+    assert digest_now_args.archive_root == default_sources / "imports"
+    assert mvp_args.twitter_archive == default_sources / "archives" / "twitter"
+    assert mvp_args.archive_root == default_sources / "imports"
+    assert smoke_args.input == default_sources / "archives" / "twitter"
+    assert smoke_args.archive_root == default_sources / "imports"
     assert daemon_args.run_dir == workspace / "_system" / "run"
     assert daemon_args.log_dir == workspace / "_system" / "logs"
 
 
 def test_workspace_sync_guard_rejects_cross_tenant_root(tmp_path: Path) -> None:
     config = PSKAConfig.from_dict({"workspace": {"root": str(tmp_path / "workspace")}})
-    allowed = config.workspace.user_notes_dir("tenant_a", "alice")
-    rejected = config.workspace.user_notes_dir("tenant_b", "bob")
+    allowed = config.workspace.user_sources_dir("tenant_a", "alice")
+    rejected = config.workspace.user_sources_dir("tenant_b", "bob")
 
     assert _assert_workspace_sync_root_allowed(config, allowed, tenant_id="tenant_a", owner_user_id="alice") == allowed
     try:

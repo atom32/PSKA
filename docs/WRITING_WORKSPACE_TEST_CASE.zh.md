@@ -26,7 +26,7 @@ PSKA 只能通过项目根目录 `./start.sh` 启动。不要单独启动前端�
 这条链路会把虚构资料写入：
 
 ```text
-~/PSKA_workspaces/tenants/<tenant>/users/<user>/notes/e2e-writing-<run_id>/
+~/PSKA_workspaces/tenants/<tenant>/users/<user>/sources/e2e-writing-<run_id>/
 ```
 
 然后显式执行 `knowledge-source add-folder`、`files-sync`、`digest-now`，再用浏览器登录 PSKA 并创建 Writing 项目。旧的 `writing-demo-seed` 只适合快速手动演示；完整验证应使用 E2E，因为它能覆盖“向 workspace 放数据 -> 登录后看见语料库 -> digest -> 写作”的真实路径。

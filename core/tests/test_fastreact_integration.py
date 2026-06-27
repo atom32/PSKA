@@ -1134,7 +1134,7 @@ def test_http_route_covers_files_sync_with_empty_twitter_archive(tmp_path: Path)
     notes_root = tmp_path / "notes"
     workspace_root = tmp_path / "workspace"
     notes_root.mkdir()
-    (workspace_root / "twitter_archive").mkdir(parents=True)
+    (workspace_root / "tenants" / "tenant_default" / "users" / "user_primary" / "sources" / "archives" / "twitter").mkdir(parents=True)
     (notes_root / "note.md").write_text("PSKA should sync this file and check twitter archive.", encoding="utf-8")
     api = _api()
     api.config = PSKAConfig(files=FilesConfig(roots=(notes_root,)), workspace=WorkspaceConfig(root=workspace_root))
