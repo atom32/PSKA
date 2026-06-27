@@ -3864,7 +3864,6 @@ def _ask_clean_facts_from_results(results: list[dict[str, Any]], *, limit: int) 
     for item in results:
         text = _ask_clean_evidence_text(str(item.get("snippet") or ""))
         for sentence in _ask_fact_sentences(text):
-            sentence = _ask_polish_quick_fact(sentence)
             key = re.sub(r"\s+", " ", sentence).strip().lower()
             if not key or key in seen:
                 continue
@@ -3908,61 +3907,6 @@ def _ask_clean_evidence_text(text: str) -> str:
     text = re.sub(r"\s*/\s*/\s*", " / ", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text
-
-
-def _ask_polish_quick_fact(sentence: str) -> str:
-    sentence = re.sub(r"\s+", " ", str(sentence or "")).strip(" -\t\r\n")
-    sentence = re.sub(r"\s+([。！？.!?])$", r"\1", sentence)
-    if not sentence:
-        return ""
-
-    match = re.fullmatch(r"([A-Za-z][A-Za-z0-9 _.-]+?)\s+Founded\s+(\d{4})\s+by\s+([A-Za-z][A-Za-z0-9 _.-]+)\.?", sentence, re.IGNORECASE)
-    if match:
-        company = match.group(1).strip()
-        year = match.group(2).strip()
-        founder = match.group(3).strip(" .。")
-        return f"{company} 是一家由 {founder} 于 {year} 年创立的公司。"
-
-    match = re.fullmatch(r"Originally\s+an?\s+(.+?)\s+company\.?", sentence, re.IGNORECASE)
-    if match:
-        return f"公司最初定位为 {match.group(1).strip()} 公司。"
-
-    match = re.fullmatch(r"pivoted\s+to\s+(.+?)\s+in\s+late\s+(\d{4})\.?", sentence, re.IGNORECASE)
-    if match:
-        return f"{match.group(2).strip()} 年底转向 {match.group(1).strip()}。"
-
-    match = re.fullmatch(r"(.+?)\s+status\s+is\s+(.+?)\s+and\s+the\s+owner\s+is\s+(.+?)\.?", sentence, re.IGNORECASE)
-    if match:
-        subject = match.group(1).strip()
-        status = match.group(2).strip()
-        owner = match.group(3).strip()
-        return f"{subject} 的状态是 {status}，负责人是 {owner}。"
-
-    match = re.fullmatch(r"(.+?)\s+CEO\s+of\s+(.+?)\.?", sentence, re.IGNORECASE)
-    if match:
-        person = match.group(1).strip()
-        company = match.group(2).strip()
-        return f"{person} 是 {company} 的 CEO。"
-
-    match = re.search(r"\bState\s*-\s*Founded:\s*(.+?)\s+-\s*Funding:\s*(.+)", sentence, re.IGNORECASE)
-    if match:
-        founded = match.group(1).strip(" .。")
-        funding = match.group(2).strip(" .。")
-        if _ask_looks_truncated_fact(funding):
-            return f"当前资料显示，成立时间为 {founded}；融资信息需打开引用来源确认。"
-        return f"当前资料显示，成立时间为 {founded}，融资阶段为 {funding}。"
-
-    if not sentence.endswith(("。", ".", "!", "?", "！", "？")):
-        sentence = f"{sentence}。"
-    return sentence
-
-
-def _ask_looks_truncated_fact(value: str) -> bool:
-    value = str(value or "").strip()
-    if not value:
-        return True
-    tail = re.findall(r"[A-Za-z]+$", value)
-    return bool(tail and tail[0].lower() in {"f", "fr", "fro", "fu", "fun", "fund"})
 
 
 def _ask_fact_sentences(text: str) -> list[str]:
