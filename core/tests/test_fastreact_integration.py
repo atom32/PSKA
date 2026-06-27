@@ -21,6 +21,8 @@ from pska_core.api import (
     _ask_answer_quality_flags,
     _ask_clean_evidence_text,
     _ask_is_stream_done_event,
+    _ask_polish_quick_fact,
+    _ask_query_terms,
     _ask_retrieval_from_agentic_trace,
 )
 from pska_core.auth import context_from_headers
@@ -329,13 +331,27 @@ def test_ask_quality_allows_report_markdown_headings() -> None:
 
 def test_ask_quick_clean_evidence_removes_inline_frontmatter_and_headings() -> None:
     cleaned = _ask_clean_evidence_text(
-        "--- title: acme-example type: company --- # acme-example Founded 2024. ## State - Active."
+        "--- title: acme-example type: company --- # acme-example Founded 2024. ## State - Active.\n| a | b |\n| --- | --- |"
     )
 
     assert "---" not in cleaned
     assert "#" not in cleaned
     assert "title:" not in cleaned
+    assert "| --- |" not in cleaned
     assert "acme-example Founded 2024" in cleaned
+
+
+def test_ask_query_terms_splits_mixed_english_chinese() -> None:
+    terms = _ask_query_terms("acme example是一个什么样公司？")
+
+    assert terms[:2] == ["acme", "example"]
+    assert "example是一个什么样公司" not in terms
+
+
+def test_ask_quick_polishes_common_company_facts() -> None:
+    assert _ask_polish_quick_fact("acme-example Founded 2024 by alice-example.") == "acme-example 是一家由 alice-example 于 2024 年创立的公司。"
+    assert _ask_polish_quick_fact("State - Founded: 2024-Q2 - Funding: seed from fund-a.") == "当前资料显示，成立时间为 2024-Q2，融资阶段为 seed from fund-a。"
+    assert _ask_polish_quick_fact("State - Founded: 2024-Q2 - Funding: seed fr") == "当前资料显示，成立时间为 2024-Q2；融资信息需打开引用来源确认。"
 
 
 def test_fastreact_ready_reports_missing_pska_tools(monkeypatch) -> None:
@@ -1974,9 +1990,9 @@ def test_workspace_ask_quick_returns_report_ready_answer_and_evidence() -> None:
     assert payload["route"]["routing_owner"] == "pska_planner"
     assert "acme" in [term.lower() for term in payload["route"]["query_terms"]]
     assert [step["phase"] for step in payload["agent_steps"]] == ["understand", "route", "search", "read", "answer"]
-    assert payload["agent_steps"][2]["title"] == "执行 PSKA GraphRAG 检索"
+    assert payload["agent_steps"][2]["title"] == "检索知识库与图谱"
     assert payload["answer"].startswith("关键结论")
-    assert "status is active" in payload["answer"]
+    assert "状态是 active" in payload["answer"]
     assert "Ask Quick Note" not in payload["answer"]
     assert "---" not in payload["answer"]
     assert payload["citations"][0]["title"] == "Ask Quick Note"
@@ -2245,7 +2261,8 @@ def test_workspace_ask_stream_quick_emits_planner_and_graphrag_steps() -> None:
     assert headers["content-type"].startswith("text/event-stream")
     assert "event: route" in body
     assert "event: agent_step" in body
-    assert "执行 PSKA GraphRAG 检索" in body
+    assert "检索知识库与图谱" in body
+    assert "lexical/vector/graph" not in body
     assert "\"retrieval_owner\": \"pska\"" in body
     assert "\"routing_owner\": \"pska_planner\"" in body
     assert "time_to_first_agent_event_ms" in body

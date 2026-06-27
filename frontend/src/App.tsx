@@ -1038,13 +1038,16 @@ function AskResult({ result }: { result: WorkspaceAskResponse | WorkspaceSearchR
       {fallbackReason ? <small className="search-note">{askFallbackLabel(fallbackReason)}</small> : null}
       {refs.length > 0 ? (
         <div className="source-ref-list">
-          {refs.slice(0, 5).map((ref, index) => (
-            <div className="source-ref" key={`${ref.source_item_id || ref.title || "ref"}-${index}`}>
-              <strong>{displayText(ref.title || ref.source_item_id, "来源")}</strong>
-              {ref.source_item_id ? <code>{ref.source_item_id}</code> : null}
-              {ref.snippet ? <p>{trimText(displayText(ref.snippet), 180)}</p> : null}
-            </div>
-          ))}
+          {refs.slice(0, 5).map((ref, index) => {
+            const snippet = trimText(cleanEvidenceSnippet(ref.snippet), 180);
+            return (
+              <div className="source-ref" key={`${ref.source_item_id || ref.title || "ref"}-${index}`}>
+                <strong>{displayText(ref.title || ref.source_item_id, "来源")}</strong>
+                {ref.source_item_id ? <code>{ref.source_item_id}</code> : null}
+                {snippet ? <p>{snippet}</p> : null}
+              </div>
+            );
+          })}
         </div>
       ) : null}
       {qualitySignals ? <AskQualitySignals signals={qualitySignals} /> : null}
@@ -1200,7 +1203,7 @@ function normalizeSearchRefs(values: unknown[]): SearchEvidenceRef[] {
       const ref = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
       return {
         title: displayText(ref.title, ""),
-        snippet: displayText(ref.snippet, ""),
+        snippet: cleanEvidenceSnippet(ref.snippet),
         source_item_id: displayText(ref.source_item_id, "") || undefined,
         score: typeof ref.score === "number" ? ref.score : undefined
       };
@@ -1328,7 +1331,7 @@ function buildAskMarkdown(query: string, answer: string, refs: SearchEvidenceRef
       const source = ref.source_item_id ? ` (${ref.source_item_id})` : "";
       lines.push(`${index + 1}. ${title}${source}`);
       if (ref.snippet) {
-        lines.push(`   - ${trimText(ref.snippet, 220)}`);
+        lines.push(`   - ${trimText(cleanEvidenceSnippet(ref.snippet), 220)}`);
       }
     });
     lines.push("");
@@ -1581,6 +1584,39 @@ function cleanAgenticAnswer(value: string) {
   }
   const unfenced = stripCodeFence(trimmed);
   return unfenced.replace(/\s*\[\.\.\. truncated \.\.\.\]\s*$/i, "").trim();
+}
+
+function cleanEvidenceSnippet(value: unknown) {
+  let text = displayText(value, "").trim();
+  if (!text) {
+    return "";
+  }
+  text = text.replace(/^\s*---[\s\S]*?---\s*/m, "");
+  text = text.replace(/\s*\|\s*-{2,}\s*(?:\|\s*-{2,}\s*)+\|?/g, " ");
+  const lines = text
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter((line) => {
+      if (!line) {
+        return false;
+      }
+      if (/^(title|type|slug|aliases|date|attendees|tags):/i.test(line)) {
+        return false;
+      }
+      if (/^\|.*\|$/.test(line)) {
+        return false;
+      }
+      if (/^[-:| ]{5,}$/.test(line)) {
+        return false;
+      }
+      return true;
+    })
+    .map((line) => line.replace(/^#{1,6}\s*/, ""));
+  text = lines.join(" ");
+  text = text.replace(/\b#{1,6}\s*/g, "");
+  text = text.replace(/\s*\|\s*/g, " / ");
+  text = text.replace(/\s*\/\s*\/\s*/g, " / ");
+  return text.replace(/\s+/g, " ").trim();
 }
 
 function extractEntities(value: string) {

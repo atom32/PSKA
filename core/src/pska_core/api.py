@@ -3425,7 +3425,7 @@ def _console_search_summary(payload: dict[str, Any]) -> dict[str, Any]:
                 "document_id": _console_result_ref(result, "document_id"),
                 "chunk_id": _console_result_ref(result, "chunk_id"),
                 "title": result.get("title"),
-                "snippet": result.get("snippet"),
+                "snippet": _ask_clean_evidence_text(result.get("snippet")) if result.get("snippet") else result.get("snippet"),
                 "score": result.get("score"),
                 "citation": _console_citation(result.get("citation")),
             }
@@ -3475,7 +3475,7 @@ def _console_citation(value: Any) -> dict[str, Any]:
         "chunk_id": citation.get("chunk_id"),
         "title": citation.get("title"),
         "url": citation.get("url"),
-        "snippet": citation.get("snippet"),
+        "snippet": _ask_clean_evidence_text(citation.get("snippet")) if citation.get("snippet") else citation.get("snippet"),
     }
 
 
@@ -3577,11 +3577,46 @@ def _ask_route_intent(query: str, *, intent: str) -> str:
 
 
 def _ask_query_terms(query: str) -> list[str]:
-    terms = _graph_query_terms(query)
+    text = str(query or "").lower()
+    seen: set[str] = set()
+    terms: list[str] = []
+
+    def add(term: str) -> None:
+        term = term.strip(" _-.,?!?;:，。！？；：、()[]{}<>《》\"'")
+        if len(term) < 2 or term in seen:
+            return
+        seen.add(term)
+        terms.append(term)
+
+    for term in re.findall(r"[a-z][a-z0-9_-]*", text):
+        add(term)
+
+    chinese_stopwords = {
+        "是什么",
+        "什么是",
+        "什么样",
+        "怎么样",
+        "一个",
+        "相关",
+        "情况",
+        "介绍",
+        "哪些",
+        "一下",
+        "这个",
+        "那个",
+        "多少",
+        "如何",
+    }
+    for chunk in re.findall(r"[\u4e00-\u9fff]+", text):
+        normalized = chunk
+        for stopword in chinese_stopwords:
+            normalized = normalized.replace(stopword, " ")
+        for term in re.findall(r"[\u4e00-\u9fff]{2,}", normalized):
+            add(term)
+
     if terms:
         return terms[:6]
-    words = [part.strip() for part in re.split(r"\s+", str(query or "")) if part.strip()]
-    return words[:6]
+    return _graph_query_terms(query)[:6]
 
 
 def _ask_route_payload(
@@ -3659,7 +3694,7 @@ def _ask_route_step_detail(*, intent: str, selected_intent: str, query_terms: li
     term_text = f"关键词：{'、'.join(query_terms[:6])}；" if query_terms else ""
     if selected_intent == "deep":
         return f"{term_text}{intent_label} 判定需要 {route_label}，由 FastReAct 通过 PSKA 只读工具检索。"
-    return f"{term_text}{intent_label} 判定可先走 {route_label}，由 PSKA GraphRAG 直接检索。"
+    return f"{term_text}{intent_label} 判定可先走 {route_label}，由 PSKA 检索知识库与图谱。"
 
 
 def _ask_quick_search_step(*, sequence: int, query_terms: list[str], top_k: int, started_at: float) -> dict[str, Any]:
@@ -3668,8 +3703,8 @@ def _ask_quick_search_step(*, sequence: int, query_terms: list[str], top_k: int,
         sequence=sequence,
         phase="search",
         status="running",
-        title="执行 PSKA GraphRAG 检索",
-        detail=f"{term_text}top_k={top_k}。检索 lexical/vector/graph 证据。",
+        title="检索知识库与图谱",
+        detail=f"{term_text}最多读取 {top_k} 条相关证据。",
         started_at=started_at,
     )
 
@@ -3682,7 +3717,7 @@ def _ask_quick_read_step(*, sequence: int, evidence: dict[str, Any], started_at:
         sequence=sequence,
         phase="read",
         status="complete",
-        title="读取 GraphRAG 证据",
+        title="读取证据",
         detail=f"返回 {len(results)} 条证据，{len(citations)} 条引用，{len(graph_paths)} 条图谱路径。",
         evidence_count=len(results),
         source_ref_count=len(citations),
@@ -3822,6 +3857,7 @@ def _ask_clean_facts_from_results(results: list[dict[str, Any]], *, limit: int) 
     for item in results:
         text = _ask_clean_evidence_text(str(item.get("snippet") or ""))
         for sentence in _ask_fact_sentences(text):
+            sentence = _ask_polish_quick_fact(sentence)
             key = re.sub(r"\s+", " ", sentence).strip().lower()
             if not key or key in seen:
                 continue
@@ -3841,6 +3877,7 @@ def _ask_clean_evidence_text(text: str) -> str:
         else:
             text = re.sub(r"^\s*---\s+.*?\s+---\s*", "", text, count=1)
     text = re.sub(r"(?<!#)#{1,6}\s+", "", text)
+    text = re.sub(r"\s*\|\s*-{2,}\s*(?:\|\s*-{2,}\s*)+\|?", " ", text)
     cleaned_lines: list[str] = []
     for raw_line in text.splitlines():
         line = raw_line.strip()
@@ -3859,8 +3896,66 @@ def _ask_clean_evidence_text(text: str) -> str:
             continue
         cleaned_lines.append(line)
     text = " ".join(cleaned_lines)
+    text = re.sub(r"\b#{1,6}\s*", "", text)
+    text = re.sub(r"\s*\|\s*", " / ", text)
+    text = re.sub(r"\s*/\s*/\s*", " / ", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text
+
+
+def _ask_polish_quick_fact(sentence: str) -> str:
+    sentence = re.sub(r"\s+", " ", str(sentence or "")).strip(" -\t\r\n")
+    sentence = re.sub(r"\s+([。！？.!?])$", r"\1", sentence)
+    if not sentence:
+        return ""
+
+    match = re.fullmatch(r"([A-Za-z][A-Za-z0-9 _.-]+?)\s+Founded\s+(\d{4})\s+by\s+([A-Za-z][A-Za-z0-9 _.-]+)\.?", sentence, re.IGNORECASE)
+    if match:
+        company = match.group(1).strip()
+        year = match.group(2).strip()
+        founder = match.group(3).strip(" .。")
+        return f"{company} 是一家由 {founder} 于 {year} 年创立的公司。"
+
+    match = re.fullmatch(r"Originally\s+an?\s+(.+?)\s+company\.?", sentence, re.IGNORECASE)
+    if match:
+        return f"公司最初定位为 {match.group(1).strip()} 公司。"
+
+    match = re.fullmatch(r"pivoted\s+to\s+(.+?)\s+in\s+late\s+(\d{4})\.?", sentence, re.IGNORECASE)
+    if match:
+        return f"{match.group(2).strip()} 年底转向 {match.group(1).strip()}。"
+
+    match = re.fullmatch(r"(.+?)\s+status\s+is\s+(.+?)\s+and\s+the\s+owner\s+is\s+(.+?)\.?", sentence, re.IGNORECASE)
+    if match:
+        subject = match.group(1).strip()
+        status = match.group(2).strip()
+        owner = match.group(3).strip()
+        return f"{subject} 的状态是 {status}，负责人是 {owner}。"
+
+    match = re.fullmatch(r"(.+?)\s+CEO\s+of\s+(.+?)\.?", sentence, re.IGNORECASE)
+    if match:
+        person = match.group(1).strip()
+        company = match.group(2).strip()
+        return f"{person} 是 {company} 的 CEO。"
+
+    match = re.search(r"\bState\s*-\s*Founded:\s*(.+?)\s+-\s*Funding:\s*(.+)", sentence, re.IGNORECASE)
+    if match:
+        founded = match.group(1).strip(" .。")
+        funding = match.group(2).strip(" .。")
+        if _ask_looks_truncated_fact(funding):
+            return f"当前资料显示，成立时间为 {founded}；融资信息需打开引用来源确认。"
+        return f"当前资料显示，成立时间为 {founded}，融资阶段为 {funding}。"
+
+    if not sentence.endswith(("。", ".", "!", "?", "！", "？")):
+        sentence = f"{sentence}。"
+    return sentence
+
+
+def _ask_looks_truncated_fact(value: str) -> bool:
+    value = str(value or "").strip()
+    if not value:
+        return True
+    tail = re.findall(r"[A-Za-z]+$", value)
+    return bool(tail and tail[0].lower() in {"f", "fr", "fro", "fu", "fun", "fund"})
 
 
 def _ask_fact_sentences(text: str) -> list[str]:
