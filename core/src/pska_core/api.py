@@ -1015,6 +1015,7 @@ class PSKAApi:
             except AgenticServiceError as exc:
                 quick = self._workspace_ask_quick(
                     query=query,
+                    scope=scope,
                     intent=intent,
                     surface=surface,
                     tenant_id=tenant_id,
@@ -1033,6 +1034,7 @@ class PSKAApi:
         return _ask_with_quality_signals(
             self._workspace_ask_quick(
                 query=query,
+                scope=scope,
                 intent=intent,
                 surface=surface,
                 tenant_id=tenant_id,
@@ -1144,6 +1146,7 @@ class PSKAApi:
                 final_payload = _ask_with_quality_signals(
                     self._workspace_ask_quick(
                         query=query,
+                        scope=scope,
                         intent=intent,
                         surface=surface,
                         tenant_id=tenant_id,
@@ -1225,6 +1228,7 @@ class PSKAApi:
         except AgenticServiceError as exc:
             quick = self._workspace_ask_quick(
                 query=query,
+                scope=scope,
                 intent=intent,
                 surface=surface,
                 tenant_id=tenant_id,
@@ -1285,6 +1289,7 @@ class PSKAApi:
         self,
         *,
         query: str,
+        scope: dict[str, Any] | None = None,
         intent: str,
         surface: str,
         tenant_id: str,
@@ -1318,7 +1323,8 @@ class PSKAApi:
                     started_at=started_at,
                 )
             )
-        retrieval_result = self.retrieval.search(query, user, represented_user_id=represented_user_id, top_k=top_k)
+        retrieval_query = _ask_query_with_scope(query, scope or {})
+        retrieval_result = self.retrieval.search(retrieval_query, user, represented_user_id=represented_user_id, top_k=top_k)
         retrieval = _console_search_summary(to_jsonable(retrieval_result))
         evidence = _ask_evidence_from_retrieval(retrieval)
         steps.append(_ask_quick_read_step(sequence=len(steps) + 1, evidence=evidence, started_at=started_at))
@@ -1347,6 +1353,7 @@ class PSKAApi:
                 "tool_policy": {"mode": "none"},
                 "routing_owner": "pska_planner",
                 "query_terms": query_terms,
+                "scope_context_nodes": len(_list_of_dicts((scope or {}).get("context_nodes"))),
             },
             "evidence": evidence,
             "citations": evidence["citations"],
@@ -1355,6 +1362,8 @@ class PSKAApi:
             "trace": {
                 "mode": "quick",
                 "query_terms": query_terms,
+                "retrieval_query": retrieval_query,
+                "scope": _ask_scope_trace(scope or {}),
                 "retrieval_owner": "pska",
                 "retrieval": retrieval,
                 "diagnostics": retrieval.get("diagnostics") if isinstance(retrieval.get("diagnostics"), dict) else {},
@@ -2015,6 +2024,13 @@ class PSKAApi:
             metadata=dict(payload["metadata"]) if isinstance(payload.get("metadata"), dict) else None,
         )
         return {"ok": True, "board": _writing_board_payload(board)}
+
+    def workspace_writing_delete_board(self, board_id: str, payload: dict[str, Any] | None = None, context: RequestContext | None = None) -> dict[str, Any]:
+        payload = context.apply_to_payload(payload or {}) if context else (payload or {})
+        tenant_id = str(payload.get("tenant_id") or DEFAULT_TENANT_ID)
+        owner = _workspace_owner_user_id(context, payload.get("owner_user_id") or payload.get("represented_user_id"))
+        self.store.delete_writing_board(board_id, tenant_id=tenant_id, owner_user_id=owner)
+        return {"ok": True, "deleted": {"board_id": board_id}}
 
     def workspace_writing_create_node(self, board_id: str, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
         payload = context.apply_to_payload(payload) if context else payload
@@ -2918,6 +2934,8 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
                 return
             if path.startswith("/workspace/writing/boards/"):
                 parts = _writing_path_parts(path)
+                if len(parts) == 1:
+                    return self._json(200, self.api.workspace_writing_delete_board(unquote(parts[0]), payload, context=context))
                 if len(parts) == 3 and parts[1] == "nodes":
                     return self._json(200, self.api.workspace_writing_delete_node(unquote(parts[0]), unquote(parts[2]), payload, context=context))
                 if len(parts) == 3 and parts[1] == "edges":
@@ -4098,6 +4116,39 @@ def _ask_deep_query(*, query: str, surface: str, scope: dict[str, Any]) -> str:
         f"Scope: {scope_text}\n"
         f"User question: {query}"
     )
+
+
+def _ask_query_with_scope(query: str, scope: dict[str, Any]) -> str:
+    context_lines: list[str] = []
+    for node in _list_of_dicts(scope.get("context_nodes"))[:8]:
+        title = str(node.get("title") or "").strip()
+        body = str(node.get("body_markdown") or "").strip()
+        node_type = str(node.get("node_type") or "node").strip()
+        text = " ".join(part for part in [title, body] if part).strip()
+        if text:
+            context_lines.append(f"{node_type}: {_trim_words(text, 80)}")
+    if not context_lines:
+        return query
+    return "\n".join([
+        query,
+        "",
+        "Connected writing context:",
+        *context_lines,
+    ])
+
+
+def _ask_scope_trace(scope: dict[str, Any]) -> dict[str, Any]:
+    context_nodes = _list_of_dicts(scope.get("context_nodes"))
+    context_edges = _list_of_dicts(scope.get("context_edges"))
+    return {
+        "board_id": scope.get("board_id"),
+        "node_id": scope.get("node_id"),
+        "session_id": scope.get("session_id"),
+        "context_model": scope.get("context_model"),
+        "context_node_count": len(context_nodes),
+        "context_edge_count": len(context_edges),
+        "source_item_ids": _string_list(scope.get("source_item_ids"))[:20],
+    }
 
 
 def _ask_evidence_from_retrieval(retrieval: dict[str, Any]) -> dict[str, Any]:

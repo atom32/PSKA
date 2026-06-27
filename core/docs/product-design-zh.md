@@ -81,8 +81,13 @@ PSKA 需要区分两个界面层次：
 5. Retrieval Quality Loop：产品上必须承认当前是 HippoRAG-inspired GraphRAG v0，而不是成熟 HippoRAG 2/GNN；它已有离线 fact/entity/passage 图索引、fact/entity embedding linking、PPR 融合和普通 RAG fallback，下一步通过 fixture、expected citations、rerank、PPR 参数调优和真实问题回放提升质量。
 
 Writing Workspace 的 v1 画布底座使用 `@xyflow/react`，保存 PSKA 自己的
-`writing_boards`、`writing_nodes` 和 `writing_edges`。它不是新的 RAG 入口：
-节点运行仍统一走 Ask PSKA；`compose` 只基于已选 answer 节点生成草稿，不再二次检索。
+`writing_boards`、`writing_nodes` 和 `writing_edges`。产品上按“项目”管理：
+新建项目得到一块空白 Inquiry Graph 画布，用户可以关闭项目回到项目列表，也可以删除项目。
+每个 question 节点有独立 Ask session；与该节点直接相连的节点/边作为结构化 `scope`
+传给 Ask PSKA，因此追问上下文来自可见图结构，而不是隐藏的第二套搜索入口。节点可以并行运行，
+展开节点可以查看该节点自己的 agentic 事件流。
+
+它不是新的 RAG 入口：节点运行仍统一走 Ask PSKA；`compose` 只基于已选 answer 节点生成草稿，不再二次检索。
 PSKA 是领域无关系统，写作建议和问题扩展不能依赖样例实体、样例语料或特定问题 shortcut。
 
 ### 产品验收门槛

@@ -181,6 +181,7 @@ class KnowledgeStore(Protocol):
     ) -> WritingBoard: ...
     def get_writing_board(self, board_id: str, *, tenant_id: str, owner_user_id: str) -> WritingBoard: ...
     def list_writing_boards(self, *, tenant_id: str, owner_user_id: str, limit: int = 50) -> list[WritingBoard]: ...
+    def delete_writing_board(self, board_id: str, *, tenant_id: str, owner_user_id: str) -> None: ...
     def upsert_writing_node(self, node: WritingNode) -> WritingNode: ...
     def update_writing_node(
         self,
@@ -792,6 +793,29 @@ class InMemoryKnowledgeStore:
             if board.tenant_id == tenant_id and board.owner_user_id == owner_user_id
         ]
         return sorted(boards, key=lambda board: (board.updated_at, board.board_id), reverse=True)[: max(0, limit)]
+
+    def delete_writing_board(self, board_id: str, *, tenant_id: str, owner_user_id: str) -> None:
+        board = self.writing_boards[board_id]
+        if board.tenant_id != tenant_id or board.owner_user_id != owner_user_id:
+            raise KeyError(board_id)
+        del self.writing_boards[board_id]
+        node_ids = {
+            node_id
+            for node_id, node in self.writing_nodes.items()
+            if node.board_id == board_id and node.tenant_id == tenant_id and node.owner_user_id == owner_user_id
+        }
+        self.writing_nodes = {
+            node_id: node
+            for node_id, node in self.writing_nodes.items()
+            if node_id not in node_ids
+        }
+        self.writing_edges = {
+            edge_id: edge
+            for edge_id, edge in self.writing_edges.items()
+            if edge.board_id != board_id
+            and edge.source_node_id not in node_ids
+            and edge.target_node_id not in node_ids
+        }
 
     def upsert_writing_node(self, node: WritingNode) -> WritingNode:
         self.get_writing_board(node.board_id, tenant_id=node.tenant_id, owner_user_id=node.owner_user_id)

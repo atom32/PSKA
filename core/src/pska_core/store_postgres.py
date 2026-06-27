@@ -1553,6 +1553,18 @@ class PostgresKnowledgeStore:
             ).fetchall()
         return [self._writing_board_from_row(row) for row in rows]
 
+    def delete_writing_board(self, board_id: str, *, tenant_id: str, owner_user_id: str) -> None:
+        with self.connect() as conn:
+            result = conn.execute(
+                """
+                delete from writing_boards
+                where tenant_id = %s and owner_user_id = %s and board_id = %s
+                """,
+                (tenant_id, owner_user_id, board_id),
+            )
+        if result.rowcount == 0:
+            raise KeyError(board_id)
+
     def upsert_writing_node(self, node: WritingNode) -> WritingNode:
         self.get_writing_board(node.board_id, tenant_id=node.tenant_id, owner_user_id=node.owner_user_id)
         with self.connect() as conn:

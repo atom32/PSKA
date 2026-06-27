@@ -13,6 +13,7 @@ import time
 from typing import Any, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+from uuid import uuid4
 
 from pska_core.acl import ACLService
 from pska_core.agent_capture import capture_agent_conversation
@@ -35,7 +36,7 @@ from pska_core.knowledge_sources import KnowledgeSourceService
 from pska_core.local_daemon import build_process_specs, config_check, daemon_status, run_supervisor, supervisor_config
 from pska_core.memory import MemoryService
 from pska_core.mcp_server import MCPServer
-from pska_core.models import AgentMemory, ChannelIngestPayload, ReviewItem, SourceItem, SourceRef, UserProfileCard, utc_now
+from pska_core.models import AgentMemory, ChannelIngestPayload, ReviewItem, SourceItem, SourceRef, UserProfileCard, WritingBoard, WritingEdge, WritingNode, utc_now
 from pska_core.retrieval import RetrievalService
 from pska_core.retrieval_eval import DEFAULT_RETRIEVAL_EVAL_FIXTURE, run_retrieval_eval
 from pska_core.review import ReviewService
@@ -425,6 +426,15 @@ def build_parser() -> argparse.ArgumentParser:
     seed_candidates_parser.add_argument("--limit", type=int, default=4)
     seed_candidates_parser.add_argument("--confidence", type=float, default=0.55)
 
+    writing_demo_parser = subparsers.add_parser(
+        "writing-demo-seed",
+        help="Seed a tenant-scoped Writing Workspace demo project and supporting corpus",
+    )
+    writing_demo_parser.add_argument("--tenant-id", default="tenant_default")
+    writing_demo_parser.add_argument("--owner-user-id", default="user_primary")
+    writing_demo_parser.add_argument("--space-id", default="private_primary")
+    writing_demo_parser.add_argument("--visibility", choices=[item.value for item in Visibility], default=Visibility.PRIVATE.value)
+
     review_list_parser = subparsers.add_parser("review-list", help="List review items awaiting or recording human decisions")
     review_list_parser.add_argument("--status", default=None)
     review_list_parser.add_argument("--owner-user-id", default=None)
@@ -611,6 +621,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return digest_scheduler(args)
     if args.command == "seed-review-candidates":
         return seed_review_candidates(args)
+    if args.command == "writing-demo-seed":
+        return writing_demo_seed(args)
     if args.command == "review-list":
         return review_list(args)
     if args.command == "review-backfill-summaries":
@@ -2668,6 +2680,345 @@ def _seed_relationship_evidence(primary: SourceItem, secondary: SourceItem) -> s
     primary_title = " ".join((primary.title or primary.source_item_id).split())
     secondary_title = " ".join((secondary.title or secondary.source_item_id).split())
     return f"Cold-start seeded relationship candidate linking two real PSKA sources: {primary_title} / {secondary_title}."
+
+
+def writing_demo_seed(args: argparse.Namespace) -> int:
+    store = PostgresKnowledgeStore(args.database_url)
+    tenant_id = str(args.tenant_id)
+    owner_user_id = str(args.owner_user_id)
+    space_id = str(args.space_id)
+    visibility = Visibility(args.visibility)
+    _ensure_writing_demo_identity(store, tenant_id=tenant_id, owner_user_id=owner_user_id, space_id=space_id)
+    ingest = IngestService(store)
+    sources: list[SourceItem] = []
+    for source in _writing_demo_sources():
+        payload = {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "writing_demo",
+            "record_type": source["record_type"],
+            "source_id": source["source_id"],
+            "owner_user_id": owner_user_id,
+            "space_id": space_id,
+            "visibility": visibility.value,
+            "title": source["title"],
+            "created_at": source["created_at"],
+            "captured_at": utc_now().isoformat(),
+            "tenant_id": tenant_id,
+            "content": {
+                "text": source["text"],
+                "demo": "northstar_writing_workspace_v1",
+            },
+            "extra": {
+                "writing_demo": True,
+                "entity": "Northstar Robotics",
+                "use_case": "parallel multi-round writing inquiry",
+            },
+        }
+        sources.append(ingest.ingest_channel_payload(payload))
+
+    board_id = f"wboard_demo_northstar_{uuid4().hex[:10]}"
+    board = store.create_writing_board(
+        WritingBoard(
+            board_id=board_id,
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            title="Northstar Robotics Q3 reserve-allocation memo",
+            goal=(
+                "写一份可引用的判断 memo：Northstar Robotics 是否应该进入 Q3 reserve-allocation shortlist。"
+                "先并行回答背景、判断标准、牵引、财务、反方观点，再用追问收束为建议。"
+            ),
+            metadata={
+                "demo": "northstar_writing_workspace_v1",
+                "recommended_flow": [
+                    "并行运行 5 个初始 question 节点。",
+                    "查看每个节点内的 Ask PSKA 事件流和生成的 answer/evidence/gap 节点。",
+                    "基于已生成 answer 节点继续追问 diligence 条件。",
+                    "把 answer 节点加入右侧章节，然后生成 draft。",
+                ],
+            },
+        )
+    )
+    nodes: dict[str, WritingNode] = {}
+
+    def add_node(node_id: str, node_type: str, title: str, body: str, x: int, y: int, *, expanded: bool = False) -> WritingNode:
+        node = store.upsert_writing_node(
+            WritingNode(
+                node_id=f"wnode_demo_{node_id}_{uuid4().hex[:8]}",
+                board_id=board.board_id,
+                tenant_id=tenant_id,
+                owner_user_id=owner_user_id,
+                node_type=node_type,
+                title=title,
+                body_markdown=body,
+                position={"x": x, "y": y},
+                metadata={
+                    "expanded": expanded,
+                    "demo": "northstar_writing_workspace_v1",
+                    "session_id": f"writing:{board.board_id}:{node_id}",
+                },
+            )
+        )
+        nodes[node_id] = node
+        return node
+
+    add_node(
+        "goal",
+        "goal",
+        "写作目标",
+        "形成一份 Northstar Robotics Q3 reserve-allocation shortlist 判断 memo，要求结论优先、证据可引用、风险和缺口清楚。",
+        80,
+        120,
+        expanded=True,
+    )
+    add_node(
+        "q_background",
+        "question",
+        "Northstar Robotics 的业务、阶段和融资背景是什么？",
+        "先给出公司是什么、解决什么问题、目前处于什么阶段，以及最近融资/董事会关注点。",
+        430,
+        40,
+        expanded=True,
+    )
+    add_node(
+        "q_criteria",
+        "question",
+        "Q3 reserve-allocation shortlist 的判断标准是什么，Northstar 对应哪些维度？",
+        "把政策或投资组合标准拆出来，形成后续文章结构需要覆盖的证据维度。",
+        430,
+        210,
+        expanded=True,
+    )
+    add_node(
+        "q_traction",
+        "question",
+        "Northstar 的产品牵引、客户试点和商业化信号是否足够？",
+        "重点查客户试点、续约、部署、客户集中度和产品可靠性。",
+        430,
+        380,
+        expanded=True,
+    )
+    add_node(
+        "q_finance",
+        "question",
+        "Northstar 的单位经济、毛利、现金消耗和 runway 暴露了什么风险？",
+        "重点查毛利、部署成本、回本周期、burn、runway 和下一轮融资条件。",
+        430,
+        550,
+        expanded=True,
+    )
+    add_node(
+        "q_counter",
+        "question",
+        "反对把 Northstar 纳入 Q3 shortlist 的最强理由是什么？",
+        "请主动寻找削弱结论的证据，不要只整理支持材料。",
+        430,
+        720,
+        expanded=True,
+    )
+    add_node(
+        "q_diligence",
+        "question",
+        "如果考虑纳入 shortlist，应该设置哪些条件和下一步 diligence？",
+        "请综合已连接问题，输出可以写进 memo 结尾的条件、缺口和下一步问题。",
+        850,
+        470,
+        expanded=True,
+    )
+    add_node("s_background", "section", "背景与判断标准", "纳入公司背景、投资组合标准和判断框架。", 1260, 90)
+    add_node("s_evidence", "section", "支持证据", "纳入牵引、客户、商业化和市场证据。", 1260, 280)
+    add_node("s_risk", "section", "风险与反方观点", "纳入财务、产品、客户集中度和反方证据。", 1260, 470)
+    add_node("s_recommendation", "section", "建议与下一步 diligence", "纳入结论、条件和缺口。", 1260, 660)
+
+    def add_edge(source_id: str, target_id: str, edge_type: str, label: str) -> None:
+        store.upsert_writing_edge(
+            WritingEdge(
+                edge_id=f"wedge_demo_{uuid4().hex[:12]}",
+                board_id=board.board_id,
+                tenant_id=tenant_id,
+                owner_user_id=owner_user_id,
+                source_node_id=nodes[source_id].node_id,
+                target_node_id=nodes[target_id].node_id,
+                edge_type=edge_type,
+                label=label,
+            )
+        )
+
+    for question_id in ["q_background", "q_criteria", "q_traction", "q_finance", "q_counter"]:
+        add_edge("goal", question_id, "decomposes_to", "拆解")
+    add_edge("q_traction", "q_diligence", "raises", "追问")
+    add_edge("q_finance", "q_diligence", "raises", "追问")
+    add_edge("q_counter", "q_diligence", "raises", "追问")
+
+    print(
+        dumps(
+            {
+                "ok": True,
+                "tenant_id": tenant_id,
+                "owner_user_id": owner_user_id,
+                "board": board,
+                "source_items": [{"source_item_id": item.source_item_id, "title": item.title} for item in sources],
+                "question_nodes": [
+                    {"node_id": nodes[key].node_id, "title": nodes[key].title}
+                    for key in ["q_background", "q_criteria", "q_traction", "q_finance", "q_counter", "q_diligence"]
+                ],
+                "next_steps": [
+                    "打开 5173 的写作入口，进入这个项目。",
+                    "并行点击前 5 个 question 节点的 Ask。",
+                    "展开节点查看各自事件流；Ask 完成后会生成 answer/evidence/gap 子节点。",
+                    "再运行 diligence 追问节点，把选中的 answer 节点纳入章节并生成草稿。",
+                ],
+            }
+        )
+    )
+    return 0
+
+
+def _ensure_writing_demo_identity(store: PostgresKnowledgeStore, *, tenant_id: str, owner_user_id: str, space_id: str) -> None:
+    handle = owner_user_id.replace(":", "_").replace("@", "_")[:80] or owner_user_id
+    with store.connect() as conn:
+        conn.execute(
+            """
+            insert into tenants(tenant_id, slug, name)
+            values (%s, %s, %s)
+            on conflict (tenant_id) do nothing
+            """,
+            (tenant_id, tenant_id, tenant_id),
+        )
+        conn.execute(
+            """
+            insert into users(user_id, handle, role, status, tenant_id)
+            values (%s, %s, 'admin', 'active', %s)
+            on conflict (user_id) do update
+            set tenant_id = excluded.tenant_id,
+                status = 'active',
+                updated_at = now()
+            """,
+            (owner_user_id, handle, tenant_id),
+        )
+        existing_space = conn.execute("select tenant_id from spaces where space_id = %s", (space_id,)).fetchone()
+        if existing_space and str(existing_space.get("tenant_id") or "tenant_default") != tenant_id:
+            raise ValueError(
+                f"space_id {space_id!r} already belongs to tenant {existing_space.get('tenant_id')!r}; "
+                "pass a tenant-specific --space-id such as private_<user_key>"
+            )
+        conn.execute(
+            """
+            insert into spaces(space_id, slug, kind, owner_user_id, tenant_id)
+            values (%s, %s, 'private', %s, %s)
+            on conflict (space_id) do update
+            set owner_user_id = excluded.owner_user_id,
+                tenant_id = excluded.tenant_id,
+                updated_at = now()
+            """,
+            (space_id, space_id, owner_user_id, tenant_id),
+        )
+
+
+def _writing_demo_sources() -> list[dict[str, str]]:
+    return [
+        {
+            "source_id": "northstar-company-brief-2026-06",
+            "record_type": "company_brief",
+            "title": "Northstar Robotics company brief",
+            "created_at": "2026-06-03T09:00:00Z",
+            "text": (
+                "Northstar Robotics builds autonomous mobile manipulation robots for mid-market warehouse and light-manufacturing operators. "
+                "The company was founded in 2023 by Maya Chen and Rafael Ortiz after a university robotics lab spinout. "
+                "Northstar sells a robot-as-a-service package that combines hardware lease, fleet orchestration software, and on-site deployment support. "
+                "The current product focuses on bin picking, case movement, and exception handling in facilities that cannot justify fully custom automation. "
+                "As of June 2026, Northstar reports 14 paid pilots, 5 production rollouts, and 3 signed letters of intent for Q3 deployments. "
+                "The company raised a seed extension in February 2026 and is seeking an insider reserve allocation before opening a Series A process."
+            ),
+        },
+        {
+            "source_id": "northstar-q3-reserve-policy",
+            "record_type": "policy_note",
+            "title": "Q3 reserve allocation shortlist criteria",
+            "created_at": "2026-06-05T10:30:00Z",
+            "text": (
+                "The Q3 reserve-allocation shortlist should prioritize portfolio companies where additional capital can defend or expand ownership before a clear external financing event. "
+                "The memo must cover four dimensions: evidence of product-market pull, quality and durability of customer signals, capital efficiency and runway, and risks that could make the next round expensive or delayed. "
+                "Companies should not be shortlisted only because they are visible or exciting. The committee expects a clear recommendation, explicit disconfirming evidence, citation-ready support, and next diligence questions. "
+                "A company can enter the shortlist with unresolved risk if the risk is measurable and the proposed reserve conditions are specific."
+            ),
+        },
+        {
+            "source_id": "northstar-customer-pilots-2026-06",
+            "record_type": "customer_note",
+            "title": "Northstar customer pilot update",
+            "created_at": "2026-06-10T15:45:00Z",
+            "text": (
+                "Customer pilot update for Northstar Robotics: Atlas Fulfillment expanded from two robots to eight robots after a 71 day pilot and signed a twelve month production contract. "
+                "Cedar Components converted one pilot line to paid production but delayed a second line because integration with legacy conveyor controls took longer than expected. "
+                "BlueArc Logistics reported a 19 percent labor-hour reduction in receiving exceptions but asked for stronger uptime guarantees before fleet expansion. "
+                "Across active deployments, average weekly utilization is 63 percent, up from 41 percent in March 2026. "
+                "Customer concentration remains material: Atlas accounts for 46 percent of contracted ARR."
+            ),
+        },
+        {
+            "source_id": "northstar-unit-economics-2026-06",
+            "record_type": "finance_note",
+            "title": "Northstar unit economics and runway note",
+            "created_at": "2026-06-14T11:15:00Z",
+            "text": (
+                "Northstar unit economics note: gross margin improved from 31 percent in Q1 2026 to 44 percent in May 2026 as the company moved final assembly to a contract manufacturer. "
+                "Deployment cost per site declined from 185000 dollars to 132000 dollars but remains above the 90000 dollar target needed for a sub-18-month payback. "
+                "ARR run-rate is 2.4 million dollars including signed production contracts and paid pilots. Net burn is 620000 dollars per month. "
+                "Cash runway is approximately 9.5 months without a reserve allocation and 15 months with the proposed 3.5 million dollar insider bridge. "
+                "Finance lead notes that a Series A process before two more production expansions would likely price weaker than planned."
+            ),
+        },
+        {
+            "source_id": "northstar-field-reliability-report",
+            "record_type": "field_report",
+            "title": "Northstar field reliability risk report",
+            "created_at": "2026-06-16T08:20:00Z",
+            "text": (
+                "Field reliability report: Northstar's May uptime averaged 92.4 percent across production sites, below the 96 percent target promised in sales materials. "
+                "The main issues were gripper calibration drift, mixed-SKU perception errors, and field support queues during night shifts. "
+                "A firmware update reduced gripper reset incidents by 38 percent in the first two June deployments. "
+                "The support team is still small: four field engineers cover all active pilots and production rollouts. "
+                "The report recommends delaying aggressive fleet expansion until uptime exceeds 95 percent for six consecutive weeks."
+            ),
+        },
+        {
+            "source_id": "northstar-founder-board-call",
+            "record_type": "meeting_note",
+            "title": "Board prep call with Northstar founders",
+            "created_at": "2026-06-18T17:00:00Z",
+            "text": (
+                "Board prep call: Maya Chen argued that the reserve allocation would let Northstar convert three LOIs into production deployments before starting the Series A. "
+                "Rafael Ortiz said the engineering team can reach the 95 percent uptime threshold by August if two senior field robotics hires close. "
+                "The investors asked for customer references from Atlas and BlueArc, proof that Cedar's integration delay is not representative, and a bridge plan tied to uptime and gross margin milestones. "
+                "Founders accepted that the shortlist memo should include a condition: release the second tranche only after two new production expansions and uptime above 95 percent."
+            ),
+        },
+        {
+            "source_id": "northstar-countermemo-risk",
+            "record_type": "countermemo",
+            "title": "Countermemo against Northstar reserve allocation",
+            "created_at": "2026-06-20T13:10:00Z",
+            "text": (
+                "Countermemo: the strongest argument against adding Northstar to the Q3 shortlist is that the company may still be a services-heavy robotics deployment business rather than a repeatable software-led automation platform. "
+                "Customer concentration is high, uptime remains below target, and the field support burden could consume the reserve allocation before Series A metrics are clean. "
+                "Hardware supply and integration work make revenue less predictable than pure software portfolio companies. "
+                "If Cedar's delay repeats, Northstar's payback model and gross margin improvement may not hold. "
+                "The countermemo recommends waiting for two independent production expansions before allocating additional reserves."
+            ),
+        },
+        {
+            "source_id": "warehouse-automation-market-scan-2026",
+            "record_type": "market_scan",
+            "title": "Warehouse automation market scan",
+            "created_at": "2026-06-22T12:00:00Z",
+            "text": (
+                "Market scan: mid-market warehouse operators are increasing automation budgets because labor availability remains volatile and enterprise automation vendors remain too expensive for smaller facilities. "
+                "Buyers prefer modular systems that can be deployed without facility redesign. "
+                "The most credible robotics vendors show evidence of repeatable deployment playbooks, uptime above 95 percent, and clear payback within 18 to 24 months. "
+                "Investors are rewarding robotics companies with production references and gross margin expansion, but discounting companies that look like custom integration shops."
+            ),
+        },
+    ]
 
 
 def review_list(args: argparse.Namespace) -> int:

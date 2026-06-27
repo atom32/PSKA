@@ -1771,19 +1771,36 @@ button {
   place-items: center;
 }
 
+.writing-project-manager {
+  grid-template-columns: minmax(320px, 420px) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  align-items: stretch;
+  overflow: auto;
+}
+
 .writing-start-panel {
-  width: min(680px, 92vw);
+  width: 100%;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: rgba(255, 254, 249, 0.96);
   box-shadow: var(--shadow);
   padding: 24px;
+  align-self: start;
+  display: grid;
+  gap: 12px;
 }
 
 .writing-start-panel h1 {
   margin: 6px 0 10px;
   font-size: 26px;
   line-height: 1.2;
+}
+
+.writing-start-panel p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.5;
+  font-size: 13px;
 }
 
 .writing-start-panel textarea {
@@ -1798,8 +1815,79 @@ button {
   line-height: 1.55;
 }
 
-.writing-start-panel button {
-  margin-top: 10px;
+.writing-start-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.writing-start-panel button,
+.writing-project-actions button {
+  min-height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--paper);
+  padding: 0 11px;
+  cursor: pointer;
+}
+
+.writing-start-panel button.primary {
+  border-color: #2e7564;
+  background: var(--accent-soft);
+  color: #235a4d;
+  font-weight: 800;
+}
+
+.writing-project-list {
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: 10px;
+}
+
+.writing-project-list article {
+  border: 1px solid rgba(39, 37, 31, 0.12);
+  border-radius: 8px;
+  background: rgba(255, 254, 249, 0.96);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  padding: 14px;
+  box-shadow: 0 10px 20px rgba(38, 34, 24, 0.08);
+}
+
+.writing-project-list article.active {
+  border-color: rgba(46, 117, 100, 0.42);
+  box-shadow: 0 0 0 3px rgba(46, 117, 100, 0.12);
+}
+
+.writing-project-list strong {
+  display: block;
+  font-size: 16px;
+  line-height: 1.28;
+}
+
+.writing-project-list p {
+  margin: 5px 0 8px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.writing-project-list small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.writing-project-actions {
+  display: flex;
+  align-items: start;
+  gap: 7px;
+}
+
+.writing-project-actions button.danger {
+  border-color: #e0b6a2;
+  background: #fff7f3;
+  color: #86462c;
 }
 
 .writing-toolbar {
@@ -2065,6 +2153,30 @@ button {
   border-top: 1px solid rgba(39, 37, 31, 0.08);
   padding-top: 8px;
   font-size: 12px;
+}
+
+.writing-node-timeline {
+  max-height: 250px;
+  overflow: auto;
+  border-top: 1px solid rgba(39, 37, 31, 0.08);
+  padding-top: 8px;
+}
+
+.writing-node-session {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 11px;
+  margin-bottom: 6px;
+}
+
+.writing-node-session code {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 10px;
 }
 
 .writing-node-citation-bar {

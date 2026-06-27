@@ -1908,6 +1908,9 @@ def test_writing_workspace_is_tenant_scoped_and_composes_selected_answers() -> N
     assert "src_a" in composed["draft_markdown"]
     with pytest.raises(KeyError):
         api.workspace_writing_board(board_a["board_id"], context=tenant_b)
+    deleted = api.workspace_writing_delete_board(board_b["board_id"], context=tenant_b)
+    assert deleted["deleted"]["board_id"] == board_b["board_id"]
+    assert api.workspace_writing_boards(context=tenant_b)["boards"] == []
 
 
 def test_writing_suggest_questions_does_not_persist_nodes() -> None:
@@ -1931,6 +1934,50 @@ def test_writing_suggest_questions_does_not_persist_nodes() -> None:
     assert suggestions["persisted"] is False
     assert suggestions["suggestions"]
     assert len(after["nodes"]) == len(before["nodes"])
+
+
+def test_writing_ask_scope_uses_connected_node_context_in_quick_trace() -> None:
+    api = _api()
+    context = context_from_headers({"X-PSKA-Tenant-Id": "tenant_default", "X-PSKA-User-Id": "user_primary"}, {})
+    IngestService(api.store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "connected-context-note",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "tenant_id": "tenant_default",
+            "title": "Connected Context Note",
+            "content": {"text": "RareContextNeedle appears only in the connected writing node context."},
+        }
+    )
+
+    response = api.workspace_ask(
+        {
+            "query": "What evidence exists for this follow-up?",
+            "intent": "quick",
+            "scope": {
+                "board_id": "board_test",
+                "node_id": "question_test",
+                "session_id": "writing:board_test:question_test",
+                "context_nodes": [
+                    {
+                        "node_id": "parent_answer",
+                        "node_type": "answer",
+                        "title": "Parent answer",
+                        "body_markdown": "The follow-up is about RareContextNeedle.",
+                    }
+                ],
+            },
+        },
+        context=context,
+    )
+
+    assert response["route"]["scope_context_nodes"] == 1
+    assert "RareContextNeedle" in response["trace"]["retrieval_query"]
+    assert response["trace"]["scope"]["context_node_count"] == 1
 
 
 def test_discovery_producers_drive_today_discoveries() -> None:

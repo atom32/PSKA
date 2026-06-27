@@ -184,7 +184,8 @@ This endpoint does not mutate memory, profile, or graph.
 Tenant-scoped writing boards persist a question-answer network used to organize
 Ask PSKA results into document drafts. Writing APIs do not replace Ask PSKA:
 question nodes still call `POST /workspace/ask/stream` with
-`surface="writing"` and `scope={board_id,node_id}`.
+`surface="writing"`, their own `session_id`, and a structured `scope` containing
+directly connected writing nodes/edges.
 
 Core endpoints:
 
@@ -194,6 +195,7 @@ Core endpoints:
 | `POST /workspace/writing/boards` | Create a board with `title`, `goal`, and optional metadata. |
 | `GET /workspace/writing/boards/{board_id}` | Load one board with nodes and edges. |
 | `PATCH /workspace/writing/boards/{board_id}` | Update board title, goal, or metadata. |
+| `DELETE /workspace/writing/boards/{board_id}` | Delete one board and cascade its nodes and edges within the current tenant/user scope. |
 | `POST /workspace/writing/boards/{board_id}/nodes` | Create a `goal`, `question`, `answer`, `evidence`, `gap`, `section`, or `draft` node. |
 | `PATCH /workspace/writing/boards/{board_id}/nodes/{node_id}` | Update node title, Markdown body, position, status, citations, source refs, or metadata. |
 | `DELETE /workspace/writing/boards/{board_id}/nodes/{node_id}` | Delete a node and its connected edges. |
@@ -204,7 +206,12 @@ Core endpoints:
 
 `compose` is intentionally retrieval-free. It only uses the selected answer
 nodes' Markdown, citations, and source refs, so the retrieval owner remains the
-original Ask PSKA run that produced those answer nodes.
+original Ask PSKA run that produced those answer nodes. Follow-up context comes
+from the Inquiry Graph: connected nodes are sent as structured scope, not as a
+hidden second search channel.
+
+For a complete seed-and-run scenario, see
+[`WRITING_WORKSPACE_TEST_CASE.zh.md`](WRITING_WORKSPACE_TEST_CASE.zh.md).
 
 ## Review
 

@@ -55,6 +55,7 @@ import {
   createWritingBoard,
   createWritingEdge,
   createWritingNode,
+  deleteWritingBoard,
   deleteWritingNode,
   ignoreDiscovery,
   loadCorpusContext,
@@ -2928,6 +2929,7 @@ type WritingNodeData = Record<string, unknown> & {
   node: WritingNode;
   selected: boolean;
   running: boolean;
+  askPreview?: WorkspaceAskResponse;
   suggestions: WritingQuestionSuggestion[];
   canAddToSection: boolean;
   onPatch: (nodeId: string, patch: Partial<WritingNode>) => void;
@@ -2949,12 +2951,14 @@ function WritingWorkspace({
   pinStatus: "idle" | "saved" | "failed";
 }) {
   const [activeBoardId, setActiveBoardId] = useState("");
+  const [projectManagerOpen, setProjectManagerOpen] = useState(false);
   const [newGoal, setNewGoal] = useState("");
   const [selectedSectionId, setSelectedSectionId] = useState("");
-  const [runningNodeId, setRunningNodeId] = useState("");
+  const [runningNodeIds, setRunningNodeIds] = useState<string[]>([]);
   const [askPreviews, setAskPreviews] = useState<Record<string, WorkspaceAskResponse>>({});
   const [suggestions, setSuggestions] = useState<Record<string, WritingQuestionSuggestion[]>>({});
   const [workspaceMessage, setWorkspaceMessage] = useState("");
+  const didAutoSelectBoard = useRef(false);
 
   const boardsQuery = useQuery({
     queryKey: ["writing-boards", serviceToken],
@@ -2964,10 +2968,11 @@ function WritingWorkspace({
   const boards = boardsQuery.data?.boards || [];
 
   useEffect(() => {
-    if (!activeBoardId && boards.length) {
+    if (!activeBoardId && boards.length && !projectManagerOpen && !didAutoSelectBoard.current) {
+      didAutoSelectBoard.current = true;
       setActiveBoardId(boards[0].board_id);
     }
-  }, [activeBoardId, boards]);
+  }, [activeBoardId, boards, projectManagerOpen]);
 
   const boardQuery = useQuery({
     queryKey: ["writing-board", serviceToken, activeBoardId],
@@ -2982,8 +2987,10 @@ function WritingWorkspace({
   const answerNodes = writingNodes.filter((node) => node.node_type === "answer");
 
   useEffect(() => {
-    if (!selectedSectionId && sections.length) {
+    if (sections.length && !sections.some((section) => section.node_id === selectedSectionId)) {
       setSelectedSectionId(sections[0].node_id);
+    } else if (!sections.length && selectedSectionId) {
+      setSelectedSectionId("");
     }
   }, [sections, selectedSectionId]);
 
@@ -3006,6 +3013,8 @@ function WritingWorkspace({
         throw new Error("missing board id");
       }
       setActiveBoardId(boardId);
+      setProjectManagerOpen(false);
+      didAutoSelectBoard.current = true;
       await createWritingNode(serviceToken, boardId, {
         node_type: "goal",
         title: "写作目标",
@@ -3029,6 +3038,31 @@ function WritingWorkspace({
     } catch (error) {
       setWorkspaceMessage(error instanceof Error ? error.message : "创建写作网络失败。");
     }
+  }
+
+  function openBoard(boardId: string) {
+    setActiveBoardId(boardId);
+    setProjectManagerOpen(false);
+    didAutoSelectBoard.current = true;
+  }
+
+  function closeBoard() {
+    setProjectManagerOpen(true);
+  }
+
+  async function removeBoard(boardId: string) {
+    const boardTitle = boards.find((item) => item.board_id === boardId)?.title || "这个写作项目";
+    if (!window.confirm(`删除「${boardTitle}」？项目里的节点和边会一起删除。`)) {
+      return;
+    }
+    await deleteWritingBoard(serviceToken, boardId);
+    if (activeBoardId === boardId) {
+      setActiveBoardId("");
+      setProjectManagerOpen(true);
+      setSelectedSectionId("");
+    }
+    setWorkspaceMessage("写作项目已删除。");
+    await refreshBoard();
   }
 
   async function addNode(nodeType: WritingNodeType) {
@@ -3100,7 +3134,7 @@ function WritingWorkspace({
   );
 
   async function runAsk(node: WritingNode) {
-    if (!activeBoardId || runningNodeId) {
+    if (!activeBoardId || runningNodeIds.includes(node.node_id)) {
       return;
     }
     const query = [node.title, node.body_markdown].filter(Boolean).join("\n").trim();
@@ -3108,7 +3142,9 @@ function WritingWorkspace({
       setWorkspaceMessage("问题节点需要标题或正文。");
       return;
     }
-    setRunningNodeId(node.node_id);
+    const sessionId = writingNodeSessionId(node);
+    const scope = buildWritingAskScope(activeBoardId, node, writingNodes, writingEdges, sessionId);
+    setRunningNodeIds((current) => current.includes(node.node_id) ? current : [...current, node.node_id]);
     setWorkspaceMessage("Ask PSKA 正在回答这个问题节点...");
     setAskPreviews((current) => ({ ...current, [node.node_id]: pendingAskResult(query) }));
     try {
@@ -3120,9 +3156,10 @@ function WritingWorkspace({
         ({ result: partial }) => {
           setAskPreviews((current) => ({ ...current, [node.node_id]: { ...partial } }));
         },
-        { scope: { board_id: activeBoardId, node_id: node.node_id } }
+        { scope, sessionId }
       );
       const answer = cleanAgenticAnswer(result.answer || finalAnswerFromTraceEvents(result) || "");
+      const lastAsk = writingNodeLastAsk(result, query, sessionId, scope);
       const answerNode = await createWritingNode(serviceToken, activeBoardId, {
         node_type: "answer",
         title: `回答：${trimText(node.title || query, 42)}`,
@@ -3135,7 +3172,7 @@ function WritingWorkspace({
         citations: result.citations || [],
         source_refs: result.source_refs || [],
         quality_signals: result.quality_signals || {},
-        metadata: { route: result.route || {}, timing: result.timing || {}, expanded: true }
+        metadata: { route: result.route || {}, timing: result.timing || {}, session_id: sessionId, source_question_id: node.node_id, expanded: true }
       });
       if (answerNode.node?.node_id) {
         await createWritingEdge(serviceToken, activeBoardId, {
@@ -3189,13 +3226,16 @@ function WritingWorkspace({
           });
         }
       }
-      await patchWritingNode(serviceToken, activeBoardId, node.node_id, { status: result.error ? "error" : "complete" });
+      await patchWritingNode(serviceToken, activeBoardId, node.node_id, {
+        status: result.error ? "error" : "complete",
+        metadata: { ...(node.metadata || {}), session_id: sessionId, last_ask: lastAsk }
+      });
       setWorkspaceMessage("回答节点已加入写作网络。");
       await boardQuery.refetch();
     } catch (error) {
       setWorkspaceMessage(error instanceof Error ? error.message : "Ask PSKA 节点运行失败。");
     } finally {
-      setRunningNodeId("");
+      setRunningNodeIds((current) => current.filter((nodeId) => nodeId !== node.node_id));
     }
   }
 
@@ -3303,7 +3343,8 @@ function WritingWorkspace({
         data: {
           node,
           selected: selectedSectionId === node.node_id,
-          running: runningNodeId === node.node_id,
+          running: runningNodeIds.includes(node.node_id),
+          askPreview: askPreviews[node.node_id] || writingNodeLastAskPreview(node),
           suggestions: suggestions[node.node_id] || [],
           canAddToSection: Boolean(selectedSectionId && node.node_type === "answer"),
           onPatch: (nodeId, patch) => void patchNode(nodeId, patch),
@@ -3318,7 +3359,7 @@ function WritingWorkspace({
           }
         }
       })),
-    [selectedSectionId, runningNodeId, suggestions, writingNodes]
+    [selectedSectionId, runningNodeIds, askPreviews, suggestions, writingNodes]
   );
   const xyEdges: Edge[] = useMemo(
     () =>
@@ -3338,17 +3379,39 @@ function WritingWorkspace({
     return <section className="main-workspace writing-surface"><div className="review-empty">正在加载写作网络...</div></section>;
   }
 
-  if (!activeBoardId) {
+  if (!activeBoardId || projectManagerOpen) {
     return (
-      <section className="main-workspace writing-surface writing-empty-state" aria-label="Writing Workspace">
+      <section className="main-workspace writing-surface writing-project-manager" aria-label="Writing Workspace">
         <div className="writing-start-panel">
-          <span className="eyebrow">Writing Workspace</span>
-          <h1>从一个问题开始，让文章自己长出来。</h1>
+          <div>
+            <span className="eyebrow">Writing Workspace</span>
+            <h1>写作项目</h1>
+            <p>每个项目是一块独立画布。问题节点有独立 session，连接到它的节点会作为结构化上下文传给 Ask PSKA。</p>
+          </div>
           <textarea value={newGoal} onChange={(event) => setNewGoal(event.target.value)} placeholder="我要写一篇关于……的文章/备忘录/报告，需要先弄清楚……" />
-          <button className="primary" type="button" onClick={() => void createBoard()}>
-            创建问题网络
-          </button>
+          <div className="writing-start-actions">
+            <button className="primary" type="button" onClick={() => void createBoard()}>
+              新建空白画布
+            </button>
+            {activeBoardId ? <button type="button" onClick={() => setProjectManagerOpen(false)}>返回当前项目</button> : null}
+          </div>
           {boardsQuery.isError ? <small>写作工作区暂时无法加载，请检查后端或登录状态。</small> : null}
+          {workspaceMessage ? <small>{workspaceMessage}</small> : null}
+        </div>
+        <div className="writing-project-list" aria-label="写作项目列表">
+          {boards.length ? boards.map((item) => (
+            <article key={item.board_id} className={item.board_id === activeBoardId ? "active" : ""}>
+              <div>
+                <strong>{item.title || "未命名写作项目"}</strong>
+                <p>{item.goal || "没有填写目标。"}</p>
+                <small>{item.updated_at ? `更新于 ${formatReviewDate(item.updated_at)}` : item.board_id}</small>
+              </div>
+              <div className="writing-project-actions">
+                <button type="button" onClick={() => openBoard(item.board_id)}>打开</button>
+                <button type="button" className="danger" onClick={() => void removeBoard(item.board_id)}>删除</button>
+              </div>
+            </article>
+          )) : <div className="review-empty compact">还没有写作项目。创建后会得到一块空白 Inquiry Graph 画布。</div>}
         </div>
       </section>
     );
@@ -3364,6 +3427,7 @@ function WritingWorkspace({
         </select>
         <button type="button" onClick={() => void addNode("question")}>问题</button>
         <button type="button" onClick={() => void addNode("section")}>章节</button>
+        <button type="button" onClick={closeBoard}>关闭项目</button>
         <button type="button" onClick={() => void copyBoardMarkdown()}>导出 Markdown</button>
         <button type="button" onClick={onPinCurrent}>
           <Pin size={15} />
@@ -3390,7 +3454,8 @@ function WritingWorkspace({
         onCompose={() => void composeSection()}
         onCopy={() => void copyBoardMarkdown()}
         message={workspaceMessage}
-        askPreview={runningNodeId ? askPreviews[runningNodeId] : undefined}
+        askPreview={runningNodeIds.length === 1 ? askPreviews[runningNodeIds[0]] : undefined}
+        runningCount={runningNodeIds.length}
       />
     </section>
   );
@@ -3401,6 +3466,8 @@ type WritingFlowNode = Node<WritingNodeData, "writingNode">;
 function WritingCanvasNode({ data }: NodeProps<WritingFlowNode>) {
   const node = data.node;
   const expanded = node.metadata?.expanded === true;
+  const timelineResult = data.askPreview;
+  const timelineRawEvents = timelineResult ? agenticTraceEvents(timelineResult) : [];
   const [draftTitle, setDraftTitle] = useState(node.title);
   const [draftBody, setDraftBody] = useState(node.body_markdown || "");
 
@@ -3425,6 +3492,15 @@ function WritingCanvasNode({ data }: NodeProps<WritingFlowNode>) {
           <input value={draftTitle} onChange={(event) => setDraftTitle(event.target.value)} onBlur={save} />
           <textarea value={draftBody} onChange={(event) => setDraftBody(event.target.value)} onBlur={save} placeholder="写下问题、答案、证据或章节草稿。" />
           {draftBody ? <MarkdownAnswer content={draftBody} /> : null}
+          {timelineResult?.agent_steps?.length || timelineRawEvents.length ? (
+            <div className="writing-node-timeline">
+              <div className="writing-node-session">
+                <span>Session</span>
+                <code>{writingNodeSessionId(node)}</code>
+              </div>
+              <AskProcessTimeline steps={normalizeAskAgentSteps(timelineResult?.agent_steps)} rawEvents={timelineRawEvents} />
+            </div>
+          ) : null}
         </div>
       ) : (
         <>
@@ -3468,7 +3544,8 @@ function WritingComposer({
   onCompose,
   onCopy,
   message,
-  askPreview
+  askPreview,
+  runningCount
 }: {
   board?: WritingBoard;
   nodes: WritingNode[];
@@ -3479,6 +3556,7 @@ function WritingComposer({
   onCopy: () => void;
   message: string;
   askPreview?: WorkspaceAskResponse;
+  runningCount?: number;
 }) {
   const sections = nodes.filter((node) => node.node_type === "section");
   const selectedEdges = edges.filter((edge) => edge.edge_type === "included_in" && edge.target_node_id === selectedSectionId);
@@ -3518,6 +3596,11 @@ function WritingComposer({
           <strong>正在运行</strong>
           <AskProcessTimeline steps={normalizeAskAgentSteps(askPreview.agent_steps)} rawEvents={agenticTraceEvents(askPreview)} />
         </div>
+      ) : runningCount ? (
+        <div className="writing-composer-section">
+          <strong>正在运行</strong>
+          <p>{runningCount} 个问题节点正在并行检索；展开对应节点查看各自事件流。</p>
+        </div>
       ) : null}
       <div className="writing-composer-section">
         <strong>草稿节点</strong>
@@ -3531,6 +3614,97 @@ function WritingComposer({
       {message ? <p className="writing-message">{message}</p> : null}
     </aside>
   );
+}
+
+function writingNodeSessionId(node: WritingNode) {
+  const existing = node.metadata?.session_id;
+  return typeof existing === "string" && existing.trim() ? existing : `writing:${node.board_id}:${node.node_id}`;
+}
+
+function writingNodeLastAsk(result: WorkspaceAskResponse, query: string, sessionId: string, scope: Record<string, unknown>) {
+  return {
+    query,
+    session_id: sessionId,
+    scope,
+    route: result.route || {},
+    timing: result.timing || {},
+    agent_steps: (result.agent_steps || []).slice(-40),
+    trace: {
+      events: agenticTraceEvents(result).slice(-40),
+      run_id: typeof result.trace?.run_id === "string" ? result.trace.run_id : undefined,
+      session_id: typeof result.trace?.session_id === "string" ? result.trace.session_id : sessionId
+    },
+    saved_at: new Date().toISOString()
+  };
+}
+
+function writingNodeLastAskPreview(node: WritingNode): WorkspaceAskResponse | undefined {
+  const lastAsk = node.metadata?.last_ask;
+  if (!lastAsk || typeof lastAsk !== "object" || Array.isArray(lastAsk)) {
+    return undefined;
+  }
+  const data = lastAsk as Record<string, unknown>;
+  return {
+    ok: true,
+    query: typeof data.query === "string" ? data.query : node.title,
+    answer: "",
+    route: isPlainObject(data.route) ? data.route as WorkspaceAskResponse["route"] : undefined,
+    timing: isPlainObject(data.timing) ? data.timing as WorkspaceAskResponse["timing"] : undefined,
+    agent_steps: Array.isArray(data.agent_steps) ? data.agent_steps as WorkspaceAskResponse["agent_steps"] : [],
+    trace: isPlainObject(data.trace) ? data.trace : undefined
+  };
+}
+
+function buildWritingAskScope(boardId: string, node: WritingNode, nodes: WritingNode[], edges: WritingEdge[], sessionId: string) {
+  const connectedEdges = edges.filter((edge) => edge.source_node_id === node.node_id || edge.target_node_id === node.node_id);
+  const connectedNodeIds = new Set<string>();
+  connectedEdges.forEach((edge) => {
+    connectedNodeIds.add(edge.source_node_id);
+    connectedNodeIds.add(edge.target_node_id);
+  });
+  connectedNodeIds.delete(node.node_id);
+  const connectedNodes = nodes.filter((item) => connectedNodeIds.has(item.node_id));
+  const sourceItemIds = new Set<string>();
+  [node, ...connectedNodes].forEach((item) => {
+    [...(item.source_refs || []), ...(item.citations || [])].forEach((ref) => {
+      const sourceItemId = typeof ref.source_item_id === "string" ? ref.source_item_id : "";
+      if (sourceItemId) {
+        sourceItemIds.add(sourceItemId);
+      }
+    });
+  });
+  return {
+    board_id: boardId,
+    node_id: node.node_id,
+    session_id: sessionId,
+    context_model: "connected_nodes_v1",
+    context_rule: "directly connected writing nodes are included as structured context",
+    context_nodes: connectedNodes.map(compactWritingNodeForScope),
+    context_edges: connectedEdges.map((edge) => ({
+      edge_id: edge.edge_id,
+      source_node_id: edge.source_node_id,
+      target_node_id: edge.target_node_id,
+      edge_type: edge.edge_type,
+      label: edge.label || writingEdgeLabel(edge.edge_type)
+    })),
+    source_item_ids: Array.from(sourceItemIds).slice(0, 20)
+  };
+}
+
+function compactWritingNodeForScope(node: WritingNode) {
+  return {
+    node_id: node.node_id,
+    node_type: node.node_type,
+    title: node.title,
+    body_markdown: trimText(node.body_markdown || "", 900),
+    status: node.status || "idle",
+    source_ref_count: (node.source_refs || []).length,
+    citation_count: (node.citations || []).length
+  };
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
 function writingNodeDefaultTitle(type: WritingNodeType) {

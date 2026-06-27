@@ -384,7 +384,7 @@ export async function askWorkspaceStream(
   intent: "auto" | "quick" | "deep" = "auto",
   surface = "ask",
   onUpdate?: (update: WorkspaceAskStreamUpdate) => void,
-  options: { scope?: Record<string, unknown>; topK?: number } = {}
+  options: { scope?: Record<string, unknown>; topK?: number; sessionId?: string } = {}
 ): Promise<WorkspaceAskResponse> {
   const response = await fetch("/workspace/ask/stream", {
     method: "POST",
@@ -394,6 +394,7 @@ export async function askWorkspaceStream(
       intent,
       surface,
       ...(options.scope ? { scope: options.scope } : {}),
+      ...(options.sessionId ? { session_id: options.sessionId } : {}),
       ...requestUserPayload(serviceToken),
       top_k: options.topK || 8
     })
@@ -481,6 +482,17 @@ export async function patchWritingBoard(serviceToken: PSKAAuth, boardId: string,
     throw new Error(await responseError(response, "保存写作工作区失败"));
   }
   return (await response.json()) as WritingBoardResponse;
+}
+
+export async function deleteWritingBoard(serviceToken: PSKAAuth, boardId: string): Promise<void> {
+  const response = await fetch(`/workspace/writing/boards/${encodeURIComponent(boardId)}`, {
+    method: "DELETE",
+    headers: headers(serviceToken),
+    body: JSON.stringify(requestUserPayload(serviceToken))
+  });
+  if (!response.ok) {
+    throw new Error(await responseError(response, "删除写作项目失败"));
+  }
 }
 
 export async function createWritingNode(serviceToken: PSKAAuth, boardId: string, payload: Partial<WritingNode>): Promise<{ ok?: boolean; node?: WritingNode }> {
