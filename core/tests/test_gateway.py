@@ -8,6 +8,7 @@ from pska_core.gateway import (
     GatewayConfig,
     decode_session,
     encode_session,
+    _iter_streaming_response_chunks,
     _is_event_stream_headers,
     _is_streaming_api_path,
     _proxy_timeout_for_path,
@@ -213,6 +214,16 @@ def test_gateway_forces_ask_stream_to_streaming_timeout() -> None:
     assert _proxy_timeout_for_path("/workspace/ask", config) == 15.0
 
 
+def test_gateway_streaming_relay_uses_sse_lines_instead_of_large_reads() -> None:
+    response = FakeStreamResponse([b"event: route\n", b"data: {}\n", b"\n"])
+
+    chunks = list(_iter_streaming_response_chunks(response, event_stream=True))
+
+    assert chunks == [b"event: route\n", b"data: {}\n", b"\n"]
+    assert response.readline_calls == 4
+    assert response.read_calls == []
+
+
 class FakeResponse:
     def __init__(self, payload: dict[str, Any]) -> None:
         self._payload = payload
@@ -225,3 +236,22 @@ class FakeResponse:
 
     def read(self) -> bytes:
         return json.dumps(self._payload).encode("utf-8")
+
+
+class FakeStreamResponse:
+    def __init__(self, lines: list[bytes]) -> None:
+        self._lines = list(lines)
+        self.readline_calls = 0
+        self.read_calls: list[int] = []
+
+    def readline(self) -> bytes:
+        self.readline_calls += 1
+        if not self._lines:
+            return b""
+        return self._lines.pop(0)
+
+    def read(self, size: int = -1) -> bytes:
+        self.read_calls.append(size)
+        if not self._lines:
+            return b""
+        return self._lines.pop(0)

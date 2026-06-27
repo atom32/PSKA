@@ -706,10 +706,7 @@ class PSKAGatewayHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
         self.wfile.flush()
-        while True:
-            chunk = response.read(8192)
-            if not chunk:
-                break
+        for chunk in _iter_streaming_response_chunks(response, event_stream=_is_event_stream_headers(headers)):
             try:
                 self.wfile.write(chunk)
                 self.wfile.flush()
@@ -783,6 +780,21 @@ def _is_event_stream_headers(headers: Mapping[str, str]) -> bool:
 
 def _is_streaming_api_path(path: str) -> bool:
     return path in {"/workspace/ask/stream"}
+
+
+def _iter_streaming_response_chunks(response: Any, *, event_stream: bool):
+    if event_stream and hasattr(response, "readline"):
+        while True:
+            chunk = response.readline()
+            if not chunk:
+                break
+            yield chunk
+        return
+    while True:
+        chunk = response.read(8192)
+        if not chunk:
+            break
+        yield chunk
 
 
 def _proxy_timeout_for_path(path: str, config: GatewayConfig) -> float:

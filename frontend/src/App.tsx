@@ -536,6 +536,7 @@ function TodayWorkspace({
     }
     setSearching(true);
     setSearchError(null);
+    setSearchResult(pendingAskResult(query));
     try {
       const result = await askWorkspaceStream(query, serviceToken, "auto", "today", ({ result: partial }) => {
         setSearchResult({ ...partial });
@@ -665,7 +666,7 @@ function TodayWorkspace({
             </button>
           </form>
           {searchError ? <div className="review-empty error-state compact">{searchError}</div> : null}
-          {searchResult ? <AskResult result={searchResult} /> : (
+          {searchResult ? <AskResult result={searchResult} pending={searching} /> : (
             <div className="review-empty compact">当前没有查询结果。</div>
           )}
         </section>
@@ -977,7 +978,7 @@ function normalizeContinueItems(data?: TodayResponse): TodayContinueItem[] {
     }));
 }
 
-function AskResult({ result }: { result: WorkspaceAskResponse | WorkspaceSearchResponse }) {
+function AskResult({ result, pending = false }: { result: WorkspaceAskResponse | WorkspaceSearchResponse; pending?: boolean }) {
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "failed">("idle");
   const askEvidence = (result as WorkspaceAskResponse).evidence;
   const route = (result as WorkspaceAskResponse).route;
@@ -1005,8 +1006,10 @@ function AskResult({ result }: { result: WorkspaceAskResponse | WorkspaceSearchR
   const gaps = normalizeAskNotes(askEvidence?.gaps);
   const conflicts = normalizeAskNotes(askEvidence?.conflicts);
   const agentSteps = normalizeAskAgentSteps((result as WorkspaceAskResponse).agent_steps);
+  const displaySteps = agentSteps.length ? agentSteps : pending ? pendingAskSteps() : [];
   const rawEvents = agenticTraceEvents(result);
   const markdown = buildAskMarkdown((result as WorkspaceAskResponse).query || "", answer, refs, gaps, conflicts);
+  const canCopy = Boolean(answer || refs.length || gaps.length || conflicts.length);
 
   async function handleCopyMarkdown() {
     try {
@@ -1017,7 +1020,7 @@ function AskResult({ result }: { result: WorkspaceAskResponse | WorkspaceSearchR
     }
   }
 
-  if (!answer && refs.length === 0 && gaps.length === 0 && conflicts.length === 0 && !result.error) {
+  if (!answer && refs.length === 0 && gaps.length === 0 && conflicts.length === 0 && !result.error && !pending && !route && !displaySteps.length && !rawEvents.length) {
     return <div className="review-empty compact">PSKA 没有为这个问题找到可展示的真实证据。</div>;
   }
 
@@ -1025,15 +1028,16 @@ function AskResult({ result }: { result: WorkspaceAskResponse | WorkspaceSearchR
     <article className="today-search-result">
       <div className="ask-result-header">
         <small className="search-note">
-          {route ? askRouteLabel(route) : "Ask PSKA"}
+          {route ? askRouteLabel(route) : pending ? "Ask PSKA · 查询中" : "Ask PSKA"}
           {timing?.time_to_first_agent_event_ms !== undefined ? ` · 首过程 ${Math.round(timing.time_to_first_agent_event_ms)} ms` : ""}
           {timing?.time_to_first_answer_ms !== undefined ? ` · 首字 ${Math.round(timing.time_to_first_answer_ms)} ms` : ""}
           {timing?.total_ms !== undefined ? ` · 总耗时 ${Math.round(timing.total_ms)} ms` : ""}
         </small>
-        <button type="button" onClick={() => void handleCopyMarkdown()} disabled={!markdown.trim()}>
+        <button type="button" onClick={() => void handleCopyMarkdown()} disabled={!canCopy}>
           {copyStatus === "copied" ? "已复制" : copyStatus === "failed" ? "复制失败" : "复制 Markdown"}
         </button>
       </div>
+      {!answer && pending ? <div className="ask-pending-state">正在等待 Ask PSKA 的第一个可见回答字符，检索过程会实时更新。</div> : null}
       {answer ? <p className="answer-text">{displayText(answer)}</p> : null}
       {fallbackReason ? <small className="search-note">{askFallbackLabel(fallbackReason)}</small> : null}
       {refs.length > 0 ? (
@@ -1051,7 +1055,7 @@ function AskResult({ result }: { result: WorkspaceAskResponse | WorkspaceSearchR
         </div>
       ) : null}
       {qualitySignals ? <AskQualitySignals signals={qualitySignals} /> : null}
-      {agentSteps.length || rawEvents.length ? <AskProcessTimeline steps={agentSteps} rawEvents={rawEvents} /> : null}
+      {displaySteps.length || rawEvents.length ? <AskProcessTimeline steps={displaySteps} rawEvents={rawEvents} /> : null}
       {gaps.length || conflicts.length ? (
         <div className="ask-gap-list">
           {gaps.length ? <EvidenceNoteList title="缺口" values={gaps} /> : null}
@@ -1070,6 +1074,32 @@ type AskAgentStepView = {
   detail: string;
   meta: string;
 };
+
+function pendingAskResult(query: string): WorkspaceAskResponse {
+  return {
+    ok: true,
+    query,
+    answer: "",
+    citations: [],
+    source_refs: [],
+    evidence: {},
+    timing: {},
+    agent_steps: []
+  };
+}
+
+function pendingAskSteps(): AskAgentStepView[] {
+  return [
+    {
+      id: "pending-stream",
+      phase: "route",
+      status: "running",
+      title: "连接 Ask PSKA",
+      detail: "正在建立流式查询，马上展示理解、检索和读取过程。",
+      meta: ""
+    }
+  ];
+}
 
 function AskProcessTimeline({ steps, rawEvents }: { steps: AskAgentStepView[]; rawEvents: Array<Record<string, unknown>> }) {
   const visibleHead = steps.slice(0, 6);
@@ -1980,6 +2010,7 @@ function CorpusWorkspace({
     }
     setAskStatus("loading");
     setAskError("");
+    setAskResult(pendingAskResult(prompt));
     try {
       const payload = await askWorkspaceStream(prompt, serviceToken, "auto", "corpus", ({ result: partial }) => {
         setAskResult({ ...partial });
@@ -2064,7 +2095,7 @@ function CorpusWorkspace({
           </button>
         </form>
         {askError ? <div className="review-empty error-state compact">{askError}</div> : null}
-        {askResult ? <AskResult result={askResult} /> : null}
+        {askResult ? <AskResult result={askResult} pending={askStatus === "loading"} /> : null}
       </section>
 
       <div className="corpus-tools">
@@ -2642,7 +2673,7 @@ function GraphWorkspace({
     }
     setPathStatus("loading");
     setPathError("");
-    setGraphAskResult(null);
+    setGraphAskResult(pendingAskResult(query));
     try {
       const payload = await askWorkspaceStream(query, serviceToken, "auto", "graph", ({ result: partial }) => {
         setGraphAskResult({ ...partial });
@@ -2857,7 +2888,7 @@ function GraphWorkspace({
                 <p>点击 digest、claim、hyperedge 或 passage，查看它如何追溯到原文证据。</p>
               </>
             )}
-            {graphAskResult ? <AskResult result={graphAskResult} /> : <GraphPathPanel result={pathResult} status={pathStatus} error={pathError} />}
+            {graphAskResult ? <AskResult result={graphAskResult} pending={pathStatus === "loading"} /> : <GraphPathPanel result={pathResult} status={pathStatus} error={pathError} />}
           </aside>
         </div>
       )}

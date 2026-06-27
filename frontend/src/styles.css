@@ -464,6 +464,18 @@ button {
   opacity: 0.55;
 }
 
+.ask-pending-state {
+  margin: 0 0 10px;
+  border: 1px solid rgba(35, 90, 77, 0.16);
+  border-radius: 8px;
+  background: #f7fbf8;
+  color: #235a4d;
+  padding: 9px 10px;
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.45;
+}
+
 .ask-quality-strip {
   display: flex;
   flex-wrap: wrap;
