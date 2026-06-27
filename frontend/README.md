@@ -59,8 +59,8 @@ JWTs.
 For local login-protected testing on the usual frontend port, set
 `startup.frontend.mode` to `gateway` in `.pska/config.json`; then `./start.sh`
 serves the built frontend through PSKA Gateway on `:5173` and redirects
-unauthenticated browsers to the local token-broker `/login`. That path is for
-smoke tests, not a production multi-tenant boundary. Use `mode: "vite"` for
-hot reload.
+unauthenticated browsers to AuthNode `/login`. AuthNode redirects back with a
+one-time code, PSKA Gateway exchanges it server-side, and the browser only keeps
+a PSKA HttpOnly session cookie. Use `mode: "vite"` for hot reload.
 
 See [Enterprise Auth Gateway](../docs/ENTERPRISE_AUTH_GATEWAY.zh.md).

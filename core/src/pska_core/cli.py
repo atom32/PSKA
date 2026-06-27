@@ -179,6 +179,8 @@ def build_parser() -> argparse.ArgumentParser:
     gateway_parser.add_argument("--request-timeout-seconds", type=float, default=None)
     gateway_parser.add_argument("--default-tenant-id", default=None)
     gateway_parser.add_argument("--default-user-key", default=None)
+    gateway_parser.add_argument("--authnode-browser-login", action=argparse.BooleanOptionalAction, default=None)
+    gateway_parser.add_argument("--local-authnode-catalog-login", action=argparse.BooleanOptionalAction, default=None)
 
     local_daemon_parser = subparsers.add_parser("local-daemon", help="Run or inspect the local PSKA service supervisor")
     local_daemon_parser.add_argument("action", choices=["run", "status", "config-check", "supervisor-config"], nargs="?", default="run")
@@ -545,6 +547,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             request_timeout_seconds=args.request_timeout_seconds or env_gateway.request_timeout_seconds,
             default_tenant_id=args.default_tenant_id or env_gateway.default_tenant_id,
             default_user_key=args.default_user_key or env_gateway.default_user_key,
+            authnode_browser_login=env_gateway.authnode_browser_login
+            if args.authnode_browser_login is None
+            else bool(args.authnode_browser_login),
+            local_authnode_catalog_login=env_gateway.local_authnode_catalog_login
+            if args.local_authnode_catalog_login is None
+            else bool(args.local_authnode_catalog_login),
+            callback_jwt_secret=env_gateway.callback_jwt_secret,
+            callback_jwt_issuer=env_gateway.callback_jwt_issuer,
+            callback_jwt_audience=env_gateway.callback_jwt_audience,
         )
         serve_gateway(gateway_config)
         return 0

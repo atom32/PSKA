@@ -19,8 +19,9 @@ sequenceDiagram
   Browser->>Gateway: GET /
   Gateway-->>Browser: redirect to AuthNode/SSO when no session
   Browser->>AuthNode: interactive login / SSO
-  AuthNode-->>Gateway: callback/code or user JWT
-  Gateway->>AuthNode: verify callback/token when needed
+  AuthNode-->>Gateway: callback with one-time code
+  Gateway->>AuthNode: POST /v1/auth/exchange
+  AuthNode-->>Gateway: aud=pska JWT + claims
   Gateway-->>Browser: HttpOnly signed session cookie
   Browser->>Gateway: GET /workspace/today/data
   Gateway->>PSKA: forward AuthNode-verified JWT or trusted headers
@@ -30,7 +31,7 @@ sequenceDiagram
   FastReAct->>PSKA: tenant/user-aware MCP calls
 ```
 
-当前 PSKA gateway 内置的 `/login` 是本地/开发 token-broker 页面，不是 PSKA 自有密码系统，也不是生产级多租户认证边界。正式企业部署应把这一段替换为 AuthNode/OIDC 的 `/authorize -> callback`、AuthNode 反向代理，或企业 ingress；PSKA 只验证 AuthNode/SSO 已证明的身份。
+PSKA gateway 的 `/login` 默认重定向到 AuthNode 浏览器登录。AuthNode 登录后只把短期一次性 code 放回浏览器回调；PSKA gateway 在服务端调用 `POST /v1/auth/exchange` 换取 `aud=pska` JWT 和 claims，然后写入 HttpOnly session。PSKA 不提供密码系统、注册 UI 或组织管理后台。
 
 ## 启动
 
@@ -44,39 +45,38 @@ export AUTHNODE_JWT_SECRET='<same-secret-as-authnode>'
 export PSKA_AUTH_JWT_SECRET="$AUTHNODE_JWT_SECRET"
 export PSKA_AUTH_JWT_ISSUER=authnode.local
 export PSKA_AUTH_JWT_AUDIENCE=pska
-./scripts/pska --config .pska/config.json serve
+./start.sh
 ```
 
-生产入口可以由企业 ingress/AuthNode proxy 承接，也可以由一个只处理已验证 SSO callback 的 BFF 承接。不要在生产中用 AuthNode admin token 让 PSKA gateway 代用户签发身份。
+生产入口可以由企业 ingress/AuthNode proxy 承接，也可以由一个只处理已验证 SSO callback/code 的 BFF 承接。不要在生产中用 AuthNode admin token 让 PSKA gateway 代用户签发身份。
 
-## 本地开发 Token Broker
+## 本地 AuthNode 登录
 
-如果只是本地 smoke `5173 -> login -> PSKA`，可以临时启用内置 token-broker 登录。这个模式需要 AuthNode admin token 调 `/v1/token`，因此仅用于本机开发；它不能证明真实用户已经交互式登录，也不能作为 SaaS 多租户安全保证。
+本地 smoke 使用 AuthNode 的 browser login + one-time code flow，不需要把 AuthNode admin token 给 PSKA。AuthNode、PSKA、FastReAct 仍各自由自己的启动脚本启动；PSKA 不启动其他项目。
 
-构建前端并启动本地 token-broker gateway：
+先启动 AuthNode：
 
 ```bash
-cd frontend
-npm run build
-cd ..
+cd /Users/xudawei/Documents/AuthNode
+./start.sh
+```
 
+再启动 PSKA：
+
+```bash
+cd /Users/xudawei/Documents/personal\ archive
 export AUTHNODE_URL=http://127.0.0.1:8788
-export AUTHNODE_ADMIN_TOKEN='<server-side-authnode-admin-token>'
 export PSKA_GATEWAY_SESSION_SECRET='<random-long-secret>'
-
-./scripts/pska --config .pska/config.json gateway \
-  --host 127.0.0.1 \
-  --port 8080 \
-  --pska-url http://127.0.0.1:8765
+./start.sh
 ```
 
 打开：
 
 ```text
-http://127.0.0.1:8080/
+http://127.0.0.1:5173/
 ```
 
-本地也可以让 `./start.sh` 直接把常用前端端口 `5173` 交给 gateway。配置
+让 `./start.sh` 把常用前端端口 `5173` 交给 gateway。配置
 `.pska/config.json`：
 
 ```json
@@ -91,8 +91,13 @@ http://127.0.0.1:8080/
 ```
 
 这样打开 `http://127.0.0.1:5173/` 或 LAN 地址上的 `:5173` 时，未登录会由
-gateway 自动跳到本地 `/login` token-broker。这个模式仍然是开发模式；如果使用
-`"mode": "vite"`，`5173` 是开发热更新服务器，不负责登录跳转。
+gateway 自动跳到 AuthNode `/login`。AuthNode 登录后回到 PSKA `/auth/callback`，
+PSKA gateway 交换 code 并设置 HttpOnly session。如果使用 `"mode": "vite"`，
+`5173` 是开发热更新服务器，不负责登录跳转。
+
+旧的本地 token-broker 表单仍可通过 `/login?local=1` 使用，并且需要
+`AUTHNODE_ADMIN_TOKEN` 或 `PSKA_GATEWAY_AUTHNODE_ADMIN_TOKEN`。它只用于调试
+AuthNode `/v1/token`，不推荐作为日常登录路径。
 
 如果后端仍运行在旧的 `service_token` 模式，gateway 可以临时使用服务端 token 代理：
 
@@ -125,6 +130,7 @@ FastReAct 凭据和 AuthNode/tenant 上下文，浏览器不接触 FastReAct ser
 | `PSKA_GATEWAY_PSKA_URL` | PSKA 后端 URL，默认 `http://127.0.0.1:8765` |
 | `PSKA_GATEWAY_AUTHNODE_URL` / `AUTHNODE_URL` | AuthNode URL |
 | `PSKA_GATEWAY_AUTHNODE_ADMIN_TOKEN` / `AUTHNODE_ADMIN_TOKEN` | 仅本地 token-broker 使用；生产不应要求 PSKA 持有 |
+| `PSKA_GATEWAY_AUTHNODE_BROWSER_LOGIN` | 是否把 `/login` 重定向到 AuthNode browser login，默认 `true` |
 | `PSKA_GATEWAY_SESSION_SECRET` | 签名浏览器 session cookie；生产必须设置 |
 | `PSKA_GATEWAY_COOKIE_SECURE` | HTTPS 下设置为 `true` |
 | `PSKA_GATEWAY_TOKEN_TTL_SECONDS` | AuthNode 签发的 PSKA JWT TTL |
@@ -135,7 +141,7 @@ FastReAct 凭据和 AuthNode/tenant 上下文，浏览器不接触 FastReAct ser
 - AuthNode 只证明用户与租户身份；PSKA 仍负责知识 ACL、tenant filter、review 写入治理。
 - Gateway 不是身份源，不存密码，不做组织管理。
 - 强多租户要求 PSKA 后端运行在 `PSKA_AUTH_MODE=jwt` 或受保护 ingress 下的 `trusted_headers`，不能把公网用户可达的 `service_token + X-PSKA-*` headers 当作租户认证。
-- 本地 `/login` token-broker 只能做 smoke test；它不能替代用户交互式登录，也不能作为生产租户边界。
+- `/login?local=1` token-broker 只能做 smoke test；它不能替代用户交互式登录，也不能作为生产租户边界。
 - Browser 不能直接拿 AuthNode admin token、PSKA service token 或 FastReAct service token。
 - Gateway 的 `/auth/session` 只返回 tenant/user/roles/groups 等摘要，不返回 JWT。
 - PSKA 不能信任公网直连传入的 `X-PSKA-*` 头；这些头只在 AuthNode/gateway/loopback 受信任边界内有效。
@@ -144,7 +150,7 @@ FastReAct 凭据和 AuthNode/tenant 上下文，浏览器不接触 FastReAct ser
 ## 验证
 
 ```bash
-curl -i http://127.0.0.1:8080/auth/session
+curl -i http://127.0.0.1:5173/auth/session
 ```
 
 未登录应返回 `401`。
@@ -152,8 +158,8 @@ curl -i http://127.0.0.1:8080/auth/session
 登录后：
 
 ```bash
-curl -b cookie.txt -c cookie.txt http://127.0.0.1:8080/auth/session
-curl -b cookie.txt http://127.0.0.1:8080/workspace/today/data?owner_user_id=user_primary
+curl -b cookie.txt -c cookie.txt http://127.0.0.1:5173/auth/session
+curl -b cookie.txt http://127.0.0.1:5173/workspace/today/data?owner_user_id=user_primary
 ```
 
 期望 `/auth/session` 返回 `tenant_id` 和 `user_id` 摘要，workspace API 返回当前 tenant 范围内的数据。

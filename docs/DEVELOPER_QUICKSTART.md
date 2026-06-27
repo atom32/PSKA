@@ -14,7 +14,8 @@ From the repository root:
 This starts:
 
 - PSKA backend supervisor via `./scripts/pska --config .pska/config.json local-daemon --restart`
-- Frontend Vite dev server via `cd frontend && npm run dev`
+- Frontend according to `.pska/config.json`: gateway mode serves the built app
+  behind AuthNode login; vite mode starts the Vite hot-reload server.
 
 Open:
 
@@ -30,38 +31,10 @@ http://127.0.0.1:8765/
 
 Press `Ctrl-C` in the `start.sh` terminal to stop both frontend and backend.
 
-## Local Gateway Login Smoke
+## Local AuthNode Login Smoke
 
-The Vite server above is for local hot reload. To smoke-test the login-shaped
-browser path locally, build the frontend and run PSKA Gateway in front of the
-backend:
-
-```bash
-cd frontend && npm run build && cd ..
-
-export AUTHNODE_URL=http://127.0.0.1:8788
-export AUTHNODE_ADMIN_TOKEN='<server-side-authnode-admin-token>'
-export PSKA_GATEWAY_SESSION_SECRET='<random-long-secret>'
-
-./scripts/pska --config .pska/config.json gateway \
-  --port 8080 \
-  --pska-url http://127.0.0.1:8765
-```
-
-Open `http://127.0.0.1:8080/`. The browser receives only an HttpOnly session
-cookie and tenant/user metadata from `/auth/session`; AuthNode admin tokens,
-PSKA service tokens, FastReAct tokens, and PSKA JWTs remain server-side.
-
-This built-in `/login` path is a local token-broker shim. It is not the
-enterprise multi-tenant security boundary. Production should use AuthNode/OIDC
-or a trusted ingress to perform user login, while PSKA runs with JWT or trusted
-header authentication.
-
-See `docs/ENTERPRISE_AUTH_GATEWAY.zh.md` for the full AuthNode/PSKA/FastReAct
-identity flow.
-
-If you want the normal `./start.sh` frontend port to be the login-protected
-entrypoint, set:
+For the normal login-protected local entrypoint, use gateway mode on port
+`5173`:
 
 ```json
 "startup": {
@@ -74,9 +47,36 @@ entrypoint, set:
 }
 ```
 
-Then `http://127.0.0.1:5173/` is served by PSKA Gateway and redirects to
-the local token-broker `/login` when no signed session cookie is present. Use
-`"mode": "vite"` when you want hot reload instead.
+Start AuthNode from its own repository, then start PSKA from this repository:
+
+```bash
+cd /Users/xudawei/Documents/AuthNode
+./start.sh
+
+cd /Users/xudawei/Documents/personal\ archive
+export AUTHNODE_URL=http://127.0.0.1:8788
+export PSKA_GATEWAY_SESSION_SECRET='<random-long-secret>'
+./start.sh
+```
+
+Open `http://127.0.0.1:5173/`. If there is no PSKA gateway session, PSKA
+redirects the browser to AuthNode `/login`. AuthNode redirects back with a
+short-lived one-time code; PSKA Gateway exchanges that code server-side, sets a
+signed HttpOnly session cookie, and proxies frontend API calls to PSKA.
+
+The browser receives only the HttpOnly session cookie and tenant/user metadata
+from `/auth/session`. AuthNode admin tokens, PSKA service tokens, FastReAct
+tokens, and PSKA JWTs remain server-side.
+
+The legacy local token-broker form remains available at `/login?local=1` when
+`AUTHNODE_ADMIN_TOKEN` or `PSKA_GATEWAY_AUTHNODE_ADMIN_TOKEN` is configured, but
+it is not the recommended path. Production should use AuthNode/OIDC or a trusted
+ingress to perform user login, while PSKA runs with JWT or trusted-header
+authentication.
+
+See `docs/ENTERPRISE_AUTH_GATEWAY.zh.md` for the full AuthNode/PSKA/FastReAct
+identity flow. Use `"mode": "vite"` only when you explicitly want frontend hot
+reload instead of the login-protected gateway entrypoint.
 
 ## First-Time Setup
 

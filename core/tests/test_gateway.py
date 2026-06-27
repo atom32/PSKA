@@ -4,7 +4,16 @@ import json
 from typing import Any
 
 from pska_core import gateway
-from pska_core.gateway import GatewayConfig, decode_session, encode_session, proxy_request_headers, request_authnode_token, session_from_token_response
+from pska_core.gateway import (
+    GatewayConfig,
+    decode_session,
+    encode_session,
+    proxy_request_headers,
+    request_authnode_code_exchange,
+    request_authnode_token,
+    session_from_callback_headers,
+    session_from_token_response,
+)
 
 
 def test_gateway_session_round_trip_and_tamper_rejected() -> None:
@@ -83,6 +92,71 @@ def test_gateway_requests_authnode_pska_audience(monkeypatch) -> None:
     assert session["tenant_id"] == "tenant_acme"
     assert session["user_id"] == "ada"
     assert session["roles"] == ["admin"]
+
+
+def test_gateway_exchanges_authnode_browser_code(monkeypatch) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_urlopen(request, timeout=0):  # noqa: ANN001 - urllib Request is enough for this contract test.
+        calls.append(
+            {
+                "url": request.full_url,
+                "method": request.get_method(),
+                "headers": {key.lower(): value for key, value in request.headers.items()},
+                "payload": json.loads(request.data.decode("utf-8")),
+                "timeout": timeout,
+            }
+        )
+        return FakeResponse(
+            {
+                "access_token": "jwt-from-code",
+                "claims": {
+                    "sub": "pska:ada",
+                    "tenant_id": "tenant_acme",
+                    "user_id": "ada",
+                    "exp": 700,
+                },
+                "target": "pska",
+                "next": "/",
+            }
+        )
+
+    monkeypatch.setattr(gateway, "urlopen", fake_urlopen)
+
+    response = request_authnode_code_exchange(
+        GatewayConfig(authnode_url="http://authnode.test", request_timeout_seconds=4),
+        code="one-time-code",
+        target="pska",
+    )
+
+    assert response["access_token"] == "jwt-from-code"
+    assert len(calls) == 1
+    assert calls[0]["url"] == "http://authnode.test/v1/auth/exchange"
+    assert calls[0]["method"] == "POST"
+    assert calls[0]["headers"]["content-type"] == "application/json"
+    assert calls[0]["headers"]["accept"] == "application/json"
+    assert calls[0]["payload"] == {"code": "one-time-code", "target": "pska"}
+    assert calls[0]["timeout"] == 4
+
+
+def test_gateway_callback_accepts_trusted_headers_without_browser_token() -> None:
+    session = session_from_callback_headers(
+        {
+            "X-PSKA-User-Id": "ada",
+            "X-PSKA-Tenant-Id": "tenant_acme",
+            "X-PSKA-Subject": "pska:ada",
+            "X-PSKA-Roles": "writer,reviewer",
+            "X-PSKA-Groups": "research",
+            "X-PSKA-Auth-Provider": "authnode",
+        },
+        GatewayConfig(token_ttl_seconds=600),
+    )
+
+    assert session["token"] == ""
+    assert session["tenant_id"] == "tenant_acme"
+    assert session["user_id"] == "ada"
+    assert session["roles"] == ["writer", "reviewer"]
+    assert session["auth_provider"] == "authnode"
 
 
 def test_gateway_proxy_headers_strip_caller_identity_and_inject_session() -> None:

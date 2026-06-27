@@ -20,6 +20,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
+from pska_core.auth import AuthError, verify_hs256_jwt
+
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_FRONTEND_DIST = REPO_ROOT / "frontend" / "dist"
@@ -60,6 +62,11 @@ class GatewayConfig:
     request_timeout_seconds: float = 15.0
     default_tenant_id: str = "tenant_default"
     default_user_key: str = "pska:user_primary"
+    authnode_browser_login: bool = True
+    local_authnode_catalog_login: bool = True
+    callback_jwt_secret: str | None = None
+    callback_jwt_issuer: str | None = None
+    callback_jwt_audience: str | None = DEFAULT_PSKA_AUDIENCE
 
     @classmethod
     def from_env(cls) -> "GatewayConfig":
@@ -79,6 +86,14 @@ class GatewayConfig:
             request_timeout_seconds=float(os.getenv("PSKA_GATEWAY_REQUEST_TIMEOUT_SECONDS", "15")),
             default_tenant_id=os.getenv("PSKA_GATEWAY_DEFAULT_TENANT_ID", "tenant_default"),
             default_user_key=os.getenv("PSKA_GATEWAY_DEFAULT_USER_KEY", "pska:user_primary"),
+            authnode_browser_login=_bool_env("PSKA_GATEWAY_AUTHNODE_BROWSER_LOGIN", True),
+            local_authnode_catalog_login=_bool_env("PSKA_GATEWAY_LOCAL_AUTHNODE_CATALOG_LOGIN", True),
+            callback_jwt_secret=os.getenv("PSKA_GATEWAY_AUTH_JWT_SECRET")
+            or os.getenv("PSKA_AUTH_JWT_SECRET")
+            or os.getenv("AUTHNODE_JWT_SECRET")
+            or None,
+            callback_jwt_issuer=os.getenv("PSKA_GATEWAY_AUTH_JWT_ISSUER") or os.getenv("PSKA_AUTH_JWT_ISSUER") or None,
+            callback_jwt_audience=os.getenv("PSKA_GATEWAY_AUTH_JWT_AUDIENCE") or os.getenv("PSKA_AUTH_JWT_AUDIENCE") or DEFAULT_PSKA_AUDIENCE,
         )
 
     def with_runtime_defaults(self) -> "GatewayConfig":
@@ -99,6 +114,11 @@ class GatewayConfig:
             request_timeout_seconds=self.request_timeout_seconds,
             default_tenant_id=self.default_tenant_id,
             default_user_key=self.default_user_key,
+            authnode_browser_login=self.authnode_browser_login,
+            local_authnode_catalog_login=self.local_authnode_catalog_login,
+            callback_jwt_secret=self.callback_jwt_secret,
+            callback_jwt_issuer=self.callback_jwt_issuer,
+            callback_jwt_audience=self.callback_jwt_audience,
         )
 
 
@@ -191,6 +211,70 @@ def request_authnode_token(
     return data
 
 
+def request_authnode_public_user(
+    config: GatewayConfig,
+    *,
+    user_key: str,
+    tenant_id: str,
+) -> dict[str, Any]:
+    request = Request(f"{config.authnode_url.rstrip('/')}/v1/users", headers={"Accept": "application/json"}, method="GET")
+    try:
+        with urlopen(request, timeout=config.request_timeout_seconds) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise GatewayError(f"AuthNode users request failed with HTTP {exc.code}: {detail}") from exc
+    except URLError as exc:
+        raise GatewayError(f"AuthNode users request unavailable: {exc.reason}") from exc
+    except TimeoutError as exc:
+        raise GatewayError("AuthNode users request timed out") from exc
+    except json.JSONDecodeError as exc:
+        raise GatewayError("AuthNode users request returned invalid JSON") from exc
+    users = data.get("users") if isinstance(data, dict) else None
+    if not isinstance(users, list):
+        raise GatewayError("AuthNode users request returned no users list")
+    requested_user = user_key.strip()
+    requested_tenant = tenant_id.strip()
+    for item in users:
+        if not isinstance(item, dict):
+            continue
+        item_user_key = str(item.get("user_key") or "").strip()
+        item_user_id = str(item.get("user_id") or "").strip()
+        item_tenant_id = str(item.get("tenant_id") or "").strip()
+        item_tenant_key = str(item.get("tenant_key") or "").strip()
+        user_matches = requested_user in {item_user_key, item_user_id}
+        tenant_matches = requested_tenant in {item_tenant_id, item_tenant_key}
+        if user_matches and tenant_matches:
+            return item
+    raise GatewayError(f"AuthNode user not found for tenant={tenant_id!r} user={user_key!r}")
+
+
+def request_authnode_code_exchange(config: GatewayConfig, *, code: str, target: str = DEFAULT_PSKA_AUDIENCE) -> dict[str, Any]:
+    payload = {"code": code, "target": target}
+    body = json.dumps(payload).encode("utf-8")
+    request = Request(
+        f"{config.authnode_url.rstrip('/')}/v1/auth/exchange",
+        data=body,
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=config.request_timeout_seconds) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise GatewayError(f"AuthNode code exchange failed with HTTP {exc.code}: {detail}") from exc
+    except URLError as exc:
+        raise GatewayError(f"AuthNode code exchange unavailable: {exc.reason}") from exc
+    except TimeoutError as exc:
+        raise GatewayError("AuthNode code exchange timed out") from exc
+    except json.JSONDecodeError as exc:
+        raise GatewayError("AuthNode code exchange returned invalid JSON") from exc
+    if not isinstance(data, dict) or not data.get("access_token"):
+        raise GatewayError("AuthNode code exchange returned no access_token")
+    return data
+
+
 def session_from_token_response(data: Mapping[str, Any], *, requested_user_key: str, requested_tenant_id: str) -> dict[str, Any]:
     claims = data.get("claims") if isinstance(data.get("claims"), dict) else {}
     exp = _int_value(claims.get("exp")) or int(time.time()) + 3600
@@ -212,6 +296,80 @@ def session_from_token_response(data: Mapping[str, Any], *, requested_user_key: 
         "auth_provider": str(claims.get("provider") or "authnode"),
         "expires_at": str(data.get("expires_at") or ""),
     }
+
+
+def session_from_public_user(
+    user: Mapping[str, Any],
+    *,
+    requested_user_key: str,
+    requested_tenant_id: str,
+    ttl_seconds: int,
+    auth_provider: str = "authnode-catalog",
+) -> dict[str, Any]:
+    now = int(time.time())
+    user_key = str(user.get("user_key") or requested_user_key)
+    user_id = str(user.get("user_id") or _normalized_user_id({"user_key": user_key}, fallback=requested_user_key))
+    tenant_id = str(user.get("tenant_id") or user.get("tenant_key") or requested_tenant_id)
+    return {
+        "token": "",
+        "exp": now + int(ttl_seconds),
+        "iat": now,
+        "tenant_id": tenant_id,
+        "user_id": user_id.removeprefix("pska:"),
+        "represented_user_id": user_id.removeprefix("pska:"),
+        "subject": user_key,
+        "display_name": str(user.get("display_name") or user.get("name") or ""),
+        "email": str(user.get("email") or ""),
+        "roles": _list_claim(user.get("roles")),
+        "groups": _list_claim(user.get("groups")),
+        "auth_provider": auth_provider,
+        "expires_at": "",
+    }
+
+
+def session_from_callback_headers(
+    headers: Mapping[str, str],
+    config: GatewayConfig,
+    *,
+    requested_user_key: str | None = None,
+    requested_tenant_id: str | None = None,
+) -> dict[str, Any]:
+    token = _bearer_token(_header_value(headers, "Authorization"))
+    if token and config.callback_jwt_secret:
+        try:
+            claims = verify_hs256_jwt(
+                token,
+                config.callback_jwt_secret,
+                issuer=config.callback_jwt_issuer,
+                audience=config.callback_jwt_audience,
+            )
+        except AuthError as exc:
+            raise GatewayError(str(exc)) from exc
+        return session_from_token_response(
+            {"access_token": token, "claims": claims},
+            requested_user_key=requested_user_key or str(claims.get("user_key") or claims.get("sub") or config.default_user_key),
+            requested_tenant_id=requested_tenant_id or _normalized_tenant_id(claims, fallback=config.default_tenant_id),
+        )
+
+    user_id = _header_value(headers, "X-PSKA-User-Id")
+    tenant_id = _header_value(headers, "X-PSKA-Tenant-Id")
+    if not user_id or not tenant_id:
+        raise GatewayError("AuthNode callback requires a verified JWT or trusted PSKA identity headers")
+    return session_from_public_user(
+        {
+            "user_id": user_id,
+            "user_key": _header_value(headers, "X-PSKA-Subject") or requested_user_key or user_id,
+            "tenant_id": tenant_id,
+            "display_name": _header_value(headers, "X-PSKA-Display-Name"),
+            "email": _header_value(headers, "X-PSKA-Email"),
+            "roles": _header_value(headers, "X-PSKA-Roles"),
+            "groups": _header_value(headers, "X-PSKA-Groups"),
+        },
+        requested_user_key=requested_user_key or user_id,
+        requested_tenant_id=requested_tenant_id or tenant_id,
+        ttl_seconds=config.token_ttl_seconds,
+        auth_provider=_header_value(headers, "X-PSKA-Auth-Provider") or "authnode-callback",
+    )
 
 
 def public_session(session: Mapping[str, Any]) -> dict[str, Any]:
@@ -267,6 +425,8 @@ class PSKAGatewayHandler(BaseHTTPRequestHandler):
             return self._json(200, {"ok": True, "component": "pska-gateway"})
         if parsed.path == "/auth/session":
             return self._session_endpoint()
+        if parsed.path == "/auth/callback":
+            return self._auth_callback(parse_qs(parsed.query))
         if parsed.path == "/login":
             return self._login_form(parse_qs(parsed.query))
         if parsed.path == "/logout":
@@ -315,11 +475,37 @@ class PSKAGatewayHandler(BaseHTTPRequestHandler):
             return self._json(401, {"authenticated": False})
         return self._json(200, public_session(session))
 
+    def _auth_callback(self, query: Mapping[str, list[str]]) -> None:
+        next_path = _safe_next(_first(query.get("next")) or "/")
+        try:
+            code = (_first(query.get("code")) or "").strip()
+            if code:
+                token_data = request_authnode_code_exchange(self.config, code=code, target=DEFAULT_PSKA_AUDIENCE)
+                next_path = _safe_next(_first(query.get("next")) or str(token_data.get("next") or "/"))
+                claims = token_data.get("claims") if isinstance(token_data.get("claims"), dict) else {}
+                session = session_from_token_response(
+                    token_data,
+                    requested_user_key=str(claims.get("user_key") or claims.get("sub") or self.config.default_user_key),
+                    requested_tenant_id=_normalized_tenant_id(claims, fallback=self.config.default_tenant_id),
+                )
+            else:
+                session = session_from_callback_headers(
+                    self.headers,
+                    self.config,
+                    requested_user_key=_first(query.get("user_key")),
+                    requested_tenant_id=_first(query.get("tenant_id")),
+                )
+        except GatewayError as exc:
+            return self._html(401, f"<h1>AuthNode callback rejected</h1><p>{html.escape(str(exc))}</p>")
+        return self._set_session_and_redirect(session, next_path)
+
     def _login_form(self, query: Mapping[str, list[str]]) -> None:
         next_path = _safe_next(_first(query.get("next")) or "/")
         session = self._session()
         if session is not None:
             return self._redirect(next_path, 302)
+        if self.config.authnode_browser_login and not _truthy(_first(query.get("local"))):
+            return self._redirect(self._authnode_login_url(query, next_path), 302)
         user_key = html.escape(_first(query.get("user_key")) or self.config.default_user_key)
         tenant_id = html.escape(_first(query.get("tenant_id")) or self.config.default_tenant_id)
         escaped_next = html.escape(next_path, quote=True)
@@ -368,18 +554,48 @@ class PSKAGatewayHandler(BaseHTTPRequestHandler):
                 session = session_from_token_response(token_data, requested_user_key=user_key, requested_tenant_id=tenant_id)
             except GatewayError as exc:
                 return self._html(502, f"<h1>AuthNode token request failed</h1><p>{html.escape(str(exc))}</p>")
+        elif self.config.local_authnode_catalog_login:
+            try:
+                user = request_authnode_public_user(self.config, user_key=user_key, tenant_id=tenant_id)
+                session = session_from_public_user(
+                    user,
+                    requested_user_key=user_key,
+                    requested_tenant_id=tenant_id,
+                    ttl_seconds=self.config.token_ttl_seconds,
+                )
+            except GatewayError as exc:
+                return self._html(502, f"<h1>AuthNode local login failed</h1><p>{html.escape(str(exc))}</p>")
         else:
             return self._html(
                 503,
                 "<h1>Gateway login is not configured</h1>"
-                "<p>Use an upstream AuthNode/OIDC login in production. The built-in login form is only a local token-broker shim.</p>",
+                "<p>Use an upstream AuthNode/OIDC login in production, configure AuthNode callback, or enable local AuthNode catalog login.</p>",
             )
+        return self._set_session_and_redirect(session, next_path)
+
+    def _set_session_and_redirect(self, session: Mapping[str, Any], next_path: str) -> None:
         cookie_value = encode_session(session, str(self.config.session_secret))
         self.send_response(302)
         self.send_header("Location", next_path)
         self.send_header("Set-Cookie", self._session_cookie(cookie_value, max_age=max(1, int(session["exp"]) - int(time.time()))))
         self.send_header("Content-Length", "0")
         self.end_headers()
+
+    def _authnode_login_url(self, query: Mapping[str, list[str]], next_path: str) -> str:
+        return_to = self._external_url("/auth/callback")
+        params = {
+            "target": DEFAULT_PSKA_AUDIENCE,
+            "return_to": return_to,
+            "next": next_path,
+            "user_key": _first(query.get("user_key")) or self.config.default_user_key,
+            "tenant_id": _first(query.get("tenant_id")) or self.config.default_tenant_id,
+        }
+        return f"{self.config.authnode_url.rstrip('/')}/login?{urlencode(params)}"
+
+    def _external_url(self, path: str) -> str:
+        proto = self.headers.get("X-Forwarded-Proto") or ("https" if self.config.cookie_secure else "http")
+        host = self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or f"{self.config.host}:{self.config.port}"
+        return f"{proto}://{host}{path}"
 
     def _logout(self) -> None:
         self.send_response(302)
@@ -560,6 +776,24 @@ def _first(values: list[str] | None) -> str | None:
     return values[0] if values else None
 
 
+def _header_value(headers: Mapping[str, str], name: str) -> str:
+    value = headers.get(name)
+    if value:
+        return str(value).strip()
+    lowered = name.lower()
+    for key, candidate in headers.items():
+        if key.lower() == lowered:
+            return str(candidate).strip()
+    return ""
+
+
+def _bearer_token(value: str | None) -> str | None:
+    if not value:
+        return None
+    prefix = "Bearer "
+    return value[len(prefix) :].strip() if value.startswith(prefix) else None
+
+
 def _b64url_encode(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).decode("ascii").rstrip("=")
 
@@ -590,6 +824,10 @@ def _bool_env(name: str, default: bool) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _truthy(value: str | None) -> bool:
+    return bool(value and value.strip().lower() in {"1", "true", "yes", "on"})
 
 
 def _normalized_user_id(claims: Mapping[str, Any], *, fallback: str) -> str:
