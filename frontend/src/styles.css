@@ -222,6 +222,14 @@ button {
   min-width: 0;
 }
 
+.top-refresh {
+  margin-left: auto;
+}
+
+.identity-fields + .top-refresh {
+  margin-left: 0;
+}
+
 .token-field {
   display: flex;
   align-items: center;

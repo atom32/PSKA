@@ -356,9 +356,62 @@ export async function askWorkspace(
     })
   });
   if (!response.ok) {
-    throw new Error(await responseError(response, "Ask PSKA 失败"));
+    const error = await responseError(response, "Ask PSKA 失败");
+    if (response.status === 404 && error.includes("/workspace/ask")) {
+      const legacy = await searchWorkspace(query, serviceToken, "direct");
+      return legacySearchToAskResponse(legacy, query, intent, surface);
+    }
+    throw new Error(error);
   }
   return (await response.json()) as WorkspaceAskResponse;
+}
+
+function legacySearchToAskResponse(
+  legacy: WorkspaceSearchResponse,
+  query: string,
+  intent: "auto" | "quick" | "deep",
+  surface: string
+): WorkspaceAskResponse {
+  const workspaceEvidence = legacy.workspace?.evidence || {};
+  const retrieval = legacy.retrieval || {};
+  const fallbackRetrieval = legacy.fallback?.retrieval || {};
+  const citations = legacy.citations || legacy.source_refs || workspaceEvidence.citations || fallbackRetrieval.citations || [];
+  const results = retrieval.results || fallbackRetrieval.results || [];
+  return {
+    ok: legacy.ok,
+    query,
+    answer: legacy.answer,
+    error: legacy.error,
+    route: {
+      intent,
+      selected_intent: "quick",
+      retrieval_owner: "pska",
+      surface,
+      requires_agentic_service_online: false,
+      fallback_from: "workspace_ask_unavailable",
+      tool_policy: { mode: "none" }
+    },
+    evidence: {
+      citations,
+      source_refs: citations,
+      results,
+      graph_paths: workspaceEvidence.graph_paths || fallbackRetrieval.graph_paths || [],
+      memory_context: workspaceEvidence.memory_context || [],
+      profile_context: [],
+      gaps: [],
+      conflicts: []
+    },
+    citations,
+    source_refs: citations,
+    trace: {
+      mode: "quick",
+      compatibility_fallback: "workspace_search_query",
+      reason: "workspace_ask_endpoint_not_found",
+      legacy_trace: legacy.trace || {}
+    },
+    timing: {},
+    agentic_service: legacy.agentic_service
+  };
 }
 
 async function responseError(response: Response, fallback: string) {

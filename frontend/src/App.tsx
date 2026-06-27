@@ -118,13 +118,18 @@ export default function App() {
   const lastAnalyzedText = useRef(documentText);
   const lastEditedActivityAt = useRef(0);
   const [pinStatus, setPinStatus] = useState<"idle" | "saved" | "failed">("idle");
+  const [gatewayAuthenticated, setGatewayAuthenticated] = useState<boolean | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     void loadGatewaySession().then((session) => {
       if (!session || cancelled) {
+        if (!cancelled) {
+          setGatewayAuthenticated(false);
+        }
         return;
       }
+      setGatewayAuthenticated(true);
       if (session.tenant_id) {
         setTenantId(session.tenant_id);
       }
@@ -295,6 +300,7 @@ export default function App() {
           tenantId={tenantId}
           userId={userId}
           representedUserId={representedUserId}
+          gatewayAuthenticated={gatewayAuthenticated}
           onModeChange={setMode}
           onTokenChange={setServiceToken}
           onTenantChange={setTenantId}
@@ -394,6 +400,7 @@ function TopBar({
   tenantId,
   userId,
   representedUserId,
+  gatewayAuthenticated,
   onModeChange,
   onTokenChange,
   onTenantChange,
@@ -406,6 +413,7 @@ function TopBar({
   tenantId: string;
   userId: string;
   representedUserId: string;
+  gatewayAuthenticated: boolean | null;
   onModeChange: (mode: WorkspaceMode) => void;
   onTokenChange: (serviceToken: string) => void;
   onTenantChange: (tenantId: string) => void;
@@ -441,30 +449,32 @@ function TopBar({
           Review
         </button>
       </div>
-      <div className="identity-fields" aria-label="PSKA 身份上下文">
-        <label className="token-field compact">
-          <span>Tenant</span>
-          <input value={tenantId} onChange={(event) => onTenantChange(event.target.value)} placeholder="tenant_default" />
-        </label>
-        <label className="token-field compact">
-          <span>User</span>
-          <input value={userId} onChange={(event) => onUserChange(event.target.value)} placeholder="user_primary" />
-        </label>
-        <label className="token-field compact">
-          <span>As</span>
-          <input value={representedUserId} onChange={(event) => onRepresentedUserChange(event.target.value)} placeholder={userId || "user_primary"} />
-        </label>
-        <label className="token-field">
-          <span>令牌/JWT</span>
-          <input
-            type="password"
-            value={serviceToken}
-            onChange={(event) => onTokenChange(event.target.value)}
-            placeholder="可选本地令牌"
-          />
-        </label>
-      </div>
-      <button className="icon-button" type="button" onClick={onRefresh} title="刷新上下文">
+      {gatewayAuthenticated === false ? (
+        <div className="identity-fields" aria-label="PSKA 身份上下文">
+          <label className="token-field compact">
+            <span>Tenant</span>
+            <input value={tenantId} onChange={(event) => onTenantChange(event.target.value)} placeholder="tenant_default" />
+          </label>
+          <label className="token-field compact">
+            <span>User</span>
+            <input value={userId} onChange={(event) => onUserChange(event.target.value)} placeholder="user_primary" />
+          </label>
+          <label className="token-field compact">
+            <span>As</span>
+            <input value={representedUserId} onChange={(event) => onRepresentedUserChange(event.target.value)} placeholder={userId || "user_primary"} />
+          </label>
+          <label className="token-field">
+            <span>令牌/JWT</span>
+            <input
+              type="password"
+              value={serviceToken}
+              onChange={(event) => onTokenChange(event.target.value)}
+              placeholder="可选本地令牌"
+            />
+          </label>
+        </div>
+      ) : null}
+      <button className="icon-button top-refresh" type="button" onClick={onRefresh} title="刷新上下文">
         <RefreshCw size={18} />
       </button>
     </header>
