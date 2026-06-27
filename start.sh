@@ -91,6 +91,11 @@ port_listening() {
   lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1
 }
 
+port_listener_pids() {
+  local port="$1"
+  lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null | sort -u || true
+}
+
 port_listener_hosts() {
   local port="$1"
   lsof -nP -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | awk 'NR > 1 {print $9}' | sed -E 's/^(.+):[0-9]+$/\1/' | sort -u
@@ -99,6 +104,59 @@ port_listener_hosts() {
 port_has_wildcard_listener() {
   local port="$1"
   port_listener_hosts "$port" | grep -Eq '^(\\*|0\\.0\\.0\\.0|\\[::\\]|::)$'
+}
+
+pid_command() {
+  local pid="$1"
+  ps -p "$pid" -o command= 2>/dev/null || true
+}
+
+is_project_pska_process() {
+  local pid="$1"
+  local subcommand="$2"
+  local command
+  command="$(pid_command "$pid")"
+  [[ "$command" == *"pska_core.cli"* && "$command" == *"--config $CONFIG"* && "$command" == *" $subcommand "* ]]
+}
+
+stop_project_pska_listeners() {
+  local port="$1"
+  local subcommand="$2"
+  local label="$3"
+  local pids=()
+  local pid
+  while IFS= read -r pid; do
+    [[ -n "$pid" ]] || continue
+    if is_project_pska_process "$pid" "$subcommand"; then
+      pids+=("$pid")
+    fi
+  done < <(port_listener_pids "$port")
+
+  if [[ "${#pids[@]}" -eq 0 ]]; then
+    return 0
+  fi
+
+  echo "Stopping stale PSKA $label listener(s) on port $port: ${pids[*]}"
+  for pid in "${pids[@]}"; do
+    kill "$pid" >/dev/null 2>&1 || true
+  done
+  for _ in {1..30}; do
+    local any_running=false
+    for pid in "${pids[@]}"; do
+      if kill -0 "$pid" >/dev/null 2>&1; then
+        any_running=true
+        break
+      fi
+    done
+    if [[ "$any_running" == "false" ]]; then
+      return 0
+    fi
+    sleep 0.2
+  done
+  echo "PSKA warning: stale $label listener did not exit after SIGTERM; sending SIGKILL." >&2
+  for pid in "${pids[@]}"; do
+    kill -9 "$pid" >/dev/null 2>&1 || true
+  done
 }
 
 lan_ip() {
@@ -156,6 +214,8 @@ else
 fi
 
 if [[ "$(config_value startup_backend)" == "true" ]]; then
+  SERVICE_PORT="$(config_value service_port)"
+  stop_project_pska_listeners "$SERVICE_PORT" "serve" "backend"
   echo "Starting PSKA backend supervisor..."
   "$ROOT/scripts/pska" --config "$CONFIG" local-daemon --restart &
   BACKEND_PID=$!
@@ -167,6 +227,9 @@ if [[ "$(config_value startup_frontend)" == "true" ]]; then
   FRONTEND_HOST="$(config_value frontend_host)"
   FRONTEND_PORT="$(config_value frontend_port)"
   FRONTEND_MODE="$(config_value frontend_mode)"
+  if [[ "$FRONTEND_MODE" == "gateway" ]]; then
+    stop_project_pska_listeners "$FRONTEND_PORT" "gateway" "gateway frontend"
+  fi
   if port_listening "$FRONTEND_PORT"; then
     echo "Frontend port $FRONTEND_PORT already has a listener; reusing it."
     if [[ "$FRONTEND_HOST" == "0.0.0.0" || "$FRONTEND_HOST" == "::" ]] && ! port_has_wildcard_listener "$FRONTEND_PORT"; then

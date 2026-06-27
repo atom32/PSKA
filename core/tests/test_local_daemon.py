@@ -68,6 +68,29 @@ def test_daemon_status_reports_pid_and_log_paths(tmp_path) -> None:
     assert "./scripts/pska local-daemon --restart" in status["restart_guidance"]
 
 
+def test_daemon_status_recovers_running_process_without_pid_file(tmp_path, monkeypatch) -> None:
+    specs = build_process_specs(
+        config_path=Path(".pska/config.json"),
+        config=PSKAConfig(),
+        database_url="postgresql:///pska_test",
+        include_worker=False,
+        include_digest_scheduler=False,
+    )
+    command = " ".join(specs[0].command)
+
+    class FakeProcessList:
+        stdout = f"123456 {command}\n"
+
+    monkeypatch.setattr("pska_core.local_daemon.subprocess.run", lambda *args, **kwargs: FakeProcessList())
+
+    status = daemon_status(specs, run_dir=tmp_path / "run", log_dir=tmp_path / "logs")
+
+    assert status["ok"] is True
+    assert status["processes"][0]["pid"] == 123456
+    assert status["processes"][0]["running"] is True
+    assert status["processes"][0]["status_source"] == "command_scan"
+
+
 def test_config_check_reports_missing_db_port_conflict_and_fastreact_warning() -> None:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
         server.bind(("127.0.0.1", 0))

@@ -116,12 +116,20 @@ def daemon_status(specs: Sequence[ProcessSpec], *, run_dir: Path = DEFAULT_RUN_D
     for spec in specs:
         pid = _read_pid(_pid_path(run_dir, spec.name))
         running = _pid_running(pid)
+        status_source = "pid_file" if pid is not None else "missing_pid_file"
+        if not running:
+            recovered_pid = _find_process_for_spec(spec)
+            if recovered_pid is not None:
+                pid = recovered_pid
+                running = True
+                status_source = "command_scan"
         processes.append(
             {
                 "name": spec.name,
                 "pid": pid,
                 "running": running,
                 "status": "running" if running else "stopped",
+                "status_source": status_source,
                 "pid_path": str(_pid_path(run_dir, spec.name)),
                 "log_path": str(_log_path(log_dir, spec.name)),
                 "command": spec.command,
@@ -333,6 +341,28 @@ def _pid_running(pid: int | None) -> bool:
     except OSError:
         return False
     return True
+
+
+def _find_process_for_spec(spec: ProcessSpec) -> int | None:
+    try:
+        result = subprocess.run(["ps", "-ax", "-o", "pid=", "-o", "command="], check=False, capture_output=True, text=True)
+    except OSError:
+        return None
+    expected_args = [arg for arg in spec.command[1:] if arg]
+    for line in result.stdout.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            pid_text, command = stripped.split(maxsplit=1)
+            pid = int(pid_text)
+        except ValueError:
+            continue
+        if pid == os.getpid():
+            continue
+        if all(arg in command for arg in expected_args):
+            return pid
+    return None
 
 
 def _database_url_check(database_url: str) -> dict[str, Any]:
