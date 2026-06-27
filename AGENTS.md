@@ -1,7 +1,9 @@
 ## Project Workflow
 
 - This project should not keep long-lived extra working branches for ordinary Codex changes.
-- After a feature/fix is validated, merge it back into `master` and push `master`.
+- `master` is the pre-multitenant stable line until the tenant architecture is promoted.
+- Multitenant/AuthNode/FastReAct integration work must be committed to and pushed on the `tenant` branch.
+- Do not merge tenant work back into `master` unless the user explicitly asks to promote `tenant` as the new mainline.
 - When GitHub authentication is needed for push/merge operations, use the PAT stored at `~/Github_PAT.txt`; never write the token into the repository, logs, commit messages, or user-visible command output.
 
 ## Implementation Constraints
