@@ -32,7 +32,7 @@ sequenceDiagram
   FastReAct->>PSKA: tenant/user-aware MCP calls
 ```
 
-PSKA gateway 的 `/login` 默认重定向到 AuthNode 浏览器登录。AuthNode 可以使用本地 dev 登录，也可以在 `browser_login_provider=keycloak` 时跳转 Keycloak/OIDC。AuthNode 完成登录后只把短期一次性 code 放回浏览器回调；PSKA gateway 在服务端调用 `POST /v1/auth/exchange` 换取 `aud=pska` JWT 和 claims，然后写入 HttpOnly session。PSKA 不提供密码系统、注册 UI 或组织管理后台。
+PSKA gateway 的 `/login` 默认重定向到 AuthNode 浏览器登录。AuthNode 可以使用 Local IAM catalog 单独承担登录，也可以在 `browser_login_provider=keycloak` 时跳转 Keycloak/OIDC。AuthNode 完成登录后只把短期一次性 code 放回浏览器回调；PSKA gateway 在服务端调用 `POST /v1/auth/exchange` 换取 `aud=pska` JWT 和 claims，然后写入 HttpOnly session。PSKA 不提供密码系统、注册 UI 或组织管理后台。
 
 ## 启动
 
@@ -53,7 +53,7 @@ export PSKA_AUTH_JWT_AUDIENCE=pska
 
 ## AuthNode / Keycloak 登录
 
-本地 smoke 使用 AuthNode 的 browser login + one-time code flow，不需要把 AuthNode admin token 给 PSKA。AuthNode、PSKA、FastReAct 仍各自由自己的启动脚本启动；PSKA 不启动其他项目。生产式登录可让 AuthNode 的 `/login` 跳转 Keycloak，再由 AuthNode `/oidc/callback` 校验 Keycloak token 并规范化 tenant/user claims。
+本地 smoke 使用 AuthNode 的 browser login + one-time code flow，不需要把 AuthNode admin token 给 PSKA。AuthNode、PSKA、FastReAct 仍各自由自己的启动脚本启动；PSKA 不启动其他项目。没有外部 SSO 时可使用 AuthNode Local IAM：SQLite catalog、Argon2id 密码、tenant membership、AuthNode session 和 audit。生产式登录也可让 AuthNode 的 `/login` 跳转 Keycloak，再由 AuthNode `/oidc/callback` 校验 Keycloak token 并规范化 tenant/user claims。
 
 先启动 AuthNode：
 
@@ -97,6 +97,7 @@ PSKA gateway 交换 code 并设置 HttpOnly session。如果 AuthNode 使用 Key
 Keycloak token 里必须有 `tenant_id` 或 `tenant_key` 以及可映射的 user claim，否则
 AuthNode fail closed。如果使用 `"mode": "vite"`，`5173` 是开发热更新服务器，不负责登录跳转。
 
+AuthNode Local IAM 可用 `python -m authnode iam init --seed-config` 初始化。
 AuthNode local dev 登录仍可通过 `GET /login?local=1` 使用；E2E 应使用
 tenant/user/password 登录本地模式，不再使用旧的 `identity` POST shortcut。
 
@@ -145,6 +146,7 @@ FastReAct 凭据和 AuthNode/tenant 上下文，浏览器不接触 FastReAct ser
 ## 安全边界
 
 - AuthNode 只证明用户与租户身份；PSKA 仍负责知识 ACL、tenant filter、review 写入治理。
+- 没有客户 SSO 时，AuthNode Local IAM 是身份源；有客户 SSO 时，AuthNode 是 adapter/federation broker。
 - Keycloak 只负责真实登录和用户目录；AuthNode 负责 OIDC 校验与 tenant/user/role claim normalization。
 - Gateway 不是身份源，不存密码，不做组织管理。
 - 强多租户要求 PSKA 后端运行在 `PSKA_AUTH_MODE=jwt` 或受保护 ingress 下的 `trusted_headers`，不能把公网用户可达的 `service_token + X-PSKA-*` headers 当作租户认证。

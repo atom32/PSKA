@@ -60,20 +60,22 @@ export PSKA_GATEWAY_SESSION_SECRET='<random-long-secret>'
 ```
 
 Open `http://127.0.0.1:5173/`. If there is no PSKA gateway session, PSKA
-redirects the browser to AuthNode `/login`. AuthNode either shows its local
-tenant/username/password form or redirects to Keycloak when configured for OIDC.
-It then redirects back with a short-lived one-time code; PSKA Gateway exchanges
-that code server-side, sets a signed HttpOnly session cookie, and proxies
-frontend API calls to PSKA.
+redirects the browser to AuthNode `/login`. AuthNode either uses its Local IAM
+catalog, shows the legacy JSON dev form, or redirects to Keycloak when
+configured for OIDC. It then redirects back with a short-lived one-time code;
+PSKA Gateway exchanges that code server-side, sets a signed HttpOnly session
+cookie, and proxies frontend API calls to PSKA.
 
 The browser receives only the HttpOnly session cookie and tenant/user metadata
 from `/auth/session`. AuthNode admin tokens, PSKA service tokens, FastReAct
 tokens, and PSKA JWTs remain server-side.
 
-AuthNode local dev login remains available at AuthNode `/login?local=1`, and
-the old PSKA gateway token-broker path remains available at PSKA `/login?local=1`
-only for debugging. Production should use AuthNode/OIDC or a trusted ingress to
-perform user login, while PSKA runs with JWT or trusted-header authentication.
+AuthNode Local IAM can be initialized with `python -m authnode iam init
+--seed-config`. AuthNode local dev login remains available at AuthNode
+`/login?local=1`, and the old PSKA gateway token-broker path remains available
+at PSKA `/login?local=1` only for debugging. Production should use AuthNode
+Local IAM, AuthNode/OIDC, or a trusted ingress to perform user login, while PSKA
+runs with JWT or trusted-header authentication.
 
 See `docs/ENTERPRISE_AUTH_GATEWAY.zh.md` for the full AuthNode/PSKA/FastReAct
 identity flow. Use `"mode": "vite"` only when you explicitly want frontend hot

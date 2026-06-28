@@ -67,7 +67,7 @@ FastReAct: http://127.0.0.1:8000
 - 创建隔离 tenant/user。
 - 写入一组虚构资料到该用户的 workspace sources 目录。
 - 执行 `knowledge-source add-folder`、`files-sync`、`digest-now`。
-- 用 Playwright 通过 AuthNode local login (`/login?local=1`) 获取 one-time code，再登录 PSKA Gateway。动态 E2E 用户默认使用 `PSKA_E2E_PASSWORD=pska-local`；指定 catalog 用户时可覆盖该环境变量。
+- 用 Playwright 通过 AuthNode local login (`/login?local=1`) 获取 one-time code，再登录 PSKA Gateway。动态 E2E 用户默认使用 `PSKA_E2E_PASSWORD=pska-local`；指定 catalog 用户时可覆盖该环境变量。如果 AuthNode `/ready` 显示 `browser_login_provider=local_iam`，脚本会先用 AuthNode CLI 创建测试 tenant/user/membership。
 - 在 Corpus 页面验证当前用户能看到刚导入的资料。
 - 在 Writing Workspace 创建项目，进行并行 Ask、连接答案后的追问、纳入章节和生成 draft。
 - 输出 JSON 报告，包含 workspace path、source/digest 摘要、board id、answer count、draft length、citation count。

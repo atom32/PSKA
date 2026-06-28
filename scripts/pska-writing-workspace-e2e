@@ -42,6 +42,7 @@ DEFAULT_FASTREACT_ROOT = next(
     (path for path in [Path.home() / "FastReAct" / "fastreact-nano", Path.home() / "Fastreact" / "fastreact-nano"] if path.exists()),
     Path.home() / "FastReAct" / "fastreact-nano",
 )
+DEFAULT_AUTHNODE_ROOT = Path.home() / "Documents" / "AuthNode"
 
 
 class E2EFailure(RuntimeError):
@@ -68,6 +69,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--pska-url", default=os.getenv("PSKA_URL", DEFAULT_PSKA_URL))
     parser.add_argument("--frontend-url", default=os.getenv("PSKA_FRONTEND_URL", DEFAULT_FRONTEND_URL))
     parser.add_argument("--authnode-url", default=os.getenv("AUTHNODE_URL", DEFAULT_AUTHNODE_URL))
+    parser.add_argument("--authnode-root", type=Path, default=Path(os.getenv("AUTHNODE_ROOT", str(DEFAULT_AUTHNODE_ROOT))))
+    parser.add_argument("--authnode-config", type=Path, default=Path(os.getenv("AUTHNODE_CONFIG", str(DEFAULT_AUTHNODE_ROOT / "authnode.local.json"))))
     parser.add_argument("--fastreact-url", default=os.getenv("FASTREACT_URL") or os.getenv("PSKA_FASTREACT_URL") or DEFAULT_FASTREACT_URL)
     parser.add_argument("--fastreact-root", type=Path, default=Path(os.getenv("FASTREACT_ROOT", str(DEFAULT_FASTREACT_ROOT))))
     parser.add_argument("--run-id", default=f"{int(time.time())}-{uuid4().hex[:8]}")
@@ -94,7 +97,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     marker = f"pska-writing-e2e-{run_id}"
 
     services = check_services(args, config)
-    check_authnode_identity_policy(services["authnode_ready"], tenant_id=tenant_id, user_id=owner_user_id)
+    authnode_password = os.getenv("PSKA_E2E_PASSWORD", "pska-local")
+    check_authnode_identity_policy(
+        args,
+        services["authnode_ready"],
+        tenant_id=tenant_id,
+        user_id=owner_user_id,
+        password=authnode_password,
+    )
     _ensure_writing_demo_identity(
         PostgresKnowledgeStore(database_url),
         tenant_id=tenant_id,
@@ -177,12 +187,42 @@ def check_services(args: argparse.Namespace, config: PSKAConfig) -> dict[str, An
     }
 
 
-def check_authnode_identity_policy(ready: dict[str, Any], *, tenant_id: str, user_id: str) -> None:
+def check_authnode_identity_policy(args: argparse.Namespace, ready: dict[str, Any], *, tenant_id: str, user_id: str, password: str) -> None:
+    if ready.get("browser_login_provider") == "local_iam":
+        ensure_authnode_local_iam_identity(args, tenant_id=tenant_id, user_id=user_id, password=password)
+        return
     if ready.get("allow_unknown_users") is False or ready.get("allow_unknown_tenants") is False:
         raise E2EFailure(
             "AuthNode is running with strict catalog identity. Add "
             f"tenant={tenant_id!r} user_key={'pska:' + user_id!r} before running this E2E."
         )
+
+
+def ensure_authnode_local_iam_identity(args: argparse.Namespace, *, tenant_id: str, user_id: str, password: str) -> None:
+    python = shutil.which("python3")
+    require(python is not None, "python3 is required to seed AuthNode Local IAM")
+    require(args.authnode_root.exists(), f"AuthNode root not found: {args.authnode_root}")
+    require(args.authnode_config.exists(), f"AuthNode config not found: {args.authnode_config}")
+    commands = [
+        ["iam", "init"],
+        ["tenant", "create", tenant_id, "--name", f"PSKA Writing E2E {tenant_id}"],
+        ["user", "create", user_id, "--display-name", f"PSKA Writing E2E {user_id}", "--password", password],
+        ["membership", "add", user_id, tenant_id, "--roles", "writer", "--groups", "e2e"],
+    ]
+    for command in commands:
+        completed = subprocess.run(
+            [python, "-m", "authnode", "--config", str(args.authnode_config), *command],
+            cwd=str(args.authnode_root),
+            text=True,
+            capture_output=True,
+            timeout=60,
+        )
+        if completed.returncode != 0:
+            raise E2EFailure(
+                f"AuthNode Local IAM command failed: {' '.join(command)}\n"
+                f"stdout:\n{completed.stdout[-2000:]}\n"
+                f"stderr:\n{completed.stderr[-2000:]}"
+            )
 
 
 def sync_and_digest(
