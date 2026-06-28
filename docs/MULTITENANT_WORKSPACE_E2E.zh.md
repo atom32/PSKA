@@ -35,7 +35,7 @@ PSKA 的本地 workspace 根目录默认是：
 
 ## Logout
 
-Gateway 已提供 `/logout`。前端在已登录状态显示当前 user/tenant 和“退出登录”按钮；退出时会清除浏览器 `sessionStorage` 中的本地 PSKA identity，再跳转 `/logout` 清除 HttpOnly gateway session cookie。
+Gateway 已提供 `/logout`。前端在已登录状态显示当前 user/tenant 和“退出登录”按钮；退出时会清除浏览器 `sessionStorage` 中的本地 PSKA identity，再跳转 `/logout` 清除 HttpOnly gateway session cookie。默认还会跳转 AuthNode `/logout`，如果 AuthNode 使用 Keycloak 模式则继续联动 Keycloak end-session。
 
 浏览器不会持有 AuthNode admin token、PSKA service token、FastReAct service token 或下游 JWT。
 
@@ -67,7 +67,7 @@ FastReAct: http://127.0.0.1:8000
 - 创建隔离 tenant/user。
 - 写入一组虚构资料到该用户的 workspace sources 目录。
 - 执行 `knowledge-source add-folder`、`files-sync`、`digest-now`。
-- 用 Playwright 通过 AuthNode code callback 登录 PSKA Gateway。
+- 用 Playwright 通过 AuthNode local login (`/login?local=1`) 获取 one-time code，再登录 PSKA Gateway。动态 E2E 用户默认使用 `PSKA_E2E_PASSWORD=pska-local`；指定 catalog 用户时可覆盖该环境变量。
 - 在 Corpus 页面验证当前用户能看到刚导入的资料。
 - 在 Writing Workspace 创建项目，进行并行 Ask、连接答案后的追问、纳入章节和生成 draft。
 - 输出 JSON 报告，包含 workspace path、source/digest 摘要、board id、answer count、draft length、citation count。

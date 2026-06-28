@@ -6,6 +6,7 @@ from typing import Any
 from pska_core import gateway
 from pska_core.gateway import (
     GatewayConfig,
+    authnode_logout_redirect,
     decode_session,
     encode_session,
     _iter_streaming_response_chunks,
@@ -141,6 +142,23 @@ def test_gateway_exchanges_authnode_browser_code(monkeypatch) -> None:
     assert calls[0]["headers"]["accept"] == "application/json"
     assert calls[0]["payload"] == {"code": "one-time-code", "target": "pska"}
     assert calls[0]["timeout"] == 4
+
+
+def test_gateway_logout_can_redirect_through_authnode() -> None:
+    config = GatewayConfig(authnode_url="http://authnode.test", authnode_browser_login=True, authnode_logout=True)
+
+    assert (
+        authnode_logout_redirect(config, return_to="http://pska.test/login")
+        == "http://authnode.test/logout?return_to=http%3A%2F%2Fpska.test%2Flogin"
+    )
+    assert authnode_logout_redirect(
+        GatewayConfig(authnode_url="http://authnode.test", authnode_browser_login=False),
+        return_to="http://pska.test/login",
+    ) == "/login"
+    assert authnode_logout_redirect(
+        GatewayConfig(authnode_url="http://authnode.test", authnode_logout=False),
+        return_to="http://pska.test/login",
+    ) == "/login"
 
 
 def test_gateway_callback_accepts_trusted_headers_without_browser_token() -> None:

@@ -6,6 +6,9 @@ const frontendUrl = (process.env.PSKA_E2E_FRONTEND_URL || "http://127.0.0.1:5173
 const authnodeUrl = (process.env.PSKA_E2E_AUTHNODE_URL || "http://127.0.0.1:8788").replace(/\/$/, "");
 const tenantId = process.env.PSKA_E2E_TENANT_ID || "tenant_default";
 const userId = process.env.PSKA_E2E_USER_ID || "user_primary";
+const password =
+  process.env.PSKA_E2E_PASSWORD ||
+  (userId === "user_primary" ? "primary-local" : userId === "alice" ? "alice-local" : "pska-local");
 const marker = process.env.PSKA_E2E_MARKER || `pska-writing-e2e-${Date.now()}`;
 const sourceTitle = process.env.PSKA_E2E_SOURCE_TITLE || "helio-company-brief.md";
 const reportPath = process.env.PSKA_E2E_REPORT_PATH || "";
@@ -81,9 +84,11 @@ test("workspace files to corpus to parallel writing draft", async ({ page, reque
 });
 
 async function authnodeCallbackUrl(request: APIRequestContext) {
-  const response = await request.post(`${authnodeUrl}/login`, {
+  const response = await request.post(`${authnodeUrl}/login?local=1`, {
     form: {
-      identity: `pska:${userId}|${tenantId}`,
+      username: userId,
+      tenant_id: tenantId,
+      password,
       target: "pska",
       return_to: `${frontendUrl}/auth/callback`,
       next: "/"

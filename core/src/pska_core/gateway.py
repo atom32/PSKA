@@ -63,6 +63,7 @@ class GatewayConfig:
     default_tenant_id: str = "tenant_default"
     default_user_key: str = "pska:user_primary"
     authnode_browser_login: bool = True
+    authnode_logout: bool = True
     local_authnode_catalog_login: bool = True
     callback_jwt_secret: str | None = None
     callback_jwt_issuer: str | None = None
@@ -87,6 +88,7 @@ class GatewayConfig:
             default_tenant_id=os.getenv("PSKA_GATEWAY_DEFAULT_TENANT_ID", "tenant_default"),
             default_user_key=os.getenv("PSKA_GATEWAY_DEFAULT_USER_KEY", "pska:user_primary"),
             authnode_browser_login=_bool_env("PSKA_GATEWAY_AUTHNODE_BROWSER_LOGIN", True),
+            authnode_logout=_bool_env("PSKA_GATEWAY_AUTHNODE_LOGOUT", True),
             local_authnode_catalog_login=_bool_env("PSKA_GATEWAY_LOCAL_AUTHNODE_CATALOG_LOGIN", True),
             callback_jwt_secret=os.getenv("PSKA_GATEWAY_AUTH_JWT_SECRET")
             or os.getenv("PSKA_AUTH_JWT_SECRET")
@@ -115,6 +117,7 @@ class GatewayConfig:
             default_tenant_id=self.default_tenant_id,
             default_user_key=self.default_user_key,
             authnode_browser_login=self.authnode_browser_login,
+            authnode_logout=self.authnode_logout,
             local_authnode_catalog_login=self.local_authnode_catalog_login,
             callback_jwt_secret=self.callback_jwt_secret,
             callback_jwt_issuer=self.callback_jwt_issuer,
@@ -389,6 +392,13 @@ def public_session(session: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def authnode_logout_redirect(config: GatewayConfig, *, return_to: str) -> str:
+    if not config.authnode_browser_login or not config.authnode_logout:
+        return "/login"
+    params = {"return_to": return_to}
+    return f"{config.authnode_url.rstrip('/')}/logout?{urlencode(params)}"
+
+
 def proxy_request_headers(incoming: Mapping[str, str], session: Mapping[str, Any], config: GatewayConfig) -> dict[str, str]:
     headers: dict[str, str] = {}
     for name, value in incoming.items():
@@ -598,8 +608,9 @@ class PSKAGatewayHandler(BaseHTTPRequestHandler):
         return f"{proto}://{host}{path}"
 
     def _logout(self) -> None:
+        location = authnode_logout_redirect(self.config, return_to=self._external_url("/login"))
         self.send_response(302)
-        self.send_header("Location", "/login")
+        self.send_header("Location", location)
         self.send_header("Set-Cookie", self._clear_cookie())
         self.send_header("Content-Length", "0")
         self.end_headers()
