@@ -183,9 +183,17 @@ X-PSKA-Scope: {"source_item_ids":["..."]}
     "mcp": {
       "ok": true,
       "protocol_version": "2024-11-05",
-      "tool_count": 8,
+      "tool_count": 10,
       "tools": ["pska_search"],
-      "required_tools": ["pska_search", "pska_agentic_search", "pska_index_status", "pska_job_context", "pska_write_candidates"],
+      "required_tools": [
+        "pska_search",
+        "pska_index_status",
+        "pska_read_evidence_context",
+        "pska_graph_context",
+        "pska_digest_context",
+        "pska_job_context",
+        "pska_write_candidates"
+      ],
       "missing_required_tools": []
     }
   }
@@ -568,7 +576,11 @@ Unknown methods or tool errors return JSON-RPC error objects.
       {
         "name": "pska",
         "transport": "http",
-        "url": "http://127.0.0.1:8765/mcp"
+        "url": "http://127.0.0.1:8765/mcp",
+        "identity_forwarding": {
+          "mode": "authnode_jwt",
+          "audience": "pska"
+        }
       }
     ]
   }
@@ -595,7 +607,13 @@ NO_PROXY=127.0.0.1,localhost PYTHONPATH=src \
 
 PSKA `/ready` accepts Fastreact namespaced MCP tools such as `pska_pska_search` and normalizes them when checking `checks.fastreact.pska_tools_loaded`.
 
-生成的 PSKA Fastreact profile 使用 `user_key=pska:{user_id}` 命中 `pska` tenant policy；该 policy 显式 deny `exec`、`read_file`、`write_file`、`edit_file`，digest/extract/QA 应只通过 PSKA HTTP MCP tools 访问知识库。
+生成的 PSKA Fastreact profile 不再依赖 `tenant_rules.pska`。PSKA-facing daemon
+使用全局 `tool_rules` deny `exec`、`read_file`、`write_file`、`edit_file`，
+并用 `tool_profiles.pska_ask_read` 表达 Ask deep 只读工具集：
+`pska_pska_search`、`pska_pska_index_status`、`pska_pska_read_evidence_context`、
+`pska_pska_graph_context`、`pska_pska_digest_context`。digest worker 另用
+`pska_pska_job_context` 和 `pska_pska_write_candidates`；admin ingest/extract/review
+不进入普通 Ask。
 
 Fastreact still must not access PSKA DB directly. PSKA remains the authority for ACL, source refs, review, audit, and persistence.
 

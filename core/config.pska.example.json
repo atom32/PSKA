@@ -40,7 +40,10 @@
     "provider": "disabled",
     "model": "BAAI/bge-m3",
     "dimensions": 1024,
-    "batch_size": 16
+    "batch_size": 16,
+    "api_key_file": null,
+    "base_url": "https://api.openai.com/v1",
+    "timeout_seconds": 60
   },
   "ingest": {
     "chunk_size": 1200,

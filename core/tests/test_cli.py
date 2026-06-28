@@ -208,7 +208,21 @@ def test_cli_accepts_search_and_smoke() -> None:
         "--expected-database-url",
         "postgresql:///pska",
     ])
-    embed = build_parser().parse_args(["embed-backfill", "--embedding-provider", "bge-m3", "--limit", "10"])
+    embed = build_parser().parse_args([
+        "embed-backfill",
+        "--embedding-provider",
+        "api",
+        "--embedding-model",
+        "remote-embedding",
+        "--embedding-api-key-file",
+        "embedding_key.txt",
+        "--embedding-base-url",
+        "https://embedding.test/v1",
+        "--embedding-timeout-seconds",
+        "12",
+        "--limit",
+        "10",
+    ])
     mcp = build_parser().parse_args(["mcp-server"])
     connector = build_parser().parse_args(["connector-ingest-record", "record.json"])
     knowledge_source = build_parser().parse_args(["knowledge-source", "add-folder", "--tenant-id", "tenant_a", "--path", "notes", "--mode", "manual"])
@@ -285,7 +299,11 @@ def test_cli_accepts_search_and_smoke() -> None:
     assert service_check.timeout_seconds == 1
     assert service_check.expected_database_url == "postgresql:///pska"
     assert embed.command == "embed-backfill"
-    assert embed.embedding_provider == "bge-m3"
+    assert embed.embedding_provider == "api"
+    assert embed.embedding_model == "remote-embedding"
+    assert str(embed.embedding_api_key_file) == "embedding_key.txt"
+    assert embed.embedding_base_url == "https://embedding.test/v1"
+    assert embed.embedding_timeout_seconds == 12
     assert embed.limit == 10
     assert mcp.command == "mcp-server"
     assert connector.command == "connector-ingest-record"

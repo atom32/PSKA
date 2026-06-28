@@ -112,7 +112,7 @@ used by Today, Corpus, and Graph surfaces.
 FastReAct through PSKA read-only MCP tools. `intent=auto` first runs the PSKA
 planner (`route.routing_owner=pska_planner`) to extract query terms and choose
 between those routes. `route.retrieval_owner` is still the hard evidence owner:
-either `pska` or `fastreact_pska_mcp`.
+either `pska` or `fastreact_pska_mcp`. Deep Ask uses `route.tool_profile="ask_read"`.
 
 Response includes:
 
@@ -309,5 +309,21 @@ Required tools include:
 
 - `pska_search`
 - `pska_index_status`
+- `pska_read_evidence_context`
+- `pska_graph_context`
+- `pska_digest_context`
 - `pska_job_context`
 - `pska_write_candidates`
+
+Ask deep only exposes the `ask_read` profile:
+
+- `pska_pska_search`
+- `pska_pska_index_status`
+- `pska_pska_read_evidence_context`
+- `pska_pska_graph_context`
+- `pska_pska_digest_context`
+
+Digest workers use `pska_job_context` and `pska_write_candidates`; admin ingest
+and extract tools are not part of Ask. HTTP MCP should receive tenant/user from
+AuthNode JWT or trusted headers. Stdio MCP is local/dev only; in that mode
+FastReAct is the only security boundary.

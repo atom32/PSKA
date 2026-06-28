@@ -92,7 +92,13 @@ POST /v1/chat/completions
   "skills": ["optional-skill-name"],
   "tool_policy": {
     "mode": "allowlist",
-    "allowed_tools": ["pska_pska_search", "pska_pska_index_status"]
+    "allowed_tools": [
+      "pska_pska_search",
+      "pska_pska_index_status",
+      "pska_pska_read_evidence_context",
+      "pska_pska_graph_context",
+      "pska_pska_digest_context"
+    ]
   },
   "metadata": {
     "caller": "pska",
@@ -239,19 +245,17 @@ PSKA 不把 FastReAct 事件流等同于知识上下文。事件流按用途分�
 
 PSKA 通过 MCP 提供工具，FastReAct 通过部署配置加载。
 
-当前工具：
+当前 MCP 工具按能力 profile 分层：
 
-- `pska_search`
-- `pska_agentic_search`
-- `pska_index_status`
-- `pska_ingest_channel_payload`
-- `pska_extract_all`
-- `pska_review_items`
+- `ask_read`：`pska_search`、`pska_index_status`、`pska_read_evidence_context`、`pska_graph_context`、`pska_digest_context`。
+- `digest_worker`：`pska_job_context`、`pska_write_candidates`。
+- `admin_ingest`：`pska_ingest_channel_payload`、`pska_extract_all`、`pska_review_items`。
+- `coding_workspace`：FastReAct native `read_file/write_file/edit_file/exec`，不属于 PSKA MCP。
 
 工具参数原则：
 
-- 查询类工具必须接收 `query`。
-- ACL 相关工具必须接收 `user_id` 或 `owner_user_id`。
+- 查询类工具通常接收 `query`，也可以接收 citations/source refs/entity ids 做二次读取。
+- HTTP MCP 下 tenant/user 不由模型参数决定；PSKA 从 RequestContext 覆盖执行参数。
 - 检索工具应接收 `top_k`。
 - 写入/提取/review 类工具必须由 PSKA 自己校验权限。
 
@@ -266,8 +270,11 @@ Ask PSKA deep 路径只允许 read-only 查询工具：
 
 - `pska_pska_search`
 - `pska_pska_index_status`
+- `pska_pska_read_evidence_context`
+- `pska_pska_graph_context`
+- `pska_pska_digest_context`
 
-不得在 deep 问答中调用 `pska_pska_agentic_search`、写入、review apply、job mutation
+不得在 deep 问答中调用写入、review apply、job mutation
 或 filesystem/host 工具。FastReAct run trace 必须记录 `tool_policy`、实际 tool calls
 和 denied tool calls，便于证明一次问题没有重复检索 owner。
 
@@ -277,8 +284,8 @@ FastReAct 只透传身份上下文：
 
 - HTTP request `user_key`
 - HTTP metadata `pska_user_id`
-- MCP tool argument `user_id`
-- MCP tool argument `owner_user_id`
+- HTTP MCP AuthNode JWT/trusted headers
+- local/dev stdio MCP params
 
 PSKA 必须自己决定：
 

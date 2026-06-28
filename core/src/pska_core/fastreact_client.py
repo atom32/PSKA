@@ -448,7 +448,15 @@ class HttpFastreactClient:
         return token.strip()
 
 
-REQUIRED_PSKA_TOOLS = {"pska_search", "pska_index_status", "pska_job_context", "pska_write_candidates"}
+REQUIRED_PSKA_TOOLS = {
+    "pska_search",
+    "pska_index_status",
+    "pska_read_evidence_context",
+    "pska_graph_context",
+    "pska_digest_context",
+    "pska_job_context",
+    "pska_write_candidates",
+}
 
 
 def _pska_metadata(

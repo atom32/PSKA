@@ -254,7 +254,10 @@ def test_agentic_search_prompt_routes_pska_queries_to_pska_skill_tools() -> None
     messages = _agentic_messages("徐大为的简历都说了什么？")
     joined = "\n".join(message["content"] for message in messages)
 
-    assert "use only PSKA MCP tools" in joined
+    assert "use only PSKA read-only MCP tools" in joined
+    assert "pska_read_evidence_context" in joined
+    assert "pska_graph_context" in joined
+    assert "pska_digest_context" in joined
     assert "do not call read_file" in joined
     assert "exec" in joined
     assert "retrieve source evidence through PSKA tools" in joined
@@ -267,7 +270,8 @@ def test_agentic_search_prompt_includes_pska_tenant_identity() -> None:
 
     assert "tenant_id='tenant_acme'" in system
     assert "user_id='alice'" in system
-    assert "Every PSKA MCP tool call must include exactly these tenant_id and user_id" in system
+    assert "PSKA MCP identity is forwarded by the runtime" in system
+    assert "do not invent or override tenant/user arguments" in system
 
 
 def test_ask_agent_steps_ignore_sse_done_frames() -> None:
@@ -401,13 +405,23 @@ def test_fastreact_ready_reports_missing_pska_tools(monkeypatch) -> None:
     assert ready["ok"] is True
     assert ready["tool_names"] == ["other_tool", "pska_search"]
     assert ready["pska_tools_loaded"] is False
-    assert ready["missing_pska_tools"] == ["pska_index_status", "pska_job_context", "pska_write_candidates"]
+    assert ready["missing_pska_tools"] == [
+        "pska_digest_context",
+        "pska_graph_context",
+        "pska_index_status",
+        "pska_job_context",
+        "pska_read_evidence_context",
+        "pska_write_candidates",
+    ]
 
 
 def test_fastreact_ready_accepts_namespaced_pska_tools(monkeypatch) -> None:
     namespaced_tools = [
         "pska_pska_search",
         "pska_pska_index_status",
+        "pska_pska_read_evidence_context",
+        "pska_pska_graph_context",
+        "pska_pska_digest_context",
         "pska_pska_job_context",
         "pska_pska_write_candidates",
     ]
@@ -430,10 +444,16 @@ def test_fastreact_ready_accepts_namespaced_pska_tools(monkeypatch) -> None:
     assert ready["missing_pska_tools"] == []
     assert set(ready["normalized_pska_tool_names"]) == {
         "pska_index_status",
+        "pska_read_evidence_context",
+        "pska_graph_context",
+        "pska_digest_context",
         "pska_job_context",
         "pska_search",
         "pska_write_candidates",
         "pska_pska_index_status",
+        "pska_pska_read_evidence_context",
+        "pska_pska_graph_context",
+        "pska_pska_digest_context",
         "pska_pska_job_context",
         "pska_pska_search",
         "pska_pska_write_candidates",
@@ -450,14 +470,23 @@ def test_fastreact_pska_service_config_keeps_builtin_tools_under_fastreact_polic
     )
     config = json.loads(result.stdout)
     policy = config["policy"]
-    pska_tools = policy["tenant_rules"]["pska"]["tools"]
+    pska_tools = policy["tool_rules"]
 
-    assert "default_action" not in policy
+    assert policy["default_action"] == "deny"
     assert pska_tools["exec"] == "deny"
     assert pska_tools["read_file"] == "deny"
-    assert pska_tools["write_file"] == "require_approval"
-    assert pska_tools["edit_file"] == "require_approval"
+    assert pska_tools["write_file"] == "deny"
+    assert pska_tools["edit_file"] == "deny"
     assert pska_tools["pska_pska_search"] == "allow"
+    assert pska_tools["pska_pska_read_evidence_context"] == "allow"
+    assert pska_tools["pska_pska_ingest_channel_payload"] == "deny"
+    assert policy["tool_profiles"]["pska_ask_read"]["tools"] == [
+        "pska_pska_search",
+        "pska_pska_index_status",
+        "pska_pska_read_evidence_context",
+        "pska_pska_graph_context",
+        "pska_pska_digest_context",
+    ]
 
 
 def test_fastreact_job_records_run_id_and_event() -> None:
@@ -2234,8 +2263,15 @@ def test_workspace_ask_deep_uses_fastreact_readonly_tool_policy() -> None:
     assert payload["route"]["retrieval_owner"] == "fastreact_pska_mcp"
     assert payload["route"]["tool_policy"] == {
         "mode": "allowlist",
-        "allowed_tools": ["pska_pska_search", "pska_pska_index_status"],
+        "allowed_tools": [
+            "pska_pska_search",
+            "pska_pska_index_status",
+            "pska_pska_read_evidence_context",
+            "pska_pska_graph_context",
+            "pska_pska_digest_context",
+        ],
     }
+    assert payload["route"]["tool_profile"] == "ask_read"
     assert payload["answer"] == "Fake external agentic answer."
     assert [step["phase"] for step in payload["agent_steps"][:4]] == ["understand", "think", "search", "read"]
     assert payload["timing"]["time_to_first_agent_event_ms"] >= 0

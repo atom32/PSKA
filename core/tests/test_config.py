@@ -259,6 +259,45 @@ def test_pska_config_builds_runtime_configs(tmp_path: Path) -> None:
     assert config.ingest_kwargs() == {"chunk_size": 512, "chunk_overlap": 32}
 
 
+def test_pska_config_builds_api_embedding_runtime_config(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("PSKA_EMBEDDING_API_KEY_FILE", raising=False)
+    monkeypatch.delenv("PSKA_EMBEDDING_BASE_URL", raising=False)
+    key_file = tmp_path / "embedding_key.txt"
+    config = PSKAConfig.from_dict(
+        {
+            "embedding": {
+                "provider": "api",
+                "model": "remote-embedding",
+                "dimensions": 1024,
+                "batch_size": 32,
+                "api_key_file": str(key_file),
+                "base_url": "https://embedding.test/v1/",
+                "timeout_seconds": 12,
+            }
+        }
+    )
+
+    embedding = config.embedding_runtime_config()
+
+    assert embedding.provider == "api"
+    assert embedding.model == "remote-embedding"
+    assert embedding.dimensions == 1024
+    assert embedding.batch_size == 32
+    assert embedding.api_key_file == key_file
+    assert embedding.base_url == "https://embedding.test/v1"
+    assert embedding.timeout_seconds == 12
+
+
+def test_pska_config_uses_api_embedding_default_model() -> None:
+    config = PSKAConfig.from_dict({"embedding": {"provider": "api"}})
+
+    embedding = config.embedding_runtime_config()
+
+    assert embedding.provider == "api"
+    assert embedding.model == "text-embedding-3-small"
+    assert embedding.dimensions == 1024
+
+
 def test_pska_config_from_env_remains_explicit_legacy_loader(tmp_path: Path, monkeypatch) -> None:
     notes = tmp_path / "notes"
     docs = tmp_path / "docs"

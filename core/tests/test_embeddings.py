@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import json
 import sys
 import types
 
 from pska_core.acl import ACLService
-from pska_core.embeddings import EmbeddingService
+from pska_core.embeddings import APIEmbeddingProvider, EmbeddingConfig, EmbeddingService, build_embedding_provider
 from pska_core.enums import UserRole, Visibility
 from pska_core.ingest import IngestService
 from pska_core.models import TeamMembership, User
@@ -97,6 +98,72 @@ def test_backfill_skips_chunks_that_already_match_provider_and_model() -> None:
     assert second.embedded == 0
     assert second.failed == 0
     assert len(provider.calls) == 1
+
+
+def test_api_embedding_provider_posts_to_remote_endpoint(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps(
+                {
+                    "data": [
+                        {"index": 1, "embedding": [0.0, 1.0, 0.0]},
+                        {"index": 0, "embedding": [1.0, 0.0, 0.0]},
+                    ]
+                }
+            ).encode("utf-8")
+
+    def fake_urlopen(request, timeout):  # noqa: ANN001 - urllib request object.
+        captured["url"] = request.full_url
+        captured["timeout"] = timeout
+        captured["headers"] = {key.lower(): value for key, value in request.header_items()}
+        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse()
+
+    monkeypatch.setattr("pska_core.embeddings.urlopen", fake_urlopen)
+    provider = APIEmbeddingProvider(
+        api_key="sk-test",
+        model_name="remote-embedding",
+        base_url="https://embedding.test/v1/",
+        dimensions=3,
+        timeout_seconds=12,
+    )
+
+    vectors = provider.embed_texts(["alpha", "beta"])
+
+    assert vectors == [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+    assert captured["url"] == "https://embedding.test/v1/embeddings"
+    assert captured["timeout"] == 12
+    assert captured["headers"]["authorization"] == "Bearer sk-test"
+    assert captured["payload"] == {"model": "remote-embedding", "input": ["alpha", "beta"], "dimensions": 3}
+
+
+def test_api_embedding_provider_does_not_load_local_bge(tmp_path, monkeypatch) -> None:
+    key_file = tmp_path / "embedding_key.txt"
+    key_file.write_text("sk-embedding\n", encoding="utf-8")
+    monkeypatch.setitem(sys.modules, "FlagEmbedding", None)
+
+    provider = build_embedding_provider(
+        EmbeddingConfig(
+            provider="api",
+            model="remote-embedding",
+            dimensions=3,
+            api_key_file=key_file,
+            base_url="https://embedding.test/v1",
+        )
+    )
+
+    assert isinstance(provider, APIEmbeddingProvider)
+    assert provider.provider_name == "api"
+    assert provider.model_name == "remote-embedding"
+    assert provider.dimensions == 3
 
 
 def test_ingest_marks_source_and_chunks_dirty_for_offline_index() -> None:

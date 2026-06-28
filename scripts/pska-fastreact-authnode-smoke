@@ -36,7 +36,15 @@ DEFAULT_AUTHNODE_URL = "http://127.0.0.1:8788"
 DEFAULT_PSKA_URL = "http://127.0.0.1:8765"
 DEFAULT_FASTREACT_URL = "http://127.0.0.1:8000"
 DEFAULT_AUTHNODE_CONFIG = ROOT.parent / "AuthNode" / "authnode.local.json"
-REQUIRED_FASTREACT_PSKA_TOOLS = {"pska_search", "pska_index_status", "pska_job_context", "pska_write_candidates"}
+REQUIRED_FASTREACT_PSKA_TOOLS = {
+    "pska_search",
+    "pska_index_status",
+    "pska_read_evidence_context",
+    "pska_graph_context",
+    "pska_digest_context",
+    "pska_job_context",
+    "pska_write_candidates",
+}
 
 
 class SmokeFailure(RuntimeError):

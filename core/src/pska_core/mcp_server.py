@@ -3,22 +3,32 @@ from __future__ import annotations
 import json
 import re
 import sys
+from types import SimpleNamespace
 from typing import Any
 
 from pska_core.acl import ACLService
 from pska_core.auth import RequestContext
 from pska_core.candidates import CandidateWriteService
 from pska_core.config import DatabaseConfig, PSKAConfig
-from pska_core.embeddings import build_embedding_provider
+from pska_core.embeddings import EmbeddingProvider, build_embedding_provider
 from pska_core.extraction import ExtractionService
 from pska_core.ingest import IngestService
-from pska_core.models import DEFAULT_TENANT_ID, ChannelIngestPayload
+from pska_core.models import DEFAULT_TENANT_ID, ChannelIngestPayload, SourceRef
 from pska_core.retrieval import RetrievalService
 from pska_core.serde import to_jsonable
 from pska_core.store_postgres import PostgresKnowledgeStore
 
 
 PROTOCOL_VERSION = "2024-11-05"
+
+
+ASK_READ_TOOL_NAMES = {
+    "pska_search",
+    "pska_index_status",
+    "pska_read_evidence_context",
+    "pska_graph_context",
+    "pska_digest_context",
+}
 
 
 TOOLS = [
@@ -29,9 +39,6 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "query": {"type": "string"},
-                "tenant_id": {"type": "string", "default": DEFAULT_TENANT_ID},
-                "user_id": {"type": "string", "default": "user_primary"},
-                "represented_user_id": {"type": "string"},
                 "top_k": {"type": "integer", "default": 5},
                 "max_results": {"type": "integer", "default": 3},
                 "max_snippet_chars": {"type": "integer", "default": 700},
@@ -41,8 +48,75 @@ TOOLS = [
     },
     {
         "name": "pska_index_status",
-        "description": "Return basic PSKA index counts.",
-        "inputSchema": {"type": "object", "properties": {"tenant_id": {"type": "string", "default": DEFAULT_TENANT_ID}}, "required": []},
+        "description": "Return basic PSKA index counts for the current tenant/user scope.",
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "pska_read_evidence_context",
+        "description": "Read fuller source, document, chunk, or citation context within the current tenant/user scope.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "source_refs": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "source_item_id": {"type": "string"},
+                            "document_id": {"type": "string"},
+                            "passage_window_id": {"type": "string"},
+                            "chunk_id": {"type": "string"},
+                            "url": {"type": "string"},
+                            "path": {"type": "string"},
+                        },
+                    },
+                },
+                "source_item_ids": {"type": "array", "items": {"type": "string"}},
+                "document_ids": {"type": "array", "items": {"type": "string"}},
+                "chunk_ids": {"type": "array", "items": {"type": "string"}},
+                "max_items": {"type": "integer", "default": 5},
+                "max_source_chars": {"type": "integer", "default": 1200},
+                "max_document_chars": {"type": "integer", "default": 2400},
+                "max_passage_chars": {"type": "integer", "default": 1600},
+                "max_chunk_chars": {"type": "integer", "default": 1200},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "pska_graph_context",
+        "description": "Expand graph neighbors, paths, and claim evidence for entities or source refs in the current tenant/user scope.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "entity_ids": {"type": "array", "items": {"type": "string"}},
+                "entity_labels": {"type": "array", "items": {"type": "string"}},
+                "source_item_ids": {"type": "array", "items": {"type": "string"}},
+                "max_depth": {"type": "integer", "default": 2},
+                "max_paths": {"type": "integer", "default": 6},
+                "max_edges": {"type": "integer", "default": 8},
+                "max_snippet_chars": {"type": "integer", "default": 700},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "pska_digest_context",
+        "description": "Read digest notes, knowledge claims, risks, and open questions in the current tenant/user scope.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "source_item_ids": {"type": "array", "items": {"type": "string"}},
+                "job_id": {"type": "string"},
+                "max_claims": {"type": "integer", "default": 8},
+                "max_digest_notes": {"type": "integer", "default": 5},
+                "max_snippet_chars": {"type": "integer", "default": 700},
+            },
+            "required": [],
+        },
     },
     {
         "name": "pska_ingest_channel_payload",
@@ -54,14 +128,14 @@ TOOLS = [
         "description": "Extract MVP entities, hyperedges, and review items from source items.",
         "inputSchema": {
             "type": "object",
-            "properties": {"tenant_id": {"type": "string", "default": DEFAULT_TENANT_ID}, "owner_user_id": {"type": "string"}},
+            "properties": {},
             "required": [],
         },
     },
     {
         "name": "pska_review_items",
         "description": "List PSKA review items.",
-        "inputSchema": {"type": "object", "properties": {"tenant_id": {"type": "string", "default": DEFAULT_TENANT_ID}}, "required": []},
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
     },
     {
         "name": "pska_write_candidates",
@@ -69,8 +143,6 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "owner_user_id": {"type": "string"},
-                "tenant_id": {"type": "string", "default": DEFAULT_TENANT_ID},
                 "schema_version": {"type": "string", "default": "pska.candidates.v1"},
                 "job_id": {"type": "string"},
                 "request_id": {"type": "string"},
@@ -206,9 +278,6 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "job_id": {"type": "string"},
-                "tenant_id": {"type": "string", "default": DEFAULT_TENANT_ID},
-                "user_id": {"type": "string", "default": "user_primary"},
-                "represented_user_id": {"type": "string"},
                 "cursor": {"type": "integer", "default": 0},
                 "limit": {"type": "integer", "default": 1},
                 "max_source_chars": {"type": "integer", "default": 300},
@@ -230,12 +299,20 @@ def main() -> int:
 
 
 class MCPServer:
-    def __init__(self, database_url: str, store: Any | None = None, llm: Any | None = None, config: PSKAConfig | None = None) -> None:
+    def __init__(
+        self,
+        database_url: str,
+        store: Any | None = None,
+        llm: Any | None = None,
+        config: PSKAConfig | None = None,
+        embedding_provider: EmbeddingProvider | None = None,
+    ) -> None:
         if config is None:
             config = PSKAConfig(database=DatabaseConfig(url=database_url))
         self.config = config
         self.store = store or PostgresKnowledgeStore(database_url)
-        embedding_provider = build_embedding_provider(config.embedding_runtime_config())
+        if embedding_provider is None:
+            embedding_provider = build_embedding_provider(config.embedding_runtime_config())
         self.retrieval = RetrievalService(self.store, ACLService(self.store), embedding_provider=embedding_provider)
         self.ingest = IngestService(self.store, embedding_provider=embedding_provider, **config.ingest_kwargs())
         self.extraction = ExtractionService(self.store, llm=llm, llm_config=config.llm)
@@ -292,6 +369,12 @@ class MCPServer:
             payload = self.pska_search(arguments)
         elif name == "pska_index_status":
             payload = self.pska_index_status(arguments)
+        elif name == "pska_read_evidence_context":
+            payload = self.pska_read_evidence_context(arguments)
+        elif name == "pska_graph_context":
+            payload = self.pska_graph_context(arguments)
+        elif name == "pska_digest_context":
+            payload = self.pska_digest_context(arguments)
         elif name == "pska_ingest_channel_payload":
             payload = self.pska_ingest_channel_payload(arguments)
         elif name == "pska_extract_all":
@@ -321,22 +404,230 @@ class MCPServer:
             max_snippet_chars=_bounded_int(arguments.get("max_snippet_chars"), default=700, minimum=120, maximum=1600),
         )
 
-    def pska_index_status(self, arguments: dict[str, Any] | None = None) -> dict[str, int | bool]:
+    def pska_index_status(self, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
         tenant_id = str((arguments or {}).get("tenant_id") or DEFAULT_TENANT_ID)
+        owner_user_id = str((arguments or {}).get("represented_user_id") or (arguments or {}).get("user_id") or "user_primary")
         source_items = self.store.list_source_items(tenant_id=tenant_id)
+        owned_source_items = [item for item in source_items if item.owner_user_id == owner_user_id]
         source_ids = {item.source_item_id for item in source_items}
         return {
             "ok": True,
             "tenant_id": tenant_id,
+            "request_user_id": owner_user_id,
             "source_items": len(source_items),
+            "user_source_items": len(owned_source_items),
             "documents": len(self.store.list_documents_for_sources(source_ids)),
             "chunks": len(self.store.list_chunks_for_sources(source_ids)),
             "entities": len(self.store.list_entities(tenant_id=tenant_id)),
             "hyperedges": len(self.store.list_hyperedges_for_entities({entity.entity_id for entity in self.store.list_entities(tenant_id=tenant_id)})),
-            "knowledge_claims": len(self.store.list_knowledge_claims(owner_user_id="user_primary", tenant_id=tenant_id, limit=10_000)),
-            "digest_notes": len(self.store.list_digest_notes(owner_user_id="user_primary", tenant_id=tenant_id, limit=10_000)),
+            "knowledge_claims": len(self.store.list_knowledge_claims(owner_user_id=owner_user_id, tenant_id=tenant_id, limit=10_000)),
+            "digest_notes": len(self.store.list_digest_notes(owner_user_id=owner_user_id, tenant_id=tenant_id, limit=10_000)),
             "review_items": len(self.store.list_review_items(tenant_id=tenant_id)),
         }
+
+    def pska_read_evidence_context(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        tenant_id, user, represented_user_id = self._request_scope(arguments)
+        max_items = _bounded_int(arguments.get("max_items"), default=5, minimum=1, maximum=12)
+        max_source_chars = _bounded_int(arguments.get("max_source_chars"), default=1200, minimum=240, maximum=8000)
+        max_document_chars = _bounded_int(arguments.get("max_document_chars"), default=2400, minimum=500, maximum=12000)
+        max_passage_chars = _bounded_int(arguments.get("max_passage_chars"), default=1600, minimum=500, maximum=8000)
+        max_chunk_chars = _bounded_int(arguments.get("max_chunk_chars"), default=1200, minimum=240, maximum=6000)
+        query = _clean_string(arguments.get("query"))
+        refs = _source_refs_from_mcp_arguments(arguments)
+        requested_source_ids = set(_string_list(arguments.get("source_item_ids")))
+        requested_document_ids = set(_string_list(arguments.get("document_ids")))
+        requested_chunk_ids = set(_string_list(arguments.get("chunk_ids")))
+        for ref in refs:
+            if ref.source_item_id:
+                requested_source_ids.add(ref.source_item_id)
+            if ref.document_id:
+                requested_document_ids.add(ref.document_id)
+            if ref.chunk_id:
+                requested_chunk_ids.add(ref.chunk_id)
+        visible_items = self._visible_source_items(user, represented_user_id=represented_user_id)
+        visible_by_id = {item.source_item_id: item for item in visible_items}
+        if not requested_source_ids and not requested_document_ids and not requested_chunk_ids and query:
+            search = self.retrieval.search(query, user, represented_user_id=represented_user_id, top_k=max_items)
+            requested_source_ids.update(result.source_item_id for result in search.results[:max_items])
+        if requested_source_ids:
+            visible_items = [item for item in visible_items if item.source_item_id in requested_source_ids]
+        source_ids = {item.source_item_id for item in visible_items}
+        documents = self.store.list_documents_for_sources(source_ids)
+        chunks = self.store.list_chunks_for_sources(source_ids)
+        if requested_document_ids:
+            documents = [document for document in documents if document.document_id in requested_document_ids]
+            document_source_ids = {document.source_item_id for document in documents}
+            source_ids = source_ids.intersection(document_source_ids) if requested_source_ids else document_source_ids
+            chunks = [chunk for chunk in chunks if chunk.document_id in requested_document_ids or chunk.source_item_id in document_source_ids]
+        if requested_chunk_ids:
+            chunks = [chunk for chunk in chunks if chunk.chunk_id in requested_chunk_ids]
+            chunk_document_ids = {chunk.document_id for chunk in chunks}
+            chunk_source_ids = {chunk.source_item_id for chunk in chunks}
+            if not requested_document_ids:
+                documents = [document for document in documents if document.document_id in chunk_document_ids or document.source_item_id in chunk_source_ids]
+            source_ids = source_ids.intersection(chunk_source_ids) if source_ids else chunk_source_ids
+        if query and not requested_document_ids and not requested_chunk_ids:
+            source_ids = {item.source_item_id for item in _rank_items_by_query(visible_items, query)[:max_items]}
+            documents = [document for document in documents if document.source_item_id in source_ids]
+            chunks = [chunk for chunk in chunks if chunk.source_item_id in source_ids]
+        selected_items = [visible_by_id[source_id] for source_id in sorted(source_ids) if source_id in visible_by_id][:max_items]
+        selected_documents = documents[: max_items * 2]
+        selected_chunks = chunks[: max_items * 4]
+        passage_windows = _passage_windows_for_documents(selected_documents, selected_chunks, target_chars=max_passage_chars)
+        results = _evidence_results_from_context(selected_items, selected_documents, selected_chunks, max_snippet_chars=max_chunk_chars)
+        citations = _citations_for_source_items(selected_items, chunks=selected_chunks, max_snippet_chars=max_chunk_chars)
+        return {
+            "ok": True,
+            "tenant_id": tenant_id,
+            "request_user_id": represented_user_id or user.user_id,
+            "query": query or None,
+            "results": results[: max_items * 2],
+            "citations": citations[: max_items * 2],
+            "source_items": [_compact_source_item(item, max_chars=max_source_chars) for item in selected_items],
+            "documents": [_compact_document(document, max_chars=max_document_chars) for document in selected_documents],
+            "passage_windows": [_compact_passage_window(window, max_chars=max_passage_chars) for window in passage_windows[: max_items * 2]],
+            "chunks": [_compact_chunk(chunk, max_chars=max_chunk_chars) for chunk in selected_chunks],
+            "graph_paths": [],
+            "diagnostics": {"gaps": [], "conflicts": [], "sensitivity": []},
+            "omitted": {
+                "source_items": max(0, len(visible_items) - len(selected_items)),
+                "documents": max(0, len(documents) - len(selected_documents)),
+                "chunks": max(0, len(chunks) - len(selected_chunks)),
+            },
+        }
+
+    def pska_graph_context(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        tenant_id, user, represented_user_id = self._request_scope(arguments)
+        query = _clean_string(arguments.get("query"))
+        max_depth = _bounded_int(arguments.get("max_depth"), default=2, minimum=1, maximum=3)
+        max_paths = _bounded_int(arguments.get("max_paths"), default=6, minimum=1, maximum=12)
+        max_edges = _bounded_int(arguments.get("max_edges"), default=8, minimum=1, maximum=24)
+        max_snippet_chars = _bounded_int(arguments.get("max_snippet_chars"), default=700, minimum=120, maximum=2000)
+        entity_ids = set(_string_list(arguments.get("entity_ids")))
+        entity_labels = [label.casefold() for label in _string_list(arguments.get("entity_labels"))]
+        source_ids = set(_string_list(arguments.get("source_item_ids")))
+        all_entities = self.store.list_entities(tenant_id=tenant_id)
+        visible_entities = self.retrieval._visible_entities(all_entities, user=user, represented_user_id=represented_user_id)
+        selected_entities = []
+        if entity_ids or entity_labels:
+            selected_entities = [
+                entity
+                for entity in visible_entities
+                if entity.entity_id in entity_ids or any(label in entity.label.casefold() for label in entity_labels)
+            ]
+        elif query:
+            search = self.retrieval.search(query, user, represented_user_id=represented_user_id, top_k=max_paths)
+            ranked = search.results
+            source_ids.update(result.source_item_id for result in ranked[:max_paths])
+            selected_entities = self.retrieval._matching_entities(query, ranked, tenant_id=tenant_id)
+            selected_entities = self.retrieval._visible_entities(selected_entities, user=user, represented_user_id=represented_user_id)
+        if source_ids and not selected_entities:
+            edge_tuples = self.store.list_hyperedges_for_entities({entity.entity_id for entity in visible_entities})
+            selected_entity_ids: set[str] = set()
+            for edge, members in edge_tuples:
+                if not self.retrieval._can_read_graph_object(user, edge.owner_user_id, edge.visibility, edge.visible_team_ids, represented_user_id):
+                    continue
+                if any(ref.source_item_id in source_ids for ref in edge.source_refs):
+                    selected_entity_ids.update(member.entity_id for member in members)
+            selected_entities = [entity for entity in visible_entities if entity.entity_id in selected_entity_ids]
+        ranked_for_paths = _retrieval_results_from_sources(query, self._visible_source_items(user, represented_user_id=represented_user_id), source_ids)
+        graph_paths = self.retrieval._graph_paths(
+            query=query or " ".join(entity.label for entity in selected_entities[:3]) or "graph context",
+            ranked=ranked_for_paths,
+            user=user,
+            represented_user_id=represented_user_id,
+            max_depth=max_depth,
+            max_paths=max_paths,
+        )
+        entity_by_id = {entity.entity_id: entity for entity in all_entities}
+        edge_contexts: list[dict[str, Any]] = []
+        for edge, members in self.store.list_hyperedges_for_entities({entity.entity_id for entity in selected_entities}):
+            if not self.retrieval._can_read_graph_object(user, edge.owner_user_id, edge.visibility, edge.visible_team_ids, represented_user_id):
+                continue
+            edge_contexts.append(self.retrieval._edge_context(edge, members, entity_by_id, user=user, represented_user_id=represented_user_id))
+            if len(edge_contexts) >= max_edges:
+                break
+        source_refs = _source_refs_from_graph_context(edge_contexts, graph_paths)
+        citations = self.retrieval._source_ref_citations(source_refs, user=user, represented_user_id=represented_user_id)
+        return {
+            "ok": True,
+            "tenant_id": tenant_id,
+            "request_user_id": represented_user_id or user.user_id,
+            "query": query or None,
+            "entities": [_compact_entity(entity) for entity in selected_entities[:max_edges]],
+            "edges": [_compact_graph_edge(edge, max_snippet_chars=max_snippet_chars) for edge in edge_contexts],
+            "graph_paths": [_compact_graph_path(path, max_snippet_chars=max_snippet_chars) for path in graph_paths],
+            "results": _results_from_graph_edges(edge_contexts, max_snippet_chars=max_snippet_chars),
+            "citations": [_compact_citation(citation, max_snippet_chars=max_snippet_chars) for citation in citations[: max_edges * 2]],
+            "diagnostics": {"gaps": [], "conflicts": [], "sensitivity": []},
+            "omitted": {
+                "entities": max(0, len(selected_entities) - max_edges),
+                "edges": max(0, len(edge_contexts) - max_edges),
+                "graph_paths": max(0, len(graph_paths) - max_paths),
+            },
+        }
+
+    def pska_digest_context(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        tenant_id, user, represented_user_id = self._request_scope(arguments)
+        owner_user_id = represented_user_id or user.user_id
+        query = _clean_string(arguments.get("query"))
+        source_ids = set(_string_list(arguments.get("source_item_ids")))
+        max_claims = _bounded_int(arguments.get("max_claims"), default=8, minimum=1, maximum=24)
+        max_digest_notes = _bounded_int(arguments.get("max_digest_notes"), default=5, minimum=1, maximum=16)
+        max_snippet_chars = _bounded_int(arguments.get("max_snippet_chars"), default=700, minimum=120, maximum=2000)
+        job_id = _clean_string(arguments.get("job_id")) or None
+        claims = self.store.list_knowledge_claims(
+            owner_user_id=owner_user_id,
+            tenant_id=tenant_id,
+            source_item_ids=source_ids or None,
+            job_id=job_id,
+            limit=max_claims * 3,
+        )
+        notes = self.store.list_digest_notes(
+            owner_user_id=owner_user_id,
+            tenant_id=tenant_id,
+            source_item_ids=source_ids or None,
+            job_id=job_id,
+            limit=max_digest_notes * 3,
+        )
+        if query:
+            claims = _rank_objects_by_query(claims, query, fields=("statement", "evidence_text", "subject", "predicate", "object"))
+            notes = _rank_objects_by_query(notes, query, fields=("title", "synopsis", "key_points", "actions", "open_questions", "risks"))
+        claims = claims[:max_claims]
+        notes = notes[:max_digest_notes]
+        source_refs = [
+            ref
+            for obj in [*claims, *notes]
+            for ref in getattr(obj, "source_refs", [])
+            if isinstance(ref, SourceRef)
+        ]
+        citations = self.retrieval._source_ref_citations(source_refs, user=user, represented_user_id=represented_user_id)
+        return {
+            "ok": True,
+            "tenant_id": tenant_id,
+            "request_user_id": owner_user_id,
+            "query": query or None,
+            "knowledge_claims": [_compact_knowledge_claim(claim) for claim in claims],
+            "digest_notes": [_compact_digest_note(note) for note in notes],
+            "results": _results_from_digest_context(claims, notes, max_snippet_chars=max_snippet_chars),
+            "citations": [_compact_citation(citation, max_snippet_chars=max_snippet_chars) for citation in citations[: (max_claims + max_digest_notes)]],
+            "graph_paths": [],
+            "diagnostics": {"gaps": [], "conflicts": [], "sensitivity": []},
+            "omitted": {"knowledge_claims": 0, "digest_notes": 0},
+        }
+
+    def _request_scope(self, arguments: dict[str, Any]) -> tuple[str, Any, str | None]:
+        tenant_id = str(arguments.get("tenant_id") or DEFAULT_TENANT_ID)
+        user = self.store.get_user(arguments.get("user_id") or "user_primary", tenant_id=tenant_id)
+        represented_user_id = arguments.get("represented_user_id")
+        return tenant_id, user, str(represented_user_id) if represented_user_id else None
+
+    def _visible_source_items(self, user: Any, *, represented_user_id: str | None) -> list[Any]:
+        return [
+            item
+            for item in self.store.list_source_items(tenant_id=user.tenant_id)
+            if self.retrieval.acl.can_read_item(user, item, represented_user_id=represented_user_id)
+        ]
 
     def pska_ingest_channel_payload(self, arguments: dict[str, Any]) -> Any:
         payload = dict(arguments["payload"])
@@ -633,6 +924,309 @@ def _compact_diagnostics(value: Any) -> dict[str, Any]:
         "conflicts": value.get("conflicts") if isinstance(value.get("conflicts"), list) else [],
         "sensitivity": value.get("sensitivity") if isinstance(value.get("sensitivity"), list) else [],
     }
+
+
+def _source_refs_from_mcp_arguments(arguments: dict[str, Any]) -> list[SourceRef]:
+    refs: list[SourceRef] = []
+    for raw in arguments.get("source_refs") or []:
+        if isinstance(raw, SourceRef):
+            refs.append(raw)
+            continue
+        if not isinstance(raw, dict):
+            continue
+        refs.append(
+            SourceRef(
+                source_item_id=_clean_string(raw.get("source_item_id")) or None,
+                document_id=_clean_string(raw.get("document_id")) or None,
+                chunk_id=_clean_string(raw.get("chunk_id")) or None,
+                passage_window_id=_clean_string(raw.get("passage_window_id")) or None,
+                message_id=_clean_string(raw.get("message_id")) or None,
+                path=_clean_string(raw.get("path")) or None,
+                url=_clean_string(raw.get("url")) or None,
+            )
+        )
+    return refs
+
+
+def _string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value] if value else []
+    if not isinstance(value, list | tuple | set):
+        return [str(value)] if str(value).strip() else []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _query_terms(query: str) -> set[str]:
+    return {term.casefold() for term in re.findall(r"[\w\u4e00-\u9fff-]+", query or "") if len(term.strip()) > 1}
+
+
+def _text_score(text: str, terms: set[str]) -> int:
+    normalized = (text or "").casefold()
+    return sum(1 for term in terms if term in normalized)
+
+
+def _rank_items_by_query(items: list[Any], query: str) -> list[Any]:
+    terms = _query_terms(query)
+    if not terms:
+        return items
+    return sorted(
+        items,
+        key=lambda item: (
+            _text_score(
+                " ".join(
+                    [
+                        str(getattr(item, "title", "") or ""),
+                        str(getattr(item, "source_id", "") or ""),
+                        str(getattr(item, "content_text", "") or ""),
+                    ]
+                ),
+                terms,
+            ),
+            str(getattr(item, "updated_at", "") or ""),
+            str(getattr(item, "source_item_id", "") or ""),
+        ),
+        reverse=True,
+    )
+
+
+def _rank_objects_by_query(objects: list[Any], query: str, *, fields: tuple[str, ...]) -> list[Any]:
+    terms = _query_terms(query)
+    if not terms:
+        return objects
+
+    def object_text(obj: Any) -> str:
+        values: list[str] = []
+        for field in fields:
+            value = getattr(obj, field, "")
+            values.append(json.dumps(to_jsonable(value), ensure_ascii=False) if isinstance(value, (list, dict)) else str(value or ""))
+        return " ".join(values)
+
+    ranked = sorted(
+        objects,
+        key=lambda obj: (_text_score(object_text(obj), terms), str(getattr(obj, "created_at", "") or ""), str(getattr(obj, "knowledge_claim_id", "") or getattr(obj, "digest_note_id", "") or "")),
+        reverse=True,
+    )
+    return [obj for obj in ranked if _text_score(object_text(obj), terms) > 0] or ranked
+
+
+def _evidence_results_from_context(source_items: list[Any], documents: list[Any], chunks: list[Any], *, max_snippet_chars: int) -> list[dict[str, Any]]:
+    item_by_id = {item.source_item_id: item for item in source_items}
+    document_by_id = {document.document_id: document for document in documents}
+    results: list[dict[str, Any]] = []
+    for chunk in chunks:
+        document = document_by_id.get(chunk.document_id)
+        item = item_by_id.get(chunk.source_item_id)
+        title = getattr(document, "title", "") or getattr(item, "title", "") or chunk.source_item_id
+        results.append(
+            {
+                "result_id": chunk.chunk_id,
+                "source_item_id": chunk.source_item_id,
+                "source": getattr(item, "source_channel", None),
+                "title": title,
+                "snippet": _truncate(str(getattr(chunk, "text", "") or ""), max_snippet_chars),
+                "score": 1.0,
+                "citation": {
+                    "source_item_id": chunk.source_item_id,
+                    "document_id": chunk.document_id,
+                    "chunk_id": chunk.chunk_id,
+                    "url": getattr(item, "url", None),
+                    "title": title,
+                    "snippet": _truncate(str(getattr(chunk, "text", "") or ""), max_snippet_chars),
+                },
+            }
+        )
+    if results:
+        return results
+    for document in documents:
+        item = item_by_id.get(document.source_item_id)
+        results.append(
+            {
+                "result_id": document.document_id,
+                "source_item_id": document.source_item_id,
+                "source": getattr(item, "source_channel", None),
+                "title": getattr(document, "title", "") or getattr(item, "title", "") or document.source_item_id,
+                "snippet": _truncate(str(getattr(document, "body", "") or ""), max_snippet_chars),
+                "score": 1.0,
+                "citation": {
+                    "source_item_id": document.source_item_id,
+                    "document_id": document.document_id,
+                    "url": getattr(item, "url", None),
+                    "title": getattr(document, "title", "") or getattr(item, "title", "") or document.source_item_id,
+                    "snippet": _truncate(str(getattr(document, "body", "") or ""), max_snippet_chars),
+                },
+            }
+        )
+    if results:
+        return results
+    for item in source_items:
+        results.append(
+            {
+                "result_id": item.source_item_id,
+                "source_item_id": item.source_item_id,
+                "source": item.source_channel,
+                "title": item.title,
+                "snippet": _truncate(str(item.content_text or ""), max_snippet_chars),
+                "score": 1.0,
+                "citation": {
+                    "source_item_id": item.source_item_id,
+                    "url": item.url,
+                    "title": item.title,
+                    "snippet": _truncate(str(item.content_text or ""), max_snippet_chars),
+                },
+            }
+        )
+    return results
+
+
+def _citations_for_source_items(source_items: list[Any], *, chunks: list[Any], max_snippet_chars: int) -> list[dict[str, Any]]:
+    item_by_id = {item.source_item_id: item for item in source_items}
+    chunks_by_source: dict[str, list[Any]] = {}
+    for chunk in chunks:
+        chunks_by_source.setdefault(chunk.source_item_id, []).append(chunk)
+    citations: list[dict[str, Any]] = []
+    for item in source_items:
+        item_chunks = sorted(chunks_by_source.get(item.source_item_id, []), key=lambda chunk: getattr(chunk, "ordinal", 0))
+        if not item_chunks:
+            citations.append(
+                {
+                    "source_item_id": item.source_item_id,
+                    "url": item.url,
+                    "title": item.title,
+                    "snippet": _truncate(str(item.content_text or ""), max_snippet_chars),
+                }
+            )
+            continue
+        for chunk in item_chunks[:2]:
+            citations.append(
+                {
+                    "source_item_id": item.source_item_id,
+                    "document_id": chunk.document_id,
+                    "chunk_id": chunk.chunk_id,
+                    "url": item_by_id[chunk.source_item_id].url,
+                    "title": item_by_id[chunk.source_item_id].title,
+                    "snippet": _truncate(str(chunk.text or ""), max_snippet_chars),
+                }
+            )
+    return citations
+
+
+def _retrieval_results_from_sources(query: str, source_items: list[Any], source_ids: set[str]) -> list[Any]:
+    candidates = [item for item in source_items if not source_ids or item.source_item_id in source_ids]
+    if query:
+        candidates = _rank_items_by_query(candidates, query)
+    return [
+        SimpleNamespace(
+            result_id=item.source_item_id,
+            source_item_id=item.source_item_id,
+            source=item.source_channel,
+            title=item.title,
+            snippet=_truncate(str(item.content_text or ""), 700),
+            score=1.0,
+            citation={"source_item_id": item.source_item_id, "title": item.title, "url": item.url},
+        )
+        for item in candidates[:12]
+    ]
+
+
+def _source_refs_from_graph_context(edge_contexts: list[dict[str, Any]], graph_paths: list[dict[str, Any]]) -> list[SourceRef]:
+    refs: list[SourceRef] = []
+
+    def collect(value: Any) -> None:
+        if isinstance(value, dict):
+            if value.get("source_item_id") or value.get("document_id") or value.get("chunk_id"):
+                refs.append(
+                    SourceRef(
+                        source_item_id=_clean_string(value.get("source_item_id")) or None,
+                        document_id=_clean_string(value.get("document_id")) or None,
+                        chunk_id=_clean_string(value.get("chunk_id")) or None,
+                        passage_window_id=_clean_string(value.get("passage_window_id")) or None,
+                        url=_clean_string(value.get("url")) or None,
+                    )
+                )
+            for child in value.values():
+                collect(child)
+        elif isinstance(value, list):
+            for child in value:
+                collect(child)
+
+    collect(edge_contexts)
+    collect(graph_paths)
+    return refs
+
+
+def _results_from_graph_edges(edge_contexts: list[dict[str, Any]], *, max_snippet_chars: int) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    for edge in edge_contexts:
+        source_refs = edge.get("source_refs") if isinstance(edge.get("source_refs"), list) else []
+        first_ref = next((ref for ref in source_refs if isinstance(ref, dict)), {})
+        members = edge.get("members") if isinstance(edge.get("members"), list) else []
+        title = " / ".join(str(member.get("label") or "") for member in members if isinstance(member, dict) and member.get("label")) or str(edge.get("relation_type") or "graph evidence")
+        snippet = _truncate(str(edge.get("evidence_text") or ""), max_snippet_chars)
+        results.append(
+            {
+                "result_id": edge.get("hyperedge_id"),
+                "source_item_id": first_ref.get("source_item_id"),
+                "source": "graph",
+                "title": title,
+                "snippet": snippet,
+                "score": edge.get("confidence"),
+                "citation": {
+                    "source_item_id": first_ref.get("source_item_id"),
+                    "document_id": first_ref.get("document_id"),
+                    "chunk_id": first_ref.get("chunk_id"),
+                    "title": title,
+                    "snippet": snippet,
+                },
+            }
+        )
+    return results
+
+
+def _results_from_digest_context(claims: list[Any], notes: list[Any], *, max_snippet_chars: int) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    for claim in claims:
+        source_ref = next((ref for ref in getattr(claim, "source_refs", []) if isinstance(ref, SourceRef)), SourceRef())
+        snippet = _truncate(str(getattr(claim, "statement", "") or getattr(claim, "evidence_text", "") or ""), max_snippet_chars)
+        results.append(
+            {
+                "result_id": getattr(claim, "knowledge_claim_id", None),
+                "source_item_id": source_ref.source_item_id,
+                "source": "knowledge_claim",
+                "title": str(getattr(claim, "claim_type", "") or "knowledge claim"),
+                "snippet": snippet,
+                "score": getattr(claim, "confidence", None),
+                "citation": {
+                    "source_item_id": source_ref.source_item_id,
+                    "document_id": source_ref.document_id,
+                    "chunk_id": source_ref.chunk_id,
+                    "title": str(getattr(claim, "claim_type", "") or "knowledge claim"),
+                    "snippet": snippet,
+                },
+            }
+        )
+    for note in notes:
+        source_ref = next((ref for ref in getattr(note, "source_refs", []) if isinstance(ref, SourceRef)), SourceRef())
+        snippet = _truncate(str(getattr(note, "synopsis", "") or ""), max_snippet_chars)
+        results.append(
+            {
+                "result_id": getattr(note, "digest_note_id", None),
+                "source_item_id": source_ref.source_item_id,
+                "source": "digest_note",
+                "title": str(getattr(note, "title", "") or "digest note"),
+                "snippet": snippet,
+                "score": getattr(note, "confidence", None),
+                "citation": {
+                    "source_item_id": source_ref.source_item_id,
+                    "document_id": source_ref.document_id,
+                    "chunk_id": source_ref.chunk_id,
+                    "title": str(getattr(note, "title", "") or "digest note"),
+                    "snippet": snippet,
+                },
+            }
+        )
+    return results
 
 
 def _job_source_item_ids(job) -> set[str]:

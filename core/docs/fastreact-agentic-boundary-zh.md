@@ -65,11 +65,30 @@ deep 路径使用的 Fastreact tool policy：
 ```json
 {
   "mode": "allowlist",
-  "allowed_tools": ["pska_pska_search", "pska_pska_index_status"]
+  "allowed_tools": [
+    "pska_pska_search",
+    "pska_pska_index_status",
+    "pska_pska_read_evidence_context",
+    "pska_pska_graph_context",
+    "pska_pska_digest_context"
+  ]
 }
 ```
 
-该限制必须同时发生在 Fastreact 给 LLM 暴露的 tool schema 层和工具执行层，不能只依赖 system prompt。
+`route.tool_profile` 为 `ask_read`。该限制必须同时发生在 Fastreact 给 LLM 暴露的
+tool schema 层和工具执行层，不能只依赖 system prompt。
+
+PSKA MCP 不只有 `pska_search`。当前按能力 profile 分层：
+
+- `ask_read`：`pska_search`、`pska_index_status`、`pska_read_evidence_context`、`pska_graph_context`、`pska_digest_context`。只读，用于 Ask deep 和 Writing question 节点。
+- `digest_worker`：`pska_job_context`、`pska_write_candidates`。仅 job-scoped digest worker 使用。
+- `admin_ingest`：`pska_ingest_channel_payload`、`pska_extract_all`、`pska_review_items`。不进入普通 Ask。
+- `coding_workspace`：Fastreact native `read_file/write_file/edit_file/exec`。只能用于 coding-agent profile，且必须受 tenant/user workspace path guard 和 role/purpose policy 约束。
+
+Fastreact 的 PSKA-facing daemon 默认用全局 `tool_rules` deny native
+`exec/read_file/write_file/edit_file`，不依赖 `tenant_rules.pska`。run-scoped
+`tool_policy` 仍是单次请求的第一道执行边界：`quick` 合成用 `mode=none`，
+`deep` 只给 `ask_read`。
 
 ## 配置
 
@@ -107,6 +126,12 @@ export PSKA_FASTREACT_SERVICE_TOKEN="replace-with-local-service-token"
 - `metadata.scope`: 允许的 source/job scope
 - `tool_policy`: `none` 或 `allowlist`，用于避免重复检索和越权工具调用
 
+Fastreact 到 PSKA MCP 的身份边界：
+
+- 生产优先使用 HTTP MCP，并通过 AuthNode JWT 或 trusted headers 转发 tenant/user。
+- stdio MCP 只适合 local/dev fallback；如果使用 stdio，Fastreact 是唯一安全边界。
+- PSKA MCP schema 不把 `tenant_id/user_id` 暴露为模型可控参数；执行时始终由 RequestContext 覆盖。
+
 ## Job Orchestration
 
 PSKA job worker 负责 durable orchestration：
@@ -132,8 +157,8 @@ Fastreact 可以离线；此时 PSKA 仍应能做基础检索、查看数据和�
 
 2026-06-15 已用真实 LLM 验证：
 
-- Fastreact stdio MCP 配置可加载 PSKA tools。
-- Fastreact HTTP MCP 配置可加载 PSKA tools，需要 `auth_token_ref=mcp_api_keys.pska` 和 `~/.fastreact/credentials.json` 中的 PSKA service token。
+- Fastreact stdio MCP 配置可加载 PSKA tools，但仅作为 local/dev fallback。
+- Fastreact HTTP MCP 配置可加载 PSKA tools；生产推荐 AuthNode JWT/trusted headers，local dev 可用 service token 参数转发。
 - PSKA `/ready` 可识别 Fastreact namespaced tools，例如 `pska_pska_search`。
 - Fastreact `/v1/chat/completions` 可以通过 HTTP MCP 调用 PSKA MCP search 并返回 citation IDs。
 - Fastreact `/v1/runs` durable path 能记录 `tool_call` 和 `tool_result` events。

@@ -47,6 +47,10 @@ def build_config(args: argparse.Namespace) -> dict:
             {
                 "transport": "http",
                 "url": args.pska_http_url,
+                "identity_forwarding": {
+                    "mode": "service_token_params_dev",
+                    "audience": "pska",
+                },
             }
         )
         if args.mcp_auth_token_ref:
@@ -58,6 +62,11 @@ def build_config(args: argparse.Namespace) -> dict:
                 "command": str(ROOT / "scripts" / "pska"),
                 "args": ["--config", str(args.pska_config), "mcp-server"],
                 "env": env,
+                "identity_forwarding": {
+                    "mode": "service_token_params_dev",
+                    "audience": "pska",
+                    "stdio_dev_only": True,
+                },
             }
         )
 
@@ -74,23 +83,46 @@ def build_config(args: argparse.Namespace) -> dict:
             "servers": [mcp_server]
         },
         "policy": {
-            "tenant_rules": {
-                "pska": {
-                    "tools": {
-                        "exec": "deny",
-                        "read_file": "deny",
-                        "write_file": "require_approval",
-                        "edit_file": "require_approval",
-                        "pska_pska_search": "allow",
-                        "pska_pska_index_status": "allow",
-                        "pska_pska_job_context": "allow",
-                        "pska_pska_review_items": "allow",
-                        "pska_pska_write_candidates": "allow",
-                        "pska_pska_ingest_channel_payload": "require_approval",
-                        "pska_pska_extract_all": "require_approval"
-                    }
-                }
-            }
+            "default_action": "deny",
+            "tool_rules": {
+                "exec": "deny",
+                "read_file": "deny",
+                "write_file": "deny",
+                "edit_file": "deny",
+                "pska_pska_search": "allow",
+                "pska_pska_index_status": "allow",
+                "pska_pska_read_evidence_context": "allow",
+                "pska_pska_graph_context": "allow",
+                "pska_pska_digest_context": "allow",
+                "pska_pska_job_context": "allow",
+                "pska_pska_write_candidates": "allow",
+                "pska_pska_ingest_channel_payload": "deny",
+                "pska_pska_extract_all": "deny",
+                "pska_pska_review_items": "deny",
+            },
+            "tool_profiles": {
+                "pska_ask_read": {
+                    "description": "Read-only PSKA research tools for Ask deep mode.",
+                    "tools": [
+                        "pska_pska_search",
+                        "pska_pska_index_status",
+                        "pska_pska_read_evidence_context",
+                        "pska_pska_graph_context",
+                        "pska_pska_digest_context",
+                    ],
+                },
+                "pska_digest_worker": {
+                    "description": "PSKA digest worker tools for job-scoped candidate writing.",
+                    "tools": [
+                        "pska_pska_job_context",
+                        "pska_pska_write_candidates",
+                    ],
+                },
+                "coding_workspace": {
+                    "description": "Native coding tools; require a coding-agent profile and workspace path guard.",
+                    "tools": ["read_file", "write_file", "edit_file", "exec"],
+                },
+            },
         },
     }
 

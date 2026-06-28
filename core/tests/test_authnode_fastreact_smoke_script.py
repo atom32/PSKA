@@ -38,9 +38,13 @@ def test_proxy_url_includes_authnode_identity() -> None:
 def test_normalized_pska_tool_names_accept_fastreact_namespace() -> None:
     smoke = load_smoke_script()
 
-    assert smoke.normalized_pska_tool_names({"pska_pska_search", "pska_pska_job_context", "read_file"}) == {
+    assert smoke.normalized_pska_tool_names(
+        {"pska_pska_search", "pska_pska_read_evidence_context", "pska_pska_job_context", "read_file"}
+    ) == {
         "pska_pska_search",
         "pska_search",
+        "pska_pska_read_evidence_context",
+        "pska_read_evidence_context",
         "pska_pska_job_context",
         "pska_job_context",
     }

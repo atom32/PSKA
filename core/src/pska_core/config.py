@@ -251,15 +251,24 @@ class EmbeddingConfigFile:
     model: str | None = None
     dimensions: int | None = None
     batch_size: int | None = None
+    api_key: str | None = None
+    api_key_file: Path | None = None
+    base_url: str | None = None
+    timeout_seconds: float | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> "EmbeddingConfigFile":
         data = data or {}
+        api_key_file = data.get("api_key_file") or data.get("key_file")
         return cls(
             provider=str(data.get("provider") or "disabled"),
             model=str(data["model"]) if data.get("model") else None,
             dimensions=int(data["dimensions"]) if data.get("dimensions") else None,
             batch_size=int(data["batch_size"]) if data.get("batch_size") else None,
+            api_key=_optional_str(data.get("api_key") or data.get("key")),
+            api_key_file=expand_path(api_key_file) if api_key_file else None,
+            base_url=_optional_url(data.get("base_url") or data.get("api_base")),
+            timeout_seconds=float(data["timeout_seconds"]) if data.get("timeout_seconds") else None,
         )
 
 
@@ -526,6 +535,14 @@ class PSKAConfig:
                 model=os.getenv("PSKA_EMBEDDING_MODEL") or base.embedding.model,
                 dimensions=int(os.getenv("PSKA_EMBEDDING_DIMENSIONS")) if os.getenv("PSKA_EMBEDDING_DIMENSIONS") else base.embedding.dimensions,
                 batch_size=int(os.getenv("PSKA_EMBEDDING_BATCH_SIZE")) if os.getenv("PSKA_EMBEDDING_BATCH_SIZE") else base.embedding.batch_size,
+                api_key=os.getenv("PSKA_EMBEDDING_API_KEY") or base.embedding.api_key,
+                api_key_file=expand_path(os.getenv("PSKA_EMBEDDING_API_KEY_FILE"))
+                if os.getenv("PSKA_EMBEDDING_API_KEY_FILE")
+                else base.embedding.api_key_file,
+                base_url=os.getenv("PSKA_EMBEDDING_BASE_URL") or os.getenv("PSKA_EMBEDDING_API_BASE") or base.embedding.base_url,
+                timeout_seconds=float(os.getenv("PSKA_EMBEDDING_TIMEOUT_SECONDS"))
+                if os.getenv("PSKA_EMBEDDING_TIMEOUT_SECONDS")
+                else base.embedding.timeout_seconds,
             ),
             ingest=IngestConfig(
                 chunk_size=int(os.getenv("PSKA_INGEST_CHUNK_SIZE") or os.getenv("PSKA_INGEST_CHUNK_CHARS") or base.ingest.chunk_size),
@@ -548,13 +565,20 @@ class PSKAConfig:
         )
 
     def embedding_runtime_config(self, *, default_provider: str | None = None) -> "EmbeddingConfig":
-        from pska_core.embeddings import BGE_M3_DIMENSIONS, BGE_M3_MODEL, EmbeddingConfig
+        from pska_core.embeddings import API_EMBEDDING_MODEL, BGE_M3_DIMENSIONS, BGE_M3_MODEL, EmbeddingConfig, is_api_embedding_provider
+
+        provider = default_provider if self.embedding.provider in {"", "disabled"} and default_provider is not None else self.embedding.provider
+        default_model = API_EMBEDDING_MODEL if is_api_embedding_provider(provider) else BGE_M3_MODEL
 
         return EmbeddingConfig(
-            provider=(default_provider if self.embedding.provider in {"", "disabled"} and default_provider is not None else self.embedding.provider),
-            model=self.embedding.model or BGE_M3_MODEL,
+            provider=provider,
+            model=self.embedding.model or default_model,
             dimensions=self.embedding.dimensions or BGE_M3_DIMENSIONS,
             batch_size=self.embedding.batch_size or 16,
+            api_key=self.embedding.api_key,
+            api_key_file=self.embedding.api_key_file,
+            base_url=self.embedding.base_url,
+            timeout_seconds=float(self.embedding.timeout_seconds or 60.0),
         )
 
     def fastreact_runtime_config(self) -> "RuntimeFastreactConfig":

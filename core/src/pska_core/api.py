@@ -52,7 +52,14 @@ from pska_core.serde import to_jsonable
 from pska_core.store_postgres import PostgresKnowledgeStore
 
 
-ASK_READ_ONLY_TOOLS = ["pska_pska_search", "pska_pska_index_status"]
+ASK_READ_TOOL_PROFILE = "ask_read"
+ASK_READ_ONLY_TOOLS = [
+    "pska_pska_search",
+    "pska_pska_index_status",
+    "pska_pska_read_evidence_context",
+    "pska_pska_graph_context",
+    "pska_pska_digest_context",
+]
 
 
 class PSKAApi:
@@ -66,11 +73,11 @@ class PSKAApi:
         self.agentic_service = build_agentic_service_client(config.agentic_service_runtime_config())
         self.ingest = IngestService(self.store, embedding_provider=embedding_provider, **config.ingest_kwargs())
         self.extraction = ExtractionService(self.store, llm_config=config.llm)
-        self.jobs = JobService(self.store, workspace_root=config.workspace.root)
+        self.jobs = JobService(self.store, workspace_root=config.workspace.root, embedding_config=config.embedding_runtime_config())
         self.reviews = ReviewService(self.store)
         self.memory = MemoryService(self.store)
         self.candidates = CandidateWriteService(self.store)
-        self.mcp = MCPServer(database_url or config.database.url, store=self.store, config=config)
+        self.mcp = MCPServer(database_url or config.database.url, store=self.store, config=config, embedding_provider=embedding_provider)
 
     def ensure_context_identity(self, context: RequestContext) -> None:
         ensure_identity = getattr(self.store, "ensure_identity", None)
@@ -86,14 +93,15 @@ class PSKAApi:
 
     def ready(self) -> dict[str, Any]:
         config = _api_config(self)
+        embedding_config = config.embedding_runtime_config()
         checks: dict[str, Any] = {
             "database": self._database_ready(),
             "schema": self._schema_ready(),
             "index": self._index_ready(),
             "embedding": {
-                "provider": config.embedding.provider,
-                "model": config.embedding.model,
-                "configured": config.embedding.provider not in {"", "disabled", "none", "off"},
+                "provider": embedding_config.provider,
+                "model": embedding_config.model,
+                "configured": embedding_config.provider.strip().lower() not in {"", "disabled", "none", "off"},
             },
             "llm": {
                 "api_key_file_configured": bool(config.llm.api_key_file),
@@ -198,7 +206,15 @@ class PSKAApi:
         response = self.mcp.handle({"jsonrpc": "2.0", "id": "ready", "method": "tools/list", "params": {}})
         tools = ((response or {}).get("result") or {}).get("tools") or []
         names = [tool.get("name") for tool in tools if isinstance(tool, dict)]
-        required = ["pska_search", "pska_index_status", "pska_job_context", "pska_write_candidates"]
+        required = [
+            "pska_search",
+            "pska_index_status",
+            "pska_read_evidence_context",
+            "pska_graph_context",
+            "pska_digest_context",
+            "pska_job_context",
+            "pska_write_candidates",
+        ]
         missing = [name for name in required if name not in names]
         return {
             "ok": not missing,
@@ -434,6 +450,7 @@ class PSKAApi:
         service = JobService(
             self.store,
             workspace_root=self.config.workspace.root,
+            embedding_config=self.config.embedding_runtime_config(),
             tenant_id=tenant_id,
         )
         report = service.run_available(limit=int(payload.get("limit") or 1))
@@ -1187,6 +1204,7 @@ class PSKAApi:
             "surface": surface,
             "requires_agentic_service_online": True,
             "tool_policy": {"mode": "allowlist", "allowed_tools": ASK_READ_ONLY_TOOLS},
+            "tool_profile": ASK_READ_TOOL_PROFILE,
             "routing_owner": "pska_planner",
             "query_terms": _ask_query_terms(query),
         }
@@ -3533,8 +3551,13 @@ def _optional_positive_int(value: Any) -> int | None:
 
 
 def _embedding_metrics(chunks: list[Any], config: PSKAConfig | None = None) -> dict[str, Any]:
-    configured_provider = config.embedding.provider if config else os.environ.get("PSKA_EMBEDDING_PROVIDER", "disabled")
-    configured_model = (config.embedding.model or "BAAI/bge-m3") if config else os.environ.get("PSKA_EMBEDDING_MODEL", "BAAI/bge-m3")
+    if config:
+        runtime_config = config.embedding_runtime_config()
+        configured_provider = runtime_config.provider
+        configured_model = runtime_config.model
+    else:
+        configured_provider = os.environ.get("PSKA_EMBEDDING_PROVIDER", "disabled")
+        configured_model = os.environ.get("PSKA_EMBEDDING_MODEL", "BAAI/bge-m3")
     total = len(chunks)
     any_embedding = 0
     current = 0
@@ -3761,7 +3784,8 @@ def _console_review_recommended_action(review_type: str, *, apply_ready: bool) -
 
 def _console_search_summary(payload: dict[str, Any]) -> dict[str, Any]:
     score_debug = payload.get("score_debug") if isinstance(payload.get("score_debug"), dict) else {}
-    diagnostics = score_debug.get("diagnostics") if isinstance(score_debug.get("diagnostics"), dict) else {}
+    payload_diagnostics = payload.get("diagnostics") if isinstance(payload.get("diagnostics"), dict) else {}
+    diagnostics = score_debug.get("diagnostics") if isinstance(score_debug.get("diagnostics"), dict) else payload_diagnostics
     return {
         "request_user_id": payload.get("request_user_id"),
         "results": [
@@ -3779,9 +3803,9 @@ def _console_search_summary(payload: dict[str, Any]) -> dict[str, Any]:
         "citations": [_console_citation(citation) for citation in _list_of_dicts(payload.get("citations"))],
         "graph_paths": [_console_graph_path(path) for path in _list_of_dicts(payload.get("graph_paths"))],
         "diagnostics": {
-            "gaps": list(payload.get("gaps") or []),
-            "conflicts": list(payload.get("conflicts") or []),
-            "sensitivity": list(payload.get("sensitivity") or []),
+            "gaps": list(payload.get("gaps") or diagnostics.get("gaps") or []),
+            "conflicts": list(payload.get("conflicts") or diagnostics.get("conflicts") or []),
+            "sensitivity": list(payload.get("sensitivity") or diagnostics.get("sensitivity") or []),
             "score_debug": diagnostics,
         },
         "memory_context": [_console_memory_context(item) for item in _list_of_dicts(payload.get("memory_context"))],
@@ -3815,13 +3839,18 @@ def _direct_retrieval_fallback_answer(query: str, retrieval: dict[str, Any]) -> 
 
 def _console_citation(value: Any) -> dict[str, Any]:
     citation = value if isinstance(value, dict) else {}
-    return {
+    compact = {
         "source_item_id": citation.get("source_item_id"),
         "chunk_id": citation.get("chunk_id"),
         "title": citation.get("title"),
         "url": citation.get("url"),
         "snippet": _ask_clean_evidence_text(citation.get("snippet")) if citation.get("snippet") else citation.get("snippet"),
     }
+    if citation.get("document_id") is not None:
+        compact["document_id"] = citation.get("document_id")
+    if citation.get("passage_window_id") is not None:
+        compact["passage_window_id"] = citation.get("passage_window_id")
+    return compact
 
 
 def _console_graph_path(path: dict[str, Any]) -> dict[str, Any]:
@@ -4002,6 +4031,7 @@ def _ask_route_payload(
         "surface": surface,
         "requires_agentic_service_online": requires_agentic_service_online,
         "tool_policy": tool_policy,
+        "tool_profile": ASK_READ_TOOL_PROFILE if retrieval_owner == "fastreact_pska_mcp" else "none",
         "routing_owner": "pska_planner",
         "query_terms": _ask_query_terms(query),
     }
@@ -4094,13 +4124,16 @@ def _ask_deep_query(*, query: str, surface: str, scope: dict[str, Any]) -> str:
     scope_text = json.dumps(scope or {}, ensure_ascii=False)
     return (
         "Answer this PSKA knowledge question for a user-facing Ask PSKA surface.\n"
-        "Use only PSKA read-only retrieval tools exposed in this run. Do not use host filesystem, shell, "
+        "Use only PSKA read-only retrieval tools exposed in this run. The ask_read profile may include "
+        "pska_search, pska_read_evidence_context, pska_graph_context, pska_digest_context, and "
+        "pska_index_status. Do not use host filesystem, shell, "
         "write, review mutation, job, or candidate-write tools. Do not mention FastReAct, MCP, GraphRAG, "
         "tool policy, or retrieval mechanics in the answer body. Put diagnostics in trace only.\n"
-        "For deep research, run a bounded generic research loop: start broad, inspect returned evidence "
-        "for follow-up keys, dossier ids, source ids, unresolved checks, contradictions, or missing "
-        "dimensions, then run targeted follow-up searches before synthesizing. Stop when evidence is "
-        "sufficient, no new evidence appears, or the iteration budget is reached.\n"
+        "For deep research, run a bounded generic research loop: start with pska_search, then read fuller "
+        "source windows with pska_read_evidence_context, expand entities/claims with pska_graph_context "
+        "when relationships or conflicts matter, inspect pska_digest_context for prior digests, claims, "
+        "risks, and open questions when useful, and only then decide whether a targeted follow-up search "
+        "is needed. Stop when evidence is sufficient, no new evidence appears, or the iteration budget is reached.\n"
         "Return JSON with keys answer, citations, source_refs, retrieval, and trace. The answer must be "
         "Chinese by default, conclusion-first, useful as report evidence, and grounded in citations when "
         "PSKA returns evidence. If evidence is insufficient, say what is missing.\n\n"
@@ -4361,6 +4394,7 @@ def _ask_deep_response(
         "mode": "deep",
         "retrieval_owner": "fastreact_pska_mcp",
         "tool_policy": {"mode": "allowlist", "allowed_tools": allowed_tools},
+        "tool_profile": ASK_READ_TOOL_PROFILE,
     }
     agent_steps = _ask_agent_steps_from_events(trace.get("events") if isinstance(trace.get("events"), list) else [])
     if dropped_refs:
@@ -4378,6 +4412,7 @@ def _ask_deep_response(
             "surface": surface,
             "requires_agentic_service_online": True,
             "tool_policy": {"mode": "allowlist", "allowed_tools": allowed_tools},
+            "tool_profile": ASK_READ_TOOL_PROFILE,
             "routing_owner": "pska_planner",
             "query_terms": _ask_query_terms(query),
         },
@@ -4445,7 +4480,7 @@ def _ask_agent_step_from_event(event: dict[str, Any], *, sequence: int, started_
     if event_type == "tool_call":
         return _ask_agent_step(
             sequence=sequence,
-            phase="search" if tool_name in ASK_READ_ONLY_TOOLS else "tool",
+            phase=_ask_tool_phase(tool_name),
             status="running",
             title=_ask_tool_step_title(tool_name, action="call"),
             detail=_ask_tool_call_detail(event),
@@ -4543,7 +4578,27 @@ def _ask_tool_step_title(tool_name: str, *, action: str) -> str:
         return "搜索 PSKA 知识库" if action == "call" else "读取搜索结果"
     if tool_name == "pska_pska_index_status":
         return "检查索引状态" if action == "call" else "读取索引状态"
+    if tool_name == "pska_pska_read_evidence_context":
+        return "读取原文证据" if action == "call" else "整理原文证据"
+    if tool_name == "pska_pska_graph_context":
+        return "扩展图谱证据" if action == "call" else "读取图谱关系"
+    if tool_name == "pska_pska_digest_context":
+        return "读取摘要事实" if action == "call" else "整理摘要事实"
     return "调用工具" if action == "call" else "读取工具结果"
+
+
+def _ask_tool_phase(tool_name: str) -> str:
+    if tool_name == "pska_pska_search":
+        return "search"
+    if tool_name == "pska_pska_read_evidence_context":
+        return "read"
+    if tool_name == "pska_pska_graph_context":
+        return "graph"
+    if tool_name == "pska_pska_digest_context":
+        return "digest"
+    if tool_name == "pska_pska_index_status":
+        return "inspect"
+    return "tool"
 
 
 def _ask_tool_call_detail(event: dict[str, Any]) -> str:
@@ -4555,6 +4610,17 @@ def _ask_tool_call_detail(event: dict[str, Any]) -> str:
         pieces.append(f"查询：{query[:120]}")
     if top_k:
         pieces.append(f"top_k={top_k}")
+    source_item_ids = _string_list(args.get("source_item_ids"))
+    entity_labels = _string_list(args.get("entity_labels"))
+    entity_ids = _string_list(args.get("entity_ids"))
+    if source_item_ids:
+        pieces.append(f"source_refs={len(source_item_ids)}")
+    if entity_labels:
+        pieces.append(f"实体：{'、'.join(entity_labels[:4])}")
+    if entity_ids:
+        pieces.append(f"entity_ids={len(entity_ids)}")
+    if args.get("job_id"):
+        pieces.append("限定 digest/job 上下文")
     return "；".join(pieces) if pieces else "正在读取当前租户可访问的知识证据。"
 
 
@@ -4885,7 +4951,21 @@ def _ask_public_trace_event(event: dict[str, Any]) -> dict[str, Any]:
         public["metadata"] = safe_metadata
     if event_type == "tool_call":
         args = event.get("tool_args") if isinstance(event.get("tool_args"), dict) else {}
-        public["tool_args"] = {key: args.get(key) for key in ["query", "top_k", "max_results"] if args.get(key) is not None}
+        public["tool_args"] = {
+            key: args.get(key)
+            for key in [
+                "query",
+                "top_k",
+                "max_results",
+                "source_item_ids",
+                "document_ids",
+                "chunk_ids",
+                "entity_ids",
+                "entity_labels",
+                "job_id",
+            ]
+            if args.get(key) is not None
+        }
     elif event_type == "tool_result":
         public["result_summary"] = _ask_tool_result_counts(event)
     elif event_type == "think":

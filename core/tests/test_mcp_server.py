@@ -5,7 +5,7 @@ import json
 from pska_core.ingest import IngestService
 from pska_core.jobs import JobService
 from pska_core.mcp_server import MCPServer
-from pska_core.models import DigestNote, SourceRef, User
+from pska_core.models import DigestNote, KnowledgeClaim, SourceRef, User
 from pska_core.store import InMemoryKnowledgeStore
 from tests.fakes import FakeLLM, extraction_response
 
@@ -35,9 +35,17 @@ def test_mcp_lists_pska_tools() -> None:
     assert "pska_search" in names
     assert "pska_agentic_search" not in names
     assert "pska_index_status" in names
+    assert "pska_read_evidence_context" in names
+    assert "pska_graph_context" in names
+    assert "pska_digest_context" in names
     assert "pska_ingest_channel_payload" in names
     assert "pska_extract_all" in names
     assert "pska_review_items" in names
+    tools_by_name = {tool["name"]: tool for tool in response["result"]["tools"]}
+    search_properties = tools_by_name["pska_search"]["inputSchema"]["properties"]
+    assert "tenant_id" not in search_properties
+    assert "user_id" not in search_properties
+    assert tools_by_name["pska_index_status"]["inputSchema"]["properties"] == {}
 
 
 def test_mcp_calls_pska_search() -> None:
@@ -97,6 +105,140 @@ def test_mcp_params_tenant_identity_overrides_tool_arguments() -> None:
     assert payload["request_user_id"] == "alice"
     assert payload["results"] == []
     assert payload["citations"] == []
+
+
+def test_mcp_read_evidence_context_uses_request_context_scope() -> None:
+    store = InMemoryKnowledgeStore()
+    store.add_user(User("user_primary", "primary", tenant_id="tenant_default"))
+    store.add_user(User("alice", "alice", tenant_id="tenant_acme"))
+    IngestService(store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "default-evidence",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "content": {"text": "default tenant marker should stay hidden"},
+        }
+    )
+    IngestService(store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "alice-evidence",
+            "owner_user_id": "alice",
+            "tenant_id": "tenant_acme",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "content": {"text": "tenant acme evidence marker is visible"},
+        }
+    )
+
+    response = MCPServer("postgresql:///unused", store=store).handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 25,
+            "method": "tools/call",
+            "params": {
+                "name": "pska_read_evidence_context",
+                "user_key": "pska:alice",
+                "tenant_key": "tenant_acme",
+                "arguments": {
+                    "query": "evidence marker",
+                    "tenant_id": "tenant_default",
+                    "user_id": "user_primary",
+                },
+            },
+        }
+    )
+
+    payload = json.loads(response["result"]["content"][0]["text"])
+    snippets = " ".join(str(result.get("snippet") or "") for result in payload["results"])
+    assert payload["tenant_id"] == "tenant_acme"
+    assert payload["request_user_id"] == "alice"
+    assert "tenant acme evidence marker" in snippets
+    assert "default tenant marker" not in snippets
+
+
+def test_mcp_index_status_and_digest_context_use_represented_user_scope() -> None:
+    store = InMemoryKnowledgeStore()
+    store.add_user(User("user_primary", "primary", tenant_id="tenant_default"))
+    store.add_user(User("alice", "alice", tenant_id="tenant_acme"))
+    ingested = IngestService(store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "alice-digest-evidence",
+            "owner_user_id": "alice",
+            "tenant_id": "tenant_acme",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "content": {"text": "digest scoped fact"},
+        }
+    )
+    store.add_knowledge_claim(
+        KnowledgeClaim(
+            "claim_alice",
+            "alice",
+            "fact",
+            "Alice-scoped claim",
+            [SourceRef(source_item_id=ingested.source_item_id)],
+            "digest scoped fact",
+            tenant_id="tenant_acme",
+        )
+    )
+    store.add_digest_note(
+        DigestNote(
+            "note_alice",
+            "alice",
+            "Alice digest",
+            "Only alice tenant digest",
+            [SourceRef(source_item_id=ingested.source_item_id)],
+            tenant_id="tenant_acme",
+        )
+    )
+    server = MCPServer("postgresql:///unused", store=store)
+
+    index_response = server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 26,
+            "method": "tools/call",
+            "params": {
+                "name": "pska_index_status",
+                "user_key": "pska:alice",
+                "tenant_key": "tenant_acme",
+                "arguments": {"tenant_id": "tenant_default", "user_id": "user_primary"},
+            },
+        }
+    )
+    digest_response = server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 27,
+            "method": "tools/call",
+            "params": {
+                "name": "pska_digest_context",
+                "user_key": "pska:alice",
+                "tenant_key": "tenant_acme",
+                "arguments": {"query": "alice digest", "tenant_id": "tenant_default", "user_id": "user_primary"},
+            },
+        }
+    )
+
+    index_payload = json.loads(index_response["result"]["content"][0]["text"])
+    digest_payload = json.loads(digest_response["result"]["content"][0]["text"])
+    assert index_payload["tenant_id"] == "tenant_acme"
+    assert index_payload["request_user_id"] == "alice"
+    assert index_payload["knowledge_claims"] == 1
+    assert index_payload["digest_notes"] == 1
+    assert digest_payload["request_user_id"] == "alice"
+    assert digest_payload["knowledge_claims"][0]["knowledge_claim_id"] == "claim_alice"
+    assert digest_payload["digest_notes"][0]["digest_note_id"] == "note_alice"
 
 
 def test_mcp_search_compacts_long_results_for_fastreact() -> None:

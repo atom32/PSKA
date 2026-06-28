@@ -5,6 +5,7 @@ from datetime import timedelta
 import zipfile
 
 from pska_core.enums import UserRole
+from pska_core.embeddings import EmbeddingConfig
 from pska_core.ingest import IngestService
 from pska_core.jobs import DIGEST_VIA_FASTREACT, EMBED_BACKFILL, EXTRACT_ALL, FULL_REPORT, IMPORT_TWITTER_ZIPS, JobService
 from pska_core.models import User, utc_now
@@ -190,6 +191,50 @@ def test_embed_backfill_job_retry_skips_already_embedded_chunks() -> None:
 
     assert report.succeeded == 2
     assert provider.calls == 1
+    chunk = next(iter(store.chunks.values()))
+    assert chunk.embedding == [1.0, 0.0, 1.0]
+    assert chunk.metadata["embedding_provider"] == "fake-bge"
+
+
+def test_embed_backfill_job_uses_global_embedding_config_when_payload_omits_provider(monkeypatch) -> None:
+    store = _store()
+    IngestService(store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "global-embed-note",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "Global embed note",
+            "content": {"text": "Global embedding config should drive the worker."},
+        }
+    )
+    built_configs: list[EmbeddingConfig] = []
+
+    def fake_build_embedding_provider(config: EmbeddingConfig):
+        built_configs.append(config)
+        return FakeEmbeddingProvider()
+
+    monkeypatch.setattr("pska_core.jobs.build_embedding_provider", fake_build_embedding_provider)
+    service = JobService(
+        store,
+        embedding_config=EmbeddingConfig(
+            provider="api",
+            model="remote-embedding",
+            dimensions=3,
+            api_key="sk-test",
+            base_url="https://embedding.test/v1",
+        ),
+    )
+    service.submit(EMBED_BACKFILL, {})
+
+    report = service.run_available(limit=1)
+
+    assert report.succeeded == 1
+    assert built_configs[0].provider == "api"
+    assert built_configs[0].model == "remote-embedding"
     chunk = next(iter(store.chunks.values()))
     assert chunk.embedding == [1.0, 0.0, 1.0]
     assert chunk.metadata["embedding_provider"] == "fake-bge"

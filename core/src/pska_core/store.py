@@ -1282,6 +1282,9 @@ class InMemoryKnowledgeStore:
             "offline_index_states": self.offline_index_states,
             "workspace_activity_events": self.workspace_activity_events,
             "discovery_items": self.discovery_items,
+            "writing_boards": self.writing_boards,
+            "writing_nodes": self.writing_nodes,
+            "writing_edges": self.writing_edges,
         }
         if table not in tables:
             raise ValueError(f"Unsupported table: {table}")

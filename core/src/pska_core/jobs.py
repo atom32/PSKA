@@ -68,6 +68,7 @@ class JobService:
         store: PostgresKnowledgeStore,
         *,
         embedding_provider: EmbeddingProvider | None = None,
+        embedding_config: EmbeddingConfig | None = None,
         llm: LLMClient | None = None,
         fastreact: FastreactClient | None = None,
         workspace_root: Path | None = None,
@@ -78,6 +79,7 @@ class JobService:
     ) -> None:
         self.store = store
         self.embedding_provider = embedding_provider
+        self.embedding_config = embedding_config
         self.llm = llm
         self.fastreact = fastreact
         self.workspace_root = workspace_root or _default_workspace_root()
@@ -462,11 +464,36 @@ class JobService:
     def _embedding_provider(self, payload: dict[str, Any]):
         if self.embedding_provider is not None:
             return self.embedding_provider
+        base = self.embedding_config
+        payload_has_embedding_config = any(
+            payload.get(key) is not None
+            for key in [
+                "embedding_provider",
+                "embedding_model",
+                "embedding_dimensions",
+                "embedding_batch_size",
+                "batch_size",
+                "embedding_api_key",
+                "embedding_api_key_file",
+                "embedding_base_url",
+                "embedding_api_base",
+                "embedding_timeout_seconds",
+            ]
+        )
+        if base is not None and not payload_has_embedding_config:
+            return build_embedding_provider(base)
         config = EmbeddingConfig(
-            provider=str(payload.get("embedding_provider") or "disabled"),
-            model=str(payload.get("embedding_model") or "BAAI/bge-m3"),
-            dimensions=int(payload.get("embedding_dimensions") or 1024),
-            batch_size=int(payload.get("batch_size") or 1),
+            provider=str(payload.get("embedding_provider") or (base.provider if base else "disabled")),
+            model=str(payload.get("embedding_model") or (base.model if base else "BAAI/bge-m3")),
+            dimensions=int(payload.get("embedding_dimensions") or (base.dimensions if base else 1024)),
+            batch_size=int(payload.get("embedding_batch_size") or payload.get("batch_size") or (base.batch_size if base else 1)),
+            api_key=payload.get("embedding_api_key") or (base.api_key if base else None),
+            api_key_file=Path(str(payload["embedding_api_key_file"])).expanduser()
+            if payload.get("embedding_api_key_file")
+            else (base.api_key_file if base else None),
+            base_url=str(payload.get("embedding_base_url") or payload.get("embedding_api_base") or (base.base_url if base else "") or "")
+            or None,
+            timeout_seconds=float(payload.get("embedding_timeout_seconds") or (base.timeout_seconds if base else 60.0)),
         )
         return build_embedding_provider(config)
 

@@ -1424,14 +1424,19 @@ def retrieval_eval(args: argparse.Namespace) -> int:
     embedding_config = None
     if args.real:
         pska_config = getattr(args, "pska_config", PSKAConfig.load(args.config))
-        provider = getattr(args, "embedding_provider", None) or pska_config.embedding.provider or "bge-m3"
+        runtime_embedding = pska_config.embedding_runtime_config()
+        provider = getattr(args, "embedding_provider", None) or runtime_embedding.provider or "bge-m3"
         if str(provider).strip().lower() in {"", "disabled", "none", "off"}:
             provider = "bge-m3"
         embedding_config = EmbeddingConfig(
             provider=provider,
-            model=getattr(args, "embedding_model", None) or pska_config.embedding.model or "BAAI/bge-m3",
-            dimensions=getattr(args, "embedding_dimensions", None) or pska_config.embedding.dimensions or 1024,
-            batch_size=getattr(args, "batch_size", None) or pska_config.embedding.batch_size or 16,
+            model=getattr(args, "embedding_model", None) or runtime_embedding.model,
+            dimensions=getattr(args, "embedding_dimensions", None) or runtime_embedding.dimensions,
+            batch_size=getattr(args, "batch_size", None) or runtime_embedding.batch_size,
+            api_key=runtime_embedding.api_key,
+            api_key_file=getattr(args, "embedding_api_key_file", None) or runtime_embedding.api_key_file,
+            base_url=getattr(args, "embedding_base_url", None) or runtime_embedding.base_url,
+            timeout_seconds=getattr(args, "embedding_timeout_seconds", None) or runtime_embedding.timeout_seconds,
         )
     payload = run_retrieval_eval(args.fixture, real=bool(args.real), embedding_config=embedding_config)
     print(dumps(payload))
@@ -2179,7 +2184,11 @@ def job_submit(args: argparse.Namespace) -> int:
     store = PostgresKnowledgeStore(args.database_url)
     payload = json.loads(args.payload.read_text(encoding="utf-8")) if args.payload else {}
     pska_config = getattr(args, "pska_config", PSKAConfig.load(args.config))
-    service = JobService(store, workspace_root=pska_config.workspace.root)
+    service = JobService(
+        store,
+        workspace_root=pska_config.workspace.root,
+        embedding_config=pska_config.embedding_runtime_config(),
+    )
     job = service.submit(args.job_type, payload, max_attempts=args.max_attempts)
     result: dict[str, object] = {"job": job}
     if args.run_now:
@@ -2194,6 +2203,7 @@ def job_run(args: argparse.Namespace) -> int:
     service = JobService(
         store,
         workspace_root=pska_config.workspace.root,
+        embedding_config=pska_config.embedding_runtime_config(),
         worker_id=args.worker_id or _default_worker_id(),
         lease_seconds=args.lease_seconds,
         excluded_job_types=set(args.excluded_job_types or []),
@@ -2213,6 +2223,7 @@ def job_worker(args: argparse.Namespace) -> int:
     service = JobService(
         store,
         workspace_root=pska_config.workspace.root,
+        embedding_config=pska_config.embedding_runtime_config(),
         worker_id=args.worker_id or _default_worker_id(),
         lease_seconds=args.lease_seconds,
         excluded_job_types=set(args.excluded_job_types or []),
@@ -3636,6 +3647,9 @@ def _add_embedding_args(parser: argparse.ArgumentParser, *, default_provider: st
     parser.add_argument("--embedding-provider", default=None)
     parser.add_argument("--embedding-model", default=None)
     parser.add_argument("--embedding-dimensions", type=int, default=None)
+    parser.add_argument("--embedding-api-key-file", type=Path, default=None)
+    parser.add_argument("--embedding-base-url", default=None)
+    parser.add_argument("--embedding-timeout-seconds", type=float, default=None)
 
 
 def _embedding_provider_from_args(args: argparse.Namespace):
@@ -3646,6 +3660,10 @@ def _embedding_provider_from_args(args: argparse.Namespace):
         model=getattr(args, "embedding_model", None) or config.model,
         dimensions=getattr(args, "embedding_dimensions", None) or config.dimensions,
         batch_size=getattr(args, "batch_size", None) or config.batch_size,
+        api_key=config.api_key,
+        api_key_file=getattr(args, "embedding_api_key_file", None) or config.api_key_file,
+        base_url=getattr(args, "embedding_base_url", None) or config.base_url,
+        timeout_seconds=getattr(args, "embedding_timeout_seconds", None) or config.timeout_seconds,
     )
     return build_embedding_provider(config)
 

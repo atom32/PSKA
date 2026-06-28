@@ -350,8 +350,8 @@ def _agentic_messages(query: str, *, tenant_id: str | None = None, user_id: str 
     if tenant_id or user_id:
         identity_instruction = (
             f" Current PSKA request identity: tenant_id={tenant_id or 'tenant_default'!r}, "
-            f"user_id={user_id or 'user_primary'!r}. Every PSKA MCP tool call must include exactly "
-            "these tenant_id and user_id arguments; never use PSKA tool defaults or a different tenant/user."
+            f"user_id={user_id or 'user_primary'!r}. PSKA MCP identity is forwarded by the runtime; "
+            "do not invent or override tenant/user arguments in tool calls."
         )
     return [
         {
@@ -373,8 +373,11 @@ def _agentic_messages(query: str, *, tenant_id: str | None = None, user_id: str 
                 "PSKA tools for broad discovery when those seeds already answer the question; use tools only for "
                 "a specific missing citation or evidence gap. If a PSKA tool fails or times out, still answer from "
                 "the provided deterministic seeds and record the tool issue in trace.gaps. "
-                "For PSKA personal knowledge questions, use only PSKA MCP tools such as pska_search and never "
-                "use host tools such as read_file, write_file, edit_file, exec, shell, or direct filesystem access. "
+                "For PSKA personal knowledge questions, use only PSKA read-only MCP tools. Start with "
+                "pska_search, then call pska_read_evidence_context to inspect fuller passages, use "
+                "pska_graph_context when entity/claim relationships or conflicts matter, and use "
+                "pska_digest_context when prior digests, claims, risks, or open questions may narrow the answer. "
+                "Never use host tools such as read_file, write_file, edit_file, exec, shell, or direct filesystem access. "
                 "Only use host tools when the user explicitly asks to inspect local files or run a command."
                 f"{identity_instruction}"
             ),
@@ -386,8 +389,8 @@ def _agentic_messages(query: str, *, tenant_id: str | None = None, user_id: str 
                 "trace, source_refs, and citations. For PSKA knowledge answers, trace should include "
                 "retrieval_plan, query_understanding, iterations, expansion_decisions, graph_paths_used, "
                 "fact_relevance_filter, evidence_check, gaps, and conflicts when available. In each "
-                "iteration, decide whether to search the previous/next passage window, same-document "
-                "neighbors, or connected entity/fact/claim neighbors before final synthesis. If you use "
+                "iteration, decide whether to read a fuller evidence window, same-document context, "
+                "digest notes, or connected entity/fact/claim neighbors before final synthesis. If you use "
                 "tools, include tool/event details in the service response when available. For this PSKA "
                 "request, do not call read_file, write_file, edit_file, exec, shell, Python scripts, PDF "
                 "extractors, or other host/filesystem tools; retrieve source evidence through PSKA tools instead. "
