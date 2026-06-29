@@ -57,6 +57,7 @@ import {
   approveReviewItem,
   cleanupKnowledgeSource,
   composeWritingDraft,
+  createEvidenceBrief,
   createKnowledgeSource,
   createWritingBoard,
   createWritingEdge,
@@ -2351,11 +2352,12 @@ function CorpusWorkspace({
   const [sourcePreview, setSourcePreview] = useState<SourcePreviewResponse | null>(null);
   const [sourceFormStatus, setSourceFormStatus] = useState<"idle" | "previewing" | "adding" | "syncing" | "success" | "error">("idle");
   const [sourceFormError, setSourceFormError] = useState("");
-  const [operationStatus, setOperationStatus] = useState<"idle" | "syncing" | "digesting" | "cleaning" | "success" | "error">("idle");
+  const [operationStatus, setOperationStatus] = useState<"idle" | "syncing" | "digesting" | "cleaning" | "briefing" | "success" | "error">("idle");
   const [operationMessage, setOperationMessage] = useState("");
   const [cleanupPreview, setCleanupPreview] = useState<KnowledgeSourceCleanupResponse | null>(null);
   const [cleanupTargetId, setCleanupTargetId] = useState<string | null>(null);
   const [cleanupConfirmText, setCleanupConfirmText] = useState("");
+  const [briefingJobId, setBriefingJobId] = useState<string | null>(null);
   const [operationSummary, setOperationSummary] = useState<{
     scanned?: number;
     ingested?: number;
@@ -2403,7 +2405,7 @@ function CorpusWorkspace({
     chunks: sourceSummary?.source_counts?.chunks ?? corpus?.counts?.chunks_matching ?? corpus?.chunks?.length ?? 0,
     inputSources: sourceSummary?.input_sources?.length ?? sourceSummary?.knowledge_sources?.source_count ?? sourceSummary?.connector_state?.state_count ?? 0
   };
-  const actionRunning = operationStatus === "syncing" || operationStatus === "digesting" || operationStatus === "cleaning";
+  const actionRunning = operationStatus === "syncing" || operationStatus === "digesting" || operationStatus === "cleaning" || operationStatus === "briefing";
   const statusMessage = operationMessage || latestSyncMessage(sourceSummary);
 
   useEffect(() => {
@@ -2447,6 +2449,24 @@ function CorpusWorkspace({
     } catch (error) {
       setOperationStatus("error");
       setOperationMessage(error instanceof Error ? error.message : "同步并理解失败。");
+    }
+  }
+
+  async function handleCreateEvidenceBrief(jobId?: string) {
+    setOperationStatus("briefing");
+    setBriefingJobId(jobId || null);
+    setOperationMessage(jobId ? "正在从这次 Digest 生成 Evidence Brief..." : "正在从最近的 Digest 生成 Evidence Brief...");
+    setOperationSummary(undefined);
+    try {
+      const payload = await createEvidenceBrief(serviceToken, jobId ? { job_id: jobId } : {});
+      setOperationStatus(payload.ok === false ? "error" : "success");
+      setOperationMessage(payload.ok === false ? payload.error || "Evidence Brief 没有生成。" : `Evidence Brief 已生成：${payload.board?.title || payload.brief?.title || "Brief 草稿"}。到 Writing Workspace 打开。`);
+      await refetchAll();
+    } catch (error) {
+      setOperationStatus("error");
+      setOperationMessage(error instanceof Error ? error.message : "生成 Evidence Brief 失败。");
+    } finally {
+      setBriefingJobId(null);
     }
   }
 
@@ -2799,7 +2819,14 @@ function CorpusWorkspace({
 
           <section className="corpus-panel digest-log-panel">
             <SectionTitle icon={<Sparkles size={18} />} title="Digest 任务日志" subtitle={`${digestLogs?.count ?? 0} 次最近理解任务`} />
-            <DigestLogPanel payload={digestLogs} isLoading={digestLogsQuery.isLoading} isError={digestLogsQuery.isError} />
+            <DigestLogPanel
+              payload={digestLogs}
+              isLoading={digestLogsQuery.isLoading}
+              isError={digestLogsQuery.isError}
+              actionRunning={actionRunning}
+              briefingJobId={briefingJobId}
+              onCreateBrief={(jobId) => void handleCreateEvidenceBrief(jobId)}
+            />
           </section>
         </div>
       )}
@@ -2836,7 +2863,21 @@ function UnderstandingSummary({ payload }: { payload?: DigestLogsResponse }) {
   );
 }
 
-function DigestLogPanel({ payload, isLoading, isError }: { payload?: DigestLogsResponse; isLoading: boolean; isError: boolean }) {
+function DigestLogPanel({
+  payload,
+  isLoading,
+  isError,
+  actionRunning = false,
+  briefingJobId = null,
+  onCreateBrief
+}: {
+  payload?: DigestLogsResponse;
+  isLoading: boolean;
+  isError: boolean;
+  actionRunning?: boolean;
+  briefingJobId?: string | null;
+  onCreateBrief?: (jobId: string) => void;
+}) {
   const logs = payload?.logs || [];
   if (isError) {
     return <div className="review-empty error-state compact">Digest 日志无法加载。</div>;
@@ -2868,6 +2909,14 @@ function DigestLogPanel({ payload, isLoading, isError }: { payload?: DigestLogsR
               <span>记忆 {summary.agent_memories ?? 0}</span>
               <span>回顾 {summary.review_items ?? 0}</span>
             </div>
+            {onCreateBrief ? (
+              <div className="digest-log-actions">
+                <button type="button" onClick={() => onCreateBrief(log.job_id)} disabled={actionRunning || briefingJobId === log.job_id}>
+                  <BookOpen size={14} />
+                  {briefingJobId === log.job_id ? "生成中" : "生成 Brief"}
+                </button>
+              </div>
+            ) : null}
             <ol className="digest-timeline">
               {(log.timeline || []).slice(-4).map((event, index) => (
                 <li key={`${log.job_id}-${event.event_type || "event"}-${index}`}>
@@ -3348,7 +3397,7 @@ function operationFailureMessage(error: string | undefined, failed: number | und
   return failed ? `有 ${failed} 项没有完成。` : "操作没有完成，请稍后再试。";
 }
 
-function operationTitle(status: "idle" | "syncing" | "digesting" | "cleaning" | "success" | "error") {
+function operationTitle(status: "idle" | "syncing" | "digesting" | "cleaning" | "briefing" | "success" | "error") {
   if (status === "syncing") {
     return "同步资料";
   }
@@ -3357,6 +3406,9 @@ function operationTitle(status: "idle" | "syncing" | "digesting" | "cleaning" | 
   }
   if (status === "cleaning") {
     return "清理资料来源";
+  }
+  if (status === "briefing") {
+    return "生成 Evidence Brief";
   }
   if (status === "success") {
     return "已完成";

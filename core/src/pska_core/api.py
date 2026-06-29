@@ -2390,6 +2390,79 @@ class PSKAApi:
             "retrieval_used": False,
         }
 
+    def workspace_evidence_brief_create(self, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
+        payload, tenant_id, owner = _writing_request_scope(context, payload)
+        limit = max(1, min(int(payload.get("limit") or 12), 40))
+        job_id = str(payload.get("job_id") or "").strip() or None
+        digest_note_ids = set(_string_list(payload.get("digest_note_ids") or payload.get("digest_note_id")))
+        claim_ids = set(_string_list(payload.get("knowledge_claim_ids") or payload.get("claim_ids") or payload.get("knowledge_claim_id")))
+        review_item_ids = set(_string_list(payload.get("review_item_ids") or payload.get("review_item_id")))
+        notes, claims, review_items = _evidence_brief_artifacts(
+            self.store,
+            tenant_id=tenant_id,
+            owner_user_id=owner,
+            job_id=job_id,
+            digest_note_ids=digest_note_ids,
+            claim_ids=claim_ids,
+            review_item_ids=review_item_ids,
+            limit=limit,
+        )
+        artifacts = [*notes, *claims, *review_items]
+        if not artifacts:
+            raise ValueError("evidence brief requires digest notes, claims, review items, or a job_id with outputs")
+        refs = _evidence_brief_refs(self.store, tenant_id=tenant_id, owner_user_id=owner, artifacts=artifacts)
+        warnings = _evidence_brief_warnings(notes, claims, review_items)
+        if not refs:
+            raise ValueError("evidence brief requires at least one source_ref")
+        title = str(payload.get("title") or _evidence_brief_title(notes, claims, review_items)).strip()
+        lineage = _evidence_brief_lineage(
+            job_id=job_id,
+            notes=notes,
+            claims=claims,
+            review_items=review_items,
+            source_refs=refs,
+            warnings=warnings,
+        )
+        board = self.store.create_writing_board(
+            WritingBoard(
+                board_id=str(payload.get("board_id") or f"wbrief_{uuid4().hex}"),
+                tenant_id=tenant_id,
+                owner_user_id=owner,
+                title=title,
+                goal=str(payload.get("goal") or "Evidence Wiki brief draft with citations and review lineage."),
+                metadata={
+                    "kind": "evidence_wiki_brief",
+                    "status": "draft",
+                    "review_status": _evidence_brief_review_status(review_items),
+                    "lineage": lineage,
+                },
+            )
+        )
+        nodes, edges = _create_evidence_brief_writing_nodes(
+            self.store,
+            board=board,
+            notes=notes,
+            claims=claims,
+            review_items=review_items,
+            refs=refs,
+            lineage=lineage,
+        )
+        return {
+            "ok": True,
+            "brief": {
+                "board_id": board.board_id,
+                "title": board.title,
+                "status": "draft",
+                "review_status": board.metadata.get("review_status"),
+                "source_refs": refs,
+                "lineage": lineage,
+                "warnings": warnings,
+            },
+            "board": _writing_board_payload(board),
+            "nodes": [_writing_node_payload(node) for node in nodes],
+            "edges": [_writing_edge_payload(edge) for edge in edges],
+        }
+
     def console_memory(self, *, owner_user_id: str = "user_primary", tenant_id: str | None = None, limit: int = 50) -> dict[str, Any]:
         limit = max(0, limit)
         tenant_id = tenant_id or DEFAULT_TENANT_ID
@@ -3078,6 +3151,8 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
                 return self._json(200, self.api.sync_knowledge_sources(payload, context=context))
             if path == "/workspace/digest/run":
                 return self._json(200, self.api.workspace_digest_run(payload, context=context))
+            if path == "/workspace/evidence-briefs":
+                return self._json(200, self.api.workspace_evidence_brief_create(payload, context=context))
             if path == "/workspace/writer/suggest":
                 return self._json(200, self.api.workspace_writer_suggest(payload, context=context))
             if path == "/workspace/activity":
@@ -7102,6 +7177,296 @@ def _today_review_summary(item: dict[str, Any]) -> str:
 def _workspace_writer_query(selected_text: str, draft_text: str, instruction: str) -> str:
     basis = selected_text or draft_text
     return " ".join(part for part in [basis[:260], instruction[:160]] if part).strip()
+
+
+def _evidence_brief_artifacts(
+    store: Any,
+    *,
+    tenant_id: str,
+    owner_user_id: str,
+    job_id: str | None,
+    digest_note_ids: set[str],
+    claim_ids: set[str],
+    review_item_ids: set[str],
+    limit: int,
+) -> tuple[list[Any], list[Any], list[ReviewItem]]:
+    notes = store.list_digest_notes(owner_user_id=owner_user_id, tenant_id=tenant_id, job_id=job_id, limit=limit)
+    claims = store.list_knowledge_claims(owner_user_id=owner_user_id, tenant_id=tenant_id, job_id=job_id, limit=limit)
+    review_items = [
+        item
+        for item in store.list_review_items(tenant_id=tenant_id)
+        if item.owner_user_id == owner_user_id
+        and (not job_id or str((item.proposal or {}).get("job_id") or "") == job_id)
+    ][:limit]
+    if digest_note_ids:
+        notes = [note for note in notes if note.digest_note_id in digest_note_ids]
+    if claim_ids:
+        claims = [claim for claim in claims if claim.knowledge_claim_id in claim_ids]
+    if review_item_ids:
+        review_items = [item for item in review_items if item.review_item_id in review_item_ids]
+    return notes, claims, review_items
+
+
+def _evidence_brief_refs(store: Any, *, tenant_id: str, owner_user_id: str, artifacts: list[Any]) -> list[dict[str, Any]]:
+    raw_refs: list[dict[str, Any]] = []
+    for artifact in artifacts:
+        if isinstance(artifact, ReviewItem):
+            proposal = artifact.proposal or {}
+            raw_refs.extend(_source_refs_payload(proposal.get("source_refs") or proposal.get("sourceRefs") or []))
+        else:
+            raw_refs.extend(_source_refs_payload(getattr(artifact, "source_refs", [])))
+    refs = _dedupe_writing_refs(raw_refs)
+    source_by_id = {
+        item.source_item_id: item
+        for item in store.list_source_items(tenant_id=tenant_id)
+        if getattr(item, "owner_user_id", "") == owner_user_id
+    }
+    enriched: list[dict[str, Any]] = []
+    for ref in refs:
+        source_item_id = str(ref.get("source_item_id") or "")
+        source = source_by_id.get(source_item_id)
+        next_ref = dict(ref)
+        if source:
+            next_ref.setdefault("title", source.title)
+            next_ref.setdefault("url", source.url)
+            next_ref.setdefault("source_channel", source.source_channel)
+        enriched.append(next_ref)
+    return enriched
+
+
+def _evidence_brief_warnings(notes: list[Any], claims: list[Any], review_items: list[ReviewItem]) -> list[dict[str, Any]]:
+    warnings: list[dict[str, Any]] = []
+    for note in notes:
+        if not _source_refs_payload(getattr(note, "source_refs", [])):
+            warnings.append({"artifact_type": "digest_note", "artifact_id": note.digest_note_id, "warning": "missing_source_refs"})
+    for claim in claims:
+        if not _source_refs_payload(getattr(claim, "source_refs", [])):
+            warnings.append({"artifact_type": "knowledge_claim", "artifact_id": claim.knowledge_claim_id, "warning": "missing_source_refs"})
+    for item in review_items:
+        if not _source_refs_payload((item.proposal or {}).get("source_refs") or []):
+            warnings.append({"artifact_type": "review_item", "artifact_id": item.review_item_id, "warning": "missing_source_refs"})
+    return warnings
+
+
+def _evidence_brief_title(notes: list[Any], claims: list[Any], review_items: list[ReviewItem]) -> str:
+    if notes:
+        return f"Brief: {notes[0].title}"
+    if claims:
+        return f"Brief: {_trim_words(claims[0].statement, 12)}"
+    if review_items:
+        return f"Brief: {review_items[0].title}"
+    return "Evidence Brief"
+
+
+def _evidence_brief_review_status(review_items: list[ReviewItem]) -> str:
+    if any(item.status == "pending" for item in review_items):
+        return "needs_review"
+    if review_items:
+        return "review_linked"
+    return "draft"
+
+
+def _evidence_brief_lineage(
+    *,
+    job_id: str | None,
+    notes: list[Any],
+    claims: list[Any],
+    review_items: list[ReviewItem],
+    source_refs: list[dict[str, Any]],
+    warnings: list[dict[str, Any]],
+) -> dict[str, Any]:
+    producers = sorted(
+        {
+            str(getattr(item, "producer", "") or (getattr(item, "proposal", {}) or {}).get("producer") or "pska")
+            for item in [*notes, *claims, *review_items]
+        }
+    )
+    return {
+        "producer": "pska.evidence_brief",
+        "job_id": job_id,
+        "source_refs": source_refs,
+        "warnings": warnings,
+        "producers": producers,
+        "digest_note_ids": [note.digest_note_id for note in notes],
+        "knowledge_claim_ids": [claim.knowledge_claim_id for claim in claims],
+        "review_item_ids": [item.review_item_id for item in review_items],
+        "review_status": _evidence_brief_review_status(review_items),
+    }
+
+
+def _create_evidence_brief_writing_nodes(
+    store: Any,
+    *,
+    board: WritingBoard,
+    notes: list[Any],
+    claims: list[Any],
+    review_items: list[ReviewItem],
+    refs: list[dict[str, Any]],
+    lineage: dict[str, Any],
+) -> tuple[list[WritingNode], list[WritingEdge]]:
+    nodes: list[WritingNode] = []
+    edges: list[WritingEdge] = []
+
+    def add_node(node_type: str, title: str, body: str, *, x: int, y: int, source_refs: list[dict[str, Any]] | None = None, metadata: dict[str, Any] | None = None, status: str = "draft") -> WritingNode:
+        node = WritingNode(
+            node_id=f"wnode_{uuid4().hex}",
+            board_id=board.board_id,
+            tenant_id=board.tenant_id,
+            owner_user_id=board.owner_user_id,
+            node_type=node_type,
+            title=title,
+            body_markdown=body,
+            position={"x": x, "y": y},
+            status=status,
+            source_refs=source_refs or [],
+            citations=source_refs or [],
+            metadata={"expanded": node_type in {"draft", "section"}, **dict(metadata or {})},
+        )
+        nodes.append(store.upsert_writing_node(node))
+        return nodes[-1]
+
+    def add_edge(source: WritingNode, target: WritingNode, edge_type: str, label: str) -> None:
+        edge = WritingEdge(
+            edge_id=f"wedge_{uuid4().hex}",
+            board_id=board.board_id,
+            tenant_id=board.tenant_id,
+            owner_user_id=board.owner_user_id,
+            source_node_id=source.node_id,
+            target_node_id=target.node_id,
+            edge_type=edge_type,
+            label=label,
+        )
+        edges.append(store.upsert_writing_edge(edge))
+
+    section = add_node(
+        "section",
+        "Evidence Brief",
+        "This draft is grounded in Digest/Review artifacts and should be reviewed before long-term publication.",
+        x=80,
+        y=120,
+        source_refs=refs,
+        metadata={"lineage": lineage},
+    )
+    draft = add_node(
+        "draft",
+        board.title,
+        _evidence_brief_markdown(board.title, notes=notes, claims=claims, review_items=review_items, refs=refs, lineage=lineage),
+        x=420,
+        y=120,
+        source_refs=refs,
+        metadata={"lineage": lineage, "wiki_status": "draft"},
+    )
+    add_edge(section, draft, "follows", "生成草稿")
+    for index, note in enumerate(notes[:8]):
+        note_refs = _source_refs_payload(getattr(note, "source_refs", []))
+        node = add_node(
+            "evidence",
+            note.title or "Digest note",
+            _digest_note_brief_body(note),
+            x=80,
+            y=360 + index * 130,
+            source_refs=note_refs,
+            metadata={"artifact_type": "digest_note", "artifact_id": note.digest_note_id, "lineage": lineage},
+        )
+        add_edge(node, draft, "supported_by", "Digest")
+    for index, claim in enumerate(claims[:10]):
+        claim_refs = _source_refs_payload(getattr(claim, "source_refs", []))
+        node = add_node(
+            "answer",
+            _trim_words(claim.statement, 14) or "Knowledge claim",
+            _claim_brief_body(claim),
+            x=420,
+            y=360 + index * 130,
+            source_refs=claim_refs,
+            metadata={"artifact_type": "knowledge_claim", "artifact_id": claim.knowledge_claim_id, "lineage": lineage},
+            status="needs_review" if float(getattr(claim, "confidence", 0.0) or 0.0) < 0.7 else "draft",
+        )
+        add_edge(node, draft, "supported_by", "Claim")
+    for index, item in enumerate(review_items[:10]):
+        item_refs = _source_refs_payload((item.proposal or {}).get("source_refs") or [])
+        node = add_node(
+            "gap" if item.status == "pending" else "evidence",
+            item.title or "Review item",
+            _review_item_brief_body(item),
+            x=760,
+            y=360 + index * 130,
+            source_refs=item_refs,
+            metadata={"artifact_type": "review_item", "artifact_id": item.review_item_id, "review_status": item.status, "lineage": lineage},
+            status=item.status,
+        )
+        add_edge(node, draft, "raises" if item.status == "pending" else "supported_by", "Review")
+    return nodes, edges
+
+
+def _evidence_brief_markdown(title: str, *, notes: list[Any], claims: list[Any], review_items: list[ReviewItem], refs: list[dict[str, Any]], lineage: dict[str, Any]) -> str:
+    lines = [f"# {title}", "", "> Draft Evidence Brief. Review before publishing to long-term knowledge.", ""]
+    if notes:
+        lines.extend(["## Digest Notes", ""])
+        for note in notes:
+            lines.append(f"### {note.title}")
+            if note.synopsis:
+                lines.extend([str(note.synopsis), ""])
+            for point in _list_of_dicts(getattr(note, "key_points", []))[:5]:
+                text = point.get("text") or point.get("summary") or point.get("point")
+                if text:
+                    lines.append(f"- {text}")
+            if lines[-1] != "":
+                lines.append("")
+    if claims:
+        lines.extend(["## Claims", ""])
+        for claim in claims:
+            lines.append(f"- {claim.statement}")
+            if claim.evidence_text:
+                lines.append(f"  Evidence: {claim.evidence_text}")
+        lines.append("")
+    if review_items:
+        lines.extend(["## Review Queue", ""])
+        for item in review_items:
+            summary = (item.proposal or {}).get("plain_text_summary") or (item.proposal or {}).get("reason") or item.review_type.value
+            lines.append(f"- [{item.status}] {item.title}: {summary}")
+        lines.append("")
+    lines.extend(["## Citations", ""])
+    for index, ref in enumerate(refs[:20], start=1):
+        title_ref = str(ref.get("title") or ref.get("source_item_id") or ref.get("chunk_id") or f"Source {index}")
+        source_id = str(ref.get("source_item_id") or "")
+        suffix = f" ({source_id})" if source_id and source_id != title_ref else ""
+        lines.append(f"{index}. {title_ref}{suffix}")
+    lines.extend(["", "## Lineage", "", f"- Producer: {lineage.get('producer')}", f"- Review status: {lineage.get('review_status')}", f"- Job: {lineage.get('job_id') or '-'}"])
+    return "\n".join(lines).strip()
+
+
+def _digest_note_brief_body(note: Any) -> str:
+    lines = [note.synopsis or ""]
+    for key, title in [("actions", "Actions"), ("open_questions", "Open Questions"), ("risks", "Risks")]:
+        values = _list_of_dicts(getattr(note, key, []))
+        if values:
+            lines.extend(["", f"**{title}**"])
+            for value in values[:5]:
+                text = value.get("text") or value.get("summary") or value.get("title") or value.get("question") or value.get("risk")
+                if text:
+                    lines.append(f"- {text}")
+    return "\n".join(line for line in lines if line is not None).strip()
+
+
+def _claim_brief_body(claim: Any) -> str:
+    lines = [claim.statement]
+    if claim.evidence_text:
+        lines.extend(["", f"Evidence: {claim.evidence_text}"])
+    lines.extend(["", f"Confidence: {float(getattr(claim, 'confidence', 0.0) or 0.0):.2f}"])
+    return "\n".join(lines).strip()
+
+
+def _review_item_brief_body(item: ReviewItem) -> str:
+    proposal = item.proposal or {}
+    summary = proposal.get("plain_text_summary") or proposal.get("statement") or proposal.get("reason") or item.review_type.value
+    return "\n".join(
+        [
+            str(summary),
+            "",
+            f"Review status: {item.status}",
+            f"Review type: {item.review_type.value if hasattr(item.review_type, 'value') else item.review_type}",
+        ]
+    ).strip()
 
 
 def _writing_board_payload(board: WritingBoard) -> dict[str, Any]:

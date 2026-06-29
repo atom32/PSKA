@@ -1907,6 +1907,31 @@ button {
   white-space: nowrap;
 }
 
+.digest-log-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 10px;
+}
+
+.digest-log-actions button {
+  min-height: 30px;
+  border: 1px solid rgba(35, 90, 77, 0.22);
+  border-radius: 7px;
+  background: #eef7f0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 9px;
+  color: #235a4d;
+  cursor: pointer;
+}
+
+.digest-log-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
 .digest-timeline {
   margin: 10px 0 0;
   padding: 0;

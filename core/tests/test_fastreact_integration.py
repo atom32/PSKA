@@ -2014,6 +2014,70 @@ def test_writing_suggest_questions_does_not_persist_nodes() -> None:
     assert len(after["nodes"]) == len(before["nodes"])
 
 
+def test_evidence_brief_creates_writing_draft_with_lineage_and_refs() -> None:
+    api = _api()
+    context = context_from_headers({"X-PSKA-Tenant-Id": "tenant_a", "X-PSKA-User-Id": "user_primary"}, {})
+    source = api.ingest.ingest_channel_payload(
+        {
+            **_minimal_ingest_payload("brief-source"),
+            "tenant_id": "tenant_a",
+            "content": {"text": "Evidence brief drafts must keep citations and review lineage."},
+        }
+    )
+    ref = SourceRef(source_item_id=source.source_item_id)
+    api.store.add_digest_note(
+        DigestNote(
+            digest_note_id="dig_brief",
+            owner_user_id="user_primary",
+            title="Briefable digest",
+            synopsis="Digest synopsis for a future Evidence Wiki page.",
+            source_refs=[ref],
+            key_points=[{"text": "Digest point keeps provenance."}],
+            job_id="job_brief",
+            tenant_id="tenant_a",
+        )
+    )
+    api.store.add_knowledge_claim(
+        KnowledgeClaim(
+            knowledge_claim_id="kc_brief",
+            owner_user_id="user_primary",
+            claim_type="observation",
+            statement="Evidence briefs preserve citations.",
+            source_refs=[ref],
+            evidence_text="Evidence brief drafts must keep citations and review lineage.",
+            confidence=0.82,
+            job_id="job_brief",
+            tenant_id="tenant_a",
+        )
+    )
+    api.store.add_review_item(
+        ReviewItem(
+            review_item_id="rev_brief",
+            owner_user_id="user_primary",
+            review_type=ReviewType.LOW_CONFIDENCE,
+            title="Review brief candidate",
+            proposal={"job_id": "job_brief", "source_refs": [{"source_item_id": source.source_item_id}], "plain_text_summary": "Review before publish."},
+            tenant_id="tenant_a",
+        )
+    )
+
+    payload = api.workspace_evidence_brief_create({"job_id": "job_brief"}, context=context)
+    board = payload["board"]
+    nodes = payload["nodes"]
+    draft = next(node for node in nodes if node["node_type"] == "draft")
+
+    assert payload["ok"] is True
+    assert board["metadata"]["kind"] == "evidence_wiki_brief"
+    assert payload["brief"]["review_status"] == "needs_review"
+    assert payload["brief"]["lineage"]["digest_note_ids"] == ["dig_brief"]
+    assert payload["brief"]["lineage"]["knowledge_claim_ids"] == ["kc_brief"]
+    assert payload["brief"]["lineage"]["review_item_ids"] == ["rev_brief"]
+    assert payload["brief"]["source_refs"][0]["source_item_id"] == source.source_item_id
+    assert draft["source_refs"][0]["source_item_id"] == source.source_item_id
+    assert "Evidence briefs preserve citations." in draft["body_markdown"]
+    assert api.workspace_writing_board(board["board_id"], context=context)["board"]["metadata"]["lineage"]["job_id"] == "job_brief"
+
+
 def test_writing_ask_scope_uses_connected_node_context_in_quick_trace() -> None:
     api = _api()
     context = context_from_headers({"X-PSKA-Tenant-Id": "tenant_default", "X-PSKA-User-Id": "user_primary"}, {})

@@ -4,6 +4,7 @@ import type {
   ConsoleSourcesResponse,
   DigestLogsResponse,
   DigestNowResponse,
+  EvidenceBriefResponse,
   FileSyncResponse,
   KnowledgeSourceCleanupResponse,
   KnowledgeSourceCreateResponse,
@@ -657,6 +658,21 @@ export async function composeWritingDraft(
     throw new Error(await responseError(response, "生成章节草稿失败"));
   }
   return (await response.json()) as WritingComposeResponse;
+}
+
+export async function createEvidenceBrief(
+  serviceToken: PSKAAuth,
+  payload: { job_id?: string; digest_note_ids?: string[]; knowledge_claim_ids?: string[]; review_item_ids?: string[]; title?: string; limit?: number }
+): Promise<EvidenceBriefResponse> {
+  const response = await fetch("/workspace/evidence-briefs", {
+    method: "POST",
+    headers: headers(serviceToken),
+    body: JSON.stringify({ ...payload, ...requestUserPayload(serviceToken) })
+  });
+  if (!response.ok) {
+    throw new Error(await responseError(response, "生成 Evidence Brief 失败"));
+  }
+  return (await response.json()) as EvidenceBriefResponse;
 }
 
 function consumeAskSseBuffer(

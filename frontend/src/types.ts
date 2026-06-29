@@ -109,6 +109,23 @@ export type WritingComposeResponse = {
   retrieval_used?: boolean;
 };
 
+export type EvidenceBriefResponse = {
+  ok?: boolean;
+  brief?: {
+    board_id?: string;
+    title?: string;
+    status?: string;
+    review_status?: string;
+    source_refs?: Array<Record<string, unknown>>;
+    lineage?: Record<string, unknown>;
+    warnings?: Array<Record<string, unknown>>;
+  };
+  board?: WritingBoard;
+  nodes?: WritingNode[];
+  edges?: WritingEdge[];
+  error?: string;
+};
+
 export type WorkspaceCorpusSource = {
   source_item_id?: string;
   title?: string;
