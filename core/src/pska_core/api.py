@@ -31,12 +31,13 @@ from pska_core.files_connector import scan_files
 from pska_core.importers.twitter_zip import TwitterZipImporter
 from pska_core.ingest import IngestService
 from pska_core.jobs import DIGEST_VIA_FASTREACT, JobService
-from pska_core.knowledge_sources import KnowledgeSourceService
+from pska_core.knowledge_sources import KnowledgeSourceService, knowledge_source_id
 from pska_core.memory import MemoryService
 from pska_core.mcp_server import MCPServer, PROTOCOL_VERSION
 from pska_core.models import (
     DEFAULT_TENANT_ID,
     ChannelIngestPayload,
+    KnowledgeSource,
     PassageWindow,
     ReviewItem,
     SourceRef,
@@ -46,9 +47,12 @@ from pska_core.models import (
     WritingNode,
 )
 from pska_core.offline_index import OfflineIndexService
+from pska_core.chunking import preview_chunking
+from pska_core.processing import resolve_processing_config
 from pska_core.retrieval import RetrievalService
 from pska_core.review import ReviewService
 from pska_core.serde import to_jsonable
+from pska_core.source_adapters import build_source_adapter, supported_source_adapters
 from pska_core.store_postgres import PostgresKnowledgeStore
 
 
@@ -116,23 +120,56 @@ class PSKAApi:
         required_ok = checks["database"]["ok"] and checks["schema"]["ok"] and checks["mcp"]["ok"]
         return {"ok": required_ok, "checks": checks}
 
-    def index_status(self) -> dict[str, Any]:
+    def workspace_readiness(self, context: RequestContext | None = None) -> dict[str, Any]:
+        tenant_id = context.tenant_id if context else DEFAULT_TENANT_ID
+        ready = self.ready()
+        checks = dict(ready.get("checks") or {})
+        stats = self.job_stats(tenant_id=tenant_id)["stats"]
         return {
-            "source_items": self.store.count_table("source_items"),
-            "documents": self.store.count_table("documents"),
-            "chunks": self.store.count_table("chunks"),
-            "entities": self.store.count_table("entities"),
-            "hyperedges": self.store.count_table("hyperedges"),
-            "knowledge_claims": self.store.count_table("knowledge_claims"),
-            "digest_notes": self.store.count_table("digest_notes"),
-            "graph_nodes": self.store.count_table("graph_nodes"),
-            "graph_edges": self.store.count_table("graph_edges"),
-            "review_items": self.store.count_table("review_items"),
-            "jobs": self.store.count_table("jobs"),
-            "offline_index_states": self.store.count_table("offline_index_states"),
-            "writing_boards": self.store.count_table("writing_boards"),
-            "writing_nodes": self.store.count_table("writing_nodes"),
-            "writing_edges": self.store.count_table("writing_edges"),
+            "ok": bool(ready.get("ok")),
+            "tenant_id": tenant_id,
+            "checks": {
+                **checks,
+                "index": {
+                    **dict(checks.get("index") or {}),
+                    "counts": self.index_status(tenant_id=tenant_id),
+                    "offline_index": OfflineIndexService(self.store).freshness(tenant_id=tenant_id),
+                },
+                "digest_worker": {
+                    "ok": True,
+                    "backlog": stats.get("digest_backlog") or {},
+                    "recent_failed": stats.get("recent_failed") or [],
+                    "running_jobs": stats.get("running_jobs") or [],
+                },
+            },
+            "summary": {
+                "database_ok": bool((checks.get("database") or {}).get("ok")),
+                "schema_ok": bool((checks.get("schema") or {}).get("ok")),
+                "mcp_ok": bool((checks.get("mcp") or {}).get("ok")),
+                "fastreact_ok": bool((checks.get("agentic_service") or {}).get("ok")),
+                "digest_backlog_jobs": int(((stats.get("digest_backlog") or {}).get("jobs")) or 0),
+            },
+        }
+
+    def index_status(self, *, tenant_id: str | None = None) -> dict[str, Any]:
+        return {
+            "tenant_id": tenant_id,
+            "source_items": self.store.count_table("source_items", tenant_id=tenant_id),
+            "documents": self.store.count_table("documents", tenant_id=tenant_id),
+            "chunks": self.store.count_table("chunks", tenant_id=tenant_id),
+            "entities": self.store.count_table("entities", tenant_id=tenant_id),
+            "hyperedges": self.store.count_table("hyperedges", tenant_id=tenant_id),
+            "knowledge_claims": self.store.count_table("knowledge_claims", tenant_id=tenant_id),
+            "digest_notes": self.store.count_table("digest_notes", tenant_id=tenant_id),
+            "graph_nodes": self.store.count_table("graph_nodes", tenant_id=tenant_id),
+            "graph_edges": self.store.count_table("graph_edges", tenant_id=tenant_id),
+            "review_items": self.store.count_table("review_items", tenant_id=tenant_id),
+            "jobs": self.store.count_table("jobs", tenant_id=tenant_id),
+            "offline_index_states": self.store.count_table("offline_index_states", tenant_id=tenant_id),
+            "processing_spans": self.store.count_table("processing_spans", tenant_id=tenant_id),
+            "writing_boards": self.store.count_table("writing_boards", tenant_id=tenant_id),
+            "writing_nodes": self.store.count_table("writing_nodes", tenant_id=tenant_id),
+            "writing_edges": self.store.count_table("writing_edges", tenant_id=tenant_id),
         }
 
     def _database_ready(self) -> dict[str, Any]:
@@ -160,6 +197,7 @@ class PSKAApi:
             "connector_states",
             "knowledge_sources",
             "sync_runs",
+            "processing_spans",
             "offline_index_states",
             "writing_boards",
             "writing_nodes",
@@ -456,6 +494,118 @@ class PSKAApi:
         report = service.run_available(limit=int(payload.get("limit") or 1))
         return {"run": to_jsonable(report)}
 
+    def chunking_preview(self, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
+        payload = context.apply_to_payload(payload) if context else payload
+        text = str(payload.get("text") or payload.get("content") or "")
+        if not text:
+            raise ValueError("text is required")
+        source_config = payload.get("source_config") if isinstance(payload.get("source_config"), dict) else None
+        processing_overrides = payload.get("processing_config") or payload.get("process_config")
+        if processing_overrides is None and isinstance(payload.get("chunking"), dict):
+            processing_overrides = {"chunking": payload["chunking"]}
+        processing_config = resolve_processing_config(source_config, processing_overrides)
+        preview = preview_chunking(text, processing_config.get("chunking"))
+        return {
+            "ok": True,
+            "tenant_id": payload.get("tenant_id") or DEFAULT_TENANT_ID,
+            "processing_config": processing_config,
+            "preview": preview,
+        }
+
+    def source_preview(self, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
+        payload = context.apply_to_payload(payload) if context else payload
+        source = _draft_knowledge_source_from_payload(payload, context=context)
+        adapter = build_source_adapter(self.store, source, processing_config=payload.get("processing_config") if isinstance(payload.get("processing_config"), dict) else None)
+        limit = max(1, min(int(payload.get("limit") or 10), 50))
+        preview = adapter.preview(limit=limit)
+        return {"ok": bool(preview.get("ok", True)), "source": to_jsonable(source), "preview": preview, "adapters": supported_source_adapters()}
+
+    def create_knowledge_source(self, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
+        payload = context.apply_to_payload(payload) if context else payload
+        source_service = KnowledgeSourceService(self.store)
+        owner_user_id = _owner_user_id_for_write(payload, context)
+        tenant_id = str(payload.get("tenant_id") or (context.tenant_id if context else DEFAULT_TENANT_ID))
+        source_type = _normal_source_type(payload.get("source_type") or payload.get("kind") or payload.get("type"))
+        value = _source_value_from_payload(payload, source_type)
+        processing_config = payload.get("processing_config") if isinstance(payload.get("processing_config"), dict) else None
+        common = {
+            "owner_user_id": owner_user_id,
+            "tenant_id": tenant_id,
+            "name": payload.get("name"),
+            "space_id": str(payload.get("space_id") or "private_primary"),
+            "visibility": Visibility(str(payload.get("visibility") or Visibility.PRIVATE)),
+            "visible_team_ids": _string_list(payload.get("visible_team_ids")),
+        }
+        if source_type == "folder":
+            source = source_service.add_folder_source(
+                Path(value),
+                ignore=_string_list(payload.get("ignore")),
+                max_bytes=_optional_positive_int(payload.get("max_bytes")) or self.config.files.max_bytes,
+                **common,
+            )
+        elif source_type == "rss":
+            source = source_service.add_rss_source(value, processing_config=processing_config, **common)
+        elif source_type == "url":
+            source = source_service.add_url_source(value, processing_config=processing_config, **common)
+        else:
+            raise ValueError(f"Unsupported source_type: {source_type}")
+        preview = None
+        if bool(payload.get("preview", False)):
+            preview = build_source_adapter(self.store, source, processing_config=processing_config).preview(limit=max(1, min(int(payload.get("limit") or 5), 20)))
+        return {"ok": True, "knowledge_source": to_jsonable(source), "preview": preview, "adapters": supported_source_adapters()}
+
+    def sync_knowledge_sources(self, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
+        payload = context.apply_to_payload(payload) if context else payload
+        tenant_id = str(payload.get("tenant_id") or (context.tenant_id if context else DEFAULT_TENANT_ID))
+        owner_user_id = _owner_user_id_for_write(payload, context)
+        source_ids = _string_list(payload.get("knowledge_source_ids") or payload.get("source_ids") or payload.get("knowledge_source_id"))
+        source_type = _normal_source_type(payload.get("source_type")) if payload.get("source_type") else None
+        source_service = KnowledgeSourceService(self.store)
+        if source_ids:
+            sources = [self.store.get_knowledge_source(source_id) for source_id in source_ids]
+            sources = [source for source in sources if source.tenant_id == tenant_id and source.owner_user_id == owner_user_id]
+        else:
+            sources = source_service.list_sources(tenant_id=tenant_id, owner_user_id=owner_user_id)
+        if source_type:
+            sources = [source for source in sources if _normal_source_type(source.source_type) == source_type]
+        sources = [source for source in sources if source.mode != "paused" and source.status != "paused"]
+        reports: list[Any] = []
+        sync_runs = []
+        failed: list[dict[str, Any]] = []
+        embedding_provider = build_embedding_provider(EmbeddingConfig(provider="disabled"))
+        limit = _optional_positive_int(payload.get("limit"))
+        processing_overrides = payload.get("processing_config") if isinstance(payload.get("processing_config"), dict) else None
+        for source in sources:
+            try:
+                adapter = build_source_adapter(self.store, source, embedding_provider=embedding_provider, processing_config=processing_overrides)
+                report = adapter.sync(limit=limit)
+                reports.append(report)
+                failed.extend(getattr(report, "failed", []) or [])
+                sync_runs.append(source_service.record_sync_report(source, report))
+            except Exception as exc:  # noqa: BLE001 - keep syncing other sources.
+                error = f"{type(exc).__name__}: {exc}"
+                failed.append({"knowledge_source_id": source.knowledge_source_id, "uri": source.uri, "error": error})
+                sync_runs.append(source_service.record_sync_error(source, error))
+        return to_jsonable(
+            {
+                "ok": not failed,
+                "knowledge_sources": sources,
+                "reports": reports,
+                "sync_runs": sync_runs,
+                "failed": failed,
+                "totals": {
+                    "sources": len(sources),
+                    "scanned": sum(int(getattr(report, "scanned", 0) or 0) for report in reports),
+                    "ingested": sum(int(getattr(report, "ingested", 0) or 0) for report in reports),
+                    "new_files": sum(int(getattr(report, "new_files", 0) or 0) for report in reports),
+                    "changed_files": sum(int(getattr(report, "changed_files", 0) or 0) for report in reports),
+                    "unchanged_files": sum(int(getattr(report, "unchanged_files", 0) or 0) for report in reports),
+                    "skipped": sum(len(getattr(report, "skipped", []) or []) for report in reports),
+                    "failed": len(failed),
+                },
+            }
+        )
+
     def files_sync(self, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
         payload = context.apply_to_payload(payload) if context else payload
         source_service = KnowledgeSourceService(self.store)
@@ -507,9 +657,11 @@ class PSKAApi:
         sync_runs = []
         failed = []
         embedding_provider = build_embedding_provider(EmbeddingConfig(provider="disabled"))
+        processing_overrides = payload.get("processing_config") or payload.get("process_config")
         for source in sources:
             root = source_service.source_path(source)
             try:
+                processing_config = resolve_processing_config(source.config, processing_overrides)
                 report = scan_files(
                     self.store,
                     root=root,
@@ -521,6 +673,7 @@ class PSKAApi:
                     ignore=[*list(source.config.get("ignore") or []), *ignore],
                     max_bytes=max_bytes,
                     embedding_provider=embedding_provider,
+                    processing_config=processing_config,
                 )
                 reports.append(report)
                 failed.extend(report.failed)
@@ -709,12 +862,67 @@ class PSKAApi:
             "count": len(entries),
         }
 
+    def workspace_digest_data(self, *, owner_user_id: str | None = None, tenant_id: str | None = None, limit: int = 50, context: RequestContext | None = None) -> dict[str, Any]:
+        tenant_id = tenant_id or (context.tenant_id if context else DEFAULT_TENANT_ID)
+        owner_user_id = _workspace_owner_user_id(context, owner_user_id)
+        limit = max(1, min(limit, 100))
+        notes = self.store.list_digest_notes(owner_user_id=owner_user_id, tenant_id=tenant_id, limit=limit)
+        claims = self.store.list_knowledge_claims(owner_user_id=owner_user_id, tenant_id=tenant_id, limit=limit)
+        review_items = [
+            item
+            for item in self.store.list_review_items(tenant_id=tenant_id)
+            if item.owner_user_id == owner_user_id
+        ]
+        review_items = sorted(review_items, key=lambda item: item.created_at, reverse=True)[:limit]
+        discoveries = self.store.list_discovery_items(owner_user_id=owner_user_id, tenant_id=tenant_id, limit=limit)
+        stats = self.job_stats(tenant_id=tenant_id)["stats"]
+        return {
+            "ok": True,
+            "tenant_id": tenant_id,
+            "owner_user_id": owner_user_id,
+            "digest_notes": to_jsonable(notes),
+            "knowledge_claims": to_jsonable(claims),
+            "review_candidates": to_jsonable(review_items),
+            "discovery_summaries": to_jsonable(discoveries),
+            "summary": {
+                "digest_notes": len(notes),
+                "knowledge_claims": len(claims),
+                "pending_review_candidates": len([item for item in review_items if item.status == "pending"]),
+                "discoveries": len(discoveries),
+                "digest_backlog": stats.get("digest_backlog") or {},
+            },
+        }
+
+    def workspace_digest_run(self, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
+        payload = context.apply_to_payload(payload) if context else payload
+        tenant_id = str(payload.get("tenant_id") or (context.tenant_id if context else DEFAULT_TENANT_ID))
+        owner_user_id = _owner_user_id_for_write(payload, context)
+        source_item_ids = _string_list(payload.get("source_item_ids"))
+        knowledge_source_ids = _string_list(payload.get("knowledge_source_ids") or payload.get("sources"))
+        if not source_item_ids and knowledge_source_ids:
+            source_item_ids = _source_item_ids_for_knowledge_sources(self.store, tenant_id=tenant_id, knowledge_source_ids=knowledge_source_ids)
+        scheduled = self.schedule_digest(
+            {
+                **payload,
+                "tenant_id": tenant_id,
+                "owner_user_id": owner_user_id,
+                "source_item_ids": source_item_ids,
+                "reason": payload.get("reason") or "workspace digest run",
+            },
+            context=context,
+        )
+        return {
+            "ok": True,
+            "scheduled": scheduled,
+            "data": self.workspace_digest_data(owner_user_id=owner_user_id, tenant_id=tenant_id, context=context),
+        }
+
     def metrics(self, *, tenant_id: str | None = None) -> dict[str, Any]:
         tenant_id = tenant_id or DEFAULT_TENANT_ID
         source_items = self.store.list_source_items(tenant_id=tenant_id)
         chunks = self.store.list_chunks_for_sources({item.source_item_id for item in source_items})
         return {
-            "index": self.index_status(),
+            "index": self.index_status(tenant_id=tenant_id),
             "tenant_id": tenant_id,
             "offline_index": OfflineIndexService(self.store).freshness(tenant_id=tenant_id),
             "embedding": _embedding_metrics(chunks, _api_config(self)),
@@ -1168,7 +1376,9 @@ class PSKAApi:
                 )
                 time_to_first_agent_event_ms = emitted_steps[0].get("elapsed_ms") if emitted_steps else None
                 for step in emitted_steps:
-                    yield ("agent_step", {"step": step, "timing": {"time_to_first_agent_event_ms": time_to_first_agent_event_ms}})
+                    timing = {"time_to_first_agent_event_ms": time_to_first_agent_event_ms}
+                    yield ("progress", {"progress": _ask_progress_from_step(step), "timing": timing})
+                    yield ("agent_step", {"step": step, "timing": timing})
                 final_payload = _ask_with_quality_signals(
                     self._workspace_ask_quick(
                         query=query,
@@ -1187,9 +1397,13 @@ class PSKAApi:
                 )
                 final_payload["timing"]["time_to_first_agent_event_ms"] = time_to_first_agent_event_ms
                 for step in _list_of_dicts(final_payload.get("agent_steps"))[len(emitted_steps) :]:
-                    yield ("agent_step", {"step": step, "timing": final_payload.get("timing") or {}})
+                    timing = final_payload.get("timing") or {}
+                    yield ("progress", {"progress": _ask_progress_from_step(step), "timing": timing})
+                    yield ("agent_step", {"step": step, "timing": timing})
                 for event_name, event_payload in _ask_sse_events(final_payload):
                     if event_name in {"route", "agent_step"}:
+                        continue
+                    if event_name == "progress" and ((event_payload.get("progress") or {}).get("step_id") != "evidence_check"):
                         continue
                     yield (event_name, event_payload)
                 return
@@ -1223,7 +1437,9 @@ class PSKAApi:
         if agent_steps:
             time_to_first_agent_event_ms = agent_steps[0].get("elapsed_ms")
             for step in agent_steps:
-                yield ("agent_step", {"step": step, "timing": {"time_to_first_agent_event_ms": time_to_first_agent_event_ms}})
+                timing = {"time_to_first_agent_event_ms": time_to_first_agent_event_ms}
+                yield ("progress", {"progress": _ask_progress_from_step(step), "timing": timing})
+                yield ("agent_step", {"step": step, "timing": timing})
         try:
             event_stream = self.agentic_service.search_event_stream(
                 _ask_deep_query(query=query, surface=surface, scope=scope),
@@ -1245,11 +1461,19 @@ class PSKAApi:
                     if time_to_first_agent_event_ms is None:
                         time_to_first_agent_event_ms = _elapsed_ms(started_at)
                     agent_steps.append(step)
+                    timing = {"time_to_first_agent_event_ms": time_to_first_agent_event_ms}
+                    yield (
+                        "progress",
+                        {
+                            "progress": _ask_progress_from_step(step),
+                            "timing": timing,
+                        },
+                    )
                     yield (
                         "agent_step",
                         {
                             "step": step,
-                            "timing": {"time_to_first_agent_event_ms": time_to_first_agent_event_ms},
+                            "timing": timing,
                         },
                     )
         except AgenticServiceError as exc:
@@ -2254,7 +2478,17 @@ class PSKAApi:
         metrics = _connector_metrics(source_items, connector_states)
         recent_sources = _console_recent_sources(source_items, owner_user_id=owner_user_id, limit=limit)
         states = [_console_connector_state(state) for state in connector_states[:limit]]
-        source_cards = [_console_knowledge_source(source, self.store.list_sync_runs(tenant_id=tenant_id, knowledge_source_id=source.knowledge_source_id, limit=1)) for source in knowledge_sources[:limit]]
+        processing_spans = self.store.list_processing_spans(tenant_id=tenant_id, limit=max(limit * 6, 50))
+        source_cards = []
+        for source in knowledge_sources[:limit]:
+            sync_runs = self.store.list_sync_runs(tenant_id=tenant_id, knowledge_source_id=source.knowledge_source_id, limit=3)
+            latest_sync_run_id = sync_runs[0].sync_run_id if sync_runs else None
+            source_spans = [
+                span
+                for span in processing_spans
+                if span.knowledge_source_id == source.knowledge_source_id and (latest_sync_run_id is None or span.sync_run_id == latest_sync_run_id)
+            ]
+            source_cards.append(_console_knowledge_source(source, sync_runs, source_spans))
         files_roots = _console_knowledge_source_roots(source_cards) or _console_files_roots(states)
         input_sources = _console_input_sources(self.config, source_cards)
         return {
@@ -2263,15 +2497,17 @@ class PSKAApi:
             "tenant_id": tenant_id,
             "read_only": True,
             "source_counts": {
-                "source_items": self.store.count_table("source_items"),
-                "documents": self.store.count_table("documents"),
-                "chunks": self.store.count_table("chunks"),
+                "source_items": self.store.count_table("source_items", tenant_id=tenant_id),
+                "documents": self.store.count_table("documents", tenant_id=tenant_id),
+                "chunks": self.store.count_table("chunks", tenant_id=tenant_id),
+                "processing_spans": self.store.count_table("processing_spans", tenant_id=tenant_id),
             },
             "source_channels": metrics.get("source_channels") or {},
             "knowledge_sources": {
                 "source_count": len(knowledge_sources),
                 "sources": source_cards,
             },
+            "source_adapters": supported_source_adapters(),
             "recent_sources": recent_sources,
             "connector_state": {
                 "state_count": len(connector_states),
@@ -2285,6 +2521,10 @@ class PSKAApi:
                 "recommended_commands": _console_files_commands(files_roots),
             },
             "input_sources": input_sources,
+            "processing_spans": {
+                "span_count": len(processing_spans),
+                "spans": [_console_processing_span(span) for span in processing_spans],
+            },
             "workspace": {
                 "root": str(self.config.workspace.root.expanduser()),
                 "excluded_paths": [str(path) for path in _workspace_excluded_paths(self.config)],
@@ -2594,6 +2834,10 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
             return
         if path == "/ready":
             return self._json(200, self.api.ready())
+        if path == "/workspace/readiness":
+            return self._json(200, self.api.workspace_readiness(context=context))
+        if path == "/workspace/sources/adapters":
+            return self._json(200, {"ok": True, "adapters": supported_source_adapters()})
         if path == "/index-status":
             return self._json(200, self.api.index_status())
         if path == "/metrics":
@@ -2635,6 +2879,16 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
                     owner_user_id=_first(query.get("owner_user_id")) or "user_primary",
                     tenant_id=context.tenant_id,
                     limit=_int_first(query.get("limit")) or 10,
+                ),
+            )
+        if path == "/workspace/digest/data":
+            return self._json(
+                200,
+                self.api.workspace_digest_data(
+                    owner_user_id=_first(query.get("owner_user_id")),
+                    tenant_id=context.tenant_id,
+                    limit=_int_first(query.get("limit")) or 50,
+                    context=context,
                 ),
             )
         if path == "/console/sources/data":
@@ -2814,6 +3068,16 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
                 return self._sse_events(200, self.api.workspace_ask_event_stream(payload, context=context))
             if path == "/workspace/search/query":
                 return self._json(200, self.api.workspace_search(payload, context=context))
+            if path == "/workspace/chunking/preview":
+                return self._json(200, self.api.chunking_preview(payload, context=context))
+            if path == "/workspace/sources/preview":
+                return self._json(200, self.api.source_preview(payload, context=context))
+            if path == "/workspace/sources":
+                return self._json(200, self.api.create_knowledge_source(payload, context=context))
+            if path == "/workspace/sources/sync":
+                return self._json(200, self.api.sync_knowledge_sources(payload, context=context))
+            if path == "/workspace/digest/run":
+                return self._json(200, self.api.workspace_digest_run(payload, context=context))
             if path == "/workspace/writer/suggest":
                 return self._json(200, self.api.workspace_writer_suggest(payload, context=context))
             if path == "/workspace/activity":
@@ -2849,6 +3113,10 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
                 return self._json(200, self.api.write_candidates(payload, context=context))
             if path == "/files/sync":
                 return self._json(200, self.api.files_sync(payload, context=context))
+            if path.startswith("/knowledge-sources/") and path.endswith("/sync"):
+                knowledge_source_id = path.removeprefix("/knowledge-sources/").removesuffix("/sync")
+                payload["knowledge_source_ids"] = [knowledge_source_id]
+                return self._json(200, self.api.sync_knowledge_sources(payload, context=context))
             if path.startswith("/knowledge-sources/") and path.endswith("/cleanup"):
                 knowledge_source_id = path.removeprefix("/knowledge-sources/").removesuffix("/cleanup")
                 return self._json(200, self.api.cleanup_knowledge_source(knowledge_source_id, payload, context=context))
@@ -4559,6 +4827,42 @@ def _ask_agent_step(
     }
 
 
+def _ask_progress_from_step(step: dict[str, Any]) -> dict[str, Any]:
+    stage = _ask_progress_stage(str(step.get("phase") or ""), str(step.get("tool_name") or ""))
+    return {
+        "stage": stage,
+        "phase": step.get("phase"),
+        "status": step.get("status"),
+        "title": step.get("title"),
+        "detail": step.get("detail"),
+        "step_id": step.get("step_id"),
+        "tool_name": step.get("tool_name"),
+        "elapsed_ms": step.get("elapsed_ms"),
+        "evidence_count": step.get("evidence_count"),
+        "source_ref_count": step.get("source_ref_count"),
+    }
+
+
+def _ask_progress_stage(phase: str, tool_name: str) -> str:
+    phase = phase.strip().lower()
+    tool_name = tool_name.strip().lower()
+    if phase in {"understand", "route", "think", "inspect"}:
+        return "understand"
+    if phase in {"search", "tool"} or tool_name == "pska_pska_search":
+        return "search"
+    if phase == "rerank":
+        return "rerank"
+    if phase == "graph" or tool_name == "pska_pska_graph_context":
+        return "graph"
+    if phase in {"read", "digest"} or tool_name in {"pska_pska_read_evidence_context", "pska_pska_digest_context"}:
+        return "read"
+    if phase in {"evidence_check", "answer"}:
+        return "evidence_check" if phase == "evidence_check" else "generate"
+    if phase == "error":
+        return "evidence_check"
+    return "generate"
+
+
 def _ask_think_step_title(event: dict[str, Any]) -> str:
     content = str(event.get("content") or "")
     if "context_compression" in content.lower() or "context_compression" in str(event.get("metadata") or "").lower():
@@ -4983,7 +5287,27 @@ def _ask_sse_events(payload: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]
         ("route", {"route": payload.get("route") or {}, "timing": timing}),
     ]
     for step in _list_of_dicts(payload.get("agent_steps")):
+        events.append(("progress", {"progress": _ask_progress_from_step(step), "timing": timing}))
         events.append(("agent_step", {"step": step, "timing": timing}))
+    quality_signals = payload.get("quality_signals") if isinstance(payload.get("quality_signals"), dict) else {}
+    events.append(
+        (
+            "progress",
+            {
+                "progress": {
+                    "stage": "evidence_check",
+                    "phase": "evidence_check",
+                    "status": "complete" if not quality_signals.get("low_evidence") else "warning",
+                    "title": "证据校验",
+                    "detail": "已检查引用、证据数量和可回答性。",
+                    "step_id": "evidence_check",
+                    "evidence_count": quality_signals.get("evidence_count"),
+                    "source_ref_count": quality_signals.get("citation_count"),
+                },
+                "timing": timing,
+            },
+        )
+    )
     events.extend(
         [
             (
@@ -7207,10 +7531,11 @@ def _console_connector_state(state: Any) -> dict[str, Any]:
     }
 
 
-def _console_knowledge_source(source: Any, sync_runs: list[Any]) -> dict[str, Any]:
+def _console_knowledge_source(source: Any, sync_runs: list[Any], processing_spans: list[Any] | None = None) -> dict[str, Any]:
     latest = sync_runs[0] if sync_runs else None
     config = getattr(source, "config", {}) or {}
     permission_scope = getattr(source, "permission_scope", {}) or {}
+    spans = [_console_processing_span(span) for span in (processing_spans or [])]
     return {
         "knowledge_source_id": getattr(source, "knowledge_source_id", None),
         "name": getattr(source, "name", None),
@@ -7222,8 +7547,41 @@ def _console_knowledge_source(source: Any, sync_runs: list[Any]) -> dict[str, An
         "path": config.get("path") or permission_scope.get("path"),
         "last_sync_at": getattr(source, "last_sync_at", None),
         "last_error": getattr(source, "last_error", None),
+        "processing_config": (config.get("processing") if isinstance(config.get("processing"), dict) else None),
         "last_sync_run": to_jsonable(latest) if latest else None,
+        "sync_runs": to_jsonable(sync_runs),
+        "latest_processing_spans": spans,
+        "processing_status": _processing_status_summary(spans),
     }
+
+
+def _console_processing_span(span: Any) -> dict[str, Any]:
+    return {
+        "processing_span_id": getattr(span, "processing_span_id", None),
+        "knowledge_source_id": getattr(span, "knowledge_source_id", None),
+        "sync_run_id": getattr(span, "sync_run_id", None),
+        "source_item_id": getattr(span, "source_item_id", None),
+        "stage": getattr(span, "stage", None),
+        "status": getattr(span, "status", None),
+        "started_at": getattr(span, "started_at", None),
+        "finished_at": getattr(span, "finished_at", None),
+        "duration_ms": getattr(span, "duration_ms", None),
+        "input": getattr(span, "input", {}) or {},
+        "output": getattr(span, "output", {}) or {},
+        "metadata": getattr(span, "metadata", {}) or {},
+        "error": getattr(span, "error", None),
+    }
+
+
+def _processing_status_summary(spans: list[dict[str, Any]]) -> dict[str, Any]:
+    if not spans:
+        return {"status": "unknown", "failed": 0, "pending": 0, "succeeded": 0, "skipped": 0}
+    counts: dict[str, int] = {}
+    for span in spans:
+        status = str(span.get("status") or "unknown")
+        counts[status] = counts.get(status, 0) + 1
+    status = "failed" if counts.get("failed") else ("pending" if counts.get("pending") else "succeeded")
+    return {"status": status, **counts}
 
 
 def _console_knowledge_source_roots(sources: list[dict[str, Any]]) -> list[str]:
@@ -7235,6 +7593,89 @@ def _console_knowledge_source_roots(sources: list[dict[str, Any]]) -> list[str]:
             continue
         roots.append(str(source.get("path")))
     return list(dict.fromkeys(roots))
+
+
+def _source_item_ids_for_knowledge_sources(store: Any, *, tenant_id: str, knowledge_source_ids: list[str]) -> list[str]:
+    source_item_ids: list[str] = []
+    for knowledge_source_id in knowledge_source_ids:
+        for run in store.list_sync_runs(tenant_id=tenant_id, knowledge_source_id=knowledge_source_id, limit=20):
+            report = dict(getattr(run, "report", {}) or {})
+            source_item_ids.extend(_string_list(report.get("source_item_ids")))
+    return list(dict.fromkeys(source_item_ids))
+
+
+def _draft_knowledge_source_from_payload(payload: dict[str, Any], *, context: RequestContext | None = None) -> KnowledgeSource:
+    owner_user_id = _owner_user_id_for_write(payload, context)
+    tenant_id = str(payload.get("tenant_id") or (context.tenant_id if context else DEFAULT_TENANT_ID))
+    source_type = _normal_source_type(payload.get("source_type") or payload.get("kind") or payload.get("type"))
+    value = _source_value_from_payload(payload, source_type)
+    visibility = Visibility(str(payload.get("visibility") or Visibility.PRIVATE))
+    processing_config = payload.get("processing_config") if isinstance(payload.get("processing_config"), dict) else None
+    if source_type == "folder":
+        root = Path(value).expanduser().resolve(strict=False)
+        uri = root.as_uri()
+        connector_id = "files"
+        config: dict[str, Any] = {"path": str(root), "ignore": _string_list(payload.get("ignore")), "max_bytes": _optional_positive_int(payload.get("max_bytes")) or 1_000_000}
+        permission_scope = {"path": str(root), "read_scope": "explicit_directory"}
+        name = str(payload.get("name") or root.name or str(root))
+    else:
+        uri = value
+        connector_id = "rss" if source_type == "rss" else "url"
+        config = {"url": uri}
+        permission_scope = {"url": uri, "read_scope": "explicit_url"}
+        name = str(payload.get("name") or _url_display_name(uri))
+    if processing_config:
+        config["processing"] = processing_config
+    return KnowledgeSource(
+        knowledge_source_id=knowledge_source_id(owner_user_id, uri, tenant_id=tenant_id),
+        owner_user_id=owner_user_id,
+        name=name,
+        source_type=source_type,
+        uri=uri,
+        mode="preview",
+        status="authorized",
+        connector_id=connector_id,
+        space_id=str(payload.get("space_id") or "private_primary"),
+        visibility=visibility,
+        visible_team_ids=_string_list(payload.get("visible_team_ids")),
+        permission_scope=permission_scope,
+        config=config,
+        tenant_id=tenant_id,
+    )
+
+
+def _source_value_from_payload(payload: dict[str, Any], source_type: str) -> str:
+    if source_type == "folder":
+        value = payload.get("path") or payload.get("root") or payload.get("uri") or payload.get("url")
+    else:
+        value = payload.get("url") or payload.get("uri") or payload.get("path")
+    value = str(value or "").strip()
+    if not value:
+        raise ValueError(f"{source_type} source requires a value")
+    return value
+
+
+def _normal_source_type(value: Any) -> str:
+    source_type = str(value or "url").strip().lower()
+    aliases = {
+        "files": "folder",
+        "file": "folder",
+        "local": "folder",
+        "directory": "folder",
+        "feed": "rss",
+        "atom": "rss",
+        "rss_atom": "rss",
+        "page": "url",
+        "web": "url",
+        "sitemap": "url",
+    }
+    return aliases.get(source_type, source_type)
+
+
+def _url_display_name(url: str) -> str:
+    parsed = urlparse(url)
+    name = Path(parsed.path).name
+    return name or parsed.netloc or url
 
 
 def _console_files_roots(states: list[dict[str, Any]]) -> list[str]:
@@ -7405,6 +7846,7 @@ def _cleanup_counts(conn: Any, source_item_ids: list[str], knowledge_source_id: 
                 "source_items": 0,
                 "documents": 0,
                 "chunks": 0,
+                "processing_spans": _count_processing_spans_for_source(conn, knowledge_source_id, source_item_ids),
                 "offline_index_states": 0,
                 "knowledge_claims": 0,
                 "digest_notes": 0,
@@ -7425,6 +7867,7 @@ def _cleanup_counts(conn: Any, source_item_ids: list[str], knowledge_source_id: 
             "source_items": len(source_item_ids),
             "documents": _count_sql(conn, "select count(*) from documents where source_item_id = any(%s)", params),
             "chunks": _count_sql(conn, "select count(*) from chunks where source_item_id = any(%s)", params),
+            "processing_spans": _count_processing_spans_for_source(conn, knowledge_source_id, source_item_ids),
             "offline_index_states": _count_sql(
                 conn,
                 """
@@ -7475,7 +7918,10 @@ def _execute_knowledge_source_cleanup(
         deleted["orphan_entities"] = _delete_by_ids(conn, "entities", "entity_id", orphan_entity_ids)
         deleted["jobs"] = _delete_text_refs(conn, "jobs", "payload", source_item_ids)
         deleted["offline_index_states"] = _delete_offline_index_states(conn, source_item_ids)
+        deleted["processing_spans"] = _delete_processing_spans_for_source(conn, knowledge_source_id, source_item_ids)
         deleted["source_items"] = _delete_by_ids(conn, "source_items", "source_item_id", source_item_ids)
+    else:
+        deleted["processing_spans"] = _delete_processing_spans_for_source(conn, knowledge_source_id, source_item_ids)
     deleted["sync_runs"] = _delete_where(conn, "delete from sync_runs where knowledge_source_id = %s", (knowledge_source_id,))
     if delete_knowledge_source:
         deleted["knowledge_sources"] = _delete_where(conn, "delete from knowledge_sources where knowledge_source_id = %s", (knowledge_source_id,))
@@ -7502,6 +7948,39 @@ def _source_ref_exists_sql(column: str = "source_refs") -> str:
       where ref->>'source_item_id' = any(%s)
     )
     """
+
+
+def _processing_spans_for_source_where(source_item_ids: list[str]) -> str:
+    source_item_clause = "or source_item_id = any(%s)" if source_item_ids else ""
+    return f"""
+    where knowledge_source_id = %s
+       {source_item_clause}
+       or sync_run_id in (
+            select sync_run_id from sync_runs where knowledge_source_id = %s
+       )
+    """
+
+
+def _processing_spans_for_source_params(knowledge_source_id: str, source_item_ids: list[str]) -> tuple[Any, ...]:
+    if source_item_ids:
+        return (knowledge_source_id, source_item_ids, knowledge_source_id)
+    return (knowledge_source_id, knowledge_source_id)
+
+
+def _count_processing_spans_for_source(conn: Any, knowledge_source_id: str, source_item_ids: list[str]) -> int:
+    return _count_sql(
+        conn,
+        f"select count(*) from processing_spans {_processing_spans_for_source_where(source_item_ids)}",
+        _processing_spans_for_source_params(knowledge_source_id, source_item_ids),
+    )
+
+
+def _delete_processing_spans_for_source(conn: Any, knowledge_source_id: str, source_item_ids: list[str]) -> int:
+    return _delete_where(
+        conn,
+        f"delete from processing_spans {_processing_spans_for_source_where(source_item_ids)}",
+        _processing_spans_for_source_params(knowledge_source_id, source_item_ids),
+    )
 
 
 def _count_source_refs(conn: Any, table: str, source_item_ids: list[str], *, source_refs_column: str = "source_refs") -> int:
@@ -7661,6 +8140,8 @@ def _console_next_actions(*, pending_review_count: int, failed_job_count: int, d
 
 
 def _string_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value] if value else []
     if not isinstance(value, list):
         return []
     return [str(item) for item in value if item]

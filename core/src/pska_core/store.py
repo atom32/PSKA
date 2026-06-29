@@ -21,6 +21,7 @@ from pska_core.models import (
     KnowledgeClaim,
     KnowledgeSource,
     OfflineIndexState,
+    ProcessingSpan,
     ReviewItem,
     SourceRef,
     SourceItem,
@@ -54,6 +55,17 @@ class KnowledgeStore(Protocol):
     ) -> list[KnowledgeSource]: ...
     def add_sync_run(self, run: SyncRun) -> SyncRun: ...
     def list_sync_runs(self, *, tenant_id: str | None = None, knowledge_source_id: str | None = None, owner_user_id: str | None = None, limit: int = 50) -> list[SyncRun]: ...
+    def add_processing_span(self, span: ProcessingSpan) -> ProcessingSpan: ...
+    def list_processing_spans(
+        self,
+        *,
+        tenant_id: str | None = None,
+        knowledge_source_id: str | None = None,
+        sync_run_id: str | None = None,
+        source_item_id: str | None = None,
+        stage: str | None = None,
+        limit: int = 100,
+    ) -> list[ProcessingSpan]: ...
     def upsert_connector_state(self, state: ConnectorState) -> ConnectorState: ...
     def get_connector_state(self, connector_state_id: str) -> ConnectorState: ...
     def list_connector_states(self, *, tenant_id: str | None = None, owner_user_id: str | None = None, connector_id: str | None = None) -> list[ConnectorState]: ...
@@ -220,7 +232,7 @@ class KnowledgeStore(Protocol):
     def update_chunk_embedding(self, chunk_id: str, embedding: list[float], *, provider: str, model: str) -> None: ...
     def vector_search_chunks(self, source_item_ids: set[str], query_embedding: list[float], *, top_k: int) -> list[tuple[Chunk, float]]: ...
     def list_hyperedges_for_entities(self, entity_ids: set[str]) -> list[tuple[Hyperedge, list[HyperedgeMember]]]: ...
-    def count_table(self, table: str) -> int: ...
+    def count_table(self, table: str, *, tenant_id: str | None = None) -> int: ...
     def claim_next_job(
         self,
         *,
@@ -246,6 +258,7 @@ class InMemoryKnowledgeStore:
         self.source_items_by_hash: dict[tuple[str, str], str] = {}
         self.knowledge_sources: dict[str, KnowledgeSource] = {}
         self.sync_runs: dict[str, SyncRun] = {}
+        self.processing_spans: dict[str, ProcessingSpan] = {}
         self.connector_states: dict[str, ConnectorState] = {}
         self.documents: dict[str, Document] = {}
         self.chunks: dict[str, Chunk] = {}
@@ -349,6 +362,33 @@ class InMemoryKnowledgeStore:
         if owner_user_id:
             runs = [run for run in runs if run.owner_user_id == owner_user_id]
         return sorted(runs, key=lambda run: run.started_at, reverse=True)[:limit]
+
+    def add_processing_span(self, span: ProcessingSpan) -> ProcessingSpan:
+        self.processing_spans[span.processing_span_id] = span
+        return span
+
+    def list_processing_spans(
+        self,
+        *,
+        tenant_id: str | None = None,
+        knowledge_source_id: str | None = None,
+        sync_run_id: str | None = None,
+        source_item_id: str | None = None,
+        stage: str | None = None,
+        limit: int = 100,
+    ) -> list[ProcessingSpan]:
+        spans = list(self.processing_spans.values())
+        if tenant_id:
+            spans = [span for span in spans if span.tenant_id == tenant_id]
+        if knowledge_source_id:
+            spans = [span for span in spans if span.knowledge_source_id == knowledge_source_id]
+        if sync_run_id:
+            spans = [span for span in spans if span.sync_run_id == sync_run_id]
+        if source_item_id:
+            spans = [span for span in spans if span.source_item_id == source_item_id]
+        if stage:
+            spans = [span for span in spans if span.stage == stage]
+        return sorted(spans, key=lambda span: span.started_at, reverse=True)[:limit]
 
     def upsert_connector_state(self, state: ConnectorState) -> ConnectorState:
         state.updated_at = utc_now()
@@ -1256,11 +1296,12 @@ class InMemoryKnowledgeStore:
             self.add_job_event(job.job_id, event_type, job.error)
         return recovered
 
-    def count_table(self, table: str) -> int:
+    def count_table(self, table: str, *, tenant_id: str | None = None) -> int:
         tables = {
             "source_items": self.source_items,
             "knowledge_sources": self.knowledge_sources,
             "sync_runs": self.sync_runs,
+            "processing_spans": self.processing_spans,
             "connector_states": self.connector_states,
             "documents": self.documents,
             "chunks": self.chunks,
@@ -1288,7 +1329,10 @@ class InMemoryKnowledgeStore:
         }
         if table not in tables:
             raise ValueError(f"Unsupported table: {table}")
-        return len(tables[table])
+        values = tables[table].values() if isinstance(tables[table], dict) else tables[table]
+        if tenant_id:
+            return len([item for item in values if getattr(item, "tenant_id", DEFAULT_TENANT_ID) == tenant_id])
+        return len(list(values))
 
 
 def _cosine_similarity(left: list[float], right: list[float]) -> float:

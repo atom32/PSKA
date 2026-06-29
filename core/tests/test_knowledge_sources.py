@@ -80,3 +80,21 @@ def test_record_sync_report_updates_source_lifecycle(tmp_path: Path) -> None:
     assert run.status == "succeeded"
     assert updated.status == "indexed"
     assert updated.last_sync_at is not None
+
+
+def test_record_sync_report_writes_processing_spans(tmp_path: Path) -> None:
+    root = tmp_path / "notes"
+    root.mkdir()
+    (root / "note.md").write_text("# Title\n\nPSKA chunk preview and digest lineage.", encoding="utf-8")
+    store = InMemoryKnowledgeStore()
+    service = KnowledgeSourceService(store)
+    source = service.add_folder_source(root)
+
+    report = scan_files(store, root=root, processing_config={"chunking": {"strategy": "heading", "chunk_size": 80}})
+    run = service.record_sync_report(source, report)
+    spans = store.list_processing_spans(sync_run_id=run.sync_run_id)
+
+    assert run.report["effective_processing_config"]["chunking"]["strategy"] == "heading"
+    assert {span.stage for span in spans} == {"discover", "extract", "chunk", "embed", "index", "digest"}
+    assert next(span for span in spans if span.stage == "chunk").metadata["chunking"]["chunk_size"] == 80
+    assert next(span for span in spans if span.stage == "digest").status == "pending"

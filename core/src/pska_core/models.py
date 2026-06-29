@@ -197,6 +197,25 @@ class SyncRun:
 
 
 @dataclass(slots=True)
+class ProcessingSpan:
+    processing_span_id: str
+    knowledge_source_id: str
+    owner_user_id: str
+    stage: str
+    status: str
+    started_at: datetime
+    finished_at: datetime | None = None
+    sync_run_id: str | None = None
+    source_item_id: str | None = None
+    duration_ms: int | None = None
+    input: dict[str, Any] = field(default_factory=dict)
+    output: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    error: str | None = None
+    tenant_id: str = DEFAULT_TENANT_ID
+
+
+@dataclass(slots=True)
 class Document:
     document_id: str
     source_item_id: str

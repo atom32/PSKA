@@ -17,6 +17,7 @@ from pska_core.enums import Visibility
 from pska_core.ingest import IngestService
 from pska_core.models import DEFAULT_TENANT_ID, Chunk, ConnectorState, Document, SourceItem
 from pska_core.offline_index import OfflineIndexService
+from pska_core.processing import resolve_processing_config
 from pska_core.store import KnowledgeStore
 
 
@@ -68,6 +69,7 @@ class FilesScanReport:
     failed: list[dict[str, Any]] = field(default_factory=list)
     source_item_ids: list[str] = field(default_factory=list)
     changes: list[dict[str, Any]] = field(default_factory=list)
+    processing_config: dict[str, Any] = field(default_factory=dict)
 
 
 def scan_files(
@@ -82,17 +84,24 @@ def scan_files(
     ignore: list[str] | None = None,
     max_bytes: int = 1_000_000,
     embedding_provider=None,
+    processing_config: dict[str, Any] | None = None,
 ) -> FilesScanReport:
     root = root.expanduser().resolve()
     if not root.exists() or not root.is_dir():
         raise ValueError(f"Files connector root must be an existing directory: {root}")
 
+    effective_processing_config = resolve_processing_config(processing_config)
     state = _connector_state(store, root=root, owner_user_id=owner_user_id, tenant_id=tenant_id)
     if not state.enabled:
-        return FilesScanReport(root=str(root), connector_state=state, skipped=[{"root": str(root), "reason": "connector_disabled"}])
+        return FilesScanReport(
+            root=str(root),
+            connector_state=state,
+            skipped=[{"root": str(root), "reason": "connector_disabled"}],
+            processing_config=effective_processing_config,
+        )
 
-    ingest = IngestService(store, embedding_provider=embedding_provider)
-    report = FilesScanReport(root=str(root), connector_state=state)
+    ingest = IngestService(store, embedding_provider=embedding_provider, processing_config=effective_processing_config)
+    report = FilesScanReport(root=str(root), connector_state=state, processing_config=effective_processing_config)
     latest_cursor = state.scan_cursor
     patterns = [*(ignore or []), *DEFAULT_IGNORE]
     root_key = str(root)
@@ -700,10 +709,11 @@ def _ingest_collection(
             tenant_id=stored.tenant_id,
         )
         documents.append(document)
-        chunk_texts = ingest._chunk_text(text)  # noqa: SLF001 - collection ingest shares the existing chunking policy.
-        chunk_embeddings = ingest.embedding_provider.embed_texts(chunk_texts) if ingest.embedding_provider else [None] * len(chunk_texts)
+        chunk_spans = ingest._chunk_spans(text)  # noqa: SLF001 - collection ingest shares the existing chunking policy.
+        embedding_texts = [span.embedding_text() for span in chunk_spans]
+        chunk_embeddings = ingest.embedding_provider.embed_texts(embedding_texts) if ingest.embedding_provider else [None] * len(chunk_spans)
         chunk_prefix = f"chk_{source_item_id[4:]}_{uuid5(NAMESPACE_URL, source_id + ':' + relative).hex[:12]}"
-        for ordinal, (chunk_text, embedding) in enumerate(zip(chunk_texts, chunk_embeddings)):
+        for ordinal, (span, embedding) in enumerate(zip(chunk_spans, chunk_embeddings)):
             chunks.append(
                 Chunk(
                     chunk_id=f"{chunk_prefix}_{ordinal}",
@@ -713,7 +723,7 @@ def _ingest_collection(
                     space_id=stored.space_id,
                     visibility=stored.visibility,
                     visible_team_ids=stored.visible_team_ids,
-                    text=chunk_text,
+                    text=span.text,
                     ordinal=ordinal,
                     embedding=embedding,
                     metadata={
@@ -721,6 +731,10 @@ def _ingest_collection(
                         "embedding_model": ingest.embedding_provider.model_name if ingest.embedding_provider else None,
                         "chunk_size": ingest.chunk_size,
                         "chunk_overlap": ingest.chunk_overlap,
+                        "chunk_strategy": span.strategy,
+                        "start": span.start,
+                        "end": span.end,
+                        "context_header": span.context_header,
                         "collection": True,
                         "relative_path": relative,
                     },

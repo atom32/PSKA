@@ -1467,6 +1467,37 @@ def test_local_console_data_shows_home_dashboard_with_agentic_service_offline() 
     assert "./scripts/pska daily-briefing" in payload["recommended_commands"]
 
 
+def test_console_dashboard_source_counts_are_tenant_scoped() -> None:
+    api = _api()
+    api.store.add_user(User("user_tenant_a", "tenant-a", UserRole.USER, tenant_id="tenant_a"))
+    api.store.add_user(User("user_tenant_b", "tenant-b", UserRole.USER, tenant_id="tenant_b"))
+    ingest = IngestService(api.store)
+
+    ingest.ingest_channel_payload(
+        {
+            **_minimal_ingest_payload("tenant-a-source"),
+            "tenant_id": "tenant_a",
+            "owner_user_id": "user_tenant_a",
+            "content": {"text": "Tenant A has one source."},
+        }
+    )
+    for source_id in ("tenant-b-source-one", "tenant-b-source-two"):
+        ingest.ingest_channel_payload(
+            {
+                **_minimal_ingest_payload(source_id),
+                "tenant_id": "tenant_b",
+                "owner_user_id": "user_tenant_b",
+                "content": {"text": f"Tenant B source {source_id}."},
+            }
+        )
+
+    tenant_a = api.console_dashboard(owner_user_id="user_tenant_a", tenant_id="tenant_a")
+    tenant_b = api.console_dashboard(owner_user_id="user_tenant_b", tenant_id="tenant_b")
+
+    assert tenant_a["source_counts"] == {"source_items": 1, "chunks": 1}
+    assert tenant_b["source_counts"] == {"source_items": 2, "chunks": 2}
+
+
 def test_local_console_review_inbox_summarizes_pending_reviews() -> None:
     api = _api()
     api.store.add_review_item(

@@ -1,12 +1,16 @@
 import type {
   BrainState,
+  ChunkingPreviewResponse,
   ConsoleSourcesResponse,
   DigestLogsResponse,
   DigestNowResponse,
   FileSyncResponse,
   KnowledgeSourceCleanupResponse,
+  KnowledgeSourceCreateResponse,
   ReviewCenterResponse,
   ReviewActionResponse,
+  SourcePreviewResponse,
+  SourceSyncResponse,
   TodayResponse,
   WorkspaceActivityResponse,
   WorkspaceActivityType,
@@ -301,6 +305,75 @@ export async function loadDigestLogs(serviceToken: PSKAAuth, limit = 8): Promise
   return (await response.json()) as DigestLogsResponse;
 }
 
+export async function previewChunking(
+  serviceToken: PSKAAuth,
+  payload: { text: string; chunking?: Record<string, unknown>; processing_config?: Record<string, unknown> }
+): Promise<ChunkingPreviewResponse> {
+  const response = await fetch("/workspace/chunking/preview", {
+    method: "POST",
+    headers: headers(serviceToken),
+    body: JSON.stringify({
+      ...payload,
+      ...requestUserPayload(serviceToken)
+    })
+  });
+  if (!response.ok) {
+    throw new Error(await responseError(response, "Chunk preview 失败"));
+  }
+  return (await response.json()) as ChunkingPreviewResponse;
+}
+
+export async function previewKnowledgeSource(
+  serviceToken: PSKAAuth,
+  payload: { source_type: string; url?: string; path?: string; name?: string; limit?: number }
+): Promise<SourcePreviewResponse> {
+  const response = await fetch("/workspace/sources/preview", {
+    method: "POST",
+    headers: headers(serviceToken),
+    body: JSON.stringify({
+      ...payload,
+      ...requestUserPayload(serviceToken)
+    })
+  });
+  if (!response.ok) {
+    throw new Error(await responseError(response, "预览输入源失败"));
+  }
+  return (await response.json()) as SourcePreviewResponse;
+}
+
+export async function createKnowledgeSource(
+  serviceToken: PSKAAuth,
+  payload: { source_type: string; url?: string; path?: string; name?: string; preview?: boolean }
+): Promise<KnowledgeSourceCreateResponse> {
+  const response = await fetch("/workspace/sources", {
+    method: "POST",
+    headers: headers(serviceToken),
+    body: JSON.stringify({
+      ...payload,
+      ...requestUserPayload(serviceToken)
+    })
+  });
+  if (!response.ok) {
+    throw new Error(await responseError(response, "添加输入源失败"));
+  }
+  return (await response.json()) as KnowledgeSourceCreateResponse;
+}
+
+export async function syncKnowledgeSources(serviceToken: PSKAAuth, knowledgeSourceId?: string): Promise<SourceSyncResponse> {
+  const response = await fetch("/workspace/sources/sync", {
+    method: "POST",
+    headers: headers(serviceToken),
+    body: JSON.stringify({
+      ...(knowledgeSourceId ? { knowledge_source_ids: [knowledgeSourceId] } : {}),
+      ...requestUserPayload(serviceToken)
+    })
+  });
+  if (!response.ok) {
+    throw new Error(await responseError(response, "同步 Knowledge Sources 失败"));
+  }
+  return (await response.json()) as SourceSyncResponse;
+}
+
 export async function cleanupKnowledgeSource(
   serviceToken: PSKAAuth,
   knowledgeSourceId: string,
@@ -421,6 +494,7 @@ export async function askWorkspaceStream(
     citations: [],
     source_refs: [],
     agent_steps: [],
+    progress: [],
     timing: {},
     evidence: {}
   };
@@ -598,7 +672,15 @@ function consumeAskSseBuffer(
     const parsed = parseAskSseFrame(frame);
     if (parsed) {
       applyAskSseEvent(result, parsed.event, parsed.data);
-      onUpdate?.({ event: parsed.event, data: parsed.data, result: { ...result, agent_steps: [...(result.agent_steps || [])] } });
+      onUpdate?.({
+        event: parsed.event,
+        data: parsed.data,
+        result: {
+          ...result,
+          agent_steps: [...(result.agent_steps || [])],
+          progress: [...(result.progress || [])]
+        }
+      });
     }
     boundary = remaining.indexOf("\n\n");
   }
@@ -637,6 +719,14 @@ function applyAskSseEvent(result: WorkspaceAskResponse, event: string, data: Rec
     const step = isRecord(data.step) ? data.step : null;
     if (step) {
       result.agent_steps = [...(result.agent_steps || []), step as NonNullable<WorkspaceAskResponse["agent_steps"]>[number]];
+    }
+    result.timing = { ...(result.timing || {}), ...(isRecord(data.timing) ? data.timing as WorkspaceAskResponse["timing"] : {}) };
+    return;
+  }
+  if (event === "progress") {
+    const progress = isRecord(data.progress) ? data.progress : null;
+    if (progress) {
+      result.progress = [...(result.progress || []), progress as NonNullable<WorkspaceAskResponse["progress"]>[number]];
     }
     result.timing = { ...(result.timing || {}), ...(isRecord(data.timing) ? data.timing as WorkspaceAskResponse["timing"] : {}) };
     return;

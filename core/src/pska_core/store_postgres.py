@@ -28,6 +28,7 @@ from pska_core.models import (
     KnowledgeClaim,
     KnowledgeSource,
     OfflineIndexState,
+    ProcessingSpan,
     ReviewItem,
     SourceRef,
     SourceItem,
@@ -444,6 +445,82 @@ class PostgresKnowledgeStore:
                 params,
             ).fetchall()
         return [self._sync_run_from_row(row) for row in rows]
+
+    def add_processing_span(self, span: ProcessingSpan) -> ProcessingSpan:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                insert into processing_spans(
+                    processing_span_id, knowledge_source_id, owner_user_id, stage, status,
+                    started_at, finished_at, sync_run_id, source_item_id, duration_ms,
+                    input_payload, output_payload, metadata, error, tenant_id
+                )
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                on conflict (processing_span_id) do update
+                set status = excluded.status,
+                    finished_at = excluded.finished_at,
+                    duration_ms = excluded.duration_ms,
+                    input_payload = excluded.input_payload,
+                    output_payload = excluded.output_payload,
+                    metadata = excluded.metadata,
+                    error = excluded.error
+                returning *
+                """,
+                (
+                    span.processing_span_id,
+                    span.knowledge_source_id,
+                    span.owner_user_id,
+                    span.stage,
+                    span.status,
+                    span.started_at,
+                    span.finished_at,
+                    span.sync_run_id,
+                    span.source_item_id,
+                    span.duration_ms,
+                    Jsonb(to_jsonable(span.input)),
+                    Jsonb(to_jsonable(span.output)),
+                    Jsonb(to_jsonable(span.metadata)),
+                    span.error,
+                    span.tenant_id,
+                ),
+            ).fetchone()
+        return self._processing_span_from_row(row)
+
+    def list_processing_spans(
+        self,
+        *,
+        tenant_id: str | None = None,
+        knowledge_source_id: str | None = None,
+        sync_run_id: str | None = None,
+        source_item_id: str | None = None,
+        stage: str | None = None,
+        limit: int = 100,
+    ) -> list[ProcessingSpan]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if tenant_id:
+            clauses.append("tenant_id = %s")
+            params.append(tenant_id)
+        if knowledge_source_id:
+            clauses.append("knowledge_source_id = %s")
+            params.append(knowledge_source_id)
+        if sync_run_id:
+            clauses.append("sync_run_id = %s")
+            params.append(sync_run_id)
+        if source_item_id:
+            clauses.append("source_item_id = %s")
+            params.append(source_item_id)
+        if stage:
+            clauses.append("stage = %s")
+            params.append(stage)
+        where = " where " + " and ".join(clauses) if clauses else ""
+        params.append(limit)
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"select * from processing_spans{where} order by started_at desc limit %s",  # noqa: S608 - fixed clauses only.
+                params,
+            ).fetchall()
+        return [self._processing_span_from_row(row) for row in rows]
 
     def get_connector_state(self, connector_state_id: str) -> ConnectorState:
         with self.connect() as conn:
@@ -2319,7 +2396,7 @@ class PostgresKnowledgeStore:
                 self.add_job_event(job.job_id, "stale_failed", job.error or "Stale running job exceeded max attempts")
         return jobs
 
-    def count_table(self, table: str) -> int:
+    def count_table(self, table: str, *, tenant_id: str | None = None) -> int:
         if table not in {
             "source_items",
             "documents",
@@ -2342,6 +2419,7 @@ class PostgresKnowledgeStore:
             "job_events",
             "knowledge_sources",
             "sync_runs",
+            "processing_spans",
             "connector_states",
             "offline_index_states",
             "workspace_activity_events",
@@ -2352,7 +2430,10 @@ class PostgresKnowledgeStore:
         }:
             raise ValueError(f"Unsupported table: {table}")
         with self.connect() as conn:
-            row = conn.execute(f"select count(*) as count from {table}").fetchone()
+            if tenant_id:
+                row = conn.execute(f"select count(*) as count from {table} where tenant_id = %s", (tenant_id,)).fetchone()
+            else:
+                row = conn.execute(f"select count(*) as count from {table}").fetchone()
         return int(row["count"])
 
     def _source_item_from_row(self, row: dict[str, Any]) -> SourceItem:
@@ -2549,6 +2630,25 @@ class PostgresKnowledgeStore:
             failed=int(row.get("failed") or 0),
             error=row.get("error"),
             report=dict(row.get("report") or {}),
+            tenant_id=row.get("tenant_id") or DEFAULT_TENANT_ID,
+        )
+
+    def _processing_span_from_row(self, row: dict[str, Any]) -> ProcessingSpan:
+        return ProcessingSpan(
+            processing_span_id=row["processing_span_id"],
+            knowledge_source_id=row["knowledge_source_id"],
+            owner_user_id=row["owner_user_id"],
+            stage=row["stage"],
+            status=row["status"],
+            started_at=row["started_at"],
+            finished_at=row["finished_at"],
+            sync_run_id=row["sync_run_id"],
+            source_item_id=row["source_item_id"],
+            duration_ms=row["duration_ms"],
+            input=dict(row["input_payload"] or {}),
+            output=dict(row["output_payload"] or {}),
+            metadata=dict(row["metadata"] or {}),
+            error=row["error"],
             tenant_id=row.get("tenant_id") or DEFAULT_TENANT_ID,
         )
 

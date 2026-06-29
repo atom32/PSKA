@@ -1243,6 +1243,53 @@ def test_digest_now_candidate_summary_counts_fastreact_writes() -> None:
     }
 
 
+def test_digest_now_candidate_summary_prefers_persisted_counts_when_store_is_available() -> None:
+    store = InMemoryKnowledgeStore()
+    store.add_knowledge_claim(
+        KnowledgeClaim(
+            knowledge_claim_id="claim_real",
+            owner_user_id="writer",
+            claim_type="fact",
+            statement="Persisted claims should define the digest-now summary.",
+            evidence_text="Persisted evidence",
+            source_refs=[SourceRef(source_item_id="src_real")],
+            confidence=0.9,
+            job_id="job_real",
+            tenant_id="tenant_real",
+        )
+    )
+
+    summary = _digest_now_candidate_summary(
+        [
+            {
+                "result": {
+                    "leased_job": {"job_id": "job_real"},
+                    "fastreact_runs": [
+                        {
+                            "tool_calls": [
+                                {
+                                    "tool_name": "pska_pska_write_candidates",
+                                    "job_id": "job_real",
+                                    "knowledge_claim_count": 0,
+                                    "digest_note_count": 1,
+                                }
+                            ]
+                        }
+                    ],
+                }
+            }
+        ],
+        store=store,
+        owner_user_id="writer",
+        tenant_id="tenant_real",
+    )
+
+    assert summary["tool_calls"] == 1
+    assert summary["knowledge_claims"] == 1
+    assert summary["digest_notes"] == 0
+    assert summary["persisted_candidate_counts"]["job_ids"] == ["job_real"]
+
+
 def test_digest_now_diagnostics_warns_when_worker_does_not_write_candidates() -> None:
     diagnostics = _digest_now_diagnostics(
         [

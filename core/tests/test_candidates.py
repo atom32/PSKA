@@ -435,6 +435,68 @@ def test_digest_note_accepts_common_llm_readable_item_fields() -> None:
     assert note.relationship_suggestions[0]["summary"] == "This links PSKA to FastReAct operationally."
 
 
+def test_digest_note_can_derive_missing_title_and_synopsis_from_readable_items() -> None:
+    store = _store_with_source()
+    source_id = next(iter(store.source_items))
+
+    summary = CandidateWriteService(store).write_candidates(
+        {
+            "schema_version": "pska.candidates.v1",
+            "owner_user_id": "user_primary",
+            "source_refs": [{"source_item_id": source_id}],
+            "digest_notes": [
+                {
+                    "key_points": [{"point": "PSKA can normalize a readable digest note from common LLM fields."}],
+                    "source_refs": [{"source_item_id": source_id}],
+                }
+            ],
+        }
+    )
+
+    note = store.list_digest_notes(owner_user_id="user_primary")[0]
+    assert summary["digest_notes"]
+    assert note.title == "PSKA can normalize a readable digest note from common LLM fields."
+    assert note.synopsis == "PSKA can normalize a readable digest note from common LLM fields."
+    assert note.key_points[0]["source_refs"][0]["source_item_id"] == source_id
+
+
+def test_digest_note_preflight_prevents_partial_claim_writes() -> None:
+    store = _store_with_source()
+    source_id = next(iter(store.source_items))
+
+    try:
+        CandidateWriteService(store).write_candidates(
+            {
+                "schema_version": "pska.candidates.v1",
+                "owner_user_id": "user_primary",
+                "source_refs": [{"source_item_id": source_id}],
+                "knowledge_claims": [
+                    {
+                        "claim_type": "fact",
+                        "statement": "This claim should not be partially persisted.",
+                        "evidence_text": "PSKA depends on Fastreact for agentic service loops.",
+                        "confidence": 0.9,
+                    }
+                ],
+                "digest_notes": [
+                    {
+                        "title": "Invalid digest",
+                        "synopsis": "The note contains an unreadable child item.",
+                        "key_points": [{"score": 1}],
+                        "source_refs": [{"source_item_id": source_id}],
+                    }
+                ],
+            }
+        )
+    except CandidateWriteError as exc:
+        assert "readable text" in str(exc)
+    else:
+        raise AssertionError("expected CandidateWriteError")
+
+    assert store.list_knowledge_claims(owner_user_id="user_primary") == []
+    assert store.list_digest_notes(owner_user_id="user_primary") == []
+
+
 def test_knowledge_claim_requires_evidence_and_low_confidence_claim_requires_review() -> None:
     store = _store_with_source()
     source_id = next(iter(store.source_items))

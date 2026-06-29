@@ -325,6 +325,7 @@ export type WorkspaceAskResponse = {
   citations?: Array<Record<string, unknown>>;
   source_refs?: Array<Record<string, unknown>>;
   agent_steps?: Array<WorkspaceAskAgentStep>;
+  progress?: Array<WorkspaceAskProgress>;
   trace?: Record<string, unknown>;
   timing?: {
     total_ms?: number;
@@ -336,6 +337,19 @@ export type WorkspaceAskResponse = {
   tenant_id?: string;
   owner_user_id?: string;
   error?: string | { message?: string; detail?: string; type?: string };
+};
+
+export type WorkspaceAskProgress = {
+  stage?: "understand" | "search" | "rerank" | "graph" | "read" | "generate" | "evidence_check" | string;
+  phase?: string;
+  status?: string;
+  title?: string;
+  detail?: string;
+  step_id?: string;
+  tool_name?: string | null;
+  elapsed_ms?: number | null;
+  evidence_count?: number | null;
+  source_ref_count?: number | null;
 };
 
 export type WorkspaceAskAgentStep = {
@@ -378,6 +392,70 @@ export type FileSyncResponse = {
     reason?: string;
   };
   failed?: Array<{ error?: string } | string>;
+};
+
+export type SourceAdapterDefinition = {
+  source_type?: string;
+  connector_id?: string;
+  label?: string;
+};
+
+export type SourcePreviewResource = {
+  resource_id?: string;
+  title?: string;
+  uri?: string;
+  record_type?: string;
+  updated_at?: string | null;
+  content_hash?: string | null;
+  summary?: string;
+  metadata?: Record<string, unknown>;
+};
+
+export type SourcePreviewResponse = {
+  ok?: boolean;
+  source?: Record<string, unknown>;
+  preview?: {
+    ok?: boolean;
+    count?: number;
+    validation?: Record<string, unknown>;
+    resources?: SourcePreviewResource[];
+  };
+  adapters?: SourceAdapterDefinition[];
+  error?: string;
+};
+
+export type KnowledgeSourceCreateResponse = {
+  ok?: boolean;
+  knowledge_source?: {
+    knowledge_source_id?: string;
+    name?: string;
+    source_type?: string;
+    uri?: string;
+    path?: string;
+    status?: string;
+  };
+  preview?: SourcePreviewResponse["preview"] | null;
+  adapters?: SourceAdapterDefinition[];
+  error?: string;
+};
+
+export type SourceSyncResponse = {
+  ok?: boolean;
+  totals?: {
+    sources?: number;
+    scanned?: number;
+    ingested?: number;
+    new_files?: number;
+    changed_files?: number;
+    unchanged_files?: number;
+    skipped?: number;
+    failed?: number;
+  };
+  failed?: Array<{ error?: string } | string>;
+  knowledge_sources?: Array<Record<string, unknown>>;
+  sync_runs?: Array<Record<string, unknown>>;
+  reports?: Array<Record<string, unknown>>;
+  error?: string;
 };
 
 export type DigestNowResponse = {
@@ -484,6 +562,22 @@ export type ConsoleSourceSummary = {
 
 export type ConsoleSourceChannelStats = number | { source_items?: number; latest_source_item_id?: string; latest_source_item_at?: string };
 
+export type ProcessingSpan = {
+  processing_span_id?: string;
+  knowledge_source_id?: string;
+  sync_run_id?: string | null;
+  source_item_id?: string | null;
+  stage?: string;
+  status?: string;
+  started_at?: string;
+  finished_at?: string | null;
+  duration_ms?: number | null;
+  input?: Record<string, unknown>;
+  output?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+  error?: string | null;
+};
+
 export type ConsoleSourcesResponse = {
   ok?: boolean;
   read_only?: boolean;
@@ -500,6 +594,9 @@ export type ConsoleSourcesResponse = {
       mode?: string;
       status?: string;
       connector_id?: string;
+      processing_config?: Record<string, unknown> | null;
+      latest_processing_spans?: ProcessingSpan[];
+      processing_status?: Record<string, unknown>;
       last_sync_at?: string | null;
       last_error?: string | null;
       last_sync_run?: {
@@ -515,8 +612,10 @@ export type ConsoleSourcesResponse = {
         status?: string;
         error?: string | null;
       } | null;
+      sync_runs?: unknown[];
     }>;
   };
+  source_adapters?: SourceAdapterDefinition[];
   recent_sources?: ConsoleSourceSummary[];
   connector_state?: {
     state_count?: number;
@@ -539,12 +638,48 @@ export type ConsoleSourcesResponse = {
     knowledge_source_id?: string;
     zip_count?: number;
   }>;
+  processing_spans?: {
+    span_count?: number;
+    spans?: ProcessingSpan[];
+  };
   workspace?: {
     root?: string;
     excluded_paths?: string[];
   };
   recommended_commands?: string[];
   notes?: string[];
+};
+
+export type ChunkingPreviewChunk = {
+  ordinal?: number;
+  text?: string;
+  start?: number;
+  end?: number;
+  chars?: number;
+  strategy?: string;
+  context_header?: string | null;
+};
+
+export type ChunkingPreviewResponse = {
+  ok?: boolean;
+  processing_config?: Record<string, unknown>;
+  preview?: {
+    ok?: boolean;
+    strategy?: string;
+    requested_strategy?: string;
+    strategy_diagnostics?: Record<string, unknown>;
+    config?: Record<string, unknown>;
+    profile?: Record<string, unknown>;
+    stats?: {
+      count?: number;
+      min_chars?: number;
+      max_chars?: number;
+      avg_chars?: number;
+      total_chars?: number;
+    };
+    chunks?: ChunkingPreviewChunk[];
+  };
+  error?: string;
 };
 
 export type WorkspaceSearchResponse = {

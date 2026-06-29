@@ -14,6 +14,8 @@ import {
   Image,
   Link2,
   LogOut,
+  Maximize2,
+  Minimize2,
   Pin,
   PlayCircle,
   RefreshCw,
@@ -21,7 +23,8 @@ import {
   Sparkles,
   Tag,
   Tags,
-  TextCursorInput
+  TextCursorInput,
+  X
 } from "lucide-react";
 import {
   Background,
@@ -31,6 +34,7 @@ import {
   MiniMap,
   Position,
   ReactFlow,
+  useNodesState,
   type Connection,
   type Edge,
   type Node,
@@ -53,6 +57,7 @@ import {
   approveReviewItem,
   cleanupKnowledgeSource,
   composeWritingDraft,
+  createKnowledgeSource,
   createWritingBoard,
   createWritingEdge,
   createWritingNode,
@@ -73,17 +78,21 @@ import {
   listWritingBoards,
   patchWritingBoard,
   patchWritingNode,
+  previewChunking,
+  previewKnowledgeSource,
   recordWorkspaceActivity,
   rejectReviewItem,
   runDigestNow,
   runFileSync,
   snoozeDiscovery,
+  syncKnowledgeSources,
   suggestWritingQuestions
 } from "./api";
 import type { PSKAAuth, PSKAIdentity } from "./api";
 import { useWorkspaceStore } from "./store";
 import type {
   BrainState,
+  ChunkingPreviewResponse,
   ConsoleSourceChannelStats,
   ConsoleSourcesResponse,
   DigestNowResponse,
@@ -91,6 +100,8 @@ import type {
   FileSyncResponse,
   KnowledgeSourceCleanupResponse,
   ReviewCenterItem,
+  SourcePreviewResponse,
+  SourceSyncResponse,
   TodayContinueItem,
   TodayDiscoveryItem,
   TodayResponse,
@@ -1049,6 +1060,7 @@ function AskResult({ result, pending = false }: { result: WorkspaceAskResponse |
   const gaps = normalizeAskNotes(askEvidence?.gaps);
   const conflicts = normalizeAskNotes(askEvidence?.conflicts);
   const agentSteps = normalizeAskAgentSteps((result as WorkspaceAskResponse).agent_steps);
+  const progressEvents = normalizeAskProgress((result as WorkspaceAskResponse).progress);
   const displaySteps = agentSteps.length ? agentSteps : pending ? pendingAskSteps() : [];
   const rawEvents = agenticTraceEvents(result);
   const markdown = buildAskMarkdown((result as WorkspaceAskResponse).query || "", answer, refs, gaps, conflicts);
@@ -1098,6 +1110,7 @@ function AskResult({ result, pending = false }: { result: WorkspaceAskResponse |
         </div>
       ) : null}
       {qualitySignals ? <AskQualitySignals signals={qualitySignals} /> : null}
+      {progressEvents.length ? <AskProgressStrip progress={progressEvents} /> : null}
       {displaySteps.length || rawEvents.length ? <AskProcessTimeline steps={displaySteps} rawEvents={rawEvents} /> : null}
       {gaps.length || conflicts.length ? (
         <div className="ask-gap-list">
@@ -1117,13 +1130,13 @@ type MarkdownBlock =
   | { type: "code"; language: string; text: string }
   | { type: "table"; headers: string[]; rows: string[][] };
 
-function MarkdownAnswer({ content }: { content: string }) {
+function MarkdownAnswer({ content, className = "" }: { content: string; className?: string }) {
   const blocks = parseMarkdownBlocks(displayText(content, ""));
   if (!blocks.length) {
     return null;
   }
   return (
-    <div className="answer-text">
+    <div className={["answer-text", className].filter(Boolean).join(" ")}>
       {blocks.map((block, index) => renderMarkdownBlock(block, `answer-block-${index}`))}
     </div>
   );
@@ -1449,6 +1462,14 @@ type AskAgentStepView = {
   meta: string;
 };
 
+type AskProgressView = {
+  id: string;
+  stage: string;
+  status: string;
+  title: string;
+  meta: string;
+};
+
 function pendingAskResult(query: string): WorkspaceAskResponse {
   return {
     ok: true,
@@ -1458,8 +1479,23 @@ function pendingAskResult(query: string): WorkspaceAskResponse {
     source_refs: [],
     evidence: {},
     timing: {},
-    agent_steps: []
+    agent_steps: [],
+    progress: []
   };
+}
+
+function AskProgressStrip({ progress }: { progress: AskProgressView[] }) {
+  const compact = progress.slice(-8);
+  return (
+    <div className="ask-progress-strip" aria-label="Ask progress">
+      {compact.map((item) => (
+        <span key={item.id} className={`ask-progress-chip ${item.status}`} data-stage={item.stage}>
+          <strong>{askProgressStageLabel(item.stage)}</strong>
+          <small>{item.meta || item.title}</small>
+        </span>
+      ))}
+    </div>
+  );
 }
 
 function pendingAskSteps(): AskAgentStepView[] {
@@ -1729,6 +1765,56 @@ function normalizeAskAgentSteps(values: unknown): AskAgentStepView[] {
       };
     })
     .filter((step): step is AskAgentStepView => Boolean(step));
+}
+
+function normalizeAskProgress(values: unknown): AskProgressView[] {
+  if (!Array.isArray(values)) {
+    return [];
+  }
+  return values
+    .map((value, index) => {
+      if (!isRecord(value)) {
+        return null;
+      }
+      const elapsed = typeof value.elapsed_ms === "number" && Number.isFinite(value.elapsed_ms)
+        ? `${Math.round(value.elapsed_ms)} ms`
+        : "";
+      const evidence = typeof value.evidence_count === "number" && value.evidence_count > 0
+        ? `证据 ${value.evidence_count}`
+        : "";
+      const refs = typeof value.source_ref_count === "number" && value.source_ref_count > 0
+        ? `引用 ${value.source_ref_count}`
+        : "";
+      return {
+        id: displayText(value.step_id, `progress-${index}`),
+        stage: displayText(value.stage, "generate"),
+        status: displayText(value.status, "complete"),
+        title: displayText(value.title, "处理中"),
+        meta: [evidence, refs, elapsed].filter(Boolean).join(" · ")
+      };
+    })
+    .filter((item): item is AskProgressView => Boolean(item));
+}
+
+function askProgressStageLabel(stage: string) {
+  switch (stage) {
+    case "understand":
+      return "理解";
+    case "search":
+      return "检索";
+    case "rerank":
+      return "重排";
+    case "graph":
+      return "图谱";
+    case "read":
+      return "读取";
+    case "evidence_check":
+      return "校验";
+    case "generate":
+      return "生成";
+    default:
+      return displayText(stage, "处理");
+  }
 }
 
 function askRouteLabel(route?: WorkspaceAskResponse["route"]) {
@@ -2253,6 +2339,18 @@ function CorpusWorkspace({
   const [askResult, setAskResult] = useState<WorkspaceAskResponse | null>(null);
   const [askStatus, setAskStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
   const [askError, setAskError] = useState("");
+  const [chunkPreviewText, setChunkPreviewText] = useState("");
+  const [chunkPreviewStrategy, setChunkPreviewStrategy] = useState("auto");
+  const [chunkPreviewSize, setChunkPreviewSize] = useState(1200);
+  const [chunkPreviewResult, setChunkPreviewResult] = useState<ChunkingPreviewResponse | null>(null);
+  const [chunkPreviewStatus, setChunkPreviewStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
+  const [chunkPreviewError, setChunkPreviewError] = useState("");
+  const [sourceFormKind, setSourceFormKind] = useState<"url" | "rss" | "folder">("url");
+  const [sourceFormValue, setSourceFormValue] = useState("");
+  const [sourceFormName, setSourceFormName] = useState("");
+  const [sourcePreview, setSourcePreview] = useState<SourcePreviewResponse | null>(null);
+  const [sourceFormStatus, setSourceFormStatus] = useState<"idle" | "previewing" | "adding" | "syncing" | "success" | "error">("idle");
+  const [sourceFormError, setSourceFormError] = useState("");
   const [operationStatus, setOperationStatus] = useState<"idle" | "syncing" | "digesting" | "cleaning" | "success" | "error">("idle");
   const [operationMessage, setOperationMessage] = useState("");
   const [cleanupPreview, setCleanupPreview] = useState<KnowledgeSourceCleanupResponse | null>(null);
@@ -2352,6 +2450,79 @@ function CorpusWorkspace({
     }
   }
 
+  async function handlePreviewSource(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const value = sourceFormValue.trim();
+    if (!value) {
+      return;
+    }
+    setSourceFormStatus("previewing");
+    setSourceFormError("");
+    try {
+      const payload = await previewKnowledgeSource(serviceToken, sourceFormPayload(sourceFormKind, value, sourceFormName));
+      setSourcePreview(payload);
+      setSourceFormStatus(payload.ok === false || payload.preview?.ok === false ? "error" : "success");
+      setSourceFormError(payload.error || (payload.preview?.ok === false ? "输入源预览失败。" : ""));
+    } catch (error) {
+      setSourceFormStatus("error");
+      setSourceFormError(error instanceof Error ? error.message : "输入源预览失败。");
+    }
+  }
+
+  async function handleAddSource() {
+    const value = sourceFormValue.trim();
+    if (!value) {
+      return;
+    }
+    setSourceFormStatus("adding");
+    setSourceFormError("");
+    try {
+      const payload = await createKnowledgeSource(serviceToken, {
+        ...sourceFormPayload(sourceFormKind, value, sourceFormName),
+        preview: true
+      });
+      setSourcePreview(payload.preview ? { ok: payload.ok, preview: payload.preview, adapters: payload.adapters } : null);
+      setSourceFormStatus(payload.ok === false ? "error" : "success");
+      setSourceFormError(payload.error || "");
+      setOperationStatus("success");
+      setOperationMessage(`${sourceKindLabel(sourceFormKind)} 输入源已添加。`);
+      await refetchAll();
+    } catch (error) {
+      setSourceFormStatus("error");
+      setOperationStatus("error");
+      setOperationMessage(error instanceof Error ? error.message : "添加输入源失败。");
+      setSourceFormError(error instanceof Error ? error.message : "添加输入源失败。");
+    }
+  }
+
+  async function handleSyncKnowledgeSources(knowledgeSourceId?: string) {
+    if (!knowledgeSourceId) {
+      setSourceFormStatus("syncing");
+      setSourceFormError("");
+    }
+    setOperationStatus("syncing");
+    setOperationMessage(knowledgeSourceId ? "正在同步选中的 Knowledge Source..." : "正在同步所有 Knowledge Sources...");
+    setOperationSummary(undefined);
+    try {
+      const payload = await syncKnowledgeSources(serviceToken, knowledgeSourceId);
+      const summary = sourceSyncSummary(payload);
+      setOperationStatus(payload.ok === false ? "error" : "success");
+      setOperationSummary(summary);
+      setOperationMessage(payload.ok === false ? operationFailureMessage(payload.error, summary.failed) : summaryMessage(summary));
+      if (!knowledgeSourceId) {
+        setSourceFormStatus(payload.ok === false ? "error" : "success");
+      }
+      await refetchAll();
+    } catch (error) {
+      setOperationStatus("error");
+      setOperationMessage(error instanceof Error ? error.message : "同步 Knowledge Sources 失败。");
+      if (!knowledgeSourceId) {
+        setSourceFormStatus("error");
+        setSourceFormError(error instanceof Error ? error.message : "同步 Knowledge Sources 失败。");
+      }
+    }
+  }
+
   async function handleCleanupKnowledgeSource(knowledgeSourceId: string, execute: boolean) {
     setOperationStatus("cleaning");
     setCleanupTargetId(knowledgeSourceId);
@@ -2396,6 +2567,31 @@ function CorpusWorkspace({
     } catch (error) {
       setAskStatus("error");
       setAskError(error instanceof Error ? error.message : "Ask PSKA 失败。");
+    }
+  }
+
+  async function handleChunkPreview(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const text = chunkPreviewText.trim();
+    if (!text) {
+      return;
+    }
+    setChunkPreviewStatus("loading");
+    setChunkPreviewError("");
+    try {
+      const payload = await previewChunking(serviceToken, {
+        text,
+        chunking: {
+          strategy: chunkPreviewStrategy,
+          chunk_size: chunkPreviewSize
+        }
+      });
+      setChunkPreviewResult(payload);
+      setChunkPreviewStatus(payload.ok === false ? "error" : "success");
+      setChunkPreviewError(payload.error || "");
+    } catch (error) {
+      setChunkPreviewStatus("error");
+      setChunkPreviewError(error instanceof Error ? error.message : "Chunk preview 失败。");
     }
   }
 
@@ -2472,6 +2668,44 @@ function CorpusWorkspace({
         {askResult ? <AskResult result={askResult} pending={askStatus === "loading"} /> : null}
       </section>
 
+      <section className="today-section chunk-preview-surface">
+        <SectionTitle icon={<TextCursorInput size={18} />} title="Chunk Preview" subtitle="处理配置调试" />
+        <form className="chunk-preview-form" onSubmit={handleChunkPreview}>
+          <textarea
+            value={chunkPreviewText}
+            onChange={(event) => setChunkPreviewText(event.target.value)}
+            placeholder="粘贴一段 Markdown、表格、代码块或长中文文本"
+          />
+          <div className="chunk-preview-controls">
+            <label>
+              <span>策略</span>
+              <select value={chunkPreviewStrategy} onChange={(event) => setChunkPreviewStrategy(event.target.value)}>
+                <option value="auto">auto</option>
+                <option value="heading">heading</option>
+                <option value="recursive">recursive</option>
+                <option value="fixed">fixed</option>
+              </select>
+            </label>
+            <label>
+              <span>大小</span>
+              <input
+                type="number"
+                min={120}
+                max={6000}
+                step={120}
+                value={chunkPreviewSize}
+                onChange={(event) => setChunkPreviewSize(Math.max(120, Number(event.target.value) || 1200))}
+              />
+            </label>
+            <button className="primary" type="submit" disabled={chunkPreviewStatus === "loading" || !chunkPreviewText.trim()}>
+              {chunkPreviewStatus === "loading" ? "预览中" : "预览"}
+            </button>
+          </div>
+        </form>
+        {chunkPreviewError ? <div className="review-empty error-state compact">{chunkPreviewError}</div> : null}
+        <ChunkPreviewPanel payload={chunkPreviewResult} />
+      </section>
+
       <div className="corpus-tools">
         <label>
           <Search size={16} />
@@ -2529,7 +2763,27 @@ function CorpusWorkspace({
           </section>
 
           <aside className="corpus-panel connector-panel">
-            <SectionTitle icon={<Folder size={18} />} title="PSKA 输入源" subtitle="本地文件 roots 与连接器 inbox" />
+            <SectionTitle icon={<Folder size={18} />} title="PSKA 输入源" subtitle="Folder、RSS/Atom、URL 与 connector inbox" />
+            <SourceAdapterPanel
+              kind={sourceFormKind}
+              value={sourceFormValue}
+              name={sourceFormName}
+              preview={sourcePreview}
+              status={sourceFormStatus}
+              error={sourceFormError}
+              adapters={sourceSummary?.source_adapters || sourcePreview?.adapters || []}
+              actionRunning={actionRunning}
+              onKindChange={(kind) => {
+                setSourceFormKind(kind);
+                setSourcePreview(null);
+                setSourceFormError("");
+              }}
+              onValueChange={setSourceFormValue}
+              onNameChange={setSourceFormName}
+              onPreview={handlePreviewSource}
+              onAdd={() => void handleAddSource()}
+              onSyncAll={() => void handleSyncKnowledgeSources()}
+            />
             <ConnectorSummary
               payload={sourceSummary}
               cleanupPreview={cleanupPreview}
@@ -2537,6 +2791,7 @@ function CorpusWorkspace({
               cleanupTargetId={cleanupTargetId}
               actionRunning={actionRunning}
               onCleanupConfirmTextChange={setCleanupConfirmText}
+              onSyncSource={(knowledgeSourceId) => void handleSyncKnowledgeSources(knowledgeSourceId)}
               onPreviewCleanup={(knowledgeSourceId) => void handleCleanupKnowledgeSource(knowledgeSourceId, false)}
               onConfirmCleanup={(knowledgeSourceId) => void handleCleanupKnowledgeSource(knowledgeSourceId, true)}
             />
@@ -2628,6 +2883,142 @@ function DigestLogPanel({ payload, isLoading, isError }: { payload?: DigestLogsR
   );
 }
 
+function ChunkPreviewPanel({ payload }: { payload: ChunkingPreviewResponse | null }) {
+  const preview = payload?.preview;
+  const chunks = preview?.chunks || [];
+  if (!preview) {
+    return null;
+  }
+  return (
+    <div className="chunk-preview-result">
+      <div className="operation-stats compact">
+        <span>策略 {preview.strategy || "-"}</span>
+        <span>Chunks {preview.stats?.count ?? 0}</span>
+        <span>均值 {preview.stats?.avg_chars ?? 0}</span>
+        <span>最大 {preview.stats?.max_chars ?? 0}</span>
+      </div>
+      <div className="chunk-preview-list">
+        {chunks.slice(0, 5).map((chunk) => (
+          <article className="chunk-preview-card" key={`${chunk.ordinal}-${chunk.start}-${chunk.end}`}>
+            <div className="card-row">
+              <span className="pill">{chunk.strategy || preview.strategy || "chunk"}</span>
+              <small>{chunk.start ?? 0}-{chunk.end ?? 0} · {chunk.chars ?? 0} chars</small>
+            </div>
+            {chunk.context_header ? <strong>{chunk.context_header}</strong> : null}
+            <p>{trimText(chunk.text || "", 260)}</p>
+          </article>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function SourceAdapterPanel({
+  kind,
+  value,
+  name,
+  preview,
+  status,
+  error,
+  adapters,
+  actionRunning,
+  onKindChange,
+  onValueChange,
+  onNameChange,
+  onPreview,
+  onAdd,
+  onSyncAll
+}: {
+  kind: "url" | "rss" | "folder";
+  value: string;
+  name: string;
+  preview: SourcePreviewResponse | null;
+  status: "idle" | "previewing" | "adding" | "syncing" | "success" | "error";
+  error: string;
+  adapters: NonNullable<ConsoleSourcesResponse["source_adapters"]>;
+  actionRunning: boolean;
+  onKindChange: (kind: "url" | "rss" | "folder") => void;
+  onValueChange: (value: string) => void;
+  onNameChange: (value: string) => void;
+  onPreview: (event: FormEvent<HTMLFormElement>) => void;
+  onAdd: () => void;
+  onSyncAll: () => void;
+}) {
+  const resources = preview?.preview?.resources || [];
+  const busy = status === "previewing" || status === "adding" || status === "syncing" || actionRunning;
+  const hasValue = value.trim().length > 0;
+  const count = preview?.preview?.count ?? resources.length;
+  return (
+    <div className="source-adapter-panel">
+      <form className="source-adapter-form" onSubmit={onPreview}>
+        <div className="source-adapter-row">
+          <label>
+            <span>类型</span>
+            <select value={kind} onChange={(event) => onKindChange(event.target.value as "url" | "rss" | "folder")}>
+              <option value="url">URL</option>
+              <option value="rss">RSS/Atom</option>
+              <option value="folder">Folder</option>
+            </select>
+          </label>
+          <label>
+            <span>名称</span>
+            <input value={name} onChange={(event) => onNameChange(event.target.value)} placeholder="可选" />
+          </label>
+        </div>
+        <label>
+          <span>{kind === "folder" ? "路径" : "地址"}</span>
+          <input value={value} onChange={(event) => onValueChange(event.target.value)} placeholder={sourceInputPlaceholder(kind)} />
+        </label>
+        <div className="source-adapter-actions">
+          <button type="submit" disabled={busy || !hasValue}>
+            <Search size={14} />
+            {status === "previewing" ? "预览中" : "Preview"}
+          </button>
+          <button className="primary" type="button" onClick={onAdd} disabled={busy || !hasValue}>
+            {kind === "folder" ? <Folder size={14} /> : <Link2 size={14} />}
+            {status === "adding" ? "添加中" : "添加"}
+          </button>
+          <button type="button" onClick={onSyncAll} disabled={busy}>
+            <RefreshCw size={14} />
+            {status === "syncing" ? "同步中" : "同步全部"}
+          </button>
+        </div>
+      </form>
+      {adapters.length ? (
+        <div className="source-adapter-kinds" aria-label="支持的输入源">
+          {adapters.map((adapter) => (
+            <span className="pill muted" key={adapter.connector_id || adapter.source_type || adapter.label}>{adapter.label || sourceKindLabel(adapter.source_type)}</span>
+          ))}
+        </div>
+      ) : null}
+      {error ? <div className="review-empty error-state compact">{error}</div> : null}
+      {preview?.preview ? (
+        <div className="source-preview">
+          <div className="operation-stats compact">
+            <span>{sourceKindLabel(kind)}</span>
+            <span>可同步 {count}</span>
+            <span>{preview.preview.ok === false ? "异常" : "可用"}</span>
+          </div>
+          {resources.length ? (
+            <div className="source-preview-list">
+              {resources.slice(0, 5).map((resource) => (
+                <article className="source-preview-card" key={resource.resource_id || resource.uri || resource.title}>
+                  <div className="card-row">
+                    <span className="pill">{resource.record_type || kind}</span>
+                    <small>{formatReviewDate(resource.updated_at || undefined)}</small>
+                  </div>
+                  <h3>{displayText(resource.title || resource.uri, "未命名资源")}</h3>
+                  <p>{displayText(resource.summary || resource.uri, "暂无摘要")}</p>
+                </article>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function ConnectorSummary({
   payload,
   cleanupPreview,
@@ -2635,6 +3026,7 @@ function ConnectorSummary({
   cleanupTargetId,
   actionRunning,
   onCleanupConfirmTextChange,
+  onSyncSource,
   onPreviewCleanup,
   onConfirmCleanup
 }: {
@@ -2644,6 +3036,7 @@ function ConnectorSummary({
   cleanupTargetId: string | null;
   actionRunning: boolean;
   onCleanupConfirmTextChange: (value: string) => void;
+  onSyncSource: (knowledgeSourceId: string) => void;
   onPreviewCleanup: (knowledgeSourceId: string) => void;
   onConfirmCleanup: (knowledgeSourceId: string) => void;
 }) {
@@ -2681,9 +3074,9 @@ function ConnectorSummary({
         ) : null}
       </div>
       <div className="connector-roots">
-        <h3>可清理的文件资料源</h3>
+        <h3>Knowledge Sources</h3>
         {knowledgeSources.length === 0 ? (
-          <p>还没有资料位置。请先在配置中添加一个资料文件夹。</p>
+          <p>还没有资料位置。可以添加 Folder、RSS/Atom 或 URL。</p>
         ) : knowledgeSources.map((source) => {
           const knowledgeSourceId = source.knowledge_source_id || "";
           const previewMatches = cleanupPreview?.knowledge_source?.knowledge_source_id === knowledgeSourceId;
@@ -2707,8 +3100,22 @@ function ConnectorSummary({
               </dl>
             ) : null}
             {source.last_error ? <p className="connector-error">{displayText(source.last_error)}</p> : null}
+            {source.latest_processing_spans?.length ? (
+              <ol className="processing-span-list">
+                {source.latest_processing_spans.map((span) => (
+                  <li key={span.processing_span_id || `${span.stage}-${span.status}`} data-status={span.status || "unknown"}>
+                    <span>{span.stage || "stage"}</span>
+                    <small>{span.status || "unknown"}</small>
+                  </li>
+                ))}
+              </ol>
+            ) : null}
             {knowledgeSourceId ? (
               <div className="source-cleanup-actions">
+                <button type="button" onClick={() => onSyncSource(knowledgeSourceId)} disabled={actionRunning}>
+                  <RefreshCw size={14} />
+                  同步
+                </button>
                 <button type="button" onClick={() => onPreviewCleanup(knowledgeSourceId)} disabled={actionRunning}>
                   {cleanupTargetId === knowledgeSourceId ? "预览中" : "预览清理"}
                 </button>
@@ -2825,18 +3232,68 @@ function digestNowSummary(payload: DigestNowResponse) {
   };
 }
 
+function sourceSyncSummary(payload: SourceSyncResponse) {
+  const totals = payload.totals || {};
+  return {
+    inputSources: totals.sources || 0,
+    scanned: totals.scanned || 0,
+    ingested: totals.ingested || 0,
+    changed: (totals.new_files || 0) + (totals.changed_files || 0),
+    unchanged: totals.unchanged_files || 0,
+    twitterZips: 0,
+    twitterImported: 0,
+    twitterSkipped: 0,
+    failed: totals.failed ?? payload.failed?.length ?? 0
+  };
+}
+
+function sourceFormPayload(kind: "url" | "rss" | "folder", rawValue: string, rawName: string) {
+  const value = rawValue.trim();
+  const name = rawName.trim();
+  return {
+    source_type: kind,
+    ...(kind === "folder" ? { path: value } : { url: value }),
+    ...(name ? { name } : {})
+  };
+}
+
+function sourceInputPlaceholder(kind?: string) {
+  if (kind === "folder") {
+    return "/Users/you/Documents/notes";
+  }
+  if (kind === "rss") {
+    return "https://example.com/feed.xml";
+  }
+  return "https://example.com/page-or-sitemap.xml";
+}
+
+function sourceKindLabel(kind?: string) {
+  if (kind === "folder" || kind === "files") {
+    return "Folder";
+  }
+  if (kind === "rss" || kind === "atom") {
+    return "RSS/Atom";
+  }
+  if (kind === "url" || kind === "web") {
+    return "URL";
+  }
+  return displayText(kind, "输入源");
+}
+
 function summaryMessage(summary: ReturnType<typeof fileSyncSummary> & { scheduled?: number; reviews?: number; claims?: number; digestNotes?: number; saved?: number }) {
   const parts = [
     `输入源 ${summary.inputSources ?? 0} 个`,
-    `本地扫描 ${summary.scanned ?? 0} 个`,
-    `本地入库 ${summary.ingested ?? 0} 个`,
+    `扫描 ${summary.scanned ?? 0} 个`,
+    `入库 ${summary.ingested ?? 0} 个`,
     `变更 ${summary.changed ?? 0} 个`,
     `未变 ${summary.unchanged ?? 0} 个`,
-    `Twitter Zip ${summary.twitterZips ?? 0} 个`,
-    `Twitter 导入 ${summary.twitterImported ?? 0} 个`,
-    `Twitter 已有 ${summary.twitterSkipped ?? 0} 个`,
     `失败 ${summary.failed ?? 0} 个`
   ];
+  if ((summary.twitterZips ?? 0) > 0 || (summary.twitterImported ?? 0) > 0 || (summary.twitterSkipped ?? 0) > 0) {
+    parts.push(`Twitter Zip ${summary.twitterZips ?? 0} 个`);
+    parts.push(`Twitter 导入 ${summary.twitterImported ?? 0} 个`);
+    parts.push(`Twitter 已有 ${summary.twitterSkipped ?? 0} 个`);
+  }
   if (summary.scheduled !== undefined) {
     parts.push(`调度 ${summary.scheduled} 个`);
   }
@@ -2943,6 +3400,75 @@ function channelLatest(value: ConsoleSourceChannelStats) {
   return [at, id].filter(Boolean).join(" / ");
 }
 
+const WRITING_NODE_COLLAPSED_SIZE = { width: 300, height: 180 };
+const WRITING_NODE_EXPANDED_SIZE = { width: 460, height: 340 };
+const WRITING_NODE_GAP = 34;
+
+function writingNodeApproxSize(nodeType: WritingNodeType, expanded: boolean) {
+  if (expanded || nodeType === "draft") {
+    return WRITING_NODE_EXPANDED_SIZE;
+  }
+  if (nodeType === "section") {
+    return { width: 320, height: 190 };
+  }
+  return WRITING_NODE_COLLAPSED_SIZE;
+}
+
+function writingNodeRect(node: Pick<WritingNode, "node_type" | "position" | "metadata">) {
+  const size = writingNodeApproxSize(node.node_type, node.metadata?.expanded === true);
+  return {
+    x: Number(node.position?.x || 80),
+    y: Number(node.position?.y || 80),
+    width: size.width,
+    height: size.height
+  };
+}
+
+function writingRectsOverlap(
+  a: { x: number; y: number; width: number; height: number },
+  b: { x: number; y: number; width: number; height: number }
+) {
+  return !(
+    a.x + a.width + WRITING_NODE_GAP < b.x ||
+    b.x + b.width + WRITING_NODE_GAP < a.x ||
+    a.y + a.height + WRITING_NODE_GAP < b.y ||
+    b.y + b.height + WRITING_NODE_GAP < a.y
+  );
+}
+
+function findOpenWritingPosition(
+  nodes: WritingNode[],
+  preferred: { x: number; y: number },
+  nodeType: WritingNodeType,
+  options: { expanded?: boolean; ignoreNodeIds?: string[] } = {}
+) {
+  const ignore = new Set(options.ignoreNodeIds || []);
+  const size = writingNodeApproxSize(nodeType, options.expanded === true);
+  const existing = nodes.filter((node) => !ignore.has(node.node_id)).map(writingNodeRect);
+  const start = { x: Math.max(40, Math.round(preferred.x)), y: Math.max(60, Math.round(preferred.y)) };
+  const stepX = Math.max(360, size.width + WRITING_NODE_GAP + 60);
+  const stepY = Math.max(230, size.height + WRITING_NODE_GAP + 40);
+  const candidateAt = (dx: number, dy: number) => ({
+    x: Math.max(40, start.x + dx * stepX),
+    y: Math.max(60, start.y + dy * stepY)
+  });
+  for (let radius = 0; radius <= 9; radius += 1) {
+    for (let dy = -radius; dy <= radius; dy += 1) {
+      for (let dx = -radius; dx <= radius; dx += 1) {
+        if (radius > 0 && Math.abs(dx) !== radius && Math.abs(dy) !== radius) {
+          continue;
+        }
+        const candidate = candidateAt(dx, dy);
+        const rect = { ...candidate, ...size };
+        if (!existing.some((other) => writingRectsOverlap(rect, other))) {
+          return candidate;
+        }
+      }
+    }
+  }
+  return candidateAt(nodes.length % 4, Math.floor(nodes.length / 4) + 1);
+}
+
 type WritingNodeData = Record<string, unknown> & {
   node: WritingNode;
   selected: boolean;
@@ -2956,8 +3482,10 @@ type WritingNodeData = Record<string, unknown> & {
   onAcceptSuggestion: (node: WritingNode, suggestion: WritingQuestionSuggestion) => void;
   onAddToSection: (node: WritingNode) => void;
   onDelete: (node: WritingNode) => void;
-  onToggleExpanded: (node: WritingNode) => void;
+  onOpenEditor: (node: WritingNode) => void;
 };
+
+type WritingFlowNode = Node<WritingNodeData, "writingNode">;
 
 function WritingWorkspace({
   serviceToken,
@@ -2976,6 +3504,8 @@ function WritingWorkspace({
   const [askPreviews, setAskPreviews] = useState<Record<string, WorkspaceAskResponse>>({});
   const [suggestions, setSuggestions] = useState<Record<string, WritingQuestionSuggestion[]>>({});
   const [workspaceMessage, setWorkspaceMessage] = useState("");
+  const [editingNodeId, setEditingNodeId] = useState("");
+  const [editorMaximized, setEditorMaximized] = useState(false);
   const didAutoSelectBoard = useRef(false);
 
   const boardsQuery = useQuery({
@@ -3003,6 +3533,7 @@ function WritingWorkspace({
   const writingEdges = boardQuery.data?.edges || [];
   const sections = writingNodes.filter((node) => node.node_type === "section");
   const answerNodes = writingNodes.filter((node) => node.node_type === "answer");
+  const editingNode = writingNodes.find((node) => node.node_id === editingNodeId);
 
   useEffect(() => {
     if (sections.length && !sections.some((section) => section.node_id === selectedSectionId)) {
@@ -3087,12 +3618,16 @@ function WritingWorkspace({
     if (!activeBoardId) {
       return;
     }
-    const baseY = 120 + writingNodes.length * 34;
+    const preferred = {
+      x: nodeType === "section" ? 100 : 420,
+      y: 120 + writingNodes.length * 34
+    };
+    const position = findOpenWritingPosition(writingNodes, preferred, nodeType, { expanded: nodeType === "question" });
     const created = await createWritingNode(serviceToken, activeBoardId, {
       node_type: nodeType,
       title: writingNodeDefaultTitle(nodeType),
       body_markdown: nodeType === "question" ? "把要追问的问题写在这里，然后运行 Ask PSKA。" : "",
-      position: { x: nodeType === "section" ? 100 : 420, y: baseY },
+      position,
       metadata: { expanded: nodeType === "question" }
     });
     if (nodeType === "section" && created.node?.node_id) {
@@ -3107,6 +3642,12 @@ function WritingWorkspace({
     }
     await patchWritingNode(serviceToken, activeBoardId, nodeId, patch);
     await boardQuery.refetch();
+  }
+
+  async function saveAndCloseEditor(nodeId: string, patch: Partial<WritingNode>) {
+    setEditingNodeId("");
+    setEditorMaximized(false);
+    await patchNode(nodeId, patch);
   }
 
   async function patchBoard(patch: Partial<Pick<WritingBoard, "title" | "goal" | "metadata">>) {
@@ -3178,14 +3719,21 @@ function WritingWorkspace({
       );
       const answer = cleanAgenticAnswer(result.answer || finalAnswerFromTraceEvents(result) || "");
       const lastAsk = writingNodeLastAsk(result, query, sessionId, scope);
+      const placementNodes = [...writingNodes];
+      const answerPosition = findOpenWritingPosition(
+        placementNodes,
+        {
+          x: Number(node.position?.x || 0) + 390,
+          y: Number(node.position?.y || 0)
+        },
+        "answer",
+        { expanded: true }
+      );
       const answerNode = await createWritingNode(serviceToken, activeBoardId, {
         node_type: "answer",
         title: `回答：${trimText(node.title || query, 42)}`,
         body_markdown: answer || "PSKA 没有生成可见回答。",
-        position: {
-          x: Number(node.position?.x || 0) + 390,
-          y: Number(node.position?.y || 0)
-        },
+        position: answerPosition,
         status: result.error ? "error" : "complete",
         citations: result.citations || [],
         source_refs: result.source_refs || [],
@@ -3199,17 +3747,23 @@ function WritingWorkspace({
           edge_type: "answered_by",
           label: "回答"
         });
+        placementNodes.push(answerNode.node);
       }
       const refs = normalizeSearchRefs([...(result.citations || []), ...(result.source_refs || [])]);
       if (refs.length && answerNode.node?.node_id) {
+        const evidencePosition = findOpenWritingPosition(
+          placementNodes,
+          {
+            x: Number(answerNode.node.position?.x || 0) + 400,
+            y: Number(answerNode.node.position?.y || 0) - 90
+          },
+          "evidence"
+        );
         const evidenceNode = await createWritingNode(serviceToken, activeBoardId, {
           node_type: "evidence",
           title: `证据 ${refs.length}`,
           body_markdown: refs.slice(0, 5).map((ref, index) => `${index + 1}. ${ref.title || ref.source_item_id}`).join("\n"),
-          position: {
-            x: Number(node.position?.x || 0) + 790,
-            y: Number(node.position?.y || 0) - 80
-          },
+          position: evidencePosition,
           source_refs: result.source_refs || [],
           citations: result.citations || [],
           metadata: { expanded: false }
@@ -3221,18 +3775,24 @@ function WritingWorkspace({
             edge_type: "supported_by",
             label: "证据"
           });
+          placementNodes.push(evidenceNode.node);
         }
       }
       const gaps = normalizeAskNotes(result.evidence?.gaps);
       if (gaps.length && answerNode.node?.node_id) {
+        const gapPosition = findOpenWritingPosition(
+          placementNodes,
+          {
+            x: Number(answerNode.node.position?.x || 0) + 400,
+            y: Number(answerNode.node.position?.y || 0) + 170
+          },
+          "gap"
+        );
         const gapNode = await createWritingNode(serviceToken, activeBoardId, {
           node_type: "gap",
           title: "证据缺口",
           body_markdown: gaps.map((gap) => `- ${gap}`).join("\n"),
-          position: {
-            x: Number(node.position?.x || 0) + 790,
-            y: Number(node.position?.y || 0) + 130
-          },
+          position: gapPosition,
           metadata: { expanded: false }
         });
         if (gapNode.node?.node_id) {
@@ -3242,6 +3802,7 @@ function WritingWorkspace({
             edge_type: "raises",
             label: "缺口"
           });
+          placementNodes.push(gapNode.node);
         }
       }
       await patchWritingNode(serviceToken, activeBoardId, node.node_id, {
@@ -3273,10 +3834,15 @@ function WritingWorkspace({
       node_type: "question",
       title: suggestion.question,
       body_markdown: suggestion.rationale || "",
-      position: {
-        x: Number(node.position?.x || 0) + 380,
-        y: Number(node.position?.y || 0) + 170
-      },
+      position: findOpenWritingPosition(
+        writingNodes,
+        {
+          x: Number(node.position?.x || 0) + 380,
+          y: Number(node.position?.y || 0) + 170
+        },
+        "question",
+        { expanded: true }
+      ),
       metadata: { expanded: true, suggestion }
     });
     if (created.node?.node_id) {
@@ -3319,14 +3885,20 @@ function WritingWorkspace({
       section_node_id: selectedSectionId,
       answer_node_ids: answerIds
     });
+    const draftPosition = findOpenWritingPosition(
+      writingNodes,
+      {
+        x: Number(section?.position?.x || 120) + 420,
+        y: Number(section?.position?.y || 120) + 220
+      },
+      "draft",
+      { expanded: true }
+    );
     const draft = await createWritingNode(serviceToken, activeBoardId, {
       node_type: "draft",
       title: `草稿：${section?.title || "章节"}`,
       body_markdown: response.draft_markdown || "",
-      position: {
-        x: Number(section?.position?.x || 120) + 420,
-        y: Number(section?.position?.y || 120) + 220
-      },
+      position: draftPosition,
       source_refs: response.source_refs || [],
       citations: response.citations || [],
       metadata: { expanded: true, composed_from: answerIds, retrieval_used: response.retrieval_used === true }
@@ -3371,9 +3943,9 @@ function WritingWorkspace({
           onAcceptSuggestion: (target, suggestion) => void acceptSuggestion(target, suggestion),
           onAddToSection: (target) => void addAnswerToSection(target),
           onDelete: (target) => void removeNode(target),
-          onToggleExpanded: (target) => {
-            const metadata = { ...(target.metadata || {}), expanded: target.metadata?.expanded !== true };
-            void patchNode(target.node_id, { metadata });
+          onOpenEditor: (target) => {
+            setEditingNodeId(target.node_id);
+            setEditorMaximized(false);
           }
         }
       })),
@@ -3392,6 +3964,28 @@ function WritingWorkspace({
       })),
     [writingEdges]
   );
+  const [displayNodes, setDisplayNodes, onDisplayNodesChange] = useNodesState<WritingFlowNode>([]);
+
+  useEffect(() => {
+    setDisplayNodes((current) => {
+      const currentById = new Map(current.map((node) => [node.id, node]));
+      return xyNodes.map((nextNode) => {
+        const currentNode = currentById.get(nextNode.id);
+        if (!currentNode) {
+          return nextNode;
+        }
+        const previousServerPosition = currentNode.data.node.position || {};
+        const nextServerPosition = nextNode.data.node.position || {};
+        const serverPositionChanged =
+          Number(previousServerPosition.x || 80) !== Number(nextServerPosition.x || 80) ||
+          Number(previousServerPosition.y || 80) !== Number(nextServerPosition.y || 80);
+        return {
+          ...nextNode,
+          position: serverPositionChanged ? nextNode.position : currentNode.position
+        };
+      });
+    });
+  }, [setDisplayNodes, xyNodes]);
 
   if (boardsQuery.isLoading) {
     return <section className="main-workspace writing-surface"><div className="review-empty">正在加载写作网络...</div></section>;
@@ -3457,7 +4051,16 @@ function WritingWorkspace({
         <input value={board?.goal || ""} onChange={(event) => void patchBoard({ goal: event.target.value })} aria-label="目标" placeholder="写作目标" data-testid="writing-board-goal-input" />
       </div>
       <div className="writing-canvas-shell" data-testid="writing-canvas">
-        <ReactFlow nodes={xyNodes} edges={xyEdges} nodeTypes={nodeTypes} onConnect={onConnect} onNodeDragStop={onNodeDragStop} fitView>
+        <ReactFlow
+          nodes={displayNodes}
+          edges={xyEdges}
+          nodeTypes={nodeTypes}
+          onConnect={onConnect}
+          onNodesChange={onDisplayNodesChange}
+          onNodeDragStop={onNodeDragStop}
+          fitView
+          proOptions={{ hideAttribution: true }}
+        >
           <Background gap={26} color="#ddd8cb" />
           <Controls />
           <MiniMap pannable zoomable />
@@ -3475,32 +4078,27 @@ function WritingWorkspace({
         askPreview={runningNodeIds.length === 1 ? askPreviews[runningNodeIds[0]] : undefined}
         runningCount={runningNodeIds.length}
       />
+      {editingNode ? (
+        <WritingFloatingEditor
+          node={editingNode}
+          maximized={editorMaximized}
+          onToggleMaximized={() => setEditorMaximized((current) => !current)}
+          onCloseSave={(nodeId, patch) => void saveAndCloseEditor(nodeId, patch)}
+        />
+      ) : null}
     </section>
   );
 }
 
-type WritingFlowNode = Node<WritingNodeData, "writingNode">;
-
 function WritingCanvasNode({ data }: NodeProps<WritingFlowNode>) {
   const node = data.node;
-  const expanded = node.metadata?.expanded === true;
   const timelineResult = data.askPreview;
   const timelineRawEvents = timelineResult ? agenticTraceEvents(timelineResult) : [];
-  const [draftTitle, setDraftTitle] = useState(node.title);
-  const [draftBody, setDraftBody] = useState(node.body_markdown || "");
-
-  useEffect(() => {
-    setDraftTitle(node.title);
-    setDraftBody(node.body_markdown || "");
-  }, [node.node_id, node.title, node.body_markdown]);
-
-  function save() {
-    data.onPatch(node.node_id, { title: draftTitle, body_markdown: draftBody });
-  }
+  const hasTimeline = Boolean(timelineResult?.agent_steps?.length || timelineRawEvents.length);
 
   return (
     <div
-      className={`writing-node writing-node-${node.node_type} ${expanded ? "expanded" : ""} ${data.selected ? "selected" : ""}`}
+      className={`writing-node writing-node-${node.node_type} ${data.selected ? "selected" : ""}`}
       data-testid="writing-node"
       data-node-id={node.node_id}
       data-node-type={node.node_type}
@@ -3511,34 +4109,35 @@ function WritingCanvasNode({ data }: NodeProps<WritingFlowNode>) {
         <span>{writingNodeLabel(node.node_type)}</span>
         <small>{data.running ? "运行中" : node.status || "idle"}</small>
       </div>
-      {expanded ? (
-        <div className="writing-node-editor nodrag">
-          <input data-testid="writing-node-title-input" value={draftTitle} onChange={(event) => setDraftTitle(event.target.value)} onBlur={save} />
-          <textarea data-testid="writing-node-body-input" value={draftBody} onChange={(event) => setDraftBody(event.target.value)} onBlur={save} placeholder="写下问题、答案、证据或章节草稿。" />
-          {draftBody ? <MarkdownAnswer content={draftBody} /> : null}
-          {timelineResult?.agent_steps?.length || timelineRawEvents.length ? (
-            <div className="writing-node-timeline" data-testid="writing-node-timeline">
-              <div className="writing-node-session">
-                <span>Session</span>
-                <code>{writingNodeSessionId(node)}</code>
-              </div>
-              <AskProcessTimeline steps={normalizeAskAgentSteps(timelineResult?.agent_steps)} rawEvents={timelineRawEvents} />
-            </div>
-          ) : null}
+      <h3>{displayText(node.title, writingNodeDefaultTitle(node.node_type))}</h3>
+      {node.body_markdown ? (
+        <div
+          className="writing-node-body-preview nodrag"
+          onDoubleClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            data.onOpenEditor(node);
+          }}
+        >
+          <MarkdownAnswer content={node.body_markdown} className="nodrag" />
         </div>
-      ) : (
-        <>
-          <h3>{displayText(node.title, writingNodeDefaultTitle(node.node_type))}</h3>
-          {node.body_markdown ? <p>{trimText(node.body_markdown, 170)}</p> : null}
-        </>
-      )}
+      ) : null}
+      {hasTimeline ? (
+        <div className="writing-node-timeline nodrag" data-testid="writing-node-timeline">
+          <div className="writing-node-session">
+            <span>Session</span>
+            <code>{writingNodeSessionId(node)}</code>
+          </div>
+          <AskProcessTimeline steps={normalizeAskAgentSteps(timelineResult?.agent_steps)} rawEvents={timelineRawEvents} />
+        </div>
+      ) : null}
       {node.citations?.length || node.source_refs?.length ? (
         <div className="writing-node-citation-bar">
           <span>引用 {(node.citations || node.source_refs || []).length}</span>
         </div>
       ) : null}
       <div className="writing-node-actions nodrag">
-        <button type="button" onClick={() => data.onToggleExpanded(node)} data-testid="writing-node-toggle">{expanded ? "收起" : "展开"}</button>
+        <button type="button" onClick={() => data.onOpenEditor(node)} data-testid="writing-node-toggle">编辑</button>
         {node.node_type === "question" ? <button type="button" onClick={() => data.onRunAsk(node)} disabled={data.running} data-testid="writing-node-ask">Ask</button> : null}
         {node.node_type === "question" || node.node_type === "answer" ? <button type="button" onClick={() => data.onSuggest(node, "followup")} data-testid="writing-node-followup">追问</button> : null}
         {node.node_type === "goal" || node.node_type === "question" ? <button type="button" onClick={() => data.onSuggest(node, "decompose")} data-testid="writing-node-decompose">拆解</button> : null}
@@ -3555,6 +4154,86 @@ function WritingCanvasNode({ data }: NodeProps<WritingFlowNode>) {
         </div>
       ) : null}
       <Handle type="source" position={Position.Right} />
+    </div>
+  );
+}
+
+function WritingFloatingEditor({
+  node,
+  maximized,
+  onToggleMaximized,
+  onCloseSave
+}: {
+  node: WritingNode;
+  maximized: boolean;
+  onToggleMaximized: () => void;
+  onCloseSave: (nodeId: string, patch: Partial<WritingNode>) => void;
+}) {
+  const [draftTitle, setDraftTitle] = useState(node.title);
+  const [draftBody, setDraftBody] = useState(node.body_markdown || "");
+  const closeRequested = useRef(false);
+
+  useEffect(() => {
+    setDraftTitle(node.title);
+    setDraftBody(node.body_markdown || "");
+    closeRequested.current = false;
+  }, [node.node_id, node.title, node.body_markdown]);
+
+  function closeAndSave() {
+    if (closeRequested.current) {
+      return;
+    }
+    closeRequested.current = true;
+    onCloseSave(node.node_id, { title: draftTitle, body_markdown: draftBody });
+  }
+
+  return (
+    <div className="writing-editor-layer" role="presentation">
+      <section
+        className={`writing-floating-editor ${maximized ? "maximized" : ""}`}
+        aria-label="节点文本编辑器"
+        data-testid="writing-floating-editor"
+      >
+        <header className="writing-floating-editor-bar">
+          <span>{writingNodeLabel(node.node_type)}</span>
+          <div>
+            <button
+              className="icon-button"
+              type="button"
+              onClick={onToggleMaximized}
+              title={maximized ? "还原" : "最大化"}
+              aria-label={maximized ? "还原" : "最大化"}
+              data-testid="writing-editor-maximize"
+            >
+              {maximized ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+            </button>
+            <button
+              className="icon-button"
+              type="button"
+              onClick={closeAndSave}
+              title="关闭并保存"
+              aria-label="关闭并保存"
+              data-testid="writing-editor-close"
+            >
+              <X size={16} />
+            </button>
+          </div>
+        </header>
+        <input
+          className="writing-floating-title"
+          value={draftTitle}
+          onChange={(event) => setDraftTitle(event.target.value)}
+          aria-label="节点标题"
+          data-testid="writing-editor-title"
+        />
+        <textarea
+          className="writing-floating-body"
+          value={draftBody}
+          onChange={(event) => setDraftBody(event.target.value)}
+          aria-label="节点正文"
+          data-testid="writing-editor-body"
+        />
+      </section>
     </div>
   );
 }

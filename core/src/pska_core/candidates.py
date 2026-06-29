@@ -49,6 +49,10 @@ class CandidateWriteService:
         self._assert_owner(owner_user_id, source_items)
         self._assert_tenant(tenant_id, source_items)
         defaults = _ContextDefaults(tenant_id=tenant_id, owner_user_id=owner_user_id, source_refs=source_refs, source_items=source_items)
+        digest_note_specs = [
+            self._digest_note_from_spec(spec, defaults, producer=producer, job_id=job_id, request_id=request_id)
+            for spec in _list_of_dicts(payload.get("digest_notes"))
+        ]
 
         summary = {
             "entities": [],
@@ -98,8 +102,8 @@ class CandidateWriteService:
             else:
                 summary["knowledge_claims"].append(result.knowledge_claim_id)
 
-        for spec in _list_of_dicts(payload.get("digest_notes")):
-            note = self._write_digest_note(spec, defaults, producer=producer, job_id=job_id, request_id=request_id)
+        for note in digest_note_specs:
+            note = self.store.add_digest_note(note)
             summary["digest_notes"].append(note.digest_note_id)
 
         for spec in _list_of_dicts(payload.get("review_items")):
@@ -378,8 +382,11 @@ class CandidateWriteService:
             summary["hyperedges"].append(edge.hyperedge_id)
 
     def _write_digest_note(self, spec: dict[str, Any], defaults: "_ContextDefaults", *, producer: str, job_id: Any, request_id: Any) -> DigestNote:
-        title = str(spec.get("title") or "").strip()
-        synopsis = str(spec.get("synopsis") or spec.get("summary") or "").strip()
+        return self.store.add_digest_note(self._digest_note_from_spec(spec, defaults, producer=producer, job_id=job_id, request_id=request_id))
+
+    def _digest_note_from_spec(self, spec: dict[str, Any], defaults: "_ContextDefaults", *, producer: str, job_id: Any, request_id: Any) -> DigestNote:
+        title = _digest_note_title(spec)
+        synopsis = _digest_note_synopsis(spec, fallback_title=title)
         if not title:
             raise CandidateWriteError("digest_note requires title")
         if not synopsis:
@@ -563,6 +570,37 @@ def _plain_text_summary(spec: dict[str, Any], proposal: dict[str, Any]) -> str:
         if text:
             return text
     return "候选结果需要人工确认。"
+
+
+def _digest_note_title(spec: dict[str, Any]) -> str:
+    for key in ("title", "heading", "name", "label"):
+        text = str(spec.get(key) or "").strip()
+        if text:
+            return text
+    synopsis = str(spec.get("synopsis") or spec.get("summary") or "").strip()
+    if synopsis:
+        return synopsis[:120]
+    return _first_digest_item_text(spec)[:120]
+
+
+def _digest_note_synopsis(spec: dict[str, Any], *, fallback_title: str) -> str:
+    for key in ("synopsis", "summary", "description", "text", "body"):
+        text = str(spec.get(key) or "").strip()
+        if text:
+            return text
+    item_text = _first_digest_item_text(spec)
+    if item_text:
+        return item_text
+    return fallback_title
+
+
+def _first_digest_item_text(spec: dict[str, Any]) -> str:
+    for group_name in ("key_points", "actions", "open_questions", "questions", "risks", "memory_suggestions", "relationship_suggestions"):
+        for item in _list_of_dicts(spec.get(group_name)):
+            text = _digest_item_readable_text(item)
+            if text:
+                return text
+    return ""
 
 
 def _assert_digest_note_items_are_grounded(note: DigestNote) -> None:

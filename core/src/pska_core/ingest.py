@@ -3,11 +3,13 @@ from __future__ import annotations
 import hashlib
 import os
 import re
-from typing import Any
+from typing import Any, Mapping
 from uuid import uuid5, NAMESPACE_URL
 
+from pska_core.chunking import ChunkSpan, chunk_text
 from pska_core.models import DEFAULT_TENANT_ID, ChannelIngestPayload, Chunk, Document, SourceItem
 from pska_core.offline_index import OfflineIndexService
+from pska_core.processing import normalize_chunking_config, resolve_processing_config
 from pska_core.store import KnowledgeStore
 from pska_core.embeddings import EmbeddingProvider
 
@@ -26,10 +28,19 @@ class IngestService:
         chunk_overlap: int | None = None,
         chunk_chars: int | None = None,
         embedding_provider: EmbeddingProvider | None = None,
+        processing_config: Mapping[str, Any] | None = None,
     ) -> None:
         self.store = store
-        self.chunk_size = self._resolve_chunk_size(chunk_size=chunk_size, chunk_chars=chunk_chars)
-        self.chunk_overlap = self._resolve_chunk_overlap(chunk_overlap)
+        self.processing_config = resolve_processing_config(processing_config)
+        chunking_config = dict(self.processing_config.get("chunking") or {})
+        if chunk_size is not None or chunk_chars is not None or os.getenv("PSKA_INGEST_CHUNK_SIZE") or os.getenv("PSKA_INGEST_CHUNK_CHARS"):
+            chunking_config["chunk_size"] = self._resolve_chunk_size(chunk_size=chunk_size, chunk_chars=chunk_chars)
+        if chunk_overlap is not None or os.getenv("PSKA_INGEST_CHUNK_OVERLAP"):
+            chunking_config["chunk_overlap"] = self._resolve_chunk_overlap(chunk_overlap, chunk_size=int(chunking_config.get("chunk_size") or 1200))
+        self.chunking_config = normalize_chunking_config(chunking_config)
+        self.processing_config["chunking"] = self.chunking_config
+        self.chunk_size = int(self.chunking_config["chunk_size"])
+        self.chunk_overlap = int(self.chunking_config["chunk_overlap"])
         self.embedding_provider = embedding_provider
 
     def ingest_channel_payload(self, payload: ChannelIngestPayload | dict) -> SourceItem:
@@ -81,10 +92,11 @@ class IngestService:
             tenant_id=stored.tenant_id,
         )
         self.store.add_document(document)
-        chunk_texts = self._chunk_text(stored.content_text)
-        chunk_embeddings = self.embedding_provider.embed_texts(chunk_texts) if self.embedding_provider else [None] * len(chunk_texts)
+        chunk_spans = self._chunk_spans(stored.content_text)
+        embedding_texts = [span.embedding_text() for span in chunk_spans]
+        chunk_embeddings = self.embedding_provider.embed_texts(embedding_texts) if self.embedding_provider else [None] * len(chunk_spans)
         chunks: list[Chunk] = []
-        for ordinal, (chunk_text, embedding) in enumerate(zip(chunk_texts, chunk_embeddings)):
+        for ordinal, (span, embedding) in enumerate(zip(chunk_spans, chunk_embeddings)):
             chunk = Chunk(
                 chunk_id=f"chk_{source_item_id[4:]}_{ordinal}",
                 document_id=document.document_id,
@@ -93,7 +105,7 @@ class IngestService:
                 space_id=stored.space_id,
                 visibility=stored.visibility,
                 visible_team_ids=stored.visible_team_ids,
-                text=chunk_text,
+                text=span.text,
                 ordinal=ordinal,
                 embedding=embedding,
                 metadata={
@@ -101,6 +113,10 @@ class IngestService:
                     "embedding_model": self.embedding_provider.model_name if self.embedding_provider else None,
                     "chunk_size": self.chunk_size,
                     "chunk_overlap": self.chunk_overlap,
+                    "chunk_strategy": span.strategy,
+                    "start": span.start,
+                    "end": span.end,
+                    "context_header": span.context_header,
                 },
                 tenant_id=stored.tenant_id,
             )
@@ -127,11 +143,10 @@ class IngestService:
         return hashlib.sha256(basis.encode("utf-8")).hexdigest()
 
     def _chunk_text(self, text: str) -> list[str]:
-        clean = re.sub(r"\s+", " ", text).strip()
-        if not clean:
-            return [""]
-        step = self.chunk_size - self.chunk_overlap
-        return [clean[index : index + self.chunk_size] for index in range(0, len(clean), step)]
+        return [span.text for span in self._chunk_spans(text)]
+
+    def _chunk_spans(self, text: str) -> list[ChunkSpan]:
+        return chunk_text(text, self.chunking_config)
 
     def _default_title(self, record_type: str, text: str) -> str:
         first = re.sub(r"\s+", " ", text).strip()[:80]
@@ -184,12 +199,13 @@ class IngestService:
             raise ValueError("chunk_size must be greater than 0")
         return value
 
-    def _resolve_chunk_overlap(self, chunk_overlap: int | None) -> int:
+    def _resolve_chunk_overlap(self, chunk_overlap: int | None, *, chunk_size: int | None = None) -> int:
         value = chunk_overlap
         if value is None:
             value = int(os.getenv("PSKA_INGEST_CHUNK_OVERLAP") or 0)
         if value < 0:
             raise ValueError("chunk_overlap must be greater than or equal to 0")
-        if value >= self.chunk_size:
+        effective_chunk_size = chunk_size if chunk_size is not None else self.chunk_size
+        if value >= effective_chunk_size:
             raise ValueError("chunk_overlap must be smaller than chunk_size")
         return value

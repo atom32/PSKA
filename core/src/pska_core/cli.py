@@ -37,6 +37,7 @@ from pska_core.local_daemon import build_process_specs, config_check, daemon_sta
 from pska_core.memory import MemoryService
 from pska_core.mcp_server import MCPServer
 from pska_core.models import DEFAULT_TENANT_ID, AgentMemory, ChannelIngestPayload, ReviewItem, SourceItem, SourceRef, UserProfileCard, WritingBoard, WritingEdge, WritingNode, utc_now
+from pska_core.processing import resolve_processing_config
 from pska_core.retrieval import RetrievalService
 from pska_core.retrieval_eval import DEFAULT_RETRIEVAL_EVAL_FIXTURE, run_retrieval_eval
 from pska_core.review import ReviewService
@@ -1045,6 +1046,7 @@ def _files_sync_payload(args: argparse.Namespace, config: PSKAConfig) -> dict[st
                 ignore=[*list(source.config.get("ignore") or []), *(args.ignore or [])],
                 max_bytes=args.max_bytes or int(source.config.get("max_bytes") or config.files.max_bytes),
                 embedding_provider=_embedding_provider_from_args(args),
+                processing_config=resolve_processing_config(source.config),
             )
             reports.append(report)
             failed.extend(report.failed)
@@ -2382,7 +2384,12 @@ def digest_now(args: argparse.Namespace, config: PSKAConfig) -> int:
         job
         for job in api.store.list_jobs(tenant_id=tenant_id, status="failed", job_type=DIGEST_VIA_FASTREACT, limit=10)
     ]
-    candidate_summary = _digest_now_candidate_summary(worker_runs)
+    candidate_summary = _digest_now_candidate_summary(
+        worker_runs,
+        store=api.store,
+        owner_user_id=args.owner_user_id,
+        tenant_id=tenant_id,
+    )
     candidate_summary["review_items"] += int(fallback_review.get("review_items") or 0)
     payload = {
         "ok": not any(run.get("ok") is False for run in worker_runs),
@@ -2469,7 +2476,13 @@ def _digest_now_fallback_review(
     return {"created": True, "reason": "fastreact_digest_completed_without_write_candidates", "review_items": len(summary["review_items"]), "summary": summary}
 
 
-def _digest_now_candidate_summary(worker_runs: list[dict[str, Any]]) -> dict[str, int]:
+def _digest_now_candidate_summary(
+    worker_runs: list[dict[str, Any]],
+    *,
+    store: Any | None = None,
+    owner_user_id: str = "user_primary",
+    tenant_id: str = DEFAULT_TENANT_ID,
+) -> dict[str, Any]:
     summary = {
         "entities": 0,
         "hyperedges": 0,
@@ -2495,7 +2508,85 @@ def _digest_now_candidate_summary(worker_runs: list[dict[str, Any]]) -> dict[str
                 summary["memory_candidates"] += int(tool_call.get("memory_candidate_count") or 0)
                 summary["saved_candidates"] += int(tool_call.get("saved_candidate_count") or tool_call.get("saved_candidates") or 0)
                 summary["review_candidates"] += int(tool_call.get("review_candidate_count") or tool_call.get("review_candidates") or 0)
+    if store is not None:
+        persisted = _digest_now_persisted_candidate_summary(
+            store,
+            owner_user_id=owner_user_id,
+            tenant_id=tenant_id,
+            job_ids=_digest_now_job_ids(worker_runs),
+        )
+        if persisted["job_ids"]:
+            for key in ("entities", "knowledge_claims", "digest_notes", "agent_memories", "profile_cards"):
+                summary[key] = persisted[key]
+            summary["saved_candidates"] = (
+                persisted["entities"]
+                + persisted["knowledge_claims"]
+                + persisted["digest_notes"]
+                + persisted["agent_memories"]
+                + persisted["profile_cards"]
+            )
+            summary["persisted_candidate_counts"] = persisted
     return summary
+
+
+def _digest_now_job_ids(worker_runs: list[dict[str, Any]]) -> set[str]:
+    job_ids: set[str] = set()
+    for run in worker_runs:
+        result = run.get("result") if isinstance(run, dict) else {}
+        if not isinstance(result, dict):
+            continue
+        leased_job = result.get("leased_job") if isinstance(result.get("leased_job"), dict) else {}
+        if leased_job.get("job_id"):
+            job_ids.add(str(leased_job["job_id"]))
+        for fastreact_run in result.get("fastreact_runs") or []:
+            if not isinstance(fastreact_run, dict):
+                continue
+            for tool_call in fastreact_run.get("tool_calls") or []:
+                if isinstance(tool_call, dict) and tool_call.get("job_id"):
+                    job_ids.add(str(tool_call["job_id"]))
+    return job_ids
+
+
+def _digest_now_persisted_candidate_summary(
+    store: Any,
+    *,
+    owner_user_id: str,
+    tenant_id: str,
+    job_ids: set[str],
+) -> dict[str, Any]:
+    claims = [
+        claim
+        for job_id in job_ids
+        for claim in store.list_knowledge_claims(owner_user_id=owner_user_id, tenant_id=tenant_id, job_id=job_id, limit=10_000)
+    ]
+    notes = [
+        note
+        for job_id in job_ids
+        for note in store.list_digest_notes(owner_user_id=owner_user_id, tenant_id=tenant_id, job_id=job_id, limit=10_000)
+    ]
+    entities = [
+        entity
+        for entity in store.list_entities(tenant_id=tenant_id)
+        if getattr(entity, "owner_user_id", "") == owner_user_id and str((getattr(entity, "metadata", {}) or {}).get("job_id") or "") in job_ids
+    ]
+    memories = [
+        memory
+        for memory in store.list_agent_memories(owner_user_id=owner_user_id, tenant_id=tenant_id)
+        if str((getattr(memory, "metadata", {}) or {}).get("job_id") or "") in job_ids
+    ]
+    profiles = [
+        card
+        for card in store.list_profile_cards(owner_user_id=owner_user_id, tenant_id=tenant_id)
+        if str((getattr(card, "metadata", {}) or {}).get("_job_id") or (getattr(card, "profile", {}) or {}).get("_job_id") or "") in job_ids
+    ]
+    return {
+        "job_ids": sorted(job_ids),
+        "entities": len({getattr(entity, "entity_id", "") for entity in entities}),
+        "knowledge_claims": len({getattr(claim, "knowledge_claim_id", "") for claim in claims}),
+        "digest_notes": len({getattr(note, "digest_note_id", "") for note in notes}),
+        "agent_memories": len({getattr(memory, "agent_memory_id", "") for memory in memories}),
+        "profile_cards": len({getattr(card, "profile_card_id", "") for card in profiles}),
+    }
 
 
 def _digest_now_diagnostics(worker_runs: list[dict[str, Any]]) -> dict[str, Any]:
