@@ -4,7 +4,7 @@
 
 ## 快速开始
 
-- [根 README](../README.zh.md)：最短本地命令、日常入口和组件地图。
+- [根 README](../README.zh.md)：多租户开发入口、服务地图、身份 headers、source/digest/Ask 工作流和验证命令。
 - [Developer Quickstart](DEVELOPER_QUICKSTART.md)：开发栈启动、首次配置、cold-start 检查和 FastReAct 联动。
 - [发布、初始化与 FastReAct 指南](RELEASE_INIT_FASTREACT_GUIDE.zh.md)：本地初始化、日常启动和真实 FastReAct 联调流程。
 
@@ -43,7 +43,7 @@
 - [Frontend README](../frontend/README.md)：User Workspace 启动方式和页面。
 - [Backend Feature Map](../frontend/BACKEND_FEATURES.md)：前端页面与后端能力映射。
 
-当前前端状态：User Workspace scaffold 已有 Today、Discoveries、Corpus、Graph 和 review 相关页面。Knowledge Sources 和文件/文件夹管理 UI 仍是下一步产品工作。
+当前前端状态：User Workspace 已包含 Today、Discoveries、Knowledge Sources、Corpus/Brain、Ask、Graph、review-oriented flows 和 Writing/Evidence Brief surfaces。Knowledge Sources 已支持 folder、RSS/Atom、URL 的 preview/create/sync，并提供 processing diagnostics 和 chunk preview。
 
 ## Twitter/X
 

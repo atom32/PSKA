@@ -5060,6 +5060,87 @@ def _ask_with_quality_signals(payload: dict[str, Any]) -> dict[str, Any]:
     return enriched
 
 
+def _ask_no_answer_diagnostics(
+    *,
+    payload: dict[str, Any],
+    route: dict[str, Any],
+    trace: dict[str, Any],
+    citations: list[dict[str, Any]],
+    results: list[dict[str, Any]],
+    gaps: list[str],
+    conflicts: list[str],
+    denied_tool_calls: list[Any],
+    dropped_source_refs: list[Any],
+    answer_chars: int,
+) -> dict[str, Any]:
+    dimensions: list[dict[str, Any]] = []
+    reasons: list[str] = []
+
+    def add(dimension: str, status: str, detail: str) -> None:
+        dimensions.append({"dimension": dimension, "status": status, "detail": detail})
+        if status not in {"ok", "not_applicable"}:
+            reasons.append(status)
+
+    if citations:
+        add("evidence", "ok", f"{len(citations)} citations are available.")
+    elif results:
+        add("evidence", "missing_citations", "Retrieval returned candidate chunks, but none were promoted to final citations.")
+    else:
+        add("evidence", "no_visible_evidence", "No visible citations or retrieval results were returned for this tenant/user scope.")
+
+    if results:
+        add("retrieval", "ok", f"{len(results)} retrieval results returned.")
+    else:
+        add("retrieval", "no_relevant_chunks", "No relevant chunks were returned by the current index/search path.")
+
+    if gaps:
+        add("evidence_check", "insufficient_evidence", "; ".join(gaps[:3]))
+    elif conflicts:
+        add("evidence_check", "conflicts_detected", "; ".join(conflicts[:3]))
+    elif citations:
+        add("evidence_check", "ok", "Evidence check found citeable support.")
+    else:
+        add("evidence_check", "not_enough_signal", "There was not enough evidence signal to support a confident answer.")
+
+    if route.get("fallback_from") or trace.get("fallback_reason"):
+        add("fastreact", str(trace.get("fallback_reason") or "fallback"), "Deep Ask fell back to PSKA direct retrieval.")
+    elif route.get("requires_agentic_service_online"):
+        add("fastreact", "ok", "FastReAct handled the deep Ask path.")
+    else:
+        add("fastreact", "not_applicable", "Quick Ask does not require FastReAct.")
+
+    if denied_tool_calls:
+        add("mcp", "tool_denied", f"{len(denied_tool_calls)} tool calls were denied by policy.")
+    elif route.get("retrieval_owner") == "fastreact_pska_mcp":
+        add("mcp", "ok", "FastReAct used the PSKA read-only MCP boundary.")
+    else:
+        add("mcp", "not_applicable", "PSKA direct retrieval did not use MCP.")
+
+    if dropped_source_refs:
+        add("permissions", "source_refs_not_visible", "Some source refs were dropped because they were outside the current tenant/user scope.")
+    elif not citations and not results:
+        add("permissions", "possibly_filtered_or_unindexed", "No visible evidence was available; the data may be unindexed, out of scope, or not ingested.")
+    else:
+        add("permissions", "ok", "Returned evidence is visible to the represented user.")
+
+    if not answer_chars:
+        add("answer", "empty_answer", "No answer text was produced.")
+    elif not citations:
+        add("answer", "uncited_answer", "Answer text exists but lacks final citations.")
+    else:
+        add("answer", "ok", "Answer includes citeable evidence.")
+
+    primary = next((reason for reason in reasons if reason not in {"missing_citations", "uncited_answer"}), reasons[0] if reasons else "ok")
+    return {
+        "schema": "pska.ask_no_answer_diagnostics.v1",
+        "primary_reason": primary,
+        "reasons": list(dict.fromkeys(reasons)),
+        "dimensions": dimensions,
+        "display": bool(reasons) or not answer_chars or not citations,
+        "query": payload.get("query"),
+    }
+
+
 def _ask_quality_signals(payload: dict[str, Any]) -> dict[str, Any]:
     evidence = payload.get("evidence") if isinstance(payload.get("evidence"), dict) else {}
     route = payload.get("route") if isinstance(payload.get("route"), dict) else {}
@@ -5108,6 +5189,18 @@ def _ask_quality_signals(payload: dict[str, Any]) -> dict[str, Any]:
         quality_band = "grounded"
     else:
         quality_band = "needs_citation_review"
+    no_answer_diagnostics = _ask_no_answer_diagnostics(
+        payload=payload,
+        route=route,
+        trace=trace,
+        citations=citations,
+        results=results,
+        gaps=gaps,
+        conflicts=conflicts,
+        denied_tool_calls=denied_tool_calls,
+        dropped_source_refs=dropped_source_refs,
+        answer_chars=answer_chars,
+    )
 
     return {
         "schema": "pska.ask_quality_signals.v1",
@@ -5131,6 +5224,7 @@ def _ask_quality_signals(payload: dict[str, Any]) -> dict[str, Any]:
         "selected_intent": route.get("selected_intent") or route.get("intent"),
         "surface": route.get("surface"),
         "fallback_from": route.get("fallback_from"),
+        "no_answer_diagnostics": no_answer_diagnostics,
         "total_ms": timing.get("total_ms"),
         "time_to_first_answer_ms": timing.get("time_to_first_answer_ms"),
         "time_to_first_agent_event_ms": timing.get("time_to_first_agent_event_ms"),

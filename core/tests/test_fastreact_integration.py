@@ -2300,6 +2300,32 @@ def test_workspace_ask_quick_returns_report_ready_answer_and_evidence() -> None:
     assert payload["quality_signals"]["time_to_first_agent_event_ms"] >= 0
 
 
+def test_workspace_ask_quick_explains_no_visible_evidence() -> None:
+    api = _api()
+
+    with _http_server(api) as base_url:
+        status, payload = _http_json(
+            base_url,
+            "POST",
+            "/workspace/ask",
+            {
+                "query": "What does the empty workspace know?",
+                "intent": "quick",
+                "user_id": "user_primary",
+                "represented_user_id": "user_primary",
+            },
+        )
+
+    diagnostics = payload["quality_signals"]["no_answer_diagnostics"]
+    by_dimension = {item["dimension"]: item for item in diagnostics["dimensions"]}
+    assert status == 200
+    assert payload["quality_signals"]["quality_band"] == "no_answerable_evidence"
+    assert diagnostics["primary_reason"] in {"no_visible_evidence", "no_relevant_chunks", "not_enough_signal"}
+    assert by_dimension["evidence"]["status"] == "no_visible_evidence"
+    assert by_dimension["retrieval"]["status"] == "no_relevant_chunks"
+    assert by_dimension["permissions"]["status"] == "possibly_filtered_or_unindexed"
+
+
 def test_workspace_ask_quick_marks_raw_dump_answers_as_needing_review() -> None:
     api = _api()
     payload = {

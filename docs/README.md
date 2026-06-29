@@ -6,7 +6,8 @@ historical planning notes.
 
 ## Quick Start
 
-- [Root README](../README.md): shortest local command loop and component map.
+- [Root README](../README.md): multi-tenant developer entrypoint, service map,
+  identity headers, source/digest/Ask workflow, and verification commands.
 - [Developer Quickstart](DEVELOPER_QUICKSTART.md): one-command dev stack, first-time setup, cold-start checks, and FastReAct integration.
 - [Release, Init, and FastReAct Guide](RELEASE_INIT_FASTREACT_GUIDE.zh.md): Chinese operational guide for local release/init and real FastReAct linkage.
 
@@ -47,9 +48,11 @@ Directory-level material packs can opt into source collection ingest with
 - [Frontend README](../frontend/README.md): User Workspace run command and surfaces.
 - [Backend Feature Map](../frontend/BACKEND_FEATURES.md): frontend-to-backend capability map.
 
-Current frontend status: User Workspace scaffold exists with Today,
-Discoveries, Corpus, Graph, and review-oriented surfaces. Knowledge Sources and
-file/folder management UI remain next-step product work.
+Current frontend status: User Workspace includes Today, Discoveries, Knowledge
+Sources, Corpus/Brain, Ask, Graph, review-oriented flows, and
+Writing/Evidence Brief surfaces. Knowledge Sources now supports folder,
+RSS/Atom, and URL preview/create/sync flows with processing diagnostics and
+chunk preview.
 
 ## Twitter/X
 

@@ -1035,6 +1035,7 @@ function normalizeContinueItems(data?: TodayResponse): TodayContinueItem[] {
 
 function AskResult({ result, pending = false }: { result: WorkspaceAskResponse | WorkspaceSearchResponse; pending?: boolean }) {
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "failed">("idle");
+  const [selectedRefIndex, setSelectedRefIndex] = useState(0);
   const askEvidence = (result as WorkspaceAskResponse).evidence;
   const route = (result as WorkspaceAskResponse).route;
   const timing = (result as WorkspaceAskResponse).timing;
@@ -1060,6 +1061,8 @@ function AskResult({ result, pending = false }: { result: WorkspaceAskResponse |
   ]);
   const gaps = normalizeAskNotes(askEvidence?.gaps);
   const conflicts = normalizeAskNotes(askEvidence?.conflicts);
+  const diagnostics = normalizeAskNoAnswerDiagnostics(qualitySignals?.no_answer_diagnostics);
+  const selectedRef = refs[Math.min(selectedRefIndex, Math.max(refs.length - 1, 0))];
   const agentSteps = normalizeAskAgentSteps((result as WorkspaceAskResponse).agent_steps);
   const progressEvents = normalizeAskProgress((result as WorkspaceAskResponse).progress);
   const displaySteps = agentSteps.length ? agentSteps : pending ? pendingAskSteps() : [];
@@ -1097,20 +1100,31 @@ function AskResult({ result, pending = false }: { result: WorkspaceAskResponse |
       {answer ? <MarkdownAnswer content={answer} /> : null}
       {fallbackReason ? <small className="search-note">{askFallbackLabel(fallbackReason)}</small> : null}
       {refs.length > 0 ? (
-        <div className="source-ref-list">
-          {refs.slice(0, 5).map((ref, index) => {
+        <div className="ask-evidence-layout">
+          <div className="source-ref-list" aria-label="引用列表">
+            {refs.slice(0, 6).map((ref, index) => {
             const snippet = trimText(cleanEvidenceSnippet(ref.snippet), 180);
             return (
-              <div className="source-ref" key={`${ref.source_item_id || ref.title || "ref"}-${index}`}>
+              <button
+                type="button"
+                className={`source-ref ${index === Math.min(selectedRefIndex, refs.length - 1) ? "active" : ""}`}
+                key={`${ref.source_item_id || ref.chunk_id || ref.title || "ref"}-${index}`}
+                onMouseEnter={() => setSelectedRefIndex(index)}
+                onFocus={() => setSelectedRefIndex(index)}
+                onClick={() => setSelectedRefIndex(index)}
+              >
                 <strong>{displayText(ref.title || ref.source_item_id, "来源")}</strong>
-                {ref.source_item_id ? <code>{ref.source_item_id}</code> : null}
+                <span>{[ref.source_item_id, ref.chunk_id].filter(Boolean).join(" / ")}</span>
                 {snippet ? <p>{snippet}</p> : null}
-              </div>
+              </button>
             );
           })}
+          </div>
+          <EvidenceWindow refItem={selectedRef} />
         </div>
       ) : null}
       {qualitySignals ? <AskQualitySignals signals={qualitySignals} /> : null}
+      {diagnostics ? <AskNoAnswerDiagnostics diagnostics={diagnostics} /> : null}
       {progressEvents.length ? <AskProgressStrip progress={progressEvents} /> : null}
       {displaySteps.length || rawEvents.length ? <AskProcessTimeline steps={displaySteps} rawEvents={rawEvents} /> : null}
       {gaps.length || conflicts.length ? (
@@ -1585,6 +1599,59 @@ function EvidenceNoteList({ title, values }: { title: string; values: string[] }
   );
 }
 
+type AskNoAnswerDiagnostic = {
+  primaryReason?: string;
+  reasons: string[];
+  dimensions: Array<{ dimension: string; status: string; detail: string }>;
+};
+
+function EvidenceWindow({ refItem }: { refItem?: SearchEvidenceRef }) {
+  if (!refItem) {
+    return null;
+  }
+  const coordinates = [
+    refItem.source_item_id ? `source ${refItem.source_item_id}` : "",
+    refItem.document_id ? `doc ${refItem.document_id}` : "",
+    refItem.chunk_id ? `chunk ${refItem.chunk_id}` : "",
+    refItem.passage_window_id ? `passage ${refItem.passage_window_id}` : ""
+  ].filter(Boolean);
+  return (
+    <aside className="evidence-window" aria-label="证据窗口">
+      <div className="card-row">
+        <span className="pill">Evidence</span>
+        {typeof refItem.score === "number" ? <small>score {Math.round(refItem.score * 100)}</small> : null}
+      </div>
+      <strong>{displayText(refItem.title || refItem.source_item_id, "来源")}</strong>
+      {coordinates.length ? <code>{coordinates.join(" / ")}</code> : null}
+      {refItem.url ? <a href={refItem.url} target="_blank" rel="noreferrer">{refItem.url}</a> : null}
+      <p>{displayText(refItem.snippet, "该引用没有返回可预览文本。")}</p>
+    </aside>
+  );
+}
+
+function AskNoAnswerDiagnostics({ diagnostics }: { diagnostics: AskNoAnswerDiagnostic }) {
+  const visible = diagnostics.dimensions.filter((item) => item.status !== "ok" && item.status !== "not_applicable");
+  if (!visible.length) {
+    return null;
+  }
+  return (
+    <div className="ask-diagnostics-panel">
+      <div className="card-row">
+        <strong>为什么还不能直接采信</strong>
+        {diagnostics.primaryReason ? <span className="pill warning">{askDiagnosticLabel(diagnostics.primaryReason)}</span> : null}
+      </div>
+      <ul>
+        {visible.slice(0, 6).map((item) => (
+          <li key={`${item.dimension}-${item.status}`}>
+            <span>{askDiagnosticDimensionLabel(item.dimension)}</span>
+            <p>{askDiagnosticLabel(item.status)}：{item.detail}</p>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function AskQualitySignals({ signals }: { signals: Record<string, unknown> }) {
   const qualityBand = displayText(signals.quality_band, "");
   const evidenceStatus = displayText(signals.evidence_status, "");
@@ -1612,6 +1679,66 @@ function AskQualitySignals({ signals }: { signals: Record<string, unknown> }) {
       ))}
     </div>
   );
+}
+
+function normalizeAskNoAnswerDiagnostics(value: unknown): AskNoAnswerDiagnostic | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const dimensions = Array.isArray(value.dimensions)
+    ? value.dimensions
+        .map((item) => {
+          if (!isRecord(item)) {
+            return null;
+          }
+          return {
+            dimension: displayText(item.dimension, "unknown"),
+            status: displayText(item.status, "unknown"),
+            detail: displayText(item.detail, "")
+          };
+        })
+        .filter((item): item is AskNoAnswerDiagnostic["dimensions"][number] => Boolean(item))
+    : [];
+  if (!dimensions.length) {
+    return null;
+  }
+  const reasons = Array.isArray(value.reasons) ? value.reasons.map((item) => displayText(item, "")).filter(Boolean) : [];
+  return {
+    primaryReason: displayText(value.primary_reason, ""),
+    reasons,
+    dimensions
+  };
+}
+
+function askDiagnosticDimensionLabel(value: string) {
+  const labels: Record<string, string> = {
+    evidence: "证据",
+    retrieval: "检索",
+    evidence_check: "证据校验",
+    fastreact: "FastReAct",
+    mcp: "MCP",
+    permissions: "权限/可见性",
+    answer: "回答"
+  };
+  return labels[value] || value;
+}
+
+function askDiagnosticLabel(value: string) {
+  const labels: Record<string, string> = {
+    no_visible_evidence: "没有可见证据",
+    no_relevant_chunks: "没有相关片段",
+    insufficient_evidence: "证据不足",
+    conflicts_detected: "存在冲突",
+    not_enough_signal: "信号不足",
+    missing_citations: "缺少引用",
+    source_refs_not_visible: "引用不可见",
+    possibly_filtered_or_unindexed: "可能未索引或不可见",
+    empty_answer: "空回答",
+    uncited_answer: "回答未引用",
+    agentic_service_unavailable: "FastReAct 不可用",
+    fallback: "已降级"
+  };
+  return labels[value] || value;
 }
 
 function numberSignal(value: unknown) {
@@ -1659,6 +1786,10 @@ type SearchEvidenceRef = {
   title: string;
   snippet: string;
   source_item_id?: string;
+  document_id?: string;
+  chunk_id?: string;
+  passage_window_id?: string;
+  url?: string;
   score?: number;
 };
 
@@ -1672,6 +1803,10 @@ function normalizeSearchRefs(values: unknown[]): SearchEvidenceRef[] {
         title: displayText(ref.title, ""),
         snippet: cleanEvidenceSnippet(ref.snippet),
         source_item_id: displayText(ref.source_item_id, "") || undefined,
+        document_id: displayText(ref.document_id, "") || undefined,
+        chunk_id: displayText(ref.chunk_id || ref.result_id, "") || undefined,
+        passage_window_id: displayText(ref.passage_window_id, "") || undefined,
+        url: displayText(ref.url, "") || undefined,
         score: typeof ref.score === "number" ? ref.score : undefined
       };
     })
@@ -1693,6 +1828,18 @@ function normalizeSearchRefs(values: unknown[]): SearchEvidenceRef[] {
       if (!current.source_item_id && ref.source_item_id) {
         current.source_item_id = ref.source_item_id;
       }
+      if (!current.document_id && ref.document_id) {
+        current.document_id = ref.document_id;
+      }
+      if (!current.chunk_id && ref.chunk_id) {
+        current.chunk_id = ref.chunk_id;
+      }
+      if (!current.passage_window_id && ref.passage_window_id) {
+        current.passage_window_id = ref.passage_window_id;
+      }
+      if (!current.url && ref.url) {
+        current.url = ref.url;
+      }
       if (ref.snippet && (!current.snippet || ref.snippet.length > current.snippet.length)) {
         current.snippet = ref.snippet;
       }
@@ -1705,8 +1852,9 @@ function normalizeSearchRefs(values: unknown[]): SearchEvidenceRef[] {
 
 function searchRefKey(ref: SearchEvidenceRef) {
   const sourceId = normalizeSearchRefIdentity(ref.source_item_id);
-  if (sourceId) {
-    return `source:${sourceId}`;
+  const chunkId = normalizeSearchRefIdentity(ref.chunk_id);
+  if (sourceId || chunkId) {
+    return `source:${sourceId}:chunk:${chunkId}`;
   }
   const title = normalizeSearchRefIdentity(ref.title);
   if (title) {

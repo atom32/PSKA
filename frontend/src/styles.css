@@ -701,12 +701,27 @@ button {
 .source-ref-list {
   display: grid;
   gap: 8px;
-  margin-top: 12px;
+  min-width: 0;
 }
 
 .source-ref {
-  border-top: 1px solid var(--line);
-  padding-top: 8px;
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fffefa;
+  display: grid;
+  gap: 4px;
+  padding: 9px;
+  color: var(--ink);
+  cursor: pointer;
+  text-align: left;
+}
+
+.source-ref.active,
+.source-ref:focus-visible {
+  border-color: rgba(35, 90, 77, 0.35);
+  background: #f6fbf7;
+  outline: 0;
 }
 
 .source-ref strong {
@@ -714,18 +729,92 @@ button {
   font-size: 13px;
 }
 
-.source-ref code {
-  display: inline-block;
-  margin-top: 4px;
+.source-ref span {
   color: #235a4d;
   font-size: 11px;
+  line-height: 1.35;
   overflow-wrap: anywhere;
 }
 
 .source-ref p {
-  margin: 4px 0 0;
+  margin: 0;
   color: var(--muted);
   line-height: 1.5;
+}
+
+.ask-evidence-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(240px, 1fr);
+  gap: 10px;
+  margin-top: 12px;
+  align-items: start;
+}
+
+.evidence-window,
+.ask-diagnostics-panel {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfaf5;
+  padding: 11px;
+  min-width: 0;
+}
+
+.evidence-window strong {
+  display: block;
+  margin-top: 7px;
+  font-size: 14px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.evidence-window code,
+.evidence-window a {
+  display: block;
+  margin-top: 7px;
+  color: #235a4d;
+  font-size: 11px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.evidence-window p {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.52;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.ask-diagnostics-panel {
+  margin-top: 10px;
+  background: #fff8f2;
+}
+
+.ask-diagnostics-panel ul {
+  display: grid;
+  gap: 7px;
+  margin: 9px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ask-diagnostics-panel li {
+  border-top: 1px solid rgba(134, 70, 44, 0.16);
+  padding-top: 7px;
+}
+
+.ask-diagnostics-panel li span {
+  color: #86462c;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.ask-diagnostics-panel li p {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
 }
 
 .ask-process {
@@ -3562,6 +3651,10 @@ button {
   }
 
   .today-header {
+    grid-template-columns: 1fr;
+  }
+
+  .ask-evidence-layout {
     grid-template-columns: 1fr;
   }
 

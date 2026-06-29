@@ -1,6 +1,6 @@
 # PSKA Frontend
 
-This is the PSKA User Workspace scaffold.
+This is the PSKA User Workspace for the tenant build.
 
 For the full documentation map, see [docs/README.md](../docs/README.md).
 
@@ -25,13 +25,20 @@ From the repository root, the normal path is:
 
 - Today: real backend data with empty/error states.
 - Discoveries: backend discovery feed and score-filtered items.
+- Knowledge Sources: folder, RSS/Atom, and URL preview/create/sync flows with
+  processing diagnostics, chunk preview, cleanup, and retry.
 - Corpus/Brain: search and corpus-backed context panels.
+- Ask PSKA: direct and FastReAct-backed answers with citations, evidence
+  preview, progress, and no-answer diagnostics.
 - Graph: early visualization over available graph/corpus context.
-- Review-adjacent flows: partial backend wiring; full Review workspace is still
-  evolving.
+- Review-oriented flows: pending candidates and approve/apply paths continue to
+  evolve with the backend review model.
+- Writing/Evidence Briefs: digest notes, claims, and review artifacts can seed
+  citation-backed writing board drafts.
 
-The frontend is not yet a durable document editor, canvas persistence layer, or
-Knowledge Sources/file management UI. Those are next-step product work.
+The frontend is not yet a full durable document editor or general canvas
+persistence layer. Keep production browser access behind AuthNode/Gateway or a
+trusted ingress; local Vite mode is for hot reload.
 
 See [Backend Feature Map](BACKEND_FEATURES.md) for the current frontend/backend
 capability map.
