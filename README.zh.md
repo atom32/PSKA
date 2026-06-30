@@ -15,6 +15,7 @@ memories、graph relationships、citations 和 writing evidence。PSKA 不只是
 - [Developer Quickstart](docs/DEVELOPER_QUICKSTART.md)
 - [企业认证网关](docs/ENTERPRISE_AUTH_GATEWAY.zh.md)
 - [多租户 Workspace E2E](docs/MULTITENANT_WORKSPACE_E2E.zh.md)
+- [WeKnora 核心覆盖验收](docs/WEKNORA_COVERAGE.zh.md)
 
 ## 多租户版本一眼看懂
 
@@ -212,6 +213,12 @@ npm run build
 
 ```bash
 ./scripts/pska-writing-workspace-e2e --config ".pska/config.json"
+```
+
+WeKnora 核心覆盖验收：
+
+```bash
+./scripts/pska-weknora-coverage-e2e --config ".pska/config.json"
 ```
 
 ## 工程约束

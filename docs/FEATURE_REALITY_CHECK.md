@@ -20,24 +20,31 @@ sources, PDF/DOCX/XLSX text extraction, optional legacy XLS extraction, manifest
 workspace Twitter/X archive inbox. `digest-now` runs sync before scheduling and
 processing one digest pass.
 
-The frontend is a User Workspace scaffold. It has real Today/Discoveries/
-Corpus/Search-backed surfaces and graph/review-adjacent panels, but it is not a
-complete file manager or Knowledge Sources UI yet.
+The frontend is a User Workspace. It has real Today/Discoveries, Knowledge
+Sources, Corpus/Search-backed surfaces, Ask evidence views,
+Writing/Evidence Brief flows, and graph/review-adjacent panels. It is not a
+full document editor, general canvas persistence layer, or enterprise connector
+marketplace yet.
 
 ## Product Surface Matrix
 
 | Feature | Backend | Frontend | Reality | Notes |
 | --- | --- | --- | --- | --- |
 | One-command local startup | Real | Real | Real | `./start.sh` starts the backend supervisor and Vite frontend. |
-| Folder source sync | Real | Partial | Partial | CLI/backend source model exists; frontend management UI is not complete. |
+| Folder source sync | Real | Real | Real | Backend and Workspace UI support folder preview/create/sync plus sync reports. |
+| RSS/Atom source sync | Real | Real | Real | SourceAdapter v1 supports preview/create/sync for RSS/Atom feeds. |
+| URL page/sitemap sync | Real | Real | Real | SourceAdapter v1 supports preview/create/sync for URL pages and sitemaps. |
+| Processing transparency | Real | Real | Real | Source cards expose sync runs, processing spans, diagnostics, cleanup, retry, and chunk preview. |
 | Twitter/X archive import | Real | Partial | Partial | `files-sync` and `digest-now` import the workspace archive inbox by content hash. |
 | Today aggregation | Real | Real | Partial | Uses real `/workspace/today/data`; empty real sections should render empty states. |
 | Discovery feed | Real | Real | Partial | Persistent discoveries and score filtering exist; quality still depends on producers and corpus. |
 | Needs Review | Real | Real | Partial | Review APIs and fallback digest review exist; full Review workspace is still evolving. |
 | Review approve/reject/apply | Real | Partial | Partial | Backend supports review actions; frontend coverage is not complete. |
+| Ask PSKA with evidence | Real | Real | Partial | Quick and FastReAct-backed Ask expose citations, source refs, progress, evidence preview, and no-answer diagnostics; answer quality still depends on retrieval/model readiness. |
 | PSKA Brain search | Real | Real | Partial | Uses workspace search and corpus context; recall quality depends on indexing/embeddings. |
 | Corpus browser | Real | Partial | Partial | Backend corpus endpoint exists; frontend uses it in selected panels. |
 | Graph browser | Real | Partial | Partial | Graph data exists; visual exploration is still early. |
+| Evidence Brief / Writing draft | Real | Real | Partial | Digest/review artifacts can generate citation-backed Writing board drafts; formal Wiki publish/revert UX is still evolving. |
 | Document editor | Planned | Mock | Mock | Tiptap editor exists, but document persistence is not wired as a source editor. |
 | Canvas | Planned | Mock | Mock | React Flow canvas is local/sample state. |
 | Project/tag navigation | Planned | Mock | Mock | Sidebar labels exist without a durable project/tag model. |
@@ -56,11 +63,11 @@ empty review queue.
 
 ## Highest Priority Product Gaps
 
-1. Build a Knowledge Sources/file management UI that shows watched folders,
-   last sync, sync report, and unmonitored workspace folders.
-2. Add user-facing "why not found?" diagnostics across search, source, and CLI.
-3. Complete Review workspace flows for accept/reject/apply/snooze with clear
+1. Complete Review workspace flows for accept/reject/apply/snooze with clear
    backend persistence.
+2. Add a formal Evidence Wiki/Brief list/detail/re-digest/expire/rollback UX.
+3. Expand SourceAdapter coverage beyond folder/RSS/URL when enterprise
+   connectors become product priority.
 4. Wire durable document/canvas persistence before treating editor/canvas as
    real workspace content.
 5. Continue tuning discovery scoring and digest write-back with real corpus

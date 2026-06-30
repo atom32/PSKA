@@ -16,6 +16,7 @@ For the Chinese version, see [README.zh.md](README.zh.md).
 - [Developer Quickstart](docs/DEVELOPER_QUICKSTART.md)
 - [Enterprise Auth Gateway](docs/ENTERPRISE_AUTH_GATEWAY.zh.md)
 - [Multi-tenant Workspace E2E](docs/MULTITENANT_WORKSPACE_E2E.zh.md)
+- [WeKnora Core Coverage Acceptance](docs/WEKNORA_COVERAGE.zh.md)
 
 ## Tenant Build At A Glance
 
@@ -241,6 +242,12 @@ Full multi-tenant Writing smoke:
 
 ```bash
 ./scripts/pska-writing-workspace-e2e --config ".pska/config.json"
+```
+
+WeKnora core coverage acceptance:
+
+```bash
+./scripts/pska-weknora-coverage-e2e --config ".pska/config.json"
 ```
 
 ## Engineering Constraints

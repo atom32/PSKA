@@ -1,0 +1,942 @@
+#!/usr/bin/env python3
+"""Run the live PSKA core coverage E2E against the WeKnora comparison bar.
+
+This script assumes PSKA was started with ./start.sh. It prepares an isolated
+tenant/user workspace, exercises Knowledge Sources, processing diagnostics,
+chunk preview, Ask, digest/review governance, and Evidence Brief creation, then
+prints a JSON evidence report.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import time
+from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+from uuid import uuid4
+
+
+ROOT = Path(__file__).resolve().parents[1]
+CORE_SRC = ROOT / "core" / "src"
+
+
+DEFAULT_CONFIG = ROOT / ".pska" / "config.json"
+DEFAULT_PSKA_URL = "http://127.0.0.1:8765"
+DEFAULT_AUTHNODE_URL = "http://127.0.0.1:8788"
+DEFAULT_FASTREACT_URL = "http://127.0.0.1:8000"
+DEFAULT_FASTREACT_ROOT = next(
+    (path for path in [Path.home() / "FastReAct" / "fastreact-nano", Path.home() / "Fastreact" / "fastreact-nano"] if path.exists()),
+    Path.home() / "FastReAct" / "fastreact-nano",
+)
+
+
+class E2EFailure(RuntimeError):
+    pass
+
+
+def main() -> int:
+    args = parse_args()
+    started_at = time.monotonic()
+    try:
+        report = run(args)
+    except E2EFailure as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False, indent=2, default=str), file=sys.stderr)
+        return 1
+    report["elapsed_ms"] = int((time.monotonic() - started_at) * 1000)
+    print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+    return 0
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
+    parser.add_argument("--database-url", default=None)
+    parser.add_argument("--pska-url", default=os.getenv("PSKA_URL", DEFAULT_PSKA_URL))
+    parser.add_argument("--authnode-url", default=os.getenv("AUTHNODE_URL", DEFAULT_AUTHNODE_URL))
+    parser.add_argument("--fastreact-url", default=os.getenv("FASTREACT_URL") or os.getenv("PSKA_FASTREACT_URL") or DEFAULT_FASTREACT_URL)
+    parser.add_argument("--fastreact-root", type=Path, default=Path(os.getenv("FASTREACT_ROOT", str(DEFAULT_FASTREACT_ROOT))))
+    parser.add_argument("--run-id", default=f"{int(time.time())}-{uuid4().hex[:8]}")
+    parser.add_argument("--tenant-id", default=None)
+    parser.add_argument("--owner-user-id", default=None)
+    parser.add_argument("--space-id", default=None)
+    parser.add_argument("--timeout-seconds", type=float, default=120.0)
+    parser.add_argument("--digest-limit", type=int, default=12)
+    parser.add_argument("--digest-batch-size", type=int, default=4)
+    parser.add_argument("--max-worker-runs", type=int, default=1)
+    parser.add_argument("--digest-worker-timeout-seconds", type=float, default=420.0)
+    parser.add_argument("--skip-digest-worker", action="store_true")
+    parser.add_argument(
+        "--strict-fastreact-candidates",
+        action="store_true",
+        help="Fail if FastReAct digest does not write digest notes, claims, or review candidates.",
+    )
+    parser.add_argument("--keep-artifacts", action="store_true", default=True)
+    return parser.parse_args()
+
+
+def run(args: argparse.Namespace) -> dict[str, Any]:
+    runtime = load_pska_runtime()
+    config_cls = runtime["PSKAConfig"]
+    config = config_cls.from_env(config_cls.load(args.config))
+    database_url = args.database_url or config.database.url
+    run_id = safe_id(args.run_id)
+    tenant_id = args.tenant_id or f"tenant_pska_weknora_e2e_{run_id}"
+    owner_user_id = args.owner_user_id or f"weknora_e2e_{run_id}"
+    empty_tenant_id = f"{tenant_id}_empty"
+    empty_user_id = f"{owner_user_id}_empty"
+    space_id = args.space_id or f"private_{owner_user_id}"
+    marker = f"pska-weknora-coverage-e2e-{run_id}"
+
+    runtime["_ensure_writing_demo_identity"](
+        runtime["PostgresKnowledgeStore"](database_url),
+        tenant_id=tenant_id,
+        owner_user_id=owner_user_id,
+        space_id=space_id,
+    )
+    runtime["_ensure_writing_demo_identity"](
+        runtime["PostgresKnowledgeStore"](database_url),
+        tenant_id=empty_tenant_id,
+        owner_user_id=empty_user_id,
+        space_id=f"private_{empty_user_id}",
+    )
+
+    fixtures_dir = config.workspace.user_sources_dir(tenant_id, owner_user_id) / f"weknora-coverage-{run_id}"
+    fixtures_dir.mkdir(parents=True, exist_ok=True)
+    fixtures = write_fixture_files(fixtures_dir, marker=marker)
+
+    headers = pska_headers(config, tenant_id=tenant_id, user_id=owner_user_id, represented_user_id=owner_user_id)
+    empty_headers = pska_headers(config, tenant_id=empty_tenant_id, user_id=empty_user_id, represented_user_id=empty_user_id)
+    service_checks = check_services(args, config, headers=headers)
+    readiness = request_json("GET", f"{args.pska_url.rstrip('/')}/workspace/readiness", headers=headers, timeout=args.timeout_seconds)
+    require(readiness.get("ok") is True, "workspace readiness is not ok")
+
+    chunk_preview = preview_chunking(args, headers=headers, marker=marker)
+    source_result = exercise_sources(
+        args,
+        headers=headers,
+        tenant_id=tenant_id,
+        owner_user_id=owner_user_id,
+        space_id=space_id,
+        fixtures_dir=fixtures_dir,
+        fixtures=fixtures,
+    )
+    source_item_ids = source_result["source_item_ids"]
+    require(source_item_ids, "source sync did not return any source_item_ids")
+
+    ask_result = ask_quick(args, headers=headers, tenant_id=tenant_id, owner_user_id=owner_user_id)
+    ask_stream = ask_stream_progress(args, headers=headers, tenant_id=tenant_id, owner_user_id=owner_user_id)
+    no_answer = ask_no_answer(args, headers=empty_headers, tenant_id=empty_tenant_id, owner_user_id=empty_user_id)
+
+    digest_result = run_digest(
+        args,
+        tenant_id=tenant_id,
+        owner_user_id=owner_user_id,
+        source_item_ids=source_item_ids,
+        skip_worker=bool(args.skip_digest_worker),
+    )
+    digest_data = digest_data_request(args, headers=headers, owner_user_id=owner_user_id)
+    seed_report = ensure_governance_artifacts(
+        args,
+        headers=headers,
+        tenant_id=tenant_id,
+        owner_user_id=owner_user_id,
+        source_item_ids=source_item_ids,
+        digest_data=digest_data,
+    )
+    if seed_report["candidate_seeded"]:
+        digest_data = digest_data_request(args, headers=headers, owner_user_id=owner_user_id)
+
+    strict_counts = digest_artifact_counts(digest_data)
+    if args.strict_fastreact_candidates and seed_report["candidate_seeded"]:
+        raise E2EFailure(f"strict FastReAct candidate check failed: {seed_report['candidate_seed_reasons']}")
+    require(
+        strict_counts["digest_notes"] + strict_counts["knowledge_claims"] + strict_counts["review_candidates"] > 0,
+        "digest/review governance artifacts are still empty after digest and deterministic fallback",
+    )
+
+    evidence_brief = create_evidence_brief(args, headers=headers, tenant_id=tenant_id, owner_user_id=owner_user_id, run_id=run_id)
+    coverage = coverage_matrix(
+        readiness=readiness,
+        chunk_preview=chunk_preview,
+        source_result=source_result,
+        ask_result=ask_result,
+        ask_stream=ask_stream,
+        no_answer=no_answer,
+        digest_data=digest_data,
+        evidence_brief=evidence_brief,
+    )
+    require(all(item["ok"] for item in coverage.values()), "one or more coverage checks failed: " + json.dumps(coverage, ensure_ascii=False, default=str))
+
+    return {
+        "ok": True,
+        "run_id": run_id,
+        "tenant_id": tenant_id,
+        "owner_user_id": owner_user_id,
+        "empty_tenant_id": empty_tenant_id,
+        "empty_user_id": empty_user_id,
+        "space_id": space_id,
+        "marker": marker,
+        "workspace_path": str(fixtures_dir),
+        "written_files": {key: str(value) for key, value in fixtures.items()},
+        "services": service_checks,
+        "coverage": coverage,
+        "source_item_ids": source_item_ids,
+        "readiness_summary": readiness.get("summary"),
+        "chunk_preview": summarize_chunk_preview(chunk_preview),
+        "sources": source_result["summary"],
+        "ask": summarize_ask(ask_result),
+        "ask_stream": summarize_ask_stream(ask_stream),
+        "no_answer": {**summarize_no_answer(no_answer), "represented_user_id": empty_user_id},
+        "digest": {
+            "command": digest_result,
+            "data_summary": digest_data.get("summary"),
+            "artifact_counts": digest_artifact_counts(digest_data),
+            "candidate_seed": seed_report,
+        },
+        "evidence_brief": summarize_evidence_brief(evidence_brief),
+        "artifacts_kept": bool(args.keep_artifacts),
+        "startup_note": "PSKA must be started by ./start.sh; this script only verifies and drives the running stack.",
+    }
+
+
+def load_pska_runtime() -> dict[str, Any]:
+    if str(CORE_SRC) not in sys.path:
+        sys.path.insert(0, str(CORE_SRC))
+    from pska_core.cli import _ensure_writing_demo_identity  # noqa: PLC0415
+    from pska_core.config import PSKAConfig  # noqa: PLC0415
+    from pska_core.store_postgres import PostgresKnowledgeStore  # noqa: PLC0415
+
+    return {
+        "PSKAConfig": PSKAConfig,
+        "PostgresKnowledgeStore": PostgresKnowledgeStore,
+        "_ensure_writing_demo_identity": _ensure_writing_demo_identity,
+    }
+
+
+def check_services(args: argparse.Namespace, config: Any, *, headers: dict[str, str]) -> dict[str, Any]:
+    services: dict[str, Any] = {}
+    services["pska_ready"] = request_json("GET", f"{args.pska_url.rstrip('/')}/ready", headers=pska_ready_headers(config), timeout=args.timeout_seconds)
+    require(services["pska_ready"].get("ok") is True, "PSKA /ready is not ok. Start PSKA with ./start.sh before running this E2E.")
+    services["authnode"] = optional_json("GET", f"{args.authnode_url.rstrip('/')}/health", timeout=min(args.timeout_seconds, 8.0))
+    services["fastreact"] = optional_json(
+        "GET",
+        f"{args.fastreact_url.rstrip('/')}/ready",
+        headers=fastreact_ready_headers(config),
+        timeout=min(args.timeout_seconds, 12.0),
+    )
+    services["workspace_readiness"] = request_json("GET", f"{args.pska_url.rstrip('/')}/workspace/readiness", headers=headers, timeout=args.timeout_seconds).get("summary")
+    return services
+
+
+def preview_chunking(args: argparse.Namespace, *, headers: dict[str, str], marker: str) -> dict[str, Any]:
+    text = f"""# Atlas Relay review packet
+
+{marker}
+
+## Evaluation table
+
+| Area | Evidence | Risk |
+| --- | --- | --- |
+| Customer proof | Seven paid pilot teams want Q3 expansion. | Procurement may still be founder-led. |
+| Delivery | Implementation playbook reduced setup time. | Support capacity is the main bottleneck. |
+
+```text
+discover -> extract -> chunk -> embed -> index -> digest
+```
+
+Long Chinese note: 这段文本用于验证中文长段落在 chunk preview 中保持稳定切分，并且每个 chunk 能保留 offset、strategy、统计信息和选型原因。
+"""
+    return request_json(
+        "POST",
+        f"{args.pska_url.rstrip('/')}/workspace/chunking/preview",
+        headers=headers,
+        timeout=args.timeout_seconds,
+        payload={
+            "text": text,
+            "processing_config": {
+                "chunking": {
+                    "strategy": "markdown",
+                    "chunk_size": 420,
+                    "chunk_overlap": 40,
+                }
+            },
+        },
+    )
+
+
+def exercise_sources(
+    args: argparse.Namespace,
+    *,
+    headers: dict[str, str],
+    tenant_id: str,
+    owner_user_id: str,
+    space_id: str,
+    fixtures_dir: Path,
+    fixtures: dict[str, Path],
+) -> dict[str, Any]:
+    base_payload = {
+        "tenant_id": tenant_id,
+        "owner_user_id": owner_user_id,
+        "represented_user_id": owner_user_id,
+        "space_id": space_id,
+        "visibility": "private",
+        "processing_config": {
+            "chunking": {"strategy": "markdown", "chunk_size": 900, "chunk_overlap": 80},
+            "digest": {"enabled": True},
+            "graph": {"enabled": True},
+        },
+    }
+    source_specs = [
+        {"source_type": "folder", "name": "Coverage folder source", "path": str(fixtures_dir / "folder")},
+        {"source_type": "rss", "name": "Coverage RSS source", "url": fixtures["rss"].as_uri()},
+        {"source_type": "url", "name": "Coverage URL source", "url": fixtures["url"].as_uri()},
+    ]
+    previews = []
+    created = []
+    for spec in source_specs:
+        payload = {**base_payload, **spec, "limit": 5}
+        preview = request_json("POST", f"{args.pska_url.rstrip('/')}/workspace/sources/preview", headers=headers, timeout=args.timeout_seconds, payload=payload)
+        require(preview.get("ok") is True, f"source preview failed for {spec['source_type']}: {preview}")
+        previews.append(preview)
+        create_payload = {**payload, "preview": True}
+        created_source = request_json("POST", f"{args.pska_url.rstrip('/')}/workspace/sources", headers=headers, timeout=args.timeout_seconds, payload=create_payload)
+        require(created_source.get("ok") is True, f"source create failed for {spec['source_type']}: {created_source}")
+        created.append(created_source)
+    knowledge_source_ids = [
+        str((item.get("knowledge_source") or {}).get("knowledge_source_id"))
+        for item in created
+        if (item.get("knowledge_source") or {}).get("knowledge_source_id")
+    ]
+    sync = request_json(
+        "POST",
+        f"{args.pska_url.rstrip('/')}/workspace/sources/sync",
+        headers=headers,
+        timeout=args.timeout_seconds,
+        payload={**base_payload, "knowledge_source_ids": knowledge_source_ids, "limit": 20},
+    )
+    require(sync.get("ok") is True, f"source sync failed: {sync}")
+    source_item_ids = source_item_ids_from_sync(sync)
+    console = request_json(
+        "GET",
+        f"{args.pska_url.rstrip('/')}/console/sources/data?owner_user_id={owner_user_id}&limit=30",
+        headers=headers,
+        timeout=args.timeout_seconds,
+    )
+    require(console.get("ok") is True, f"console sources failed: {console}")
+    return {
+        "previews": previews,
+        "created": created,
+        "sync": sync,
+        "console": console,
+        "knowledge_source_ids": knowledge_source_ids,
+        "source_item_ids": source_item_ids,
+        "summary": {
+            "preview_counts": [int((item.get("preview") or {}).get("count") or 0) for item in previews],
+            "knowledge_source_ids": knowledge_source_ids,
+            "sync_totals": sync.get("totals"),
+            "console_source_counts": console.get("source_counts"),
+            "processing_span_count": int(((console.get("processing_spans") or {}).get("span_count")) or 0),
+        },
+    }
+
+
+def ask_quick(args: argparse.Namespace, *, headers: dict[str, str], tenant_id: str, owner_user_id: str) -> dict[str, Any]:
+    return request_json(
+        "POST",
+        f"{args.pska_url.rstrip('/')}/workspace/ask",
+        headers=headers,
+        timeout=args.timeout_seconds,
+        payload={
+            "tenant_id": tenant_id,
+            "user_id": owner_user_id,
+            "represented_user_id": owner_user_id,
+            "owner_user_id": owner_user_id,
+            "query": "What evidence supports adding Atlas Relay to the Q3 shortlist, and what risks need review?",
+            "intent": "quick",
+            "surface": "weknora_coverage_e2e",
+            "top_k": 8,
+        },
+    )
+
+
+def ask_stream_progress(args: argparse.Namespace, *, headers: dict[str, str], tenant_id: str, owner_user_id: str) -> list[dict[str, Any]]:
+    return request_sse_events(
+        f"{args.pska_url.rstrip('/')}/workspace/ask/stream",
+        headers=headers,
+        timeout=args.timeout_seconds,
+        payload={
+            "tenant_id": tenant_id,
+            "user_id": owner_user_id,
+            "represented_user_id": owner_user_id,
+            "owner_user_id": owner_user_id,
+            "query": "Summarize the Atlas Relay shortlist decision from available evidence.",
+            "intent": "quick",
+            "surface": "weknora_coverage_e2e_stream",
+            "top_k": 6,
+        },
+    )
+
+
+def ask_no_answer(args: argparse.Namespace, *, headers: dict[str, str], tenant_id: str, owner_user_id: str) -> dict[str, Any]:
+    return request_json(
+        "POST",
+        f"{args.pska_url.rstrip('/')}/workspace/ask",
+        headers=headers,
+        timeout=args.timeout_seconds,
+        payload={
+            "tenant_id": tenant_id,
+            "user_id": owner_user_id,
+            "represented_user_id": owner_user_id,
+            "owner_user_id": owner_user_id,
+            "query": "What did Zephyr Kestrel say about lunar aquaculture insurance renewals?",
+            "intent": "quick",
+            "surface": "weknora_coverage_no_answer",
+            "top_k": 5,
+        },
+    )
+
+
+def run_digest(
+    args: argparse.Namespace,
+    *,
+    tenant_id: str,
+    owner_user_id: str,
+    source_item_ids: list[str],
+    skip_worker: bool,
+) -> dict[str, Any]:
+    command = [
+        "digest-now",
+        "--tenant-id",
+        tenant_id,
+        "--owner-user-id",
+        owner_user_id,
+        "--skip-sync",
+        "--force",
+        "--limit",
+        str(args.digest_limit),
+        "--batch-size",
+        str(args.digest_batch_size),
+        "--max-worker-runs",
+        "0" if skip_worker else str(args.max_worker_runs),
+        "--worker-timeout-seconds",
+        str(args.digest_worker_timeout_seconds),
+        "--pska-url",
+        args.pska_url.rstrip("/"),
+        "--fastreact-url",
+        args.fastreact_url.rstrip("/"),
+        "--fastreact-root",
+        str(args.fastreact_root),
+    ]
+    for source_item_id in source_item_ids[: args.digest_limit]:
+        command.extend(["--source-item-id", source_item_id])
+    payload = run_pska(args, command, timeout=digest_command_timeout(args, skip_worker=skip_worker), allow_nonzero=skip_worker)
+    require(payload.get("ok") is not False or skip_worker, f"digest-now failed: {payload}")
+    return summarize_digest_command(payload)
+
+
+def digest_data_request(args: argparse.Namespace, *, headers: dict[str, str], owner_user_id: str) -> dict[str, Any]:
+    return request_json(
+        "GET",
+        f"{args.pska_url.rstrip('/')}/workspace/digest/data?owner_user_id={owner_user_id}&limit=50",
+        headers=headers,
+        timeout=args.timeout_seconds,
+    )
+
+
+def ensure_governance_artifacts(
+    args: argparse.Namespace,
+    *,
+    headers: dict[str, str],
+    tenant_id: str,
+    owner_user_id: str,
+    source_item_ids: list[str],
+    digest_data: dict[str, Any],
+) -> dict[str, Any]:
+    counts = digest_artifact_counts(digest_data)
+    reasons = []
+    if counts["digest_notes"] + counts["knowledge_claims"] == 0:
+        reasons.append("missing_digest_notes_or_claims")
+    if counts["review_candidates"] == 0:
+        reasons.append("missing_review_candidates")
+    if not reasons:
+        return {"candidate_seeded": False, "candidate_seed_reasons": [], "summary": None}
+    refs = [{"source_item_id": source_item_id} for source_item_id in source_item_ids[:3]]
+    require(refs, "cannot seed governance candidates without source refs")
+    payload = {
+        "schema_version": "pska.candidates.v1",
+        "tenant_id": tenant_id,
+        "owner_user_id": owner_user_id,
+        "producer": "pska_weknora_coverage_e2e",
+        "request_id": f"weknora_coverage:{tenant_id}:{owner_user_id}",
+        "source_refs": refs,
+        "knowledge_claims": [
+            {
+                "claim_type": "fact",
+                "dedupe_key": "weknora-coverage:atlas-relay:q3-shortlist-evidence",
+                "statement": "Atlas Relay shortlist readiness depends on expansion evidence and implementation risk review.",
+                "evidence_text": "The coverage fixture links Q3 expansion demand, implementation support load, and review gates.",
+                "confidence": 0.84,
+                "source_refs": refs[:1],
+            }
+        ],
+        "digest_notes": [
+            {
+                "dedupe_key": "weknora-coverage:atlas-relay:digest",
+                "title": "Atlas Relay Q3 shortlist digest",
+                "synopsis": "The fixture produces a source-backed digest note for Review, Ask, Evidence Brief, and Writing coverage.",
+                "key_points": [{"summary": "Expansion demand is present, but implementation risk remains review-worthy.", "source_refs": refs}],
+                "actions": [{"summary": "Review support capacity and customer concentration before applying long-term memory.", "source_refs": refs}],
+                "open_questions": [{"summary": "Which evidence should become durable memory after review?", "source_refs": refs}],
+                "risks": [{"summary": "Low-confidence relationship and memory candidates should remain in Review.", "source_refs": refs}],
+                "source_refs": refs,
+            }
+        ],
+        "memory_candidates": [
+            {
+                "kind": "agent_memory",
+                "layer": "semantic",
+                "text": "Atlas Relay should keep expansion proof linked to implementation risk in future reviews.",
+                "confidence": 0.42,
+                "source_refs": refs,
+            }
+        ],
+        "hyperedges": [
+            {
+                "relation_type": "depends_on",
+                "confidence": 0.35,
+                "members": [
+                    {"entity_type": "project", "label": "Atlas Relay", "role": "candidate"},
+                    {"entity_type": "risk", "label": "Implementation support capacity", "role": "constraint"},
+                ],
+                "source_refs": refs,
+            }
+        ],
+    }
+    summary = request_json("POST", f"{args.pska_url.rstrip('/')}/candidates", headers=headers, timeout=args.timeout_seconds, payload=payload)
+    return {"candidate_seeded": True, "candidate_seed_reasons": reasons, "summary": summary.get("summary")}
+
+
+def create_evidence_brief(args: argparse.Namespace, *, headers: dict[str, str], tenant_id: str, owner_user_id: str, run_id: str) -> dict[str, Any]:
+    return request_json(
+        "POST",
+        f"{args.pska_url.rstrip('/')}/workspace/evidence-briefs",
+        headers=headers,
+        timeout=args.timeout_seconds,
+        payload={
+            "tenant_id": tenant_id,
+            "owner_user_id": owner_user_id,
+            "represented_user_id": owner_user_id,
+            "title": f"WeKnora Coverage Evidence Brief {run_id}",
+            "goal": "Show PSKA source-backed digest/review artifacts as a writing-ready evidence brief.",
+            "limit": 20,
+        },
+    )
+
+
+def coverage_matrix(
+    *,
+    readiness: dict[str, Any],
+    chunk_preview: dict[str, Any],
+    source_result: dict[str, Any],
+    ask_result: dict[str, Any],
+    ask_stream: list[dict[str, Any]],
+    no_answer: dict[str, Any],
+    digest_data: dict[str, Any],
+    evidence_brief: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    digest_counts = digest_artifact_counts(digest_data)
+    source_counts = source_result["summary"]
+    source_types = {
+        str(((item.get("knowledge_source") or {}).get("source_type")) or "")
+        for item in source_result["created"]
+    }
+    progress_stages = [
+        str(((event.get("data") or {}).get("progress") or {}).get("stage") or "")
+        for event in ask_stream
+        if event.get("event") == "progress"
+    ]
+    diagnostics = ((no_answer.get("quality_signals") or {}).get("no_answer_diagnostics") or {})
+    brief = evidence_brief.get("brief") or {}
+    return {
+        "readiness": {
+            "ok": bool(readiness.get("ok")) and bool((readiness.get("summary") or {}).get("database_ok")) and bool((readiness.get("summary") or {}).get("mcp_ok")),
+            "evidence": readiness.get("summary"),
+        },
+        "source_adapters": {
+            "ok": {"folder", "rss", "url"}.issubset(source_types) and len(source_result["knowledge_source_ids"]) >= 3,
+            "evidence": {"source_types": sorted(source_types), "knowledge_source_ids": source_result["knowledge_source_ids"]},
+        },
+        "processing_transparency": {
+            "ok": int(source_counts.get("processing_span_count") or 0) > 0,
+            "evidence": {"processing_span_count": source_counts.get("processing_span_count"), "source_counts": source_counts.get("console_source_counts")},
+        },
+        "chunk_preview": {
+            "ok": bool((chunk_preview.get("preview") or {}).get("chunks")),
+            "evidence": summarize_chunk_preview(chunk_preview),
+        },
+        "ask_rag": {
+            "ok": bool(ask_result.get("answer")) and int(((ask_result.get("quality_signals") or {}).get("citation_count")) or 0) > 0,
+            "evidence": summarize_ask(ask_result),
+        },
+        "ask_progress": {
+            "ok": bool(progress_stages) and bool({"understand", "search", "read", "generate"}.intersection(progress_stages)),
+            "evidence": {"progress_stages": progress_stages},
+        },
+        "no_answer_diagnostics": {
+            "ok": diagnostics.get("schema") == "pska.ask_no_answer_diagnostics.v1"
+            and bool(diagnostics.get("dimensions"))
+            and bool(diagnostics.get("display"))
+            and diagnostics.get("primary_reason") != "ok",
+            "evidence": summarize_no_answer(no_answer),
+        },
+        "digest_review_governance": {
+            "ok": digest_counts["digest_notes"] + digest_counts["knowledge_claims"] > 0 and digest_counts["review_candidates"] > 0,
+            "evidence": {"artifact_counts": digest_counts, "summary": digest_data.get("summary")},
+        },
+        "evidence_brief_writing": {
+            "ok": bool(brief.get("board_id")) and bool(brief.get("source_refs")) and bool((evidence_brief.get("nodes") or [])),
+            "evidence": summarize_evidence_brief(evidence_brief),
+        },
+    }
+
+
+def write_fixture_files(root: Path, *, marker: str) -> dict[str, Path]:
+    folder = root / "folder"
+    folder.mkdir(parents=True, exist_ok=True)
+    files = {
+        "scorecard": folder / "atlas-scorecard.md",
+        "risk": folder / "implementation-risk.md",
+        "table": folder / "review-table.md",
+        "url": root / "atlas-url-page.html",
+        "rss": root / "atlas-feed.xml",
+    }
+    files["scorecard"].write_text(
+        f"""---
+title: Atlas Relay Q3 shortlist scorecard
+marker: {marker}
+---
+# Atlas Relay Q3 shortlist scorecard
+
+Atlas Relay is being evaluated for the Q3 shortlist. The supporting case is
+that seven paid pilot teams requested expansion, implementation time dropped
+from 18 days to 11 days, and account teams now have a repeatable onboarding
+checklist.
+
+The review should not approve durable memory automatically. Support capacity,
+customer concentration, and founder-led procurement remain open risks.
+""",
+        encoding="utf-8",
+    )
+    files["risk"].write_text(
+        f"""---
+title: Atlas Relay implementation risk review
+marker: {marker}
+---
+# Atlas Relay implementation risk review
+
+Implementation risk is concentrated in support capacity. The current team can
+handle four parallel rollouts, while the Q3 expansion request could require
+seven. A review item should ask whether partner implementation support exists
+before the shortlist decision becomes long-term knowledge.
+""",
+        encoding="utf-8",
+    )
+    files["table"].write_text(
+        f"""---
+title: Atlas Relay evidence table
+marker: {marker}
+---
+# Atlas Relay evidence table
+
+| Signal | Evidence | Review question |
+| --- | --- | --- |
+| Customer proof | Seven paid pilot teams requested expansion | Is demand concentrated in one segment? |
+| Delivery | Setup time dropped from 18 days to 11 days | Can support handle seven rollouts? |
+| Decision | Q3 shortlist candidate | What should stay pending in Review? |
+""",
+        encoding="utf-8",
+    )
+    files["url"].write_text(
+        f"""<!doctype html>
+<html>
+<head><title>Atlas Relay public decision note</title></head>
+<body>
+<h1>Atlas Relay public decision note</h1>
+<p>{marker}</p>
+<p>The URL page states that Atlas Relay should be considered for Q3 only when
+expansion demand is tied to visible implementation capacity and reviewable
+source evidence.</p>
+</body>
+</html>
+""",
+        encoding="utf-8",
+    )
+    files["rss"].write_text(
+        f"""<?xml version="1.0" encoding="UTF-8" ?>
+<rss version="2.0">
+  <channel>
+    <title>Atlas Relay coverage feed</title>
+    <item>
+      <title>Atlas Relay customer expansion signal</title>
+      <link>{files["url"].as_uri()}</link>
+      <guid>{marker}:rss:customer-expansion</guid>
+      <description>Seven paid pilot teams requested Q3 expansion, which supports shortlist discussion.</description>
+    </item>
+    <item>
+      <title>Atlas Relay support capacity risk</title>
+      <link>{files["url"].as_uri()}</link>
+      <guid>{marker}:rss:support-risk</guid>
+      <description>Support capacity remains a review risk because Q3 rollout demand could exceed current implementation bandwidth.</description>
+    </item>
+  </channel>
+</rss>
+""",
+        encoding="utf-8",
+    )
+    return files
+
+
+def request_json(
+    method: str,
+    url: str,
+    *,
+    headers: dict[str, str] | None = None,
+    timeout: float,
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    data = None
+    request_headers = {"Accept": "application/json", **(headers or {})}
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+        request_headers["Content-Type"] = "application/json"
+    request = Request(url, data=data, headers=request_headers, method=method)
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise E2EFailure(f"HTTP {exc.code} for {method} {url}: {body[-2000:]}") from exc
+    except URLError as exc:
+        raise E2EFailure(f"Service unavailable at {url}: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise E2EFailure(f"Non-JSON response from {method} {url}") from exc
+
+
+def optional_json(method: str, url: str, *, timeout: float, headers: dict[str, str] | None = None) -> dict[str, Any]:
+    try:
+        payload = request_json(method, url, headers=headers, timeout=timeout)
+        return {"ok": True, "payload": payload}
+    except E2EFailure as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def request_sse_events(url: str, *, headers: dict[str, str], timeout: float, payload: dict[str, Any]) -> list[dict[str, Any]]:
+    request_headers = {"Accept": "text/event-stream", "Content-Type": "application/json", **headers}
+    request = Request(url, data=json.dumps(payload).encode("utf-8"), headers=request_headers, method="POST")
+    events: list[dict[str, Any]] = []
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            event_name = "message"
+            data_lines: list[str] = []
+            for raw_line in response:
+                line = raw_line.decode("utf-8", errors="replace").rstrip("\n")
+                if not line:
+                    if data_lines:
+                        event_payload = parse_sse_data("\n".join(data_lines))
+                        events.append({"event": event_name, "data": event_payload})
+                        if event_name == "done":
+                            break
+                    event_name = "message"
+                    data_lines = []
+                    continue
+                if line.startswith("event:"):
+                    event_name = line.partition(":")[2].strip()
+                elif line.startswith("data:"):
+                    data_lines.append(line.partition(":")[2].lstrip())
+    except HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise E2EFailure(f"HTTP {exc.code} for SSE {url}: {body[-2000:]}") from exc
+    except URLError as exc:
+        raise E2EFailure(f"SSE service unavailable at {url}: {exc}") from exc
+    return events
+
+
+def parse_sse_data(value: str) -> Any:
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return value
+
+
+def run_pska(args: argparse.Namespace, command: list[str], *, timeout: float, allow_nonzero: bool = False) -> dict[str, Any]:
+    completed = subprocess.run(
+        [str(ROOT / "scripts" / "pska"), "--config", str(args.config), *command],
+        cwd=str(ROOT),
+        text=True,
+        capture_output=True,
+        timeout=timeout,
+    )
+    try:
+        payload = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        if completed.returncode != 0:
+            raise E2EFailure(
+                f"PSKA command failed: {' '.join(command)}\n"
+                f"stdout:\n{completed.stdout[-3000:]}\n"
+                f"stderr:\n{completed.stderr[-3000:]}"
+            ) from exc
+        raise E2EFailure(f"PSKA command returned non-JSON output for {' '.join(command)}: {completed.stdout[-2000:]}") from exc
+    if completed.returncode != 0 and not allow_nonzero:
+        raise E2EFailure(
+            f"PSKA command failed: {' '.join(command)}\n"
+            f"stdout:\n{completed.stdout[-3000:]}\n"
+            f"stderr:\n{completed.stderr[-3000:]}"
+        )
+    if completed.returncode != 0:
+        payload["_returncode"] = completed.returncode
+    return payload
+
+
+def pska_headers(config: Any, *, tenant_id: str, user_id: str, represented_user_id: str) -> dict[str, str]:
+    headers = {
+        "X-PSKA-Tenant-Id": tenant_id,
+        "X-PSKA-User-Id": user_id,
+        "X-PSKA-Represented-User-Id": represented_user_id,
+        "X-PSKA-Subject": f"pska:{user_id}",
+    }
+    if config.service.service_token:
+        headers["Authorization"] = f"Bearer {config.service.service_token}"
+    return headers
+
+
+def pska_ready_headers(config: Any) -> dict[str, str]:
+    if config.service.service_token:
+        return {"X-PSKA-Service-Token": config.service.service_token}
+    return {}
+
+
+def fastreact_ready_headers(config: Any) -> dict[str, str]:
+    token = config.fastreact.service_token or config.agentic_service.service_token
+    if token:
+        return {"X-FastReAct-Service-Token": token}
+    return {}
+
+
+def source_item_ids_from_sync(sync: dict[str, Any]) -> list[str]:
+    ids: list[str] = []
+    for report in sync.get("reports") or []:
+        if not isinstance(report, dict):
+            continue
+        ids.extend(str(item) for item in report.get("source_item_ids") or [] if item)
+        for change in report.get("changes") or []:
+            if isinstance(change, dict) and change.get("source_item_id"):
+                ids.append(str(change["source_item_id"]))
+    return list(dict.fromkeys(ids))
+
+
+def digest_command_timeout(args: argparse.Namespace, *, skip_worker: bool) -> float:
+    if skip_worker:
+        return max(float(args.timeout_seconds), 90.0)
+    return max(float(args.timeout_seconds), float(args.max_worker_runs or 1) * float(args.digest_worker_timeout_seconds) + 120.0)
+
+
+def digest_artifact_counts(data: dict[str, Any]) -> dict[str, int]:
+    return {
+        "digest_notes": len(data.get("digest_notes") or []),
+        "knowledge_claims": len(data.get("knowledge_claims") or []),
+        "review_candidates": len(data.get("review_candidates") or []),
+        "discovery_summaries": len(data.get("discovery_summaries") or []),
+    }
+
+
+def summarize_digest_command(payload: dict[str, Any]) -> dict[str, Any]:
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    return {
+        "ok": payload.get("ok") is not False,
+        "scheduled_source_items": summary.get("scheduled_source_items"),
+        "worker_processed": summary.get("worker_processed"),
+        "candidate_write": summary.get("candidate_write"),
+        "diagnostics": summary.get("diagnostics"),
+        "fallback_review": summary.get("fallback_review"),
+        "pending_review_count": summary.get("pending_review_count"),
+        "failed_digest_jobs": summary.get("failed_digest_jobs"),
+    }
+
+
+def summarize_chunk_preview(payload: dict[str, Any]) -> dict[str, Any]:
+    preview = payload.get("preview") if isinstance(payload.get("preview"), dict) else {}
+    chunks = preview.get("chunks") if isinstance(preview.get("chunks"), list) else []
+    return {
+        "chunk_count": len(chunks),
+        "strategy": preview.get("strategy"),
+        "stats": preview.get("stats"),
+        "diagnostics": preview.get("diagnostics"),
+    }
+
+
+def summarize_ask(payload: dict[str, Any]) -> dict[str, Any]:
+    quality = payload.get("quality_signals") if isinstance(payload.get("quality_signals"), dict) else {}
+    return {
+        "ok": payload.get("ok") is not False,
+        "answer_chars": len(str(payload.get("answer") or "")),
+        "quality_band": quality.get("quality_band"),
+        "evidence_status": quality.get("evidence_status"),
+        "citation_count": quality.get("citation_count"),
+        "source_ref_count": quality.get("source_ref_count"),
+        "retrieval_owner": quality.get("retrieval_owner"),
+    }
+
+
+def summarize_ask_stream(events: list[dict[str, Any]]) -> dict[str, Any]:
+    stages = [
+        str(((event.get("data") or {}).get("progress") or {}).get("stage") or "")
+        for event in events
+        if event.get("event") == "progress"
+    ]
+    return {"event_count": len(events), "progress_event_count": len(stages), "progress_stages": stages}
+
+
+def summarize_no_answer(payload: dict[str, Any]) -> dict[str, Any]:
+    quality = payload.get("quality_signals") if isinstance(payload.get("quality_signals"), dict) else {}
+    diagnostics = quality.get("no_answer_diagnostics") if isinstance(quality.get("no_answer_diagnostics"), dict) else {}
+    return {
+        "quality_band": quality.get("quality_band"),
+        "evidence_status": quality.get("evidence_status"),
+        "primary_reason": diagnostics.get("primary_reason"),
+        "display": diagnostics.get("display"),
+        "dimensions": diagnostics.get("dimensions"),
+    }
+
+
+def summarize_evidence_brief(payload: dict[str, Any]) -> dict[str, Any]:
+    brief = payload.get("brief") if isinstance(payload.get("brief"), dict) else {}
+    board = payload.get("board") if isinstance(payload.get("board"), dict) else {}
+    return {
+        "ok": payload.get("ok") is True,
+        "board_id": brief.get("board_id") or board.get("board_id"),
+        "review_status": brief.get("review_status"),
+        "source_ref_count": len(brief.get("source_refs") or []),
+        "node_count": len(payload.get("nodes") or []),
+        "edge_count": len(payload.get("edges") or []),
+        "lineage": brief.get("lineage"),
+    }
+
+
+def require(condition: Any, message: str) -> None:
+    if not condition:
+        raise E2EFailure(message)
+
+
+def safe_id(value: str) -> str:
+    return "".join(ch.lower() if ch.isalnum() else "_" for ch in value).strip("_")[:48] or uuid4().hex[:8]
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
