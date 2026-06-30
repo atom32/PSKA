@@ -44,7 +44,7 @@
 - [Frontend README](../frontend/README.md)：User Workspace 启动方式和页面。
 - [Backend Feature Map](../frontend/BACKEND_FEATURES.md)：前端页面与后端能力映射。
 
-当前前端状态：User Workspace 已包含 Today、Discoveries、Knowledge Sources、Corpus/Brain、Ask、Graph、review-oriented flows 和 Writing/Evidence Brief surfaces。Knowledge Sources 已支持 folder、RSS/Atom、URL 的 preview/create/sync，并提供 processing diagnostics 和 chunk preview。
+当前前端状态：User Workspace 已包含 Today、Discoveries、资料库、多轮 Ask、Graph、review-oriented flows、Prompt Profiles 和 Writing/Evidence Brief surfaces。普通用户入口支持上传文件、粘贴文本、添加 URL/RSS；folder source 保留给 admin/dev、本地迁移或批量导入。代码内部仍然沿用 KnowledgeSource、source item、document、chunk、digest、review 等模型。
 
 ## Twitter/X
 

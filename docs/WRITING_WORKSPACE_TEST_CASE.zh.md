@@ -20,7 +20,7 @@ PSKA 只能通过项目根目录 `./start.sh` 启动。不要单独启动前端�
 
 ```bash
 ./scripts/pska-writing-workspace-e2e \
-  --config "/Users/xudawei/Documents/personal archive/.pska/config.json"
+  --config .pska/config.json
 ```
 
 这条链路会把虚构资料写入：

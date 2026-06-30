@@ -15,15 +15,22 @@ import {
   Link2,
   LogOut,
   Maximize2,
+  MessageCircle,
   Minimize2,
+  Paperclip,
   Pin,
   PlayCircle,
   RefreshCw,
+  RotateCcw,
   Search,
+  Send,
+  Settings2,
+  SlidersHorizontal,
   Sparkles,
   Tag,
-  Tags,
   TextCursorInput,
+  Trash2,
+  UploadCloud,
   X
 } from "lucide-react";
 import {
@@ -52,19 +59,23 @@ import { useQuery } from "@tanstack/react-query";
 import {
   analyzeWorkspaceContext,
   acceptDiscovery,
+  askConversationStream,
   askWorkspaceStream,
   applyReviewItem,
   approveReviewItem,
   cleanupKnowledgeSource,
   composeWritingDraft,
+  createAskConversation,
   createEvidenceBrief,
   createKnowledgeSource,
+  createTextSource,
   createWritingBoard,
   createWritingEdge,
   createWritingNode,
   deleteWritingBoard,
   deleteWritingNode,
   ignoreDiscovery,
+  deleteWorkspaceDocuments,
   loadCorpusContext,
   loadCorpusData,
   loadDigestLogs,
@@ -72,7 +83,11 @@ import {
   loadGraphData,
   loadGraphSearchSubgraph,
   loadGraphSubgraph,
+  loadAskConversation,
   loadReviewCenter,
+  loadAskConversations,
+  loadPromptProfiles,
+  loadWorkspaceDocuments,
   loadSourcesConsole,
   loadToday,
   loadWritingBoard,
@@ -84,10 +99,11 @@ import {
   recordWorkspaceActivity,
   rejectReviewItem,
   runDigestNow,
-  runFileSync,
   snoozeDiscovery,
   syncKnowledgeSources,
-  suggestWritingQuestions
+  suggestWritingQuestions,
+  updatePromptProfiles,
+  uploadWorkspaceSource
 } from "./api";
 import type { PSKAAuth, PSKAIdentity } from "./api";
 import { useWorkspaceStore } from "./store";
@@ -98,8 +114,9 @@ import type {
   ConsoleSourcesResponse,
   DigestNowResponse,
   DigestLogsResponse,
-  FileSyncResponse,
   KnowledgeSourceCleanupResponse,
+  AskConversation,
+  AskMessage,
   ReviewCenterItem,
   SourcePreviewResponse,
   SourceSyncResponse,
@@ -109,6 +126,10 @@ import type {
   TodayReviewItem,
   WorkspaceAskResponse,
   WorkspaceCorpusResponse,
+  WorkspaceDocumentDeleteResponse,
+  WorkspaceDocumentsResponse,
+  WorkspaceSourceIngestResponse,
+  PromptProfilesResponse,
   WorkspaceGraphEdge,
   WorkspaceGraphNode,
   WorkspaceGraphPathResponse,
@@ -162,6 +183,7 @@ export default function App() {
   const lastEditedActivityAt = useRef(0);
   const [pinStatus, setPinStatus] = useState<"idle" | "saved" | "failed">("idle");
   const [gatewayAuthenticated, setGatewayAuthenticated] = useState<boolean | null>(null);
+  const [activeAskConversationId, setActiveAskConversationId] = useState("");
   const activeMode: WorkspaceMode = mode === "document" || mode === "canvas" ? "writing" : mode;
 
   useEffect(() => {
@@ -340,8 +362,16 @@ export default function App() {
   }
 
   return (
-    <main className={`app-shell ${leftCollapsed ? "left-collapsed" : ""} ${activeMode === "writing" ? "writing-mode" : ""}`}>
-      <LeftSidebar collapsed={leftCollapsed} mode={activeMode} onModeChange={setMode} onToggle={toggleLeft} />
+    <main className={`app-shell ${leftCollapsed ? "left-collapsed" : ""} ${activeMode === "writing" ? "writing-mode" : ""} ${activeMode === "today" ? "today-mode" : ""}`}>
+      <LeftSidebar
+        collapsed={leftCollapsed}
+        mode={activeMode}
+        serviceToken={pskaIdentity}
+        activeAskConversationId={activeAskConversationId}
+        onAskConversationChange={setActiveAskConversationId}
+        onModeChange={setMode}
+        onToggle={toggleLeft}
+      />
       <section className="workspace-column">
         <TopBar
           mode={activeMode}
@@ -359,20 +389,26 @@ export default function App() {
           onRefresh={refreshCurrentSurface}
         />
         {activeMode === "today" ? (
-          <TodayWorkspace serviceToken={pskaIdentity} onOpenWorkspace={setMode} setBrain={setBrain} />
+          <TodayWorkspace
+            serviceToken={pskaIdentity}
+            activeConversationId={activeAskConversationId}
+            onActiveConversationChange={setActiveAskConversationId}
+            onOpenWorkspace={setMode}
+            setBrain={setBrain}
+          />
         ) : activeMode === "review" ? (
           <ReviewCenter serviceToken={pskaIdentity} onPinCurrent={pinCurrentWorkspace} pinStatus={pinStatus} />
         ) : activeMode === "graph" ? (
           <GraphWorkspace serviceToken={pskaIdentity} onPinCurrent={pinCurrentWorkspace} pinStatus={pinStatus} />
         ) : activeMode === "corpus" ? (
-          <CorpusWorkspace serviceToken={pskaIdentity} onPinCurrent={pinCurrentWorkspace} pinStatus={pinStatus} setBrain={setBrain} />
+          <CorpusWorkspace serviceToken={pskaIdentity} onOpenWorkspace={setMode} onPinCurrent={pinCurrentWorkspace} pinStatus={pinStatus} setBrain={setBrain} />
         ) : activeMode === "writing" ? (
           <WritingWorkspace serviceToken={pskaIdentity} onPinCurrent={pinCurrentWorkspace} pinStatus={pinStatus} />
         ) : (
           <CanvasWorkspace brain={brain} onPinCurrent={pinCurrentWorkspace} pinStatus={pinStatus} />
         )}
       </section>
-      {activeMode === "writing" ? null : <BrainSidebar brain={brain} onRefresh={refreshCurrentSurface} />}
+      {activeMode === "writing" || activeMode === "today" ? null : <BrainSidebar brain={brain} onRefresh={refreshCurrentSurface} />}
     </main>
   );
 }
@@ -380,14 +416,44 @@ export default function App() {
 function LeftSidebar({
   collapsed,
   mode,
+  serviceToken,
+  activeAskConversationId,
+  onAskConversationChange,
   onModeChange,
   onToggle
 }: {
   collapsed: boolean;
   mode: WorkspaceMode;
+  serviceToken: PSKAAuth;
+  activeAskConversationId: string;
+  onAskConversationChange: (conversationId: string) => void;
   onModeChange: (mode: WorkspaceMode) => void;
   onToggle: () => void;
 }) {
+  const [contextMessage, setContextMessage] = useState("");
+  const askConversationsQuery = useQuery({
+    queryKey: ["left-ask-conversations", serviceToken],
+    queryFn: () => loadAskConversations(serviceToken),
+    enabled: mode === "today" && !collapsed,
+    retry: 1
+  });
+  const conversations = askConversationsQuery.data?.conversations || [];
+
+  async function createSidebarConversation() {
+    setContextMessage("");
+    try {
+      const payload = await createAskConversation(serviceToken, "Ask PSKA");
+      const conversationId = payload.conversation?.conversation_id || "";
+      if (conversationId) {
+        onAskConversationChange(conversationId);
+        onModeChange("today");
+      }
+      await askConversationsQuery.refetch();
+    } catch (error) {
+      setContextMessage(error instanceof Error ? error.message : "创建对话失败。");
+    }
+  }
+
   return (
     <aside className="left-sidebar">
       <button className="collapse-button" type="button" onClick={onToggle} title={collapsed ? "展开侧栏" : "收起侧栏"}>
@@ -406,19 +472,108 @@ function LeftSidebar({
         <NavItem collapsed={collapsed} icon={<CalendarDays size={18} />} label="Today" active={mode === "today"} onClick={() => onModeChange("today")} />
         <NavItem collapsed={collapsed} icon={<TextCursorInput size={18} />} label="写作" active={mode === "writing"} onClick={() => onModeChange("writing")} />
         <NavItem collapsed={collapsed} icon={<Hash size={18} />} label="Graph" active={mode === "graph"} onClick={() => onModeChange("graph")} />
-        <NavItem collapsed={collapsed} icon={<Folder size={18} />} label="语料库" active={mode === "corpus"} onClick={() => onModeChange("corpus")} />
-        <NavItem collapsed={collapsed} icon={<BookOpen size={18} />} label="项目" />
-        <NavItem collapsed={collapsed} icon={<Tags size={18} />} label="标签" />
-        <NavItem collapsed={collapsed} icon={<Search size={18} />} label="搜索" />
+        <NavItem collapsed={collapsed} icon={<Folder size={18} />} label="资料库" active={mode === "corpus"} onClick={() => onModeChange("corpus")} />
         <NavItem collapsed={collapsed} icon={<GitPullRequest size={18} />} label="Review" active={mode === "review"} onClick={() => onModeChange("review")} />
       </nav>
       {!collapsed && (
-        <div className="tree">
-          <p>当前项目</p>
-          <span>真实项目索引尚未连接。</span>
-        </div>
+        <SidebarContextTree
+          mode={mode}
+          conversations={conversations}
+          activeAskConversationId={activeAskConversationId}
+          loading={askConversationsQuery.isLoading}
+          message={contextMessage}
+          onNewConversation={() => void createSidebarConversation()}
+          onSelectConversation={(conversationId) => {
+            onAskConversationChange(conversationId);
+            onModeChange("today");
+          }}
+          onModeChange={onModeChange}
+        />
       )}
     </aside>
+  );
+}
+
+function SidebarContextTree({
+  mode,
+  conversations,
+  activeAskConversationId,
+  loading,
+  message,
+  onNewConversation,
+  onSelectConversation,
+  onModeChange
+}: {
+  mode: WorkspaceMode;
+  conversations: AskConversation[];
+  activeAskConversationId: string;
+  loading: boolean;
+  message: string;
+  onNewConversation: () => void;
+  onSelectConversation: (conversationId: string) => void;
+  onModeChange: (mode: WorkspaceMode) => void;
+}) {
+  if (mode === "today") {
+    return (
+      <div className="tree context-tree">
+        <div className="context-tree-head">
+          <p>对话</p>
+          <button className="context-action" type="button" onClick={onNewConversation} title="新对话">
+            <MessageCircle size={14} />
+          </button>
+        </div>
+        {loading ? <span>正在加载对话...</span> : null}
+        {!loading && conversations.length === 0 ? <span>还没有 Ask PSKA 对话。</span> : null}
+        <div className="context-thread-list">
+          {conversations.slice(0, 10).map((conversation) => (
+            <button
+              className={`context-item ${conversation.conversation_id === activeAskConversationId ? "active" : ""}`}
+              type="button"
+              key={conversation.conversation_id}
+              onClick={() => conversation.conversation_id && onSelectConversation(conversation.conversation_id)}
+            >
+              <MessageCircle size={14} />
+              <span>{trimText(conversation.title || conversation.conversation_id || "Ask PSKA", 30)}</span>
+            </button>
+          ))}
+        </div>
+        {message ? <small>{message}</small> : null}
+      </div>
+    );
+  }
+  if (mode === "writing") {
+    return (
+      <div className="tree context-tree">
+        <p>写作</p>
+        <button className="context-item" type="button" onClick={() => onModeChange("writing")}>
+          <TextCursorInput size={14} />
+          <span>项目卡片</span>
+        </button>
+        <span>写作项目在主区以卡片选择，进入项目后是 Inquiry Graph 画布。</span>
+      </div>
+    );
+  }
+  if (mode === "corpus") {
+    return (
+      <div className="tree context-tree">
+        <p>资料库</p>
+        <span>上传、粘贴、URL/RSS 和资料删除影响都在主区管理。</span>
+      </div>
+    );
+  }
+  if (mode === "review") {
+    return (
+      <div className="tree context-tree">
+        <p>Review</p>
+        <span>审核候选、Digest 风险和待应用知识在主区处理。</span>
+      </div>
+    );
+  }
+  return (
+    <div className="tree context-tree">
+      <p>Graph</p>
+      <span>关系浏览、路径检索和图谱问答在主区展开。</span>
+    </div>
   );
 }
 
@@ -489,7 +644,7 @@ function TopBar({
         </button>
         <button className={mode === "corpus" ? "active" : ""} type="button" onClick={() => onModeChange("corpus")}>
           <Folder size={17} />
-          语料库
+          资料库
         </button>
         <button className={mode === "review" ? "active" : ""} type="button" onClick={() => onModeChange("review")}>
           <GitPullRequest size={17} />
@@ -540,10 +695,14 @@ type TodayAction = "待处理" | "处理中" | "已接受" | "已忽略" | "稍�
 
 function TodayWorkspace({
   serviceToken,
+  activeConversationId,
+  onActiveConversationChange,
   onOpenWorkspace,
   setBrain
 }: {
   serviceToken: PSKAAuth;
+  activeConversationId: string;
+  onActiveConversationChange: (conversationId: string) => void;
   onOpenWorkspace: (mode: WorkspaceMode) => void;
   setBrain: (brain: Partial<BrainState>) => void;
 }) {
@@ -552,30 +711,41 @@ function TodayWorkspace({
   const [searchResult, setSearchResult] = useState<WorkspaceAskResponse | null>(null);
   const [searchError, setSearchError] = useState<string | null>(null);
   const [searching, setSearching] = useState(false);
+  const [attachmentFile, setAttachmentFile] = useState<File | null>(null);
+  const [attachmentStatus, setAttachmentStatus] = useState("");
+  const [askTemperature, setAskTemperature] = useState(0.3);
+  const [askMaxTokens, setAskMaxTokens] = useState(4096);
+  const [askTopK, setAskTopK] = useState(8);
+  const [rightRailCollapsed, setRightRailCollapsed] = useState(false);
   const todayQuery = useQuery({
     queryKey: ["today", serviceToken],
     queryFn: () => loadToday(serviceToken),
     retry: 1
   });
-  const corpusQuery = useQuery({
-    queryKey: ["today-corpus", serviceToken],
-    queryFn: () => loadCorpusData(serviceToken, 12),
+  const askConversationsQuery = useQuery({
+    queryKey: ["today-ask-conversations", serviceToken],
+    queryFn: () => loadAskConversations(serviceToken),
+    retry: 1
+  });
+  const askConversationQuery = useQuery({
+    queryKey: ["today-ask-conversation", serviceToken, activeConversationId],
+    queryFn: () => loadAskConversation(serviceToken, activeConversationId),
+    enabled: Boolean(activeConversationId),
     retry: 1
   });
   const data = todayQuery.data;
   const continueWorking = normalizeContinueItems(data);
   const discoveries = normalizeDiscoveries(data);
   const needsReview = normalizeReviewItems(data);
-  const corpus = corpusQuery.data;
-  const sourceCounts = data?.system?.source_counts || corpus?.counts || {};
-  const visibleSources = (corpus?.sources || []).slice(0, 6);
-  const visibleChunks = (corpus?.chunks || []).slice(0, 4);
+  const conversations = askConversationsQuery.data?.conversations || [];
+  const conversationMessages = askConversationQuery.data?.messages || [];
+  const actionCount = continueWorking.length + discoveries.length + needsReview.length;
 
   useEffect(() => {
-    if (corpus && !searchResult) {
-      setBrain(corpusToBrain(corpus));
+    if (!activeConversationId && conversations[0]?.conversation_id) {
+      onActiveConversationChange(conversations[0].conversation_id);
     }
-  }, [corpus, searchResult, setBrain]);
+  }, [activeConversationId, conversations, onActiveConversationChange]);
 
   function mark(id: string, value: TodayAction) {
     setActions((current) => ({ ...current, [id]: value }));
@@ -591,9 +761,39 @@ function TodayWorkspace({
     }
     setSearching(true);
     setSearchError(null);
+    setAttachmentStatus("");
     setSearchResult(pendingAskResult(query));
     try {
-      const result = await askWorkspaceStream(query, serviceToken, "auto", "today", ({ result: partial }) => {
+      let conversationId = activeConversationId;
+      if (!conversationId) {
+        const created = await createAskConversation(serviceToken, query.slice(0, 60));
+        conversationId = created.conversation?.conversation_id || "";
+        if (conversationId) {
+          onActiveConversationChange(conversationId);
+        }
+      }
+      if (attachmentFile) {
+        setAttachmentStatus(`正在把 ${attachmentFile.name} 加入资料库`);
+        const upload = await uploadWorkspaceSource(serviceToken, attachmentFile, { digest_mode: "after_upload" });
+        const sourceItemIds = upload.source_item_ids || [];
+        setAttachmentStatus(`${attachmentFile.name} 已加入资料库，并用于本次提问`);
+        setAttachmentFile(null);
+        const result = conversationId ? await askConversationStream(conversationId, query, serviceToken, ({ result: partial }) => {
+          setSearchResult({ ...partial });
+        }, { surface: "today", topK: askTopK, temperature: askTemperature, maxTokens: askMaxTokens, sourceItemIds }) : await askWorkspaceStream(query, serviceToken, "auto", "today", ({ result: partial }) => {
+          setSearchResult({ ...partial });
+        }, { topK: askTopK, scope: sourceItemIds.length ? { source_item_ids: sourceItemIds } : undefined });
+        setSearchResult(result);
+        setBrain(searchToBrain(result, query));
+        if (result.error) {
+          setSearchError(displaySearchError(result.error));
+        }
+        await Promise.all([askConversationsQuery.refetch(), conversationId ? askConversationQuery.refetch() : Promise.resolve()]);
+        return;
+      }
+      const result = conversationId ? await askConversationStream(conversationId, query, serviceToken, ({ result: partial }) => {
+        setSearchResult({ ...partial });
+      }, { surface: "today", topK: askTopK, temperature: askTemperature, maxTokens: askMaxTokens }) : await askWorkspaceStream(query, serviceToken, "auto", "today", ({ result: partial }) => {
         setSearchResult({ ...partial });
       });
       setSearchResult(result);
@@ -601,6 +801,7 @@ function TodayWorkspace({
       if (result.error) {
         setSearchError(displaySearchError(result.error));
       }
+      await Promise.all([askConversationsQuery.refetch(), conversationId ? askConversationQuery.refetch() : Promise.resolve()]);
     } catch (error) {
       setSearchResult(null);
       setSearchError(error instanceof Error ? error.message : "PSKA 查询失败。");
@@ -684,165 +885,140 @@ function TodayWorkspace({
 
   return (
     <section className="main-workspace today-surface" aria-label="Today">
-      <div className="today-header">
-        <div>
-          <span className="eyebrow">Today</span>
-          <h1>继续思考，不处理收件箱。</h1>
-          <p>{todayQuery.isError ? "PSKA 后端暂时不可用；这里不会显示原型数据。" : "真实 PSKA 数据已接入；Today 任务区只显示已产生的活动、发现和审核候选。"}</p>
-        </div>
-        <div className="today-summary" aria-label="今日摘要">
-          <span>
-            <strong>{sourceCounts.source_items ?? sourceCounts.sources_total ?? corpus?.sources?.length ?? 0}</strong>
-            来源
-          </span>
-          <span>
-            <strong>{sourceCounts.chunks ?? sourceCounts.chunks_matching ?? corpus?.chunks?.length ?? 0}</strong>
-            Chunks
-          </span>
-          <span>
-            <strong>{needsReview.length}</strong>
-            待审核
-          </span>
-        </div>
-      </div>
-
       {todayQuery.isError ? (
         <div className="review-empty error-state">Today 无法加载。请检查 8765 后端、Vite 代理或服务令牌。</div>
       ) : todayQuery.isLoading ? (
         <div className="review-empty">正在加载真实 Today 数据...</div>
       ) : (
-      <div className="today-grid">
+      <div className={`today-grid ${rightRailCollapsed ? "right-rail-collapsed" : ""}`}>
         <section className="today-section today-search">
-          <SectionTitle icon={<Search size={18} />} title="Ask PSKA" subtitle="自动选择快速回答或深入分析" />
-          <form className="today-search-form" onSubmit={runTodaySearch}>
-            <textarea value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="问 PSKA" />
-            <button className="primary" type="submit" disabled={searching}>
-              {searching ? "查询中" : "查询"}
-            </button>
-          </form>
-          {searchError ? <div className="review-empty error-state compact">{searchError}</div> : null}
-          {searchResult ? <AskResult result={searchResult} pending={searching} /> : (
-            <div className="review-empty compact">当前没有查询结果。</div>
-          )}
+          <AskConversationPanel
+            messages={conversationMessages}
+            isLoading={askConversationsQuery.isLoading || askConversationQuery.isLoading}
+            liveQuery={searchQuery}
+            liveResult={searching || conversationMessages.length === 0 ? searchResult : null}
+            livePending={searching}
+            composer={(
+              <form className="today-search-form today-chat-composer" onSubmit={runTodaySearch}>
+                <textarea value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="询问资料库，或拖入附件后继续追问" />
+                <div className="today-chat-tools">
+                  <div className="today-chat-tool-left">
+                    <label className="attachment-picker" title="上传到资料库，并用于本次提问">
+                      <Paperclip size={16} />
+                      <input type="file" onChange={(event) => setAttachmentFile(event.target.files?.[0] || null)} />
+                      <span>{attachmentFile ? trimText(attachmentFile.name, 24) : "附件"}</span>
+                    </label>
+                    <details className="ask-settings">
+                      <summary title="Ask 参数">
+                        <SlidersHorizontal size={16} />
+                        参数
+                      </summary>
+                      <label>
+                        <span>Top K</span>
+                        <input type="number" min={1} max={20} value={askTopK} onChange={(event) => setAskTopK(Number(event.target.value) || 8)} />
+                      </label>
+                      <label>
+                        <span>Temperature</span>
+                        <input type="number" min={0} max={2} step={0.1} value={askTemperature} onChange={(event) => setAskTemperature(Number(event.target.value) || 0)} />
+                      </label>
+                      <label>
+                        <span>Max Tokens</span>
+                        <input type="number" min={256} max={32000} step={256} value={askMaxTokens} onChange={(event) => setAskMaxTokens(Number(event.target.value) || 4096)} />
+                      </label>
+                    </details>
+                  </div>
+                  <button className="today-send-button" type="submit" disabled={searching} title={searching ? "查询中" : "发送"}>
+                    <Send size={18} />
+                    <span>{searching ? "查询中" : "发送"}</span>
+                  </button>
+                </div>
+                {attachmentStatus ? <small className="search-note">{attachmentStatus}</small> : null}
+                {searchError ? <div className="review-empty error-state compact">{searchError}</div> : null}
+              </form>
+            )}
+          />
         </section>
 
-        <section className="today-section corpus-overview">
-          <SectionTitle icon={<BookOpen size={18} />} title="Corpus" subtitle="当前工作区真实资料" />
-          {corpusQuery.isError ? (
-            <div className="review-empty error-state compact">Corpus 无法加载。请检查 8765 后端、数据库或服务令牌。</div>
-          ) : corpusQuery.isLoading ? (
-            <div className="review-empty compact">正在加载真实 Corpus...</div>
-          ) : visibleSources.length === 0 && visibleChunks.length === 0 ? (
-            <div className="review-empty compact">当前工作区还没有可展示的真实资料。</div>
-          ) : (
-            <div className="corpus-columns">
-              <div className="corpus-column">
-                <h3>Sources</h3>
-                <div className="corpus-list">
-                  {visibleSources.map((source, index) => (
-                    <article className="corpus-item" key={source.source_item_id || `source-${index}`}>
-                      <div className="card-row">
-                        <span className="pill muted">{source.source_channel || "source"}</span>
-                        <small>{formatSourceAge(source.created_at)}</small>
-                      </div>
-                      <h4>{displayText(source.title || source.source_item_id, "未命名来源")}</h4>
-                      {source.url ? <p>{displayText(source.url)}</p> : null}
-                    </article>
-                  ))}
-                </div>
-              </div>
-              <div className="corpus-column">
-                <h3>Chunks</h3>
-                <div className="corpus-list">
-                  {visibleChunks.map((chunk, index) => (
-                    <article className="corpus-item" key={chunk.chunk_id || `chunk-${index}`}>
-                      <div className="card-row">
-                        <span className="pill muted">{chunk.source_channel || "chunk"}</span>
-                        <small>{displayText(chunk.title || chunk.source_item_id, "片段")}</small>
-                      </div>
-                      <p>{trimText(chunk.snippet || chunk.text || "", 220) || "该 chunk 暂无可显示文本。"}</p>
-                    </article>
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
-        </section>
-
-        <section className="today-section continue-working">
-          <SectionTitle icon={<PlayCircle size={18} />} title="Continue Working" subtitle="回到上次真正的工作现场" />
-          <div className="today-list">
-            {continueWorking.length === 0 ? (
-              <div className="review-empty">当前没有可继续的工作记录。置顶工作区、编辑文档或打开具体资料后，这里会出现真实活动。</div>
-            ) : continueWorking.map((item) => (
-              <button className="work-item" type="button" key={item.id} onClick={() => onOpenWorkspace(item.opened_surface || "document")}>
-                <span>
-                  <strong>{item.title}</strong>
-                  <small>{item.subtitle}</small>
-                </span>
-                <p>{item.summary}</p>
+        <aside className={`today-actions-sidebar ${rightRailCollapsed ? "collapsed" : ""}`} aria-label="Today 侧栏">
+          <button className="today-rail-toggle" type="button" onClick={() => setRightRailCollapsed((value) => !value)} title={rightRailCollapsed ? "展开右栏" : "折叠右栏"}>
+            {rightRailCollapsed ? <ChevronLeft size={16} /> : <ChevronRight size={16} />}
+            {actionCount > 0 ? <span className="rail-alert-dot" /> : null}
+          </button>
+          {rightRailCollapsed ? (
+            <div className="today-rail-icons" aria-label="Today 待处理入口">
+              <button className={continueWorking.length ? "has-alert" : ""} type="button" onClick={() => setRightRailCollapsed(false)} title="Continue">
+                <PlayCircle size={18} />
               </button>
-            ))}
-          </div>
-        </section>
+              <button className={discoveries.length ? "has-alert" : ""} type="button" onClick={() => setRightRailCollapsed(false)} title="Discoveries">
+                <Sparkles size={18} />
+              </button>
+              <button className={needsReview.length ? "has-alert" : ""} type="button" onClick={() => setRightRailCollapsed(false)} title="Review">
+                <CheckCircle2 size={18} />
+              </button>
+            </div>
+          ) : null}
+          {!rightRailCollapsed ? (
+          <>
+          <CollapsibleTodayPanel className="continue-working" icon={<PlayCircle size={18} />} title="Continue" count={continueWorking.length} hasAlert={continueWorking.length > 0}>
+            <div className="today-rail-stack">
+              {continueWorking.length === 0 ? (
+                <div className="review-empty compact">当前没有可继续的工作记录。</div>
+              ) : continueWorking.slice(0, 4).map((item) => (
+                <button className="work-item compact" type="button" key={item.id} onClick={() => onOpenWorkspace(item.opened_surface || "document")}>
+                  <span>
+                    <strong>{item.title}</strong>
+                    <small>{item.subtitle}</small>
+                  </span>
+                  <p>{trimText(item.summary, 120)}</p>
+                </button>
+              ))}
+            </div>
+          </CollapsibleTodayPanel>
 
-        <section className="today-section discoveries">
-          <SectionTitle icon={<Sparkles size={18} />} title="Discoveries" subtitle="系统今天递回来的新线索" />
-          <div className="today-list">
-            {discoveries.length === 0 ? (
-              <div className="review-empty">当前没有达到质量阈值的新发现。导入资料后需要 digest/discovery worker 产出候选，这里才会出现内容。</div>
-            ) : discoveries.map((item) => (
-              <article className="today-card discovery-card" key={item.id}>
-                <div className="card-row">
-                  <span className="pill">{item.label}</span>
-                  <small>{actions[item.id] || discoveryQualityLabel(item)}</small>
-                </div>
-                <h2>{item.title}</h2>
-                <p>{item.summary}</p>
-                <div className="card-actions">
-                  <button type="button" onClick={() => acceptDiscoveryFromToday(item)}>
-                    接受
-                  </button>
-                  <button type="button" onClick={() => ignoreDiscoveryFromToday(item)}>
-                    忽略
-                  </button>
-                  <button type="button" onClick={() => snoozeDiscoveryFromToday(item)}>
-                    稍后
-                  </button>
-                </div>
-              </article>
-            ))}
-          </div>
-        </section>
+          <CollapsibleTodayPanel className="discoveries" icon={<Sparkles size={18} />} title="Discoveries" count={discoveries.length} hasAlert={discoveries.length > 0}>
+            <div className="today-rail-stack">
+              {discoveries.length === 0 ? (
+                <div className="review-empty compact">当前没有达到质量阈值的新发现。</div>
+              ) : discoveries.slice(0, 3).map((item) => (
+                <article className="today-card discovery-card compact" key={item.id}>
+                  <div className="card-row">
+                    <span className="pill">{item.label}</span>
+                    <small>{actions[item.id] || discoveryQualityLabel(item)}</small>
+                  </div>
+                  <h2>{item.title}</h2>
+                  <p>{trimText(item.summary, 130)}</p>
+                  <div className="card-actions">
+                    <button type="button" onClick={() => acceptDiscoveryFromToday(item)}>接受</button>
+                    <button type="button" onClick={() => ignoreDiscoveryFromToday(item)}>忽略</button>
+                  </div>
+                </article>
+              ))}
+            </div>
+          </CollapsibleTodayPanel>
 
-        <section className="today-section needs-review">
-          <SectionTitle icon={<CheckCircle2 size={18} />} title="Needs Review" subtitle="会影响长期记忆的候选" />
-          <div className="today-list">
-            {needsReview.length === 0 ? (
-              <div className="review-empty">当前没有待审核候选。只有 discovery/review 流程生成了待确认记忆或关系，这里才会出现内容。</div>
-            ) : needsReview.map((item) => (
-              <article className="today-card review-card" key={item.review_item_id}>
-                <div className="card-row">
-                  <span className="pill muted">{item.review_type || "review"}</span>
-                  <small>{actions[item.review_item_id] || recommendedActionLabel(item.recommended_action)}</small>
-                </div>
-                <h2>{item.title}</h2>
-                <p>{item.summary}</p>
-                <div className="card-actions">
-                  <button type="button" onClick={() => approveFromToday(item, "已批准")}>
-                    {item.recommended_action === "approve_apply" ? "批准并应用" : "批准"}
-                  </button>
-                  <button type="button" onClick={() => rejectFromToday(item, "已拒绝")}>
-                    拒绝
-                  </button>
-                  <button type="button" onClick={() => mark(item.review_item_id, "稍后")}>
-                    稍后
-                  </button>
-                </div>
-              </article>
-            ))}
-          </div>
-        </section>
+          <CollapsibleTodayPanel className="needs-review" icon={<CheckCircle2 size={18} />} title="Review" count={needsReview.length} hasAlert={needsReview.length > 0}>
+            <div className="today-rail-stack">
+              {needsReview.length === 0 ? (
+                <div className="review-empty compact">当前没有待审核候选。</div>
+              ) : needsReview.slice(0, 3).map((item) => (
+                <article className="today-card review-card compact" key={item.review_item_id}>
+                  <div className="card-row">
+                    <span className="pill muted">{item.review_type || "review"}</span>
+                    <small>{actions[item.review_item_id] || recommendedActionLabel(item.recommended_action)}</small>
+                  </div>
+                  <h2>{item.title}</h2>
+                  <p>{trimText(item.summary, 130)}</p>
+                  <div className="card-actions">
+                    <button type="button" onClick={() => approveFromToday(item, "已批准")}>批准</button>
+                    <button type="button" onClick={() => rejectFromToday(item, "已拒绝")}>拒绝</button>
+                  </div>
+                </article>
+              ))}
+            </div>
+          </CollapsibleTodayPanel>
+          </>
+          ) : null}
+        </aside>
       </div>
       )}
     </section>
@@ -1054,6 +1230,7 @@ function AskResult({ result, pending = false }: { result: WorkspaceAskResponse |
     ...(result.citations || []),
     ...(askEvidence?.citations || []),
     ...(askEvidence?.results || []),
+    ...(askEvidence?.source_windows || []),
     ...(workspaceEvidence?.citations || []),
     ...(retrieval?.results || []),
     ...(fallback?.retrieval?.citations || []),
@@ -1096,6 +1273,8 @@ function AskResult({ result, pending = false }: { result: WorkspaceAskResponse |
           {copyStatus === "copied" ? "已复制" : copyStatus === "failed" ? "复制失败" : "复制 Markdown"}
         </button>
       </div>
+      {progressEvents.length ? <AskProgressStrip progress={progressEvents} /> : null}
+      {displaySteps.length || rawEvents.length ? <AskProcessTimeline steps={displaySteps} rawEvents={rawEvents} defaultOpen={pending} /> : null}
       {!answer && pending ? <div className="ask-pending-state">正在等待 Ask PSKA 的第一个可见回答字符，检索过程会实时更新。</div> : null}
       {answer ? <MarkdownAnswer content={answer} /> : null}
       {fallbackReason ? <small className="search-note">{askFallbackLabel(fallbackReason)}</small> : null}
@@ -1125,8 +1304,6 @@ function AskResult({ result, pending = false }: { result: WorkspaceAskResponse |
       ) : null}
       {qualitySignals ? <AskQualitySignals signals={qualitySignals} /> : null}
       {diagnostics ? <AskNoAnswerDiagnostics diagnostics={diagnostics} /> : null}
-      {progressEvents.length ? <AskProgressStrip progress={progressEvents} /> : null}
-      {displaySteps.length || rawEvents.length ? <AskProcessTimeline steps={displaySteps} rawEvents={rawEvents} /> : null}
       {gaps.length || conflicts.length ? (
         <div className="ask-gap-list">
           {gaps.length ? <EvidenceNoteList title="缺口" values={gaps} /> : null}
@@ -1526,7 +1703,19 @@ function pendingAskSteps(): AskAgentStepView[] {
   ];
 }
 
-function AskProcessTimeline({ steps, rawEvents }: { steps: AskAgentStepView[]; rawEvents: Array<Record<string, unknown>> }) {
+function AskProcessTimeline({
+  steps,
+  rawEvents,
+  defaultOpen = false
+}: {
+  steps: AskAgentStepView[];
+  rawEvents: Array<Record<string, unknown>>;
+  defaultOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  useEffect(() => {
+    setOpen(defaultOpen);
+  }, [defaultOpen]);
   const visibleHead = steps.slice(0, 6);
   const visibleTail = steps.length > 12 ? steps.slice(-6) : steps.slice(6, 12);
   const omittedCount = Math.max(0, steps.length - visibleHead.length - visibleTail.length);
@@ -1537,7 +1726,7 @@ function AskProcessTimeline({ steps, rawEvents }: { steps: AskAgentStepView[]; r
   return (
     <div className="ask-process">
       {steps.length ? (
-        <details open>
+        <details open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
           <summary>
             <span>检索过程</span>
             <small>{steps.length} 步</small>
@@ -1624,7 +1813,7 @@ function EvidenceWindow({ refItem }: { refItem?: SearchEvidenceRef }) {
       <strong>{displayText(refItem.title || refItem.source_item_id, "来源")}</strong>
       {coordinates.length ? <code>{coordinates.join(" / ")}</code> : null}
       {refItem.url ? <a href={refItem.url} target="_blank" rel="noreferrer">{refItem.url}</a> : null}
-      <p>{displayText(refItem.snippet, "该引用没有返回可预览文本。")}</p>
+      <p>{displayText(refItem.source_window?.text || refItem.snippet, "该引用没有返回可预览文本。")}</p>
     </aside>
   );
 }
@@ -1785,6 +1974,7 @@ type AgenticEventSummary = {
 type SearchEvidenceRef = {
   title: string;
   snippet: string;
+  source_window?: { text?: string; window_policy?: string; start_char?: number; end_char?: number };
   source_item_id?: string;
   document_id?: string;
   chunk_id?: string;
@@ -1799,9 +1989,18 @@ function normalizeSearchRefs(values: unknown[]): SearchEvidenceRef[] {
   values
     .map((value) => {
       const ref = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+      const sourceWindow = isRecord(ref.source_window) ? ref.source_window : undefined;
       return {
         title: displayText(ref.title, ""),
-        snippet: cleanEvidenceSnippet(ref.snippet),
+        snippet: cleanEvidenceSnippet(ref.snippet || sourceWindow?.text),
+        source_window: sourceWindow
+          ? {
+              text: displayText(sourceWindow.text, ""),
+              window_policy: displayText(sourceWindow.window_policy, "") || undefined,
+              start_char: typeof sourceWindow.start_char === "number" ? sourceWindow.start_char : undefined,
+              end_char: typeof sourceWindow.end_char === "number" ? sourceWindow.end_char : undefined
+            }
+          : undefined,
         source_item_id: displayText(ref.source_item_id, "") || undefined,
         document_id: displayText(ref.document_id, "") || undefined,
         chunk_id: displayText(ref.chunk_id || ref.result_id, "") || undefined,
@@ -1843,6 +2042,9 @@ function normalizeSearchRefs(values: unknown[]): SearchEvidenceRef[] {
       if (ref.snippet && (!current.snippet || ref.snippet.length > current.snippet.length)) {
         current.snippet = ref.snippet;
       }
+      if (!current.source_window && ref.source_window) {
+        current.source_window = ref.source_window;
+      }
       if (typeof ref.score === "number" && (typeof current.score !== "number" || ref.score > current.score)) {
         current.score = ref.score;
       }
@@ -1853,8 +2055,9 @@ function normalizeSearchRefs(values: unknown[]): SearchEvidenceRef[] {
 function searchRefKey(ref: SearchEvidenceRef) {
   const sourceId = normalizeSearchRefIdentity(ref.source_item_id);
   const chunkId = normalizeSearchRefIdentity(ref.chunk_id);
-  if (sourceId || chunkId) {
-    return `source:${sourceId}:chunk:${chunkId}`;
+  const passageId = normalizeSearchRefIdentity(ref.passage_window_id);
+  if (sourceId || chunkId || passageId) {
+    return `source:${sourceId}:chunk:${chunkId}:passage:${passageId}`;
   }
   const title = normalizeSearchRefIdentity(ref.title);
   if (title) {
@@ -2474,20 +2677,29 @@ function SectionTitle({ icon, title, subtitle }: { icon: JSX.Element; title: str
 
 function CorpusWorkspace({
   serviceToken,
+  onOpenWorkspace,
   onPinCurrent,
   pinStatus,
   setBrain
 }: {
   serviceToken: PSKAAuth;
+  onOpenWorkspace: (mode: WorkspaceMode) => void;
   onPinCurrent: () => void;
   pinStatus: "idle" | "saved" | "failed";
   setBrain: (brain: Partial<BrainState>) => void;
 }) {
   const [query, setQuery] = useState("");
-  const [askQuery, setAskQuery] = useState("");
-  const [askResult, setAskResult] = useState<WorkspaceAskResponse | null>(null);
-  const [askStatus, setAskStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
-  const [askError, setAskError] = useState("");
+  const [textSourceTitle, setTextSourceTitle] = useState("");
+  const [textSourceBody, setTextSourceBody] = useState("");
+  const [uploadDigestAfter, setUploadDigestAfter] = useState(true);
+  const [documentDeletePreview, setDocumentDeletePreview] = useState<WorkspaceDocumentDeleteResponse | null>(null);
+  const [documentDeleteTarget, setDocumentDeleteTarget] = useState("");
+  const [promptAsk, setPromptAsk] = useState("");
+  const [promptDigest, setPromptDigest] = useState("");
+  const [promptReview, setPromptReview] = useState("");
+  const [promptWriting, setPromptWriting] = useState("");
+  const [promptStatus, setPromptStatus] = useState<"idle" | "saving" | "success" | "error">("idle");
+  const [promptError, setPromptError] = useState("");
   const [chunkPreviewText, setChunkPreviewText] = useState("");
   const [chunkPreviewStrategy, setChunkPreviewStrategy] = useState("auto");
   const [chunkPreviewSize, setChunkPreviewSize] = useState(1200);
@@ -2537,19 +2749,28 @@ function CorpusWorkspace({
     queryFn: () => loadDigestLogs(serviceToken, 8),
     retry: 1
   });
+  const documentsQuery = useQuery({
+    queryKey: ["workspace-documents", serviceToken],
+    queryFn: () => loadWorkspaceDocuments(serviceToken, true),
+    retry: 1
+  });
+  const promptProfilesQuery = useQuery({
+    queryKey: ["prompt-profiles", serviceToken],
+    queryFn: () => loadPromptProfiles(serviceToken),
+    retry: 1
+  });
   const corpus = corpusQuery.data;
   const sourceSummary = sourcesQuery.data;
   const digestLogs = digestLogsQuery.data;
+  const documentsData = documentsQuery.data;
+  const promptProfiles = promptProfilesQuery.data;
   const normalizedQuery = query.trim().toLowerCase();
-  const filteredSources = (corpus?.sources || []).filter((source) =>
-    corpusText([source.title, source.source_channel, source.url, source.source_item_id]).includes(normalizedQuery)
-  );
   const filteredChunks = (corpus?.chunks || []).filter((chunk) =>
     corpusText([chunk.title, chunk.source_channel, chunk.source_item_id, chunk.text, chunk.snippet]).includes(normalizedQuery)
   );
   const counts = {
-    sources: sourceSummary?.source_counts?.source_items ?? corpus?.counts?.sources_total ?? corpus?.sources?.length ?? 0,
-    documents: sourceSummary?.source_counts?.documents ?? corpus?.counts?.documents ?? 0,
+    sources: documentsData?.counts?.active ?? sourceSummary?.source_counts?.source_items ?? corpus?.counts?.sources_total ?? corpus?.sources?.length ?? 0,
+    documents: documentsData?.counts?.documents ?? sourceSummary?.source_counts?.documents ?? corpus?.counts?.documents ?? 0,
     chunks: sourceSummary?.source_counts?.chunks ?? corpus?.counts?.chunks_matching ?? corpus?.chunks?.length ?? 0,
     inputSources: sourceSummary?.input_sources?.length ?? sourceSummary?.knowledge_sources?.source_count ?? sourceSummary?.connector_state?.state_count ?? 0
   };
@@ -2562,20 +2783,128 @@ function CorpusWorkspace({
     }
   }, [corpus, setBrain]);
 
+  useEffect(() => {
+    const effective = promptProfiles?.effective || {};
+    setPromptAsk(String((effective.ask?.config?.personal_instruction || effective.ask?.config?.custom_instruction || "") ?? ""));
+    setPromptDigest(String((effective.digest?.config?.focus || effective.digest?.config?.custom_instruction || "") ?? ""));
+    setPromptReview(String((effective.review?.config?.review_policy || effective.review?.config?.custom_instruction || "") ?? ""));
+    setPromptWriting(String((effective.writing?.config?.tone || effective.writing?.config?.custom_instruction || "") ?? ""));
+  }, [promptProfilesQuery.dataUpdatedAt]);
+
   async function refetchAll() {
-    await Promise.all([corpusQuery.refetch(), sourcesQuery.refetch(), digestLogsQuery.refetch()]);
+    await Promise.all([corpusQuery.refetch(), sourcesQuery.refetch(), digestLogsQuery.refetch(), documentsQuery.refetch()]);
+  }
+
+  async function handleCreateTextSource(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const text = textSourceBody.trim();
+    if (!text) {
+      return;
+    }
+    setOperationStatus("syncing");
+    setOperationMessage("正在把粘贴文本加入资料库...");
+    setOperationSummary(undefined);
+    try {
+      const payload = await createTextSource(serviceToken, {
+        title: textSourceTitle.trim() || undefined,
+        text,
+        digest_mode: uploadDigestAfter ? "after_upload" : "manual"
+      });
+      const summary = sourceIngestSummary(payload);
+      setOperationStatus(payload.ok === false ? "error" : "success");
+      setOperationSummary(summary);
+      setOperationMessage(payload.ok === false ? payload.error || "添加文本资料失败。" : summaryMessage(summary));
+      setTextSourceTitle("");
+      setTextSourceBody("");
+      await refetchAll();
+    } catch (error) {
+      setOperationStatus("error");
+      setOperationMessage(error instanceof Error ? error.message : "添加文本资料失败。");
+    }
+  }
+
+  async function handleUploadSource(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const input = event.currentTarget.elements.namedItem("source-file") as HTMLInputElement | null;
+    const file = input?.files?.[0];
+    if (!file) {
+      return;
+    }
+    setOperationStatus("syncing");
+    setOperationMessage("正在上传并处理资料...");
+    setOperationSummary(undefined);
+    try {
+      const payload = await uploadWorkspaceSource(serviceToken, file, {
+        digest_mode: uploadDigestAfter ? "after_upload" : "manual"
+      });
+      const summary = sourceIngestSummary(payload);
+      setOperationStatus(payload.ok === false ? "error" : "success");
+      setOperationSummary(summary);
+      setOperationMessage(payload.ok === false ? payload.error || "上传资料失败。" : summaryMessage(summary));
+      input.value = "";
+      await refetchAll();
+    } catch (error) {
+      setOperationStatus("error");
+      setOperationMessage(error instanceof Error ? error.message : "上传资料失败。");
+    }
+  }
+
+  async function handleDocumentLifecycle(sourceItemId: string, execute: boolean, restore = false, hardDelete = false) {
+    setOperationStatus("cleaning");
+    setDocumentDeleteTarget(sourceItemId);
+    setOperationMessage(execute ? "正在更新资料删除状态..." : "正在预览资料删除影响...");
+    try {
+      const payload = await deleteWorkspaceDocuments(serviceToken, [sourceItemId], {
+        execute,
+        restore,
+        hardDelete,
+        reason: restore ? "frontend restore document" : "frontend document delete"
+      });
+      setDocumentDeletePreview(payload);
+      setOperationStatus(payload.ok === false ? "error" : "success");
+      const counts = payload.deleted || payload.counts || {};
+      setOperationMessage(execute ? documentLifecycleDoneMessage(counts, restore) : documentLifecyclePreviewMessage(counts));
+      if (execute) {
+        await refetchAll();
+      }
+    } catch (error) {
+      setOperationStatus("error");
+      setOperationMessage(error instanceof Error ? error.message : "资料删除操作失败。");
+    } finally {
+      setDocumentDeleteTarget("");
+    }
+  }
+
+  async function handleSavePromptProfiles(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setPromptStatus("saving");
+    setPromptError("");
+    try {
+      const payload = await updatePromptProfiles(serviceToken, [
+        { profile_type: "ask", scope: "user", name: "个人 Ask Profile", config: { personal_instruction: promptAsk.trim() } },
+        { profile_type: "digest", scope: "user", name: "个人 Digest Profile", config: { focus: promptDigest.trim() } },
+        { profile_type: "review", scope: "user", name: "个人 Review Profile", config: { review_policy: promptReview.trim() } },
+        { profile_type: "writing", scope: "user", name: "个人 Writing Profile", config: { tone: promptWriting.trim() } }
+      ]);
+      setPromptStatus(payload.ok === false ? "error" : "success");
+      setPromptError(payload.error || "");
+      await promptProfilesQuery.refetch();
+    } catch (error) {
+      setPromptStatus("error");
+      setPromptError(error instanceof Error ? error.message : "Prompt Profiles 保存失败。");
+    }
   }
 
   async function handleFileSync() {
     setOperationStatus("syncing");
-    setOperationMessage("正在同步本地文件和 Twitter/X 输入源...");
+    setOperationMessage("正在同步当前账号的高级资料源...");
     setOperationSummary(undefined);
     try {
-      const payload = await runFileSync(serviceToken);
-      const summary = fileSyncSummary(payload);
+      const payload = await syncKnowledgeSources(serviceToken, undefined, { sourceTypes: ["upload", "text", "url", "rss", "atom", "feed", "web"] });
+      const summary = sourceSyncSummary(payload);
       setOperationStatus(payload.ok === false ? "error" : "success");
       setOperationSummary(summary);
-      setOperationMessage(payload.ok === false ? operationFailureMessage(payload.error, summary.failed) : summaryMessage(summary));
+      setOperationMessage(payload.ok === false ? operationFailureMessage(payload.error, summary.failed) : sourceSyncMessage(summary));
       await refetchAll();
     } catch (error) {
       setOperationStatus("error");
@@ -2603,16 +2932,19 @@ function CorpusWorkspace({
   async function handleCreateEvidenceBrief(jobId?: string) {
     setOperationStatus("briefing");
     setBriefingJobId(jobId || null);
-    setOperationMessage(jobId ? "正在从这次 Digest 生成 Evidence Brief..." : "正在从最近的 Digest 生成 Evidence Brief...");
+    setOperationMessage(jobId ? "正在从这次 Digest 生成 Brief 草稿..." : "正在从最近的 Digest 生成 Brief 草稿...");
     setOperationSummary(undefined);
     try {
       const payload = await createEvidenceBrief(serviceToken, jobId ? { job_id: jobId } : {});
       setOperationStatus(payload.ok === false ? "error" : "success");
-      setOperationMessage(payload.ok === false ? payload.error || "Evidence Brief 没有生成。" : `Evidence Brief 已生成：${payload.board?.title || payload.brief?.title || "Brief 草稿"}。到 Writing Workspace 打开。`);
+      setOperationMessage(payload.ok === false ? payload.error || "Brief 没有生成：没有可用的 Digest、Claim 或 Review 证据。" : `Brief 已生成：${payload.board?.title || payload.brief?.title || "Brief 草稿"}。已打开写作页面。`);
       await refetchAll();
+      if (payload.ok !== false && payload.board?.board_id) {
+        onOpenWorkspace("writing");
+      }
     } catch (error) {
       setOperationStatus("error");
-      setOperationMessage(error instanceof Error ? error.message : "生成 Evidence Brief 失败。");
+      setOperationMessage(error instanceof Error ? error.message : "生成 Brief 失败。");
     } finally {
       setBriefingJobId(null);
     }
@@ -2669,7 +3001,7 @@ function CorpusWorkspace({
       setSourceFormError("");
     }
     setOperationStatus("syncing");
-    setOperationMessage(knowledgeSourceId ? "正在同步选中的 Knowledge Source..." : "正在同步所有 Knowledge Sources...");
+    setOperationMessage(knowledgeSourceId ? "正在同步选中的高级资料源..." : "正在同步所有高级资料源...");
     setOperationSummary(undefined);
     try {
       const payload = await syncKnowledgeSources(serviceToken, knowledgeSourceId);
@@ -2683,10 +3015,10 @@ function CorpusWorkspace({
       await refetchAll();
     } catch (error) {
       setOperationStatus("error");
-      setOperationMessage(error instanceof Error ? error.message : "同步 Knowledge Sources 失败。");
+      setOperationMessage(error instanceof Error ? error.message : "同步高级资料源失败。");
       if (!knowledgeSourceId) {
         setSourceFormStatus("error");
-        setSourceFormError(error instanceof Error ? error.message : "同步 Knowledge Sources 失败。");
+        setSourceFormError(error instanceof Error ? error.message : "同步高级资料源失败。");
       }
     }
   }
@@ -2694,7 +3026,7 @@ function CorpusWorkspace({
   async function handleCleanupKnowledgeSource(knowledgeSourceId: string, execute: boolean) {
     setOperationStatus("cleaning");
     setCleanupTargetId(knowledgeSourceId);
-    setOperationMessage(execute ? "正在清理资料来源和派生知识..." : "正在预览清理影响...");
+    setOperationMessage(execute ? "正在清理高级资料源和派生知识..." : "正在预览清理影响...");
     try {
       const payload = await cleanupKnowledgeSource(serviceToken, knowledgeSourceId, execute);
       setCleanupPreview(payload);
@@ -2709,32 +3041,9 @@ function CorpusWorkspace({
       }
     } catch (error) {
       setOperationStatus("error");
-      setOperationMessage(error instanceof Error ? error.message : "清理资料来源失败。");
+      setOperationMessage(error instanceof Error ? error.message : "清理高级资料源失败。");
     } finally {
       setCleanupTargetId(null);
-    }
-  }
-
-  async function handleCorpusAsk(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const prompt = askQuery.trim();
-    if (!prompt) {
-      return;
-    }
-    setAskStatus("loading");
-    setAskError("");
-    setAskResult(pendingAskResult(prompt));
-    try {
-      const payload = await askWorkspaceStream(prompt, serviceToken, "auto", "corpus", ({ result: partial }) => {
-        setAskResult({ ...partial });
-      });
-      setAskResult(payload);
-      setAskStatus(payload.ok === false ? "error" : "success");
-      setAskError(payload.error ? displaySearchError(payload.error) : "");
-      setBrain(searchToBrain(payload, prompt));
-    } catch (error) {
-      setAskStatus("error");
-      setAskError(error instanceof Error ? error.message : "Ask PSKA 失败。");
     }
   }
 
@@ -2764,23 +3073,23 @@ function CorpusWorkspace({
   }
 
   return (
-    <section className="main-workspace corpus-surface" aria-label="语料库">
+    <section className="main-workspace corpus-surface" aria-label="资料库">
       <div className="corpus-header">
         <div>
-          <span className="eyebrow">资料更新台</span>
+          <span className="eyebrow">资料库</span>
           <h1>资料库</h1>
-          <p>把本地资料同步进 PSKA，并让它整理出可回顾的发现。</p>
+          <p>上传、粘贴或同步资料，管理删除影响，并把 Digest 结果沉淀成可审阅 Brief。</p>
         </div>
-        <div className="corpus-summary" aria-label="语料库摘要">
-          <span><strong>{counts.sources}</strong> 资料</span>
-          <span><strong>{counts.documents}</strong> 文档</span>
-          <span><strong>{counts.chunks}</strong> 片段</span>
-          <span><strong>{counts.inputSources}</strong> 输入源</span>
+        <div className="corpus-summary" aria-label="资料库摘要">
+          <span><strong>{counts.sources}</strong> 条目</span>
+          <span><strong>{counts.documents}</strong> 原文</span>
+          <span><strong>{counts.chunks}</strong> 检索片段</span>
+          <span><strong>{counts.inputSources}</strong> 高级源</span>
         </div>
         <div className="corpus-actions">
           <button type="button" onClick={onPinCurrent}>
             <Pin size={15} />
-            {pinStatus === "saved" ? "已置顶" : pinStatus === "failed" ? "置顶失败" : "置顶语料库"}
+            {pinStatus === "saved" ? "已置顶" : pinStatus === "failed" ? "置顶失败" : "置顶资料库"}
           </button>
           <button type="button" onClick={() => void refetchAll()} disabled={actionRunning}>
             <RefreshCw size={15} />
@@ -2788,11 +3097,11 @@ function CorpusWorkspace({
           </button>
           <button type="button" onClick={() => void handleFileSync()} disabled={actionRunning}>
             <Folder size={15} />
-            {operationStatus === "syncing" ? "同步中" : "同步输入源"}
+            {operationStatus === "syncing" ? "同步中" : "同步高级源"}
           </button>
           <button type="button" onClick={() => void handleDigestNow()} disabled={actionRunning}>
             <Sparkles size={15} />
-            {operationStatus === "digesting" ? "理解中" : "同步并理解"}
+            {operationStatus === "digesting" ? "整理中" : "整理资料"}
           </button>
         </div>
       </div>
@@ -2824,17 +3133,38 @@ function CorpusWorkspace({
 
       <UnderstandingSummary payload={digestLogs} />
 
-      <section className="today-section corpus-ask">
-        <SectionTitle icon={<Search size={18} />} title="Ask PSKA" subtitle="基于当前资料库回答" />
-        <form className="today-search-form" onSubmit={handleCorpusAsk}>
-          <textarea value={askQuery} onChange={(event) => setAskQuery(event.target.value)} placeholder="问这批资料" />
-          <button className="primary" type="submit" disabled={askStatus === "loading"}>
-            {askStatus === "loading" ? "查询中" : "查询"}
-          </button>
-        </form>
-        {askError ? <div className="review-empty error-state compact">{askError}</div> : null}
-        {askResult ? <AskResult result={askResult} pending={askStatus === "loading"} /> : null}
-      </section>
+      <div className="product-flow-grid">
+        <SourceIngestPanel
+          textTitle={textSourceTitle}
+          textBody={textSourceBody}
+          digestAfter={uploadDigestAfter}
+          actionRunning={actionRunning}
+          onTextTitleChange={setTextSourceTitle}
+          onTextBodyChange={setTextSourceBody}
+          onDigestAfterChange={setUploadDigestAfter}
+          onTextSubmit={handleCreateTextSource}
+          onUploadSubmit={handleUploadSource}
+        />
+        <PromptProfilePanel
+          promptAsk={promptAsk}
+          promptDigest={promptDigest}
+          promptReview={promptReview}
+          promptWriting={promptWriting}
+          status={promptStatus}
+          error={promptError}
+          payload={promptProfiles}
+          onPromptAskChange={setPromptAsk}
+          onPromptDigestChange={setPromptDigest}
+          onPromptReviewChange={setPromptReview}
+          onPromptWritingChange={setPromptWriting}
+          onSave={handleSavePromptProfiles}
+        />
+      </div>
+
+      <button className="floating-ask-bubble" type="button" onClick={() => onOpenWorkspace("today")} title="回到 Today 提问">
+        <MessageCircle size={18} />
+        Ask
+      </button>
 
       <section className="today-section chunk-preview-surface">
         <SectionTitle icon={<TextCursorInput size={18} />} title="Chunk Preview" subtitle="处理配置调试" />
@@ -2881,36 +3211,25 @@ function CorpusWorkspace({
         </label>
       </div>
 
+      <DocumentLifecyclePanel
+        payload={documentsData}
+        isLoading={documentsQuery.isLoading}
+        isError={documentsQuery.isError}
+        deletePreview={documentDeletePreview}
+        deleteTarget={documentDeleteTarget}
+        actionRunning={actionRunning}
+        onPreview={(sourceItemId) => void handleDocumentLifecycle(sourceItemId, false)}
+        onDelete={(sourceItemId) => void handleDocumentLifecycle(sourceItemId, true)}
+        onRestore={(sourceItemId) => void handleDocumentLifecycle(sourceItemId, true, true)}
+        onPurge={(sourceItemId) => void handleDocumentLifecycle(sourceItemId, true, false, true)}
+      />
+
       {corpusQuery.isError || sourcesQuery.isError ? (
-        <div className="review-empty error-state">语料库无法完整加载。请检查 8765 后端、数据库或服务令牌。</div>
+        <div className="review-empty error-state">资料库无法完整加载。请检查 8765 后端、数据库或服务令牌。</div>
       ) : corpusQuery.isLoading && sourcesQuery.isLoading ? (
-        <div className="review-empty">正在加载真实语料库...</div>
+        <div className="review-empty">正在加载真实资料库...</div>
       ) : (
         <div className="corpus-workspace-grid">
-          <section className="corpus-panel corpus-source-panel">
-            <SectionTitle icon={<FileText size={18} />} title="已收进来的资料" subtitle={`${filteredSources.length} 条可见资料`} />
-            {filteredSources.length === 0 ? (
-              <div className="review-empty compact">{normalizedQuery ? "当前没有匹配的资料。" : "还没有同步进来的资料。点击“同步资料”开始扫描。"}</div>
-            ) : (
-              <div className="corpus-source-list" data-testid="corpus-source-list">
-                {filteredSources.slice(0, 30).map((source, index) => (
-                  <article className="corpus-source-card" key={source.source_item_id || `corpus-source-${index}`} data-testid="corpus-source-card">
-                    <div className="card-row">
-                      <span className="pill muted">{source.source_channel || "source"}</span>
-                      <small>{formatSourceAge(source.created_at)}</small>
-                    </div>
-                    <h2>{displayText(source.title || source.source_item_id, "未命名来源")}</h2>
-                    <dl>
-                      <div><dt>片段</dt><dd>{source.chunk_count ?? "-"}</dd></div>
-                      <div><dt>ID</dt><dd>{source.source_item_id || "-"}</dd></div>
-                    </dl>
-                    {source.url ? <p>{displayText(source.url)}</p> : null}
-                  </article>
-                ))}
-              </div>
-            )}
-          </section>
-
           <section className="corpus-panel corpus-chunk-panel">
             <SectionTitle icon={<TextCursorInput size={18} />} title="可检索片段" subtitle={`${filteredChunks.length} 个片段`} />
             {filteredChunks.length === 0 ? (
@@ -2931,7 +3250,7 @@ function CorpusWorkspace({
           </section>
 
           <aside className="corpus-panel connector-panel">
-            <SectionTitle icon={<Folder size={18} />} title="PSKA 输入源" subtitle="Folder、RSS/Atom、URL 与 connector inbox" />
+            <SectionTitle icon={<Folder size={18} />} title="高级同步" subtitle="URL、RSS/Atom、Folder 与 connector inbox" />
             <SourceAdapterPanel
               kind={sourceFormKind}
               value={sourceFormValue}
@@ -2978,6 +3297,286 @@ function CorpusWorkspace({
           </section>
         </div>
       )}
+    </section>
+  );
+}
+
+function SourceIngestPanel({
+  textTitle,
+  textBody,
+  digestAfter,
+  actionRunning,
+  onTextTitleChange,
+  onTextBodyChange,
+  onDigestAfterChange,
+  onTextSubmit,
+  onUploadSubmit
+}: {
+  textTitle: string;
+  textBody: string;
+  digestAfter: boolean;
+  actionRunning: boolean;
+  onTextTitleChange: (value: string) => void;
+  onTextBodyChange: (value: string) => void;
+  onDigestAfterChange: (value: boolean) => void;
+  onTextSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  onUploadSubmit: (event: FormEvent<HTMLFormElement>) => void;
+}) {
+  return (
+    <section className="today-section product-ingest-panel">
+      <SectionTitle icon={<UploadCloud size={18} />} title="加入资料库" subtitle="上传文件或粘贴文本" />
+      <div className="ingest-forms">
+        <form className="ingest-form" onSubmit={onUploadSubmit}>
+          <label>
+            <span>上传文件</span>
+            <input name="source-file" type="file" />
+          </label>
+          <label className="inline-toggle">
+            <input type="checkbox" checked={digestAfter} onChange={(event) => onDigestAfterChange(event.target.checked)} />
+            <span>入库后自动 Digest</span>
+          </label>
+          <button className="primary" type="submit" disabled={actionRunning}>
+            <UploadCloud size={14} />
+            上传入库
+          </button>
+        </form>
+        <form className="ingest-form" onSubmit={onTextSubmit}>
+          <label>
+            <span>文本标题</span>
+            <input value={textTitle} onChange={(event) => onTextTitleChange(event.target.value)} placeholder="可选" />
+          </label>
+          <textarea value={textBody} onChange={(event) => onTextBodyChange(event.target.value)} placeholder="粘贴一段文本、Markdown、会议纪要或网页摘录" />
+          <button className="primary" type="submit" disabled={actionRunning || !textBody.trim()}>
+            <FileText size={14} />
+            保存文本
+          </button>
+        </form>
+      </div>
+    </section>
+  );
+}
+
+function PromptProfilePanel({
+  promptAsk,
+  promptDigest,
+  promptReview,
+  promptWriting,
+  status,
+  error,
+  payload,
+  onPromptAskChange,
+  onPromptDigestChange,
+  onPromptReviewChange,
+  onPromptWritingChange,
+  onSave
+}: {
+  promptAsk: string;
+  promptDigest: string;
+  promptReview: string;
+  promptWriting: string;
+  status: "idle" | "saving" | "success" | "error";
+  error: string;
+  payload?: PromptProfilesResponse;
+  onPromptAskChange: (value: string) => void;
+  onPromptDigestChange: (value: string) => void;
+  onPromptReviewChange: (value: string) => void;
+  onPromptWritingChange: (value: string) => void;
+  onSave: (event: FormEvent<HTMLFormElement>) => void;
+}) {
+  const effective = payload?.effective || {};
+  return (
+    <section className="today-section prompt-profile-panel">
+      <SectionTitle icon={<Settings2 size={18} />} title="个人 Prompt" subtitle="租户默认之上的个人覆盖" />
+      <form className="prompt-profile-form" onSubmit={onSave}>
+        <label>
+          <span>Ask</span>
+          <input value={promptAsk} onChange={(event) => onPromptAskChange(event.target.value)} placeholder="回答风格、语言、结构偏好" />
+        </label>
+        <label>
+          <span>Digest</span>
+          <input value={promptDigest} onChange={(event) => onPromptDigestChange(event.target.value)} placeholder="希望重点发现的知识类型" />
+        </label>
+        <label>
+          <span>Review</span>
+          <input value={promptReview} onChange={(event) => onPromptReviewChange(event.target.value)} placeholder="高影响变更和低置信候选的处理偏好" />
+        </label>
+        <label>
+          <span>Writing</span>
+          <input value={promptWriting} onChange={(event) => onPromptWritingChange(event.target.value)} placeholder="写作语气和证据呈现偏好" />
+        </label>
+        <div className="prompt-profile-footer">
+          <span>{Object.keys(effective).length} 个有效 profile</span>
+          <button type="submit" disabled={status === "saving"}>
+            <Settings2 size={14} />
+            {status === "saving" ? "保存中" : "保存"}
+          </button>
+        </div>
+      </form>
+      {status === "success" ? <div className="review-empty compact">Prompt Profiles 已保存。</div> : null}
+      {error ? <div className="review-empty error-state compact">{error}</div> : null}
+    </section>
+  );
+}
+
+function AskConversationPanel({
+  messages,
+  isLoading,
+  liveQuery,
+  liveResult,
+  livePending,
+  composer
+}: {
+  messages: AskMessage[];
+  isLoading: boolean;
+  liveQuery?: string;
+  liveResult?: WorkspaceAskResponse | null;
+  livePending?: boolean;
+  composer: ReactNode;
+}) {
+  const showLiveResult = Boolean(liveResult);
+  return (
+    <div className="ask-conversation-panel">
+      <div className="ask-chat-main">
+        <div className="ask-message-list">
+          {isLoading ? (
+            <div className="today-chat-empty">正在加载对话...</div>
+          ) : messages.length === 0 && !showLiveResult ? (
+            <div className="today-chat-empty">
+              <strong>Today</strong>
+              <span>问 PSKA 一个问题，或带着资料继续追问。</span>
+            </div>
+          ) : null}
+          {messages.slice(-12).map((message) => (
+            <article className={`ask-message ${message.role || "message"}`} key={message.message_id || `${message.role}-${message.created_at}`}>
+              <span>{message.role === "assistant" ? "PSKA" : "你"}</span>
+              <p>{trimText(message.content || "", 800)}</p>
+            </article>
+          ))}
+          {showLiveResult ? (
+            <>
+              {liveQuery?.trim() ? (
+                <article className="ask-message user live">
+                  <span>你</span>
+                  <p>{trimText(liveQuery.trim(), 800)}</p>
+                </article>
+              ) : null}
+              <article className="ask-message assistant live">
+                <span>PSKA</span>
+                <AskResult result={liveResult as WorkspaceAskResponse} pending={livePending} />
+              </article>
+            </>
+          ) : null}
+        </div>
+        {composer}
+      </div>
+    </div>
+  );
+}
+
+function CollapsibleTodayPanel({
+  className,
+  icon,
+  title,
+  count,
+  hasAlert,
+  children
+}: {
+  className: string;
+  icon: ReactNode;
+  title: string;
+  count: number;
+  hasAlert: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <details className={`today-section today-collapsible ${className} ${hasAlert ? "has-alert" : ""}`} open>
+      <summary>
+        <span>
+          {icon}
+          <strong>{title}</strong>
+        </span>
+        <span className="panel-count">{count}</span>
+      </summary>
+      {children}
+    </details>
+  );
+}
+
+function DocumentLifecyclePanel({
+  payload,
+  isLoading,
+  isError,
+  deletePreview,
+  deleteTarget,
+  actionRunning,
+  onPreview,
+  onDelete,
+  onRestore,
+  onPurge
+}: {
+  payload?: WorkspaceDocumentsResponse;
+  isLoading: boolean;
+  isError: boolean;
+  deletePreview: WorkspaceDocumentDeleteResponse | null;
+  deleteTarget: string;
+  actionRunning: boolean;
+  onPreview: (sourceItemId: string) => void;
+  onDelete: (sourceItemId: string) => void;
+  onRestore: (sourceItemId: string) => void;
+  onPurge: (sourceItemId: string) => void;
+}) {
+  const documents = payload?.documents || [];
+  return (
+    <section className="today-section document-lifecycle-panel">
+      <SectionTitle icon={<FileText size={18} />} title="资料条目" subtitle={`${documents.length} 条，可预览删除影响`} />
+      {isError ? <div className="review-empty error-state compact">资料条目无法加载。</div> : null}
+      {isLoading ? <div className="review-empty compact">正在加载资料条目...</div> : null}
+      {!isLoading && documents.length === 0 ? <div className="review-empty compact">还没有可管理的资料。</div> : null}
+      <div className="document-lifecycle-list">
+        {documents.slice(0, 12).map((document) => {
+          const sourceItemId = document.source_item_id || "";
+          const isDeleted = document.lifecycle_status === "deleted";
+          const previewMatches = deletePreview?.source_item_ids?.includes(sourceItemId);
+          const counts = previewMatches ? deletePreview?.counts || deletePreview?.deleted || {} : document.impact || {};
+          return (
+            <article className="document-lifecycle-card" key={sourceItemId || document.title}>
+              <div className="card-row">
+                <span className={`pill ${isDeleted ? "warning" : "muted"}`}>{document.lifecycle_status || "active"}</span>
+                <small>{formatSourceAge(document.created_at)}</small>
+              </div>
+              <h3>{displayText(document.title || sourceItemId, "未命名资料")}</h3>
+              <p>{trimText(document.snippet || document.url || "", 180)}</p>
+              <div className="operation-stats compact">
+                <span>文档 {document.document_count ?? 0}</span>
+                <span>片段 {document.chunk_count ?? 0}</span>
+                <span>Claims {counts.knowledge_claims ?? 0}</span>
+                <span>Digest {counts.digest_notes ?? 0}</span>
+                <span>Review {counts.review_items ?? 0}</span>
+              </div>
+              <div className="source-cleanup-actions">
+                <button type="button" onClick={() => onPreview(sourceItemId)} disabled={actionRunning || !sourceItemId}>
+                  {deleteTarget === sourceItemId ? "预览中" : "预览影响"}
+                </button>
+                {isDeleted ? (
+                  <button type="button" onClick={() => onRestore(sourceItemId)} disabled={actionRunning || !sourceItemId}>
+                    <RotateCcw size={14} />
+                    恢复
+                  </button>
+                ) : (
+                  <button className="danger" type="button" onClick={() => onDelete(sourceItemId)} disabled={actionRunning || !sourceItemId}>
+                    <Trash2 size={14} />
+                    软删
+                  </button>
+                )}
+                <button className="danger ghost" type="button" onClick={() => onPurge(sourceItemId)} disabled={actionRunning || !sourceItemId}>
+                  彻底清除
+                </button>
+              </div>
+              {previewMatches ? <p className="connector-error">{(deletePreview?.notes || []).join(" ")}</p> : null}
+            </article>
+          );
+        })}
+      </div>
     </section>
   );
 }
@@ -3263,17 +3862,11 @@ function ConnectorSummary({
             ) : null}
           </article>
         ))}
-        {payload?.workspace?.excluded_paths?.length ? (
-          <div className="connector-exclusions">
-            <h3>系统排除路径</h3>
-            {payload.workspace.excluded_paths.map((path) => <code key={path}>{path}</code>)}
-          </div>
-        ) : null}
       </div>
       <div className="connector-roots">
-        <h3>Knowledge Sources</h3>
+        <h3>高级资料源</h3>
         {knowledgeSources.length === 0 ? (
-          <p>还没有资料位置。可以添加 Folder、RSS/Atom 或 URL。</p>
+          <p>还没有高级同步源。普通用户可以直接上传文件或粘贴文本。</p>
         ) : knowledgeSources.map((source) => {
           const knowledgeSourceId = source.knowledge_source_id || "";
           const previewMatches = cleanupPreview?.knowledge_source?.knowledge_source_id === knowledgeSourceId;
@@ -3363,7 +3956,7 @@ function ConnectorSummary({
               <span className={`pill ${state.sync_status === "failed" ? "warning" : ""}`}>{state.sync_status || "unknown"}</span>
               <small>{state.enabled ? "enabled" : "disabled"}</small>
             </div>
-            <h3>{displayText(state.connector_state_id || state.connector_id, "资料来源")}</h3>
+            <h3>{displayText(state.connector_state_id || state.connector_id, "高级资料源")}</h3>
             <dl>
               <div><dt>Cursor</dt><dd>{state.scan_cursor || "-"}</dd></div>
               <div><dt>最近成功</dt><dd>{formatReviewDate(state.last_success_at || undefined)}</dd></div>
@@ -3391,21 +3984,22 @@ function ConnectorSummary({
   );
 }
 
-function fileSyncSummary(payload: FileSyncResponse) {
-  const totals = payload.totals || {};
-  const twitterEnabled = payload.twitter_archives?.enabled === true;
-  return {
-    inputSources: (totals.roots || 0) + (twitterEnabled ? 1 : 0),
-    scanned: totals.scanned || 0,
-    ingested: totals.ingested || 0,
-    changed: (totals.new_files || 0) + (totals.changed_files || 0),
-    unchanged: totals.unchanged_files || 0,
-    twitterZips: totals.twitter_zip_count ?? payload.twitter_archives?.zip_count ?? 0,
-    twitterImported: totals.twitter_imported ?? payload.twitter_archives?.imported ?? 0,
-    twitterSkipped: totals.twitter_skipped ?? payload.twitter_archives?.skipped ?? 0,
-    failed: totals.failed ?? payload.failed?.length ?? 0
-  };
-}
+type OperationSummary = {
+  inputSources?: number;
+  scanned?: number;
+  ingested?: number;
+  changed?: number;
+  unchanged?: number;
+  failed?: number;
+  twitterZips?: number;
+  twitterImported?: number;
+  twitterSkipped?: number;
+  scheduled?: number;
+  reviews?: number;
+  claims?: number;
+  digestNotes?: number;
+  saved?: number;
+};
 
 function digestNowSummary(payload: DigestNowResponse) {
   const synced = payload.summary?.synced || payload.sync?.totals || {};
@@ -3444,6 +4038,46 @@ function sourceSyncSummary(payload: SourceSyncResponse) {
   };
 }
 
+function sourceSyncMessage(summary: OperationSummary) {
+  if ((summary.inputSources ?? 0) === 0) {
+    return "当前账号还没有可同步的资料源。请先上传文件、粘贴文本，或添加 URL/RSS。";
+  }
+  return summaryMessage(summary);
+}
+
+function sourceIngestSummary(payload: WorkspaceSourceIngestResponse) {
+  const report = payload.sync_report || {};
+  const chunkStats = payload.chunk_stats || {};
+  const digest = payload.digest || {};
+  return {
+    inputSources: 1,
+    scanned: Number(report.scanned || 1),
+    ingested: Number(report.ingested || payload.source_item_ids?.length || 0),
+    changed: Number(report.new_files || report.changed_files || payload.source_item_ids?.length || 0),
+    unchanged: Number(report.unchanged_files || 0),
+    failed: Array.isArray(report.failed) ? report.failed.length : Number(report.failed || 0),
+    twitterZips: 0,
+    twitterImported: 0,
+    twitterSkipped: 0,
+    scheduled: digest.scheduled_source_item_ids?.length || 0,
+    digestNotes: 0,
+    claims: 0,
+    saved: 0,
+    reviews: 0,
+    chunks: chunkStats.count || 0
+  };
+}
+
+function documentLifecyclePreviewMessage(counts: Record<string, number>) {
+  return `预览完成：会影响资料 ${counts.source_items ?? 0} 条、文档 ${counts.documents ?? 0} 个、片段 ${counts.chunks ?? 0} 个、Digest ${counts.digest_notes ?? 0} 条、Review ${counts.review_items ?? 0} 条。`;
+}
+
+function documentLifecycleDoneMessage(counts: Record<string, number>, restore: boolean) {
+  return restore
+    ? `恢复完成：资料 ${counts.source_items ?? 0} 条、片段 ${counts.chunks ?? 0} 个重新可用。`
+    : `删除状态已更新：资料 ${counts.source_items ?? 0} 条、片段 ${counts.chunks ?? 0} 个已从检索中移除或彻底清除。`;
+}
+
 function sourceFormPayload(kind: "url" | "rss" | "folder", rawValue: string, rawName: string) {
   const value = rawValue.trim();
   const name = rawName.trim();
@@ -3477,7 +4111,7 @@ function sourceKindLabel(kind?: string) {
   return displayText(kind, "输入源");
 }
 
-function summaryMessage(summary: ReturnType<typeof fileSyncSummary> & { scheduled?: number; reviews?: number; claims?: number; digestNotes?: number; saved?: number }) {
+function summaryMessage(summary: OperationSummary) {
   const parts = [
     `输入源 ${summary.inputSources ?? 0} 个`,
     `扫描 ${summary.scanned ?? 0} 个`,
@@ -3550,13 +4184,13 @@ function operationTitle(status: "idle" | "syncing" | "digesting" | "cleaning" | 
     return "同步资料";
   }
   if (status === "digesting") {
-    return "同步并理解";
+    return "整理资料";
   }
   if (status === "cleaning") {
-    return "清理资料来源";
+    return "清理资料";
   }
   if (status === "briefing") {
-    return "生成 Evidence Brief";
+    return "生成 Brief 草稿";
   }
   if (status === "success") {
     return "已完成";
@@ -4213,13 +4847,12 @@ function WritingWorkspace({
         <div className="writing-project-list" aria-label="写作项目列表" data-testid="writing-project-list">
           {boards.length ? boards.map((item) => (
             <article key={item.board_id} className={item.board_id === activeBoardId ? "active" : ""} data-testid="writing-project" data-board-id={item.board_id}>
-              <div>
+              <button className="writing-project-card-main" type="button" onClick={() => openBoard(item.board_id)} data-testid="writing-open-board">
                 <strong>{item.title || "未命名写作项目"}</strong>
                 <p>{item.goal || "没有填写目标。"}</p>
                 <small>{item.updated_at ? `更新于 ${formatReviewDate(item.updated_at)}` : item.board_id}</small>
-              </div>
+              </button>
               <div className="writing-project-actions">
-                <button type="button" onClick={() => openBoard(item.board_id)} data-testid="writing-open-board">打开</button>
                 <button type="button" className="danger" onClick={() => void removeBoard(item.board_id)} data-testid="writing-delete-board">删除</button>
               </div>
             </article>
@@ -5800,7 +6433,7 @@ function buildWorkspaceGraph(corpus?: WorkspaceCorpusResponse, today?: TodayResp
   chunks.forEach((chunk, index) => {
     const sourceKey = chunk.source_item_id || "";
     const chunkId = graphChunkNodeId(chunk.chunk_id || `chunk-${index}`);
-    addNode(chunkId, chunk.title || chunk.source_item_id || "Chunk", chunk.snippet || chunk.text || "Corpus chunk", "chunks", "text");
+    addNode(chunkId, chunk.title || chunk.source_item_id || "Chunk", chunk.snippet || chunk.text || "资料片段", "chunks", "text");
     if (sourceKey) {
       addEdge(graphSourceNodeId(sourceKey), chunkId, "contains");
     }
@@ -6071,7 +6704,7 @@ function workspaceActivityTarget(surface: WorkspaceMode) {
     return { title: "Graph 工作区", summary: "查看真实 PSKA 图谱与候选关系。" };
   }
   if (surface === "corpus") {
-    return { title: "语料库", summary: "查看已同步资料、可检索片段和资料位置。" };
+  return { title: "资料库", summary: "查看已同步资料、可检索片段和资料位置。" };
   }
   if (surface === "document") {
     return { title: "文档工作区", summary: "查看文档工作区。" };

@@ -301,6 +301,60 @@ Candidates require valid `source_refs` and preserve audit/source metadata.
 Knowledge Source is the user-facing model. Connector state endpoints remain as
 runtime/adapter support for sync cursors, manifests, and diagnostics.
 
+## Document Library Product APIs
+
+User-facing product copy should call this surface the document library
+(`资料库`). Reviewed long-term memory, graph, and Evidence Wiki/Brief material is
+the knowledge base (`知识库`). `KnowledgeSource`, `source_item`, `document`, and
+`chunk` remain internal/API model names.
+
+| Endpoint | Purpose |
+| --- | --- |
+| `POST /workspace/sources/upload` | Multipart or JSON upload; creates an upload source item, document, chunks, sync report, optional digest job |
+| `POST /workspace/sources/text` | Paste long text or Markdown into the private document library |
+| `GET /workspace/documents/data` | List source items/documents with lifecycle state, chunk counts, impact counts, and delete metadata |
+| `POST /workspace/documents/delete` | Preview or execute soft delete, restore, or admin/dev hard purge |
+
+`/workspace/sources/upload` accepts either multipart form fields
+(`file`, `filename`, `digest_mode`) or JSON (`bytes_base64`, `text`, `filename`).
+`digest_mode=after_upload` schedules `digest_via_fastreact`; `manual` only
+ingests and indexes. Upload/text sources are private by default and inherit the
+request tenant/user from AuthNode/Gateway context.
+
+Document delete defaults to dry-run preview. Soft delete removes documents from
+active retrieval and tombstones index state. Reviewed knowledge derived from
+removed evidence should be marked stale/reviewable instead of being silently
+deleted. Hard purge is for explicit admin/dev cleanup flows.
+
+## Ask Conversations
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /workspace/ask/conversations` | List active/archived Ask threads |
+| `POST /workspace/ask/conversations` | Create a thread |
+| `GET /workspace/ask/conversations/{conversation_id}` | Read thread, messages, and runs |
+| `POST /workspace/ask/conversations/{conversation_id}/messages/stream` | Stream a multi-turn Ask run and persist user/assistant messages |
+
+The legacy `POST /workspace/ask/stream` remains available. Conversation runs
+add recent message context and conversation summary to the Ask scope, but chat
+content is not automatically written to long-term knowledge. Users must
+explicitly save an answer, citation, or attachment as a writing node, Evidence
+Brief draft, or document-library entry.
+
+## Prompt Profiles
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /workspace/prompt-profiles` | List stored tenant/user profiles plus effective merged profiles |
+| `GET /workspace/prompt-profiles/effective` | Read only the effective prompt set |
+| `PUT /workspace/prompt-profiles` | Upsert tenant or user prompt profiles |
+
+Profile types are `ask`, `digest`, `review`, and `writing`. Effective order is:
+system defaults, tenant defaults, user overrides, then single-run overrides.
+Artifacts produced by Ask/Digest/Writing should record profile id/version
+lineage. Prompt customization cannot bypass source refs, review gates, or
+tenant visibility.
+
 ## MCP
 
 `POST /mcp` exposes PSKA tools over JSON-RPC for FastReAct or other clients.

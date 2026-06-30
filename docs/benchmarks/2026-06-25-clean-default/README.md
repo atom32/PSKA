@@ -4,12 +4,19 @@
 
 ## 环境
 
-- Repo: `/Users/xudawei/Documents/personal archive`
+路径已脱敏为占位变量；复现时按本机环境设置：
+
+```bash
+export PSKA_REPO="/path/to/pska"
+export PSKA_WORKSPACE="/path/to/PSKA_workspaces/default"
+```
+
+- Repo: `$PSKA_REPO`
 - Branch: `master`
 - Repo HEAD before benchmark notes were written: `f2f6fd7d11683a9ab1da3eaae9839a3f1bc79193`
-- Workspace: `/Users/xudawei/PSKA_workspaces/default`
-- Notes root: `/Users/xudawei/PSKA_workspaces/default/notes`
-- Twitter archive root: `/Users/xudawei/PSKA_workspaces/default/twitter_archive`
+- Workspace: `$PSKA_WORKSPACE`
+- Notes root: `$PSKA_WORKSPACE/notes`
+- Twitter archive root: `$PSKA_WORKSPACE/twitter_archive`
 - Config: `.pska/config.json`
 - Database: `postgresql:///pska`
 - LLM key source used for extraction: `PSKA_LLM_API_KEY_FILE=~/api_key.txt`
@@ -19,7 +26,7 @@
 Corpus root:
 
 ```bash
-/Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25
+$PSKA_WORKSPACE/notes/benchmark-2026-06-25
 ```
 
 Contents:
@@ -47,7 +54,7 @@ git clone https://github.com/garrytan/gbrain.git /tmp/codex-compare-gbrain
 git -C /tmp/codex-compare-gbrain checkout 814258dda67945ffec9457a1e73980e947b7e462
 python3 docs/benchmarks/2026-06-25-clean-default/prepare_corpus.py \
   --gbrain-fixtures-root /tmp/codex-compare-gbrain/test/fixtures/calibration \
-  --notes-root /Users/xudawei/PSKA_workspaces/default/notes
+  --notes-root "$PSKA_WORKSPACE/notes"
 ```
 
 `prepare_corpus.py` recreates only `notes/benchmark-2026-06-25`.

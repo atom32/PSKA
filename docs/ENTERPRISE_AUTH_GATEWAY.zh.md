@@ -55,17 +55,24 @@ export PSKA_AUTH_JWT_AUDIENCE=pska
 
 本地 smoke 使用 AuthNode 的 browser login + one-time code flow，不需要把 AuthNode admin token 给 PSKA。AuthNode、PSKA、FastReAct 仍各自由自己的启动脚本启动；PSKA 不启动其他项目。没有外部 SSO 时可使用 AuthNode Local IAM：SQLite catalog、Argon2id 密码、tenant membership、AuthNode session 和 audit。生产式登录也可让 AuthNode 的 `/login` 跳转 Keycloak，再由 AuthNode `/oidc/callback` 校验 Keycloak token 并规范化 tenant/user claims。
 
+以下示例使用占位变量表示本机 checkout：
+
+```bash
+export AUTHNODE_REPO="/path/to/AuthNode"
+export PSKA_REPO="/path/to/pska"
+```
+
 先启动 AuthNode：
 
 ```bash
-cd /Users/xudawei/Documents/AuthNode
+cd "$AUTHNODE_REPO"
 ./start.sh
 ```
 
 再启动 PSKA：
 
 ```bash
-cd /Users/xudawei/Documents/personal\ archive
+cd "$PSKA_REPO"
 export AUTHNODE_URL=http://127.0.0.1:8788
 export PSKA_GATEWAY_SESSION_SECRET='<random-long-secret>'
 ./start.sh

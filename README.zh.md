@@ -23,7 +23,7 @@ memories、graph relationships、citations 和 writing evidence。PSKA 不只是
 - 身份模型：每个请求都必须落到 `tenant_id`、`user_id`，以及可选的 `represented_user_id`。
 - 浏览器认证：正常多租户浏览器访问走 PSKA Gateway + AuthNode；浏览器只应该持有 HttpOnly gateway session cookie。
 - Agentic 能力：Deep Ask 和 digest generation 由 FastReAct 执行；PSKA 负责 readiness、MCP 边界、引用、review 治理和 tenant 可见性。
-- 核心覆盖：Knowledge Sources、processing spans、chunk preview、Digest、Review、带证据的 Ask、Evidence Briefs/Writing、readiness diagnostics 都是 tenant 版本的一等能力。
+- 核心覆盖：用户可见的资料库、processing spans、chunk preview、Digest、Review、带证据的多轮 Ask、Evidence Briefs/Writing、Prompt Profiles、readiness diagnostics 都是 tenant 版本的一等能力。代码内部仍然使用 KnowledgeSource、source item、document、chunk、review/digest 等模型名。
 
 ## 本地服务
 
@@ -35,6 +35,15 @@ memories、graph relationships、citations 和 writing evidence。PSKA 不只是
 | FastReAct | `http://127.0.0.1:8000` | FastReAct 仓库启动命令 | Agentic Ask/digest 执行 |
 
 PSKA 不会替你启动 AuthNode 或 FastReAct。先在各自项目里启动它们，再回到本仓库执行 `./start.sh`。验证 PSKA 时应使用集成启动路径 `./start.sh`，除非你明确在做单独进程调试。
+
+命令示例使用路径变量，避免把某台机器的 checkout 路径写进文档：
+
+```bash
+export PSKA_REPO="$(pwd)"
+export AUTHNODE_REPO="/path/to/AuthNode"
+export FASTREACT_REPO="/path/to/FastReAct"
+export FASTREACT_NANO_REPO="$FASTREACT_REPO/fastreact-nano"
+```
 
 ## 首次配置
 
@@ -68,10 +77,10 @@ npm install
 然后启动 AuthNode 和 PSKA：
 
 ```bash
-cd /Users/xudawei/Documents/AuthNode
+cd "$AUTHNODE_REPO"
 ./start.sh
 
-cd /Users/xudawei/Documents/personal\ archive
+cd "$PSKA_REPO"
 export AUTHNODE_URL=http://127.0.0.1:8788
 export PSKA_GATEWAY_SESSION_SECRET='<random-long-secret>'
 ./start.sh
@@ -90,13 +99,13 @@ http://127.0.0.1:5173/
 启动依赖：
 
 ```bash
-cd /Users/xudawei/Documents/AuthNode
+cd "$AUTHNODE_REPO"
 ./start.sh
 
-cd /Users/xudawei/FastReAct
+cd "$FASTREACT_REPO"
 ./start.sh
 
-cd /Users/xudawei/Documents/personal\ archive
+cd "$PSKA_REPO"
 ./start.sh
 ```
 
@@ -144,7 +153,7 @@ mkdir -p "$HOME/PSKA_workspaces/tenants/tenant_default/users/user_primary/source
   --root "$HOME/PSKA_workspaces/tenants/tenant_default/users/user_primary/sources"
 ```
 
-Workspace UI 和 HTTP API 支持 folder、RSS/Atom、URL source 的 preview、sync、cleanup、retry、processing spans 和 chunk preview。
+普通用户主要通过 Workspace UI 上传文件、粘贴文本、添加 URL/RSS，把内容加入“资料库”。folder source 保留给 admin/dev、本地迁移或批量导入场景，不作为普通用户主路径。HTTP API 同时支持 upload/text/URL/RSS/folder 的 preview、sync、cleanup、retry、processing spans 和 chunk preview。
 
 ## Digest、Review、Ask、Writing
 
@@ -159,7 +168,9 @@ Digest 是 PSKA 的差异化能力。一次 digest 应该产出带 source_refs �
 ./scripts/pska --config .pska/config.json review-list --status pending --summary
 ```
 
-Ask PSKA 支持 direct 和 FastReAct-backed 两类路径。回答需要展示 citations、source/chunk preview、progress、evidence check；当没有可见证据时，要明确解释为什么没找到答案，而不是假装成功。
+Ask PSKA 支持 direct 和 FastReAct-backed 两类路径，并保存 conversation/message/run 三层记录。回答需要展示 citations、source/chunk preview、progress、evidence check；当没有可见证据时，要明确解释为什么没找到答案，而不是假装成功。聊天附件默认应询问是否加入资料库；临时附件不自动写入长期知识。
+
+系统 Prompt 使用 Prompt Profile 管理，生效顺序是系统默认 < tenant 默认 < user override < 单次 run override。Ask/Digest/Writing 产物需要记录使用的 profile id/version，且不能通过 prompt 绕过 source_refs、Review 或权限边界。
 
 Evidence Briefs 是 PSKA 风格的 Wiki 路径：digest notes、Ask results、reviewed claims 可以生成带 citations、source_refs、lineage 和 review 状态的 Writing board 草稿。PSKA 不自动发布未经 review 的 Wiki 页面。
 
@@ -184,14 +195,23 @@ curl -s http://127.0.0.1:8765/workspace/readiness \
 - `GET /workspace/readiness`
 - `GET /console/sources/data`
 - `GET /workspace/sources/adapters`
+- `POST /workspace/sources/upload`
+- `POST /workspace/sources/text`
 - `POST /workspace/sources/preview`
 - `POST /workspace/sources`
 - `POST /workspace/sources/sync`
+- `GET /workspace/documents/data`
+- `POST /workspace/documents/delete`
 - `POST /workspace/chunking/preview`
 - `GET /workspace/digest/data`
 - `POST /workspace/digest/run`
 - `POST /workspace/ask`
 - `POST /workspace/ask/stream`
+- `GET /workspace/ask/conversations`
+- `POST /workspace/ask/conversations`
+- `POST /workspace/ask/conversations/{conversation_id}/messages/stream`
+- `GET /workspace/prompt-profiles`
+- `PUT /workspace/prompt-profiles`
 - `POST /workspace/evidence-briefs`
 
 浏览器/SaaS 场景不要把 service token 或原始 tenant headers 暴露给用户。应把前端放在 PSKA Gateway/AuthNode、JWT 模式或可信 ingress 后面，由服务端注入已验证身份。
@@ -230,7 +250,7 @@ WeKnora 核心覆盖验收：
 ## 主要组件
 
 - `core/`：tenant-aware 知识模型、source adapters、ingestion、jobs、search、digest、review、Ask、Evidence Briefs、HTTP API、local daemon 和 MCP 工具。
-- `frontend/`：User Workspace，包含 Today、Discoveries、Knowledge Sources、Corpus/Brain、Ask、Graph、Review-oriented flows 和 Writing/Evidence Brief surfaces。
+- `frontend/`：User Workspace，包含 Today、Discoveries、资料库、多轮 Ask、Graph、Review-oriented flows、Prompt Profiles 和 Writing/Evidence Brief surfaces。
 - `channels/twitter-x/`：Twitter/X 归档采集器和 archive schema。
 
 ## 许可证

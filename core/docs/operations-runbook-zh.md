@@ -6,6 +6,14 @@
 
 ## 1. Environment
 
+命令示例使用占位变量表示本机目录：
+
+```bash
+export PSKA_REPO="/path/to/pska"
+export NOTES_ROOT="/path/to/notes"
+export FASTREACT_NANO_REPO="/path/to/FastReAct/fastreact-nano"
+```
+
 推荐本地配置文件：
 
 ```json
@@ -48,7 +56,7 @@ MVP 推荐先用有限数据源启动：
 ```bash
 ./scripts/pska mvp-bootstrap \
   --twitter-archive ~/PSKA_workspaces/default/twitter_archive \
-  --notes-root ~/Documents/notes \
+  --notes-root "$NOTES_ROOT" \
   --extract
 ```
 
@@ -262,7 +270,7 @@ Fastreact 侧脚本型 digest worker：
 ```bash
 ./scripts/pska --config .pska/config.json fastreact-digest-worker-command
 
-cd ~/Fastreact/fastreact-nano
+cd "$FASTREACT_NANO_REPO"
 python3 scripts/pska_digest_worker.py \
   --pska-url http://127.0.0.1:8765 \
   --fastreact-url http://127.0.0.1:8000 \
@@ -339,10 +347,10 @@ transport: http
 # Fastreact credentials must include mcp_api_keys.pska.
 # Store the PSKA service.service_token value there; do not commit credentials.json.
 
-cd ~/Fastreact/fastreact-nano
+cd "$FASTREACT_NANO_REPO"
 NO_PROXY=127.0.0.1,localhost PYTHONPATH=src \
   python3 -m fastreact.adapters.http \
-  --config "/Users/xudawei/Documents/personal archive/.pska/fastreact-pska-http.json"
+  --config "$PSKA_REPO/.pska/fastreact-pska-http.json"
 ```
 
 验证：

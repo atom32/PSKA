@@ -130,6 +130,10 @@ class SourceItem:
     metadata: dict[str, Any] = field(default_factory=dict)
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
+    lifecycle_status: str = "active"
+    deleted_at: datetime | None = None
+    deleted_by: str | None = None
+    delete_reason: str | None = None
     tenant_id: str = DEFAULT_TENANT_ID
 
 
@@ -226,6 +230,10 @@ class Document:
     title: str
     body: str
     metadata: dict[str, Any] = field(default_factory=dict)
+    lifecycle_status: str = "active"
+    deleted_at: datetime | None = None
+    deleted_by: str | None = None
+    delete_reason: str | None = None
     tenant_id: str = DEFAULT_TENANT_ID
 
 
@@ -242,6 +250,68 @@ class Chunk:
     ordinal: int = 0
     embedding: list[float] | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    lifecycle_status: str = "active"
+    deleted_at: datetime | None = None
+    deleted_by: str | None = None
+    delete_reason: str | None = None
+    tenant_id: str = DEFAULT_TENANT_ID
+
+
+@dataclass(slots=True)
+class AskConversation:
+    conversation_id: str
+    owner_user_id: str
+    title: str
+    status: str = "active"
+    summary: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
+    tenant_id: str = DEFAULT_TENANT_ID
+
+
+@dataclass(slots=True)
+class AskMessage:
+    message_id: str
+    conversation_id: str
+    owner_user_id: str
+    role: str
+    content: str
+    run_id: str | None = None
+    citations: list[dict[str, Any]] = field(default_factory=list)
+    source_refs: list[dict[str, Any]] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: datetime = field(default_factory=utc_now)
+    tenant_id: str = DEFAULT_TENANT_ID
+
+
+@dataclass(slots=True)
+class AskRun:
+    run_id: str
+    conversation_id: str
+    owner_user_id: str
+    query: str
+    status: str = "running"
+    result: dict[str, Any] = field(default_factory=dict)
+    prompt_profile_id: str | None = None
+    prompt_profile_version: int | None = None
+    started_at: datetime = field(default_factory=utc_now)
+    finished_at: datetime | None = None
+    tenant_id: str = DEFAULT_TENANT_ID
+
+
+@dataclass(slots=True)
+class PromptProfile:
+    prompt_profile_id: str
+    profile_type: str
+    scope: str
+    name: str
+    config: dict[str, Any] = field(default_factory=dict)
+    owner_user_id: str | None = None
+    status: str = "active"
+    current_version: int = 1
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
     tenant_id: str = DEFAULT_TENANT_ID
 
 

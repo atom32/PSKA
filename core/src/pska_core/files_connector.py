@@ -7,6 +7,7 @@ import io
 import json
 import mimetypes
 from pathlib import Path
+import tempfile
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 import zipfile
@@ -311,6 +312,18 @@ def _extract_text(path: Path, raw: bytes) -> dict[str, Any]:
     if suffix == ".xls":
         return _extract_xls_text(path)
     return {"ok": False, "reason": "unsupported_suffix"}
+
+
+def extract_text_from_bytes(filename: str, raw: bytes) -> dict[str, Any]:
+    """Extract uploaded file text with the same rules as folder sources."""
+    safe_name = Path(filename or "upload.txt").name or "upload.txt"
+    path = Path(safe_name)
+    if path.suffix.lower() in TEXT_SUFFIXES:
+        return _extract_text(path, raw)
+    with tempfile.TemporaryDirectory(prefix="pska_upload_extract_") as tmpdir:
+        temp_path = Path(tmpdir) / safe_name
+        temp_path.write_bytes(raw)
+        return _extract_text(temp_path, raw)
 
 
 def _extract_xlsx_text(path: Path, raw: bytes) -> dict[str, Any]:

@@ -6,10 +6,17 @@ API 和 MCP；FastReAct 负责 agentic loop、LLM 调用、工具编排和事件
 
 ## 1. 推荐目录与端口
 
+本文用占位变量表示本机 checkout，不记录任何真实用户名或机器路径：
+
+```bash
+export PSKA_REPO="/path/to/pska"
+export FASTREACT_NANO_REPO="/path/to/FastReAct/fastreact-nano"
+```
+
 源码仓库：
 
 ```text
-/Users/xudawei/Documents/personal archive
+$PSKA_REPO
 ```
 
 PSKA 本地运行数据：
@@ -35,7 +42,7 @@ FastReAct API:     http://127.0.0.1:8000
 
 ```bash
 brew install python@3.12
-cd "/Users/xudawei/Documents/personal archive"
+cd "$PSKA_REPO"
 ./scripts/bootstrap_pska_env
 ```
 
@@ -202,10 +209,10 @@ credentials。示例文件位置：
 启动 FastReAct：
 
 ```bash
-cd /Users/xudawei/FastReAct/fastreact-nano
+cd "$FASTREACT_NANO_REPO"
 NO_PROXY=127.0.0.1,localhost PYTHONPATH=src \
   python3 -m fastreact.adapters.http \
-  --config "/Users/xudawei/Documents/personal archive/.pska/fastreact-pska-http.json"
+  --config "$PSKA_REPO/.pska/fastreact-pska-http.json"
 ```
 
 FastReAct 默认 API 地址：
@@ -230,14 +237,14 @@ PSKA 调用 FastReAct 时需要知道 FastReAct API 和 service token：
 
 ```bash
 ./scripts/fastreact-pska-service-config
-cd /Users/xudawei/FastReAct/fastreact-nano
+cd "$FASTREACT_NANO_REPO"
 python3 -m fastreact.adapters.http --config ~/.fastreact/config.json
 ```
 
 stdio 模式下 FastReAct 会启动：
 
 ```text
-/Users/xudawei/Documents/personal archive/scripts/pska mcp-server
+$PSKA_REPO/scripts/pska mcp-server
 ```
 
 这种模式不要求 PSKA HTTP daemon 已经启动，但必须确认生成配置时使用的是
@@ -278,7 +285,7 @@ mcp.tools 包含 pska_pska_search
 真实 HTTP/SSE smoke：
 
 ```bash
-cd "/Users/xudawei/Documents/personal archive/core"
+cd "$PSKA_REPO/core"
 python3 scripts/fastreact_http_sse_e2e.py \
   --python ../.pska/venvs/pska-py312/bin/python
 ```

@@ -16,6 +16,7 @@ from pska_core.cli import (
     _graph_qa_eval_result,
     _digest_now_candidate_summary,
     _digest_now_diagnostics,
+    _digest_now_diagnostics_with_persisted_candidates,
     _digest_now_fallback_review,
     _digest_schedule_payload,
     _job_run_diagnostics,
@@ -1317,6 +1318,42 @@ def test_digest_now_diagnostics_warns_when_worker_does_not_write_candidates() ->
     }
 
 
+def test_digest_now_diagnostics_warns_when_write_candidates_persists_nothing() -> None:
+    diagnostics = _digest_now_diagnostics(
+        [
+            {
+                "ok": True,
+                "processed": 1,
+                "result": {
+                    "leased_job": {"job_id": "job_empty"},
+                    "fastreact_runs": [
+                        {
+                            "tool_calls": [{"tool_name": "pska_pska_write_candidates", "job_id": "job_empty", "knowledge_claim_count": 1}],
+                            "write_call_count": 1,
+                            "job_context_call_count": 1,
+                        }
+                    ],
+                },
+            }
+        ]
+    )
+    summary = {
+        "persisted_candidate_counts": {
+            "job_ids": ["job_empty"],
+            "entities": 0,
+            "knowledge_claims": 0,
+            "digest_notes": 0,
+            "review_items": 0,
+            "agent_memories": 0,
+            "profile_cards": 0,
+        }
+    }
+
+    diagnostics = _digest_now_diagnostics_with_persisted_candidates(diagnostics, summary)
+
+    assert diagnostics["warnings"] == ["fastreact_digest_completed_without_persisted_candidates"]
+
+
 def test_digest_now_diagnostics_warns_when_digest_skips_claim_layer() -> None:
     diagnostics = _digest_now_diagnostics(
         [
@@ -1396,7 +1433,7 @@ def test_digest_now_fallback_review_when_worker_writes_no_candidates() -> None:
         owner_user_id="user_primary",
         scheduled_source_item_ids=[item.source_item_id],
         diagnostics=diagnostics,
-        worker_runs=[{"ok": True, "processed": 1}],
+        worker_runs=[{"ok": True, "processed": 1, "result": {"leased_job": {"job_id": "job_fallback"}}}],
     )
 
     assert result["created"] is True
@@ -1404,6 +1441,7 @@ def test_digest_now_fallback_review_when_worker_writes_no_candidates() -> None:
     review = store.list_review_items()[0]
     assert review.review_type == ReviewType.LOW_CONFIDENCE
     assert review.proposal["reason"] == "fastreact_digest_completed_without_write_candidates"
+    assert review.proposal["job_id"] == "job_fallback"
     assert review.proposal["source_refs"][0]["source_item_id"] == item.source_item_id
 
 
@@ -2080,6 +2118,47 @@ def test_fastreact_digest_worker_command_payload_uses_config_urls() -> None:
     assert "--tenant-id" in payload["command"]
     assert "tenant_a" in payload["command"]
     assert "'/tmp/Fast React/fastreact-nano'" in payload["shell"]
+
+
+def test_fastreact_digest_worker_command_payload_uses_loopback_for_wildcard_host() -> None:
+    args = build_parser().parse_args([
+        "fastreact-digest-worker-command",
+        "--represented-user-id",
+        "user_primary",
+    ])
+    config = PSKAConfig.from_dict(
+        {
+            "database": {"url": "postgresql:///pska"},
+            "service": {"host": "0.0.0.0", "port": 8765},
+            "fastreact": {"url": "http://127.0.0.1:8000"},
+        }
+    )
+
+    payload = _fastreact_digest_worker_command_payload(args, config)
+
+    assert payload["pska_url"] == "http://127.0.0.1:8765"
+    assert payload["command"][payload["command"].index("--pska-url") + 1] == "http://127.0.0.1:8765"
+
+
+def test_fastreact_digest_worker_command_payload_can_target_job_id() -> None:
+    args = build_parser().parse_args([
+        "fastreact-digest-worker-command",
+        "--represented-user-id",
+        "user_primary",
+    ])
+    args.job_id = "job_digest_123"
+    config = PSKAConfig.from_dict(
+        {
+            "database": {"url": "postgresql:///pska"},
+            "service": {"host": "127.0.0.1", "port": 8765},
+            "fastreact": {"url": "http://127.0.0.1:8000"},
+        }
+    )
+
+    payload = _fastreact_digest_worker_command_payload(args, config)
+
+    assert payload["command"][payload["command"].index("--job-id") + 1] == "job_digest_123"
+    assert "--job-id job_digest_123" in payload["shell"]
 
 
 def test_files_sync_reports_missing_roots(capsys) -> None:

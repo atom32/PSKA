@@ -190,7 +190,7 @@ display_url() {
 }
 
 if [[ "$(config_value startup_bootstrap)" == "true" ]]; then
-  echo "Preparing PSKA database and Knowledge Sources..."
+  echo "Preparing PSKA database and document library sources..."
   DB_NAME="$(config_value database_name)"
   DB_HOST="$(config_value database_host)"
   if [[ -n "$DB_NAME" && ( -z "$DB_HOST" || "$DB_HOST" == "127.0.0.1" || "$DB_HOST" == "localhost" ) ]]; then
@@ -284,7 +284,7 @@ Listening:
   Backend bind:  $SERVICE_HOST:$SERVICE_PORT
 
 Useful places:
-  Frontend 语料库 page: Knowledge Sources, sync reports, and source/chunk visibility
+  Frontend 资料库 page: uploads, text/URL/RSS sources, sync reports, and source/chunk visibility
 
 Useful commands:
   ./scripts/pska --config "$CONFIG" knowledge-source list

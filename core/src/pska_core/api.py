@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import base64
 from datetime import UTC, datetime, timedelta
+from email.parser import BytesParser
+from email.policy import default as email_policy
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
@@ -27,7 +30,7 @@ from pska_core.embeddings import EmbeddingConfig, build_embedding_provider
 from pska_core.enums import UserRole, Visibility
 from pska_core.extraction import ExtractionService
 from pska_core.fastreact_protocol import compact_trace_for_context
-from pska_core.files_connector import scan_files
+from pska_core.files_connector import extract_text_from_bytes, scan_files
 from pska_core.importers.twitter_zip import TwitterZipImporter
 from pska_core.ingest import IngestService
 from pska_core.jobs import DIGEST_VIA_FASTREACT, JobService
@@ -36,9 +39,13 @@ from pska_core.memory import MemoryService
 from pska_core.mcp_server import MCPServer, PROTOCOL_VERSION
 from pska_core.models import (
     DEFAULT_TENANT_ID,
+    AskConversation,
+    AskMessage,
+    AskRun,
     ChannelIngestPayload,
     KnowledgeSource,
     PassageWindow,
+    PromptProfile,
     ReviewItem,
     SourceRef,
     WorkspaceActivityEvent,
@@ -64,6 +71,29 @@ ASK_READ_ONLY_TOOLS = [
     "pska_pska_graph_context",
     "pska_pska_digest_context",
 ]
+
+PROMPT_PROFILE_TYPES = {"ask", "digest", "review", "writing"}
+DEFAULT_PROMPT_PROFILE_CONFIGS: dict[str, dict[str, Any]] = {
+    "ask": {
+        "answer_language": "zh-CN",
+        "style": "conclusion_first",
+        "citation_policy": "required_when_evidence_exists",
+        "no_answer_policy": "explain_missing_evidence",
+    },
+    "digest": {
+        "candidate_policy": "source_refs_required",
+        "low_confidence_policy": "route_to_review",
+        "outputs": ["digest_note", "knowledge_claim", "review_item", "memory_candidate", "relationship_candidate"],
+    },
+    "review": {
+        "default_queue": "pending",
+        "high_impact_policy": "manual_approval",
+    },
+    "writing": {
+        "tone": "clear_evidence_brief",
+        "citation_policy": "preserve_source_refs",
+    },
+}
 
 
 class PSKAApi:
@@ -125,6 +155,7 @@ class PSKAApi:
         ready = self.ready()
         checks = dict(ready.get("checks") or {})
         stats = self.job_stats(tenant_id=tenant_id)["stats"]
+        agentic_pska_mcp_ok = _agentic_pska_mcp_ok(checks.get("agentic_service"))
         return {
             "ok": bool(ready.get("ok")),
             "tenant_id": tenant_id,
@@ -146,9 +177,65 @@ class PSKAApi:
                 "database_ok": bool((checks.get("database") or {}).get("ok")),
                 "schema_ok": bool((checks.get("schema") or {}).get("ok")),
                 "mcp_ok": bool((checks.get("mcp") or {}).get("ok")),
-                "fastreact_ok": bool((checks.get("agentic_service") or {}).get("ok")),
+                "fastreact_ok": bool((checks.get("agentic_service") or {}).get("ok")) and agentic_pska_mcp_ok,
+                "fastreact_pska_mcp_ok": agentic_pska_mcp_ok,
                 "digest_backlog_jobs": int(((stats.get("digest_backlog") or {}).get("jobs")) or 0),
             },
+        }
+
+    def workspace_prompt_profiles(self, payload: dict[str, Any] | None = None, context: RequestContext | None = None) -> dict[str, Any]:
+        payload = context.apply_to_payload(payload or {}) if context else dict(payload or {})
+        tenant_id = _tenant_id_for_request(context, str(payload.get("tenant_id")) if payload.get("tenant_id") else None)
+        owner_user_id = _workspace_owner_user_id(context, payload.get("owner_user_id") or payload.get("represented_user_id"))
+        profiles = self.store.list_prompt_profiles(tenant_id=tenant_id, owner_user_id=owner_user_id)
+        effective = _effective_prompt_profiles(self.store, tenant_id=tenant_id, owner_user_id=owner_user_id)
+        return {
+            "ok": True,
+            "tenant_id": tenant_id,
+            "owner_user_id": owner_user_id,
+            "profiles": [_prompt_profile_payload(profile) for profile in profiles],
+            "effective": effective,
+            "defaults": _default_prompt_profiles_payload(tenant_id=tenant_id),
+        }
+
+    def update_workspace_prompt_profiles(self, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
+        payload = context.apply_to_payload(payload) if context else payload
+        tenant_id = _tenant_id_for_request(context, str(payload.get("tenant_id")) if payload.get("tenant_id") else None)
+        owner_user_id = _workspace_owner_user_id(context, payload.get("owner_user_id") or payload.get("represented_user_id"))
+        raw_profiles = payload.get("profiles")
+        if isinstance(raw_profiles, dict):
+            profile_inputs = [{"profile_type": key, "config": value} for key, value in raw_profiles.items()]
+        elif isinstance(raw_profiles, list):
+            profile_inputs = [item for item in raw_profiles if isinstance(item, dict)]
+        else:
+            profile_inputs = [payload]
+        stored: list[PromptProfile] = []
+        for item in profile_inputs:
+            profile_type = str(item.get("profile_type") or item.get("type") or "ask").strip().lower()
+            if profile_type not in PROMPT_PROFILE_TYPES:
+                raise ValueError(f"unsupported prompt profile type: {profile_type}")
+            scope = str(item.get("scope") or "user").strip().lower()
+            if scope not in {"tenant", "user"}:
+                raise ValueError("prompt profile scope must be tenant or user")
+            profile_owner = None if scope == "tenant" else owner_user_id
+            config = item.get("config") if isinstance(item.get("config"), dict) else {}
+            profile = PromptProfile(
+                prompt_profile_id=_prompt_profile_id(tenant_id=tenant_id, scope=scope, owner_user_id=profile_owner, profile_type=profile_type),
+                tenant_id=tenant_id,
+                owner_user_id=profile_owner,
+                profile_type=profile_type,
+                scope=scope,
+                name=str(item.get("name") or _prompt_profile_default_name(profile_type, scope)),
+                config=config,
+            )
+            stored.append(self.store.upsert_prompt_profile(profile))
+        effective = _effective_prompt_profiles(self.store, tenant_id=tenant_id, owner_user_id=owner_user_id)
+        return {
+            "ok": True,
+            "tenant_id": tenant_id,
+            "owner_user_id": owner_user_id,
+            "profiles": [_prompt_profile_payload(profile) for profile in stored],
+            "effective": effective,
         }
 
     def index_status(self, *, tenant_id: str | None = None) -> dict[str, Any]:
@@ -554,12 +641,100 @@ class PSKAApi:
             preview = build_source_adapter(self.store, source, processing_config=processing_config).preview(limit=max(1, min(int(payload.get("limit") or 5), 20)))
         return {"ok": True, "knowledge_source": to_jsonable(source), "preview": preview, "adapters": supported_source_adapters()}
 
+    def create_text_source(self, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
+        payload = context.apply_to_payload(payload) if context else payload
+        text = str(payload.get("text") or payload.get("content") or payload.get("body") or "").strip()
+        if not text:
+            raise ValueError("text source requires non-empty text")
+        title = str(payload.get("title") or payload.get("name") or _default_inline_title(text, fallback="Pasted text")).strip()
+        source = _inline_knowledge_source_from_payload(payload, context=context, source_type="text", title=title, text=text)
+        self.store.upsert_knowledge_source(source)
+        return self._sync_inline_source(source, payload, context=context, action="text")
+
+    def create_upload_source(self, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
+        payload = context.apply_to_payload(payload) if context else payload
+        filename = str(payload.get("filename") or payload.get("name") or "upload.txt").strip() or "upload.txt"
+        text, content_type, size_bytes, extraction = _upload_text_from_payload(payload)
+        if not text.strip():
+            raise ValueError("uploaded file has no readable text")
+        title = str(payload.get("title") or Path(filename).name or _default_inline_title(text, fallback="Uploaded file")).strip()
+        source = _inline_knowledge_source_from_payload(
+            {
+                **payload,
+                "filename": filename,
+                "content_type": content_type,
+                "size_bytes": size_bytes,
+                "metadata": {**dict(payload.get("metadata") or {}), "extraction": extraction},
+            },
+            context=context,
+            source_type="upload",
+            title=title,
+            text=text,
+        )
+        self.store.upsert_knowledge_source(source)
+        return self._sync_inline_source(source, payload, context=context, action="upload")
+
+    def _sync_inline_source(
+        self,
+        source: KnowledgeSource,
+        payload: dict[str, Any],
+        *,
+        context: RequestContext | None,
+        action: str,
+    ) -> dict[str, Any]:
+        processing_config = payload.get("processing_config") if isinstance(payload.get("processing_config"), dict) else None
+        adapter = build_source_adapter(
+            self.store,
+            source,
+            embedding_provider=build_embedding_provider(EmbeddingConfig(provider="disabled")),
+            processing_config=processing_config,
+        )
+        preview = adapter.preview(limit=1)
+        report = adapter.sync(limit=1)
+        run = KnowledgeSourceService(self.store).record_sync_report(source, report)
+        digest_mode = str(payload.get("digest_mode") or "after_upload").strip().lower()
+        digest = None
+        if digest_mode in {"after_upload", "auto", "immediate"} and report.source_item_ids:
+            digest = self.schedule_digest(
+                {
+                    "tenant_id": source.tenant_id,
+                    "owner_user_id": source.owner_user_id,
+                    "source_item_ids": report.source_item_ids,
+                    "force": bool(payload.get("force_digest", False)),
+                    "limit": len(report.source_item_ids),
+                    "batch_size": max(1, min(len(report.source_item_ids), int(payload.get("digest_batch_size") or 1))),
+                    "priority": int(payload.get("digest_priority") or 5),
+                    "reason": f"{action} source {digest_mode}",
+                    "triggered_by": _actor_user_id(context, payload),
+                },
+                context=context,
+            )
+        chunks = self.store.list_chunks_for_sources(set(report.source_item_ids))
+        documents = self.store.list_documents_for_sources(set(report.source_item_ids))
+        return {
+            "ok": True,
+            "action": action,
+            "tenant_id": source.tenant_id,
+            "owner_user_id": source.owner_user_id,
+            "knowledge_source": to_jsonable(source),
+            "source_item_ids": report.source_item_ids,
+            "documents": to_jsonable(documents),
+            "chunk_stats": _chunk_stats(chunks),
+            "preview": preview,
+            "sync_run": to_jsonable(run),
+            "sync_report": to_jsonable(report),
+            "digest_mode": digest_mode,
+            "digest": digest,
+            "adapters": supported_source_adapters(),
+        }
+
     def sync_knowledge_sources(self, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
         payload = context.apply_to_payload(payload) if context else payload
         tenant_id = str(payload.get("tenant_id") or (context.tenant_id if context else DEFAULT_TENANT_ID))
         owner_user_id = _owner_user_id_for_write(payload, context)
         source_ids = _string_list(payload.get("knowledge_source_ids") or payload.get("source_ids") or payload.get("knowledge_source_id"))
         source_type = _normal_source_type(payload.get("source_type")) if payload.get("source_type") else None
+        source_types = {_normal_source_type(value) for value in _string_list(payload.get("source_types"))}
         source_service = KnowledgeSourceService(self.store)
         if source_ids:
             sources = [self.store.get_knowledge_source(source_id) for source_id in source_ids]
@@ -568,6 +743,8 @@ class PSKAApi:
             sources = source_service.list_sources(tenant_id=tenant_id, owner_user_id=owner_user_id)
         if source_type:
             sources = [source for source in sources if _normal_source_type(source.source_type) == source_type]
+        if source_types:
+            sources = [source for source in sources if _normal_source_type(source.source_type) in source_types]
         sources = [source for source in sources if source.mode != "paused" and source.status != "paused"]
         reports: list[Any] = []
         sync_runs = []
@@ -640,7 +817,7 @@ class PSKAApi:
                 raise
             return {
                 "ok": False,
-                "error": "No knowledge sources configured. Add files.roots to .pska/config.json for cold start seed or pass roots.",
+                "error": "当前账号还没有可同步的本地文件夹资料源。普通用户请在资料库上传文件、粘贴文本或添加 URL/RSS；文件夹同步仅用于管理员、本地开发或迁移场景。",
                 "database_error": f"{type(exc).__name__}: {exc}",
                 "reports": [],
                 "knowledge_sources": [],
@@ -648,7 +825,7 @@ class PSKAApi:
         if not sources:
             return {
                 "ok": False,
-                "error": "No knowledge sources configured. Add files.roots to .pska/config.json for cold start seed or pass roots.",
+                "error": "当前账号还没有可同步的本地文件夹资料源。普通用户请在资料库上传文件、粘贴文本或添加 URL/RSS；文件夹同步仅用于管理员、本地开发或迁移场景。",
                 "reports": [],
                 "knowledge_sources": [],
             }
@@ -718,6 +895,7 @@ class PSKAApi:
         from pska_core.cli import (
             _digest_now_candidate_summary,
             _digest_now_diagnostics,
+            _digest_now_diagnostics_with_persisted_candidates,
             _digest_now_fallback_review,
             _digest_schedule_payload,
             _review_items_payload,
@@ -726,9 +904,10 @@ class PSKAApi:
 
         payload = context.apply_to_payload(payload) if context else payload
         tenant_id = str(payload.get("tenant_id") or DEFAULT_TENANT_ID)
-        owner_user_id = str(payload.get("owner_user_id") or "user_primary")
+        owner_user_id = _owner_user_id_for_write(payload, context)
         args = argparse.Namespace(
             database_url=getattr(self.store, "database_url", self.config.database.url),
+            tenant_id=tenant_id,
             config=None,
             pska_config=self.config,
             owner_user_id=owner_user_id,
@@ -767,8 +946,17 @@ class PSKAApi:
                 return {"ok": False, "stage": "files_sync", "sync": sync_payload}
 
         scheduled = self.schedule_digest(_digest_schedule_payload(args), context=context)
+        scheduled_job = scheduled.get("job") if isinstance(scheduled.get("job"), dict) else None
+        args.job_id = str(scheduled_job.get("job_id")) if scheduled_job and scheduled_job.get("job_id") else None
         worker_runs = _run_fastreact_digest_worker(args, self.config) if args.max_worker_runs > 0 else []
         diagnostics = _digest_now_diagnostics(worker_runs)
+        candidate_summary = _digest_now_candidate_summary(
+            worker_runs,
+            store=self.store,
+            owner_user_id=owner_user_id,
+            tenant_id=tenant_id,
+        )
+        diagnostics = _digest_now_diagnostics_with_persisted_candidates(diagnostics, candidate_summary)
         fallback_review = _digest_now_fallback_review(
             self.store,
             owner_user_id=owner_user_id,
@@ -791,7 +979,6 @@ class PSKAApi:
             to_jsonable(job)
             for job in self.store.list_jobs(tenant_id=tenant_id, status="failed", job_type=DIGEST_VIA_FASTREACT, limit=10)
         ]
-        candidate_summary = _digest_now_candidate_summary(worker_runs)
         candidate_summary["review_items"] += int(fallback_review.get("review_items") or 0)
         result = {
             "ok": not any(run.get("ok") is False for run in worker_runs) and not failed_digest_jobs,
@@ -1536,6 +1723,133 @@ class PSKAApi:
                 continue
             yield (event_name, event_payload)
 
+    def workspace_ask_conversations(self, payload: dict[str, Any] | None = None, context: RequestContext | None = None) -> dict[str, Any]:
+        payload = context.apply_to_payload(payload or {}) if context else dict(payload or {})
+        tenant_id = _tenant_id_for_request(context, str(payload.get("tenant_id")) if payload.get("tenant_id") else None)
+        owner_user_id = _workspace_owner_user_id(context, payload.get("owner_user_id") or payload.get("represented_user_id"))
+        conversations = self.store.list_ask_conversations(tenant_id=tenant_id, owner_user_id=owner_user_id, limit=int(payload.get("limit") or 50))
+        return {
+            "ok": True,
+            "tenant_id": tenant_id,
+            "owner_user_id": owner_user_id,
+            "conversations": [_ask_conversation_payload(conversation) for conversation in conversations],
+        }
+
+    def create_workspace_ask_conversation(self, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
+        payload = context.apply_to_payload(payload) if context else payload
+        tenant_id = _tenant_id_for_request(context, str(payload.get("tenant_id")) if payload.get("tenant_id") else None)
+        owner_user_id = _workspace_owner_user_id(context, payload.get("owner_user_id") or payload.get("represented_user_id"))
+        title = str(payload.get("title") or "Ask PSKA conversation").strip()
+        conversation = AskConversation(
+            conversation_id=str(payload.get("conversation_id") or f"ask_{uuid4().hex}"),
+            owner_user_id=owner_user_id,
+            title=title,
+            summary=str(payload.get("summary") or ""),
+            metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
+            tenant_id=tenant_id,
+        )
+        stored = self.store.create_ask_conversation(conversation)
+        return {"ok": True, "conversation": _ask_conversation_payload(stored)}
+
+    def workspace_ask_conversation(self, conversation_id: str, payload: dict[str, Any] | None = None, context: RequestContext | None = None) -> dict[str, Any]:
+        payload = context.apply_to_payload(payload or {}) if context else dict(payload or {})
+        tenant_id = _tenant_id_for_request(context, str(payload.get("tenant_id")) if payload.get("tenant_id") else None)
+        owner_user_id = _workspace_owner_user_id(context, payload.get("owner_user_id") or payload.get("represented_user_id"))
+        conversation = self.store.get_ask_conversation(conversation_id, tenant_id=tenant_id, owner_user_id=owner_user_id)
+        messages = self.store.list_ask_messages(conversation_id, tenant_id=tenant_id, owner_user_id=owner_user_id, limit=int(payload.get("message_limit") or 100))
+        runs = self.store.list_ask_runs(conversation_id, tenant_id=tenant_id, owner_user_id=owner_user_id, limit=int(payload.get("run_limit") or 50))
+        return {
+            "ok": True,
+            "conversation": _ask_conversation_payload(conversation),
+            "messages": [_ask_message_payload(message) for message in messages],
+            "runs": [_ask_run_payload(run) for run in runs],
+        }
+
+    def workspace_ask_conversation_event_stream(self, conversation_id: str, payload: dict[str, Any], context: RequestContext | None = None):
+        payload = context.apply_to_payload(payload) if context else payload
+        tenant_id = _tenant_id_for_request(context, str(payload.get("tenant_id")) if payload.get("tenant_id") else None)
+        owner_user_id = _workspace_owner_user_id(context, payload.get("owner_user_id") or payload.get("represented_user_id"))
+        query = str(payload.get("query") or payload.get("content") or "").strip()
+        if not query:
+            raise ValueError("query is required")
+        try:
+            conversation = self.store.get_ask_conversation(conversation_id, tenant_id=tenant_id, owner_user_id=owner_user_id)
+        except KeyError:
+            conversation = self.store.create_ask_conversation(
+                AskConversation(
+                    conversation_id=conversation_id,
+                    owner_user_id=owner_user_id,
+                    title=str(payload.get("title") or _default_inline_title(query, fallback="Ask PSKA conversation")),
+                    tenant_id=tenant_id,
+                )
+            )
+        prompt_lineage = _prompt_profile_lineage(self.store, tenant_id=tenant_id, owner_user_id=owner_user_id, profile_type="ask")
+        run = self.store.add_ask_run(
+            AskRun(
+                run_id=str(payload.get("run_id") or f"askrun_{uuid4().hex}"),
+                conversation_id=conversation.conversation_id,
+                owner_user_id=owner_user_id,
+                query=query,
+                prompt_profile_id=prompt_lineage.get("prompt_profile_id"),
+                prompt_profile_version=prompt_lineage.get("prompt_profile_version"),
+                tenant_id=tenant_id,
+            )
+        )
+        self.store.add_ask_message(
+            AskMessage(
+                message_id=str(payload.get("message_id") or f"askmsg_{uuid4().hex}"),
+                conversation_id=conversation.conversation_id,
+                owner_user_id=owner_user_id,
+                role="user",
+                content=query,
+                run_id=run.run_id,
+                metadata={"prompt_profile": prompt_lineage},
+                tenant_id=tenant_id,
+            )
+        )
+        history = self.store.list_ask_messages(conversation.conversation_id, tenant_id=tenant_id, owner_user_id=owner_user_id, limit=12)
+        ask_payload = {
+            **payload,
+            "query": query,
+            "session_id": conversation.conversation_id,
+            "surface": payload.get("surface") or "ask",
+            "scope": {
+                **(payload.get("scope") if isinstance(payload.get("scope"), dict) else {}),
+                "conversation_id": conversation.conversation_id,
+                "conversation_summary": conversation.summary,
+                "recent_messages": [_ask_message_scope(message) for message in history[-8:]],
+                "prompt_profile": prompt_lineage,
+            },
+        }
+        result = _empty_ask_stream_result(query=query, conversation_id=conversation.conversation_id, run_id=run.run_id, prompt_lineage=prompt_lineage)
+        yield ("conversation", {"conversation": _ask_conversation_payload(conversation), "run": _ask_run_payload(run)})
+        try:
+            for event_name, event_payload in self.workspace_ask_event_stream(ask_payload, context=context):
+                _accumulate_ask_stream_result(result, event_name, event_payload)
+                if event_name == "done":
+                    self.store.finish_ask_run(run.run_id, status="succeeded" if result.get("ok") is not False else "failed", result=result)
+                    self.store.add_ask_message(
+                        AskMessage(
+                            message_id=f"askmsg_{uuid4().hex}",
+                            conversation_id=conversation.conversation_id,
+                            owner_user_id=owner_user_id,
+                            role="assistant",
+                            content=str(result.get("answer") or ""),
+                            run_id=run.run_id,
+                            citations=_list_of_dicts(result.get("citations")),
+                            source_refs=_list_of_dicts(result.get("source_refs")),
+                            metadata={"quality_signals": result.get("quality_signals") or {}, "prompt_profile": prompt_lineage},
+                            tenant_id=tenant_id,
+                        )
+                    )
+                    event_payload = {**dict(event_payload), "conversation_id": conversation.conversation_id, "run_id": run.run_id}
+                yield (event_name, event_payload)
+        except Exception as exc:
+            result["ok"] = False
+            result["error"] = f"{type(exc).__name__}: {exc}"
+            self.store.finish_ask_run(run.run_id, status="failed", result=result)
+            raise
+
     def _workspace_ask_quick(
         self,
         *,
@@ -1574,9 +1888,23 @@ class PSKAApi:
                     started_at=started_at,
                 )
             )
+        scoped_source_item_ids = set(_string_list((scope or {}).get("source_item_ids")))
         retrieval_query = _ask_query_with_scope(query, scope or {})
-        retrieval_result = self.retrieval.search(retrieval_query, user, represented_user_id=represented_user_id, top_k=top_k)
+        retrieval_result = self.retrieval.search(
+            retrieval_query,
+            user,
+            represented_user_id=represented_user_id,
+            top_k=top_k,
+            source_item_ids=scoped_source_item_ids or None,
+        )
         retrieval = _console_search_summary(to_jsonable(retrieval_result))
+        retrieval = _ask_hydrate_retrieval_source_windows(
+            self.store,
+            retrieval,
+            query=query,
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+        )
         evidence = _ask_evidence_from_retrieval(retrieval)
         steps.append(_ask_quick_read_step(sequence=len(steps) + 1, evidence=evidence, started_at=started_at))
         answer = _ask_quick_answer(query, retrieval)
@@ -1779,7 +2107,7 @@ class PSKAApi:
         limit = max(1, min(limit, 100))
         query_text = str(query or "").strip().lower()
         channel = str(source_channel or "").strip()
-        all_sources = [item for item in self.store.list_source_items(tenant_id=tenant_id) if item.owner_user_id == owner_user_id]
+        all_sources = [item for item in self.store.list_source_items(tenant_id=tenant_id) if item.owner_user_id == owner_user_id and _is_active_lifecycle(item)]
         all_source_ids = {item.source_item_id for item in all_sources}
         all_chunks = self.store.list_chunks_for_sources(all_source_ids)
         chunks_by_source: dict[str, list[Any]] = {}
@@ -1846,6 +2174,144 @@ class PSKAApi:
             "profiles": [_console_profile_card(card) for card in profiles],
         }
 
+    def workspace_documents_data(
+        self,
+        payload: dict[str, Any] | None = None,
+        *,
+        context: RequestContext | None = None,
+    ) -> dict[str, Any]:
+        payload = context.apply_to_payload(payload or {}) if context else dict(payload or {})
+        owner_user_id = _workspace_owner_user_id(context, payload.get("owner_user_id") or payload.get("represented_user_id"))
+        tenant_id = _tenant_id_for_request(context, str(payload.get("tenant_id")) if payload.get("tenant_id") else None)
+        include_deleted = bool(payload.get("include_deleted", True))
+        limit = max(1, min(int(payload.get("limit") or 100), 500))
+        source_items = [
+            item
+            for item in self.store.list_source_items(tenant_id=tenant_id)
+            if item.owner_user_id == owner_user_id and (include_deleted or _is_active_lifecycle(item))
+        ]
+        source_items.sort(key=lambda item: (getattr(item, "updated_at", None) or getattr(item, "created_at", datetime.min.replace(tzinfo=UTC))), reverse=True)
+        source_items = source_items[:limit]
+        source_ids = {item.source_item_id for item in source_items}
+        documents = self.store.list_documents_for_sources(source_ids)
+        chunks = self.store.list_chunks_for_sources(source_ids)
+        docs_by_source: dict[str, list[Any]] = {}
+        chunks_by_source: dict[str, list[Any]] = {}
+        for document in documents:
+            docs_by_source.setdefault(document.source_item_id, []).append(document)
+        for chunk in chunks:
+            chunks_by_source.setdefault(chunk.source_item_id, []).append(chunk)
+        rows = []
+        for item in source_items:
+            source_id = item.source_item_id
+            rows.append(
+                {
+                    **_workspace_source(item, chunks_by_source.get(source_id, [])),
+                    "lifecycle_status": _lifecycle_status(item),
+                    "deleted_at": getattr(item, "deleted_at", None),
+                    "deleted_by": getattr(item, "deleted_by", None),
+                    "delete_reason": getattr(item, "delete_reason", None),
+                    "document_count": len(docs_by_source.get(source_id, [])),
+                    "chunk_count": len(chunks_by_source.get(source_id, [])),
+                    "impact": _document_delete_impact(self.store, tenant_id=tenant_id, source_item_ids=[source_id]),
+                }
+            )
+        return {
+            "ok": True,
+            "tenant_id": tenant_id,
+            "owner_user_id": owner_user_id,
+            "include_deleted": include_deleted,
+            "documents": rows,
+            "counts": {
+                "documents": len(rows),
+                "active": sum(1 for item in source_items if _is_active_lifecycle(item)),
+                "deleted": sum(1 for item in source_items if _lifecycle_status(item) == "deleted"),
+                "stale": sum(1 for item in source_items if _lifecycle_status(item) == "stale"),
+            },
+        }
+
+    def workspace_documents_delete(self, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
+        payload = context.apply_to_payload(payload) if context else payload
+        tenant_id = _tenant_id_for_request(context, str(payload.get("tenant_id")) if payload.get("tenant_id") else None)
+        owner_user_id = _workspace_owner_user_id(context, payload.get("owner_user_id") or payload.get("represented_user_id"))
+        requested_ids = _string_list(payload.get("source_item_ids") or payload.get("source_item_id") or payload.get("document_ids"))
+        if not requested_ids:
+            raise ValueError("source_item_ids is required")
+        owned_ids = [
+            item.source_item_id
+            for item in self.store.list_source_items(tenant_id=tenant_id)
+            if item.owner_user_id == owner_user_id and item.source_item_id in set(requested_ids)
+        ]
+        if not owned_ids:
+            raise PermissionError("no owned document entries matched")
+        execute = bool(payload.get("execute", False))
+        restore = bool(payload.get("restore", False))
+        hard_delete = str(payload.get("mode") or payload.get("delete_mode") or "").lower() in {"hard", "purge", "hard_purge"} or bool(payload.get("hard_delete", False))
+        reason = str(payload.get("reason") or ("restore document" if restore else "workspace document lifecycle update"))
+        impact = _document_delete_impact(self.store, tenant_id=tenant_id, source_item_ids=owned_ids)
+        if not execute:
+            return {
+                "ok": True,
+                "dry_run": True,
+                "execute": False,
+                "restore": restore,
+                "hard_delete": hard_delete,
+                "tenant_id": tenant_id,
+                "owner_user_id": owner_user_id,
+                "source_item_ids": owned_ids,
+                "counts": impact,
+                "notes": _document_delete_notes(restore=restore, hard_delete=hard_delete),
+            }
+        actor_user_id = _actor_user_id(context, payload)
+        deleted: dict[str, int] = {}
+        if restore:
+            deleted.update(
+                self.store.update_source_lifecycle(
+                    owned_ids,
+                    lifecycle_status="active",
+                    actor_user_id=actor_user_id,
+                    reason=reason,
+                    tenant_id=tenant_id,
+                )
+            )
+        elif hard_delete:
+            deleted.update(_hard_delete_source_derivatives(self.store, owned_ids))
+            deleted.update(
+                self.store.update_source_lifecycle(
+                    owned_ids,
+                    lifecycle_status="purged",
+                    actor_user_id=actor_user_id,
+                    reason=reason,
+                    tenant_id=tenant_id,
+                    hard_delete=True,
+                )
+            )
+        else:
+            deleted.update(
+                self.store.update_source_lifecycle(
+                    owned_ids,
+                    lifecycle_status="deleted",
+                    actor_user_id=actor_user_id,
+                    reason=reason,
+                    tenant_id=tenant_id,
+                )
+            )
+            stale = _mark_source_derivatives_stale(self.store, owned_ids, actor_user_id=actor_user_id, reason=reason)
+            deleted.update({f"stale_{key}": value for key, value in stale.items()})
+        return {
+            "ok": True,
+            "dry_run": False,
+            "execute": True,
+            "restore": restore,
+            "hard_delete": hard_delete,
+            "tenant_id": tenant_id,
+            "owner_user_id": owner_user_id,
+            "source_item_ids": owned_ids,
+            "counts": impact,
+            "deleted": deleted,
+            "notes": _document_delete_notes(restore=restore, hard_delete=hard_delete),
+        }
+
     def workspace_graph_data(
         self,
         *,
@@ -1857,7 +2323,7 @@ class PSKAApi:
         owner_user_id = _workspace_owner_user_id(context, owner_user_id)
         tenant_id = _tenant_id_for_request(context)
         limit = max(1, min(limit, 100))
-        source_items = [item for item in self.store.list_source_items(tenant_id=tenant_id) if item.owner_user_id == owner_user_id][:limit]
+        source_items = [item for item in self.store.list_source_items(tenant_id=tenant_id) if item.owner_user_id == owner_user_id and _is_active_lifecycle(item)][:limit]
         source_ids = {item.source_item_id for item in source_items}
         documents = self.store.list_documents_for_sources(source_ids)
         chunks = self.store.list_chunks_for_sources(source_ids)
@@ -2678,7 +3144,7 @@ class PSKAApi:
                 "quota_limited": True,
             }
 
-        source_items = [item for item in self.store.list_source_items(tenant_id=tenant_id) if item.owner_user_id == owner_user_id]
+        source_items = [item for item in self.store.list_source_items(tenant_id=tenant_id) if item.owner_user_id == owner_user_id and _is_active_lifecycle(item)]
         if source_item_ids:
             requested = set(source_item_ids)
             source_items = [item for item in source_items if item.source_item_id in requested]
@@ -2717,6 +3183,7 @@ class PSKAApi:
 
         job = None
         if source_refs:
+            prompt_lineage = _prompt_profile_lineage(self.store, tenant_id=tenant_id, owner_user_id=owner_user_id, profile_type="digest")
             job_payload: dict[str, Any] = {
                 "owner_user_id": owner_user_id,
                 "tenant_id": tenant_id,
@@ -2724,6 +3191,9 @@ class PSKAApi:
                 "retry_backoff_seconds": retry_backoff_seconds,
                 "source_refs": source_refs,
                 "scope": {"source_item_ids": [ref["source_item_id"] for ref in source_refs]},
+                "triggered_by": str(payload.get("triggered_by") or payload.get("actor_user_id") or owner_user_id),
+                "producer": "pska.digest_scheduler",
+                **prompt_lineage,
             }
             if payload.get("reason"):
                 job_payload["reason"] = str(payload["reason"])
@@ -2777,7 +3247,7 @@ class PSKAApi:
         represented_user_id = context.represented_user_id if context else None
         allowed_owner_id = represented_user_id or user_id
         source_item_ids = _job_source_item_ids(job)
-        candidate_items = [item for item in self.store.list_source_items(tenant_id=tenant_id) if item.owner_user_id == allowed_owner_id]
+        candidate_items = [item for item in self.store.list_source_items(tenant_id=tenant_id) if item.owner_user_id == allowed_owner_id and _is_active_lifecycle(item)]
         if source_item_ids:
             candidate_items = [item for item in candidate_items if item.source_item_id in source_item_ids]
         candidate_items = sorted(candidate_items, key=lambda item: (item.created_at, item.source_item_id))
@@ -2909,6 +3379,37 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
             return self._json(200, self.api.ready())
         if path == "/workspace/readiness":
             return self._json(200, self.api.workspace_readiness(context=context))
+        if path == "/workspace/prompt-profiles":
+            return self._json(200, self.api.workspace_prompt_profiles({"owner_user_id": _first(query.get("owner_user_id"))}, context=context))
+        if path == "/workspace/prompt-profiles/effective":
+            prompt_profiles = self.api.workspace_prompt_profiles({"owner_user_id": _first(query.get("owner_user_id"))}, context=context)
+            return self._json(
+                200,
+                {
+                    "ok": True,
+                    "tenant_id": prompt_profiles.get("tenant_id"),
+                    "owner_user_id": prompt_profiles.get("owner_user_id"),
+                    "effective": prompt_profiles.get("effective") or {},
+                },
+            )
+        if path == "/workspace/documents/data":
+            return self._json(
+                200,
+                self.api.workspace_documents_data(
+                    {
+                        "owner_user_id": _first(query.get("owner_user_id")),
+                        "include_deleted": (_first(query.get("include_deleted")) or "true").lower() != "false",
+                        "limit": _int_first(query.get("limit")) or 100,
+                    },
+                    context=context,
+                ),
+            )
+        if path == "/workspace/ask/conversations":
+            return self._json(200, self.api.workspace_ask_conversations({"limit": _int_first(query.get("limit")) or 50}, context=context))
+        if path.startswith("/workspace/ask/conversations/"):
+            parts = _ask_conversation_path_parts(path)
+            if len(parts) == 1:
+                return self._json(200, self.api.workspace_ask_conversation(unquote(parts[0]), context=context))
         if path == "/workspace/sources/adapters":
             return self._json(200, {"ok": True, "adapters": supported_source_adapters()})
         if path == "/index-status":
@@ -3139,16 +3640,30 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
                 return self._json(200, self.api.workspace_ask(payload, context=context))
             if path == "/workspace/ask/stream":
                 return self._sse_events(200, self.api.workspace_ask_event_stream(payload, context=context))
+            if path == "/workspace/ask/conversations":
+                return self._json(200, self.api.create_workspace_ask_conversation(payload, context=context))
+            if path.startswith("/workspace/ask/conversations/"):
+                parts = _ask_conversation_path_parts(path)
+                if len(parts) == 3 and parts[1] == "messages" and parts[2] == "stream":
+                    return self._sse_events(200, self.api.workspace_ask_conversation_event_stream(unquote(parts[0]), payload, context=context))
             if path == "/workspace/search/query":
                 return self._json(200, self.api.workspace_search(payload, context=context))
             if path == "/workspace/chunking/preview":
                 return self._json(200, self.api.chunking_preview(payload, context=context))
             if path == "/workspace/sources/preview":
                 return self._json(200, self.api.source_preview(payload, context=context))
+            if path == "/workspace/sources/text":
+                return self._json(200, self.api.create_text_source(payload, context=context))
+            if path == "/workspace/sources/upload":
+                return self._json(200, self.api.create_upload_source(payload, context=context))
             if path == "/workspace/sources":
                 return self._json(200, self.api.create_knowledge_source(payload, context=context))
             if path == "/workspace/sources/sync":
                 return self._json(200, self.api.sync_knowledge_sources(payload, context=context))
+            if path == "/workspace/documents/delete":
+                return self._json(200, self.api.workspace_documents_delete(payload, context=context))
+            if path == "/workspace/prompt-profiles":
+                return self._json(200, self.api.update_workspace_prompt_profiles(payload, context=context))
             if path == "/workspace/digest/run":
                 return self._json(200, self.api.workspace_digest_run(payload, context=context))
             if path == "/workspace/evidence-briefs":
@@ -3310,7 +3825,35 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("content-length") or "0")
         if length == 0:
             return {}
-        return json.loads(self.rfile.read(length).decode("utf-8"))
+        raw = self.rfile.read(length)
+        content_type = self.headers.get("content-type") or ""
+        if content_type.lower().startswith("multipart/form-data"):
+            return _parse_multipart_payload(content_type, raw)
+        return json.loads(raw.decode("utf-8"))
+
+    def do_PUT(self) -> None:  # noqa: N802 - stdlib handler API
+        path = urlparse(self.path).path
+        try:
+            payload = self._read_json()
+            self._begin_request(path=path, payload=payload)
+            context = self._context(payload)
+            if context is None:
+                return
+            if path == "/workspace/prompt-profiles":
+                return self._json(200, self.api.update_workspace_prompt_profiles(payload, context=context))
+            self._json(404, {"error": f"not found: {path}"})
+        except KeyError as exc:
+            if not hasattr(self, "_request_meta"):
+                self._begin_request(path=path, payload={})
+            self._json(404, {"error": f"not found: {exc}"})
+        except PermissionError as exc:
+            if not hasattr(self, "_request_meta"):
+                self._begin_request(path=path, payload={})
+            self._json(403, {"error": str(exc)})
+        except Exception as exc:  # noqa: BLE001 - local API should report JSON errors.
+            if not hasattr(self, "_request_meta"):
+                self._begin_request(path=path, payload={})
+            self._json(500, {"error": f"{type(exc).__name__}: {exc}"})
 
     def _context(self, payload: dict[str, Any]) -> RequestContext | None:
         config = getattr(self.api, "config", None)
@@ -4527,6 +5070,7 @@ def _ask_evidence_from_retrieval(retrieval: dict[str, Any]) -> dict[str, Any]:
         "citations": citations,
         "source_refs": citations,
         "results": results,
+        "source_windows": _list_of_dicts(retrieval.get("source_windows")),
         "graph_paths": _list_of_dicts(retrieval.get("graph_paths")),
         "memory_context": _list_of_dicts(retrieval.get("memory_context")),
         "profile_context": _list_of_dicts(retrieval.get("profile_context")),
@@ -4627,6 +5171,253 @@ def _ask_quick_answer(query: str, retrieval: dict[str, Any]) -> str:
     if diagnostics.get("gaps") or diagnostics.get("conflicts"):
         lines.append("不确定性：存在检索缺口或证据冲突，报告中应保留限定表述。")
     return "\n".join(lines)
+
+
+def _ask_hydrate_retrieval_source_windows(
+    store: Any,
+    retrieval: dict[str, Any],
+    *,
+    query: str,
+    tenant_id: str,
+    owner_user_id: str,
+    max_windows: int = 6,
+    max_chars: int = 1800,
+) -> dict[str, Any]:
+    results = _list_of_dicts(retrieval.get("results"))
+    citations = _list_of_dicts(retrieval.get("citations"))
+    source_ids = {
+        str(ref.get("source_item_id") or "")
+        for ref in [*results, *citations]
+        if str(ref.get("source_item_id") or "").strip()
+    }
+    if not source_ids:
+        return retrieval
+    visible_items = {
+        item.source_item_id: item
+        for item in store.list_source_items(tenant_id=tenant_id)
+        if item.owner_user_id == owner_user_id and item.source_item_id in source_ids and _is_active_lifecycle(item)
+    }
+    if not visible_items:
+        return retrieval
+    documents = [
+        document
+        for document in store.list_documents_for_sources(set(visible_items))
+        if getattr(document, "owner_user_id", "") == owner_user_id and _is_active_lifecycle(document)
+    ]
+    chunks = [
+        chunk
+        for chunk in store.list_chunks_for_sources(set(visible_items))
+        if getattr(chunk, "owner_user_id", "") == owner_user_id and _is_active_lifecycle(chunk)
+    ]
+    documents_by_id = {str(getattr(document, "document_id", "") or ""): document for document in documents}
+    documents_by_source: dict[str, list[Any]] = {}
+    chunks_by_id = {str(getattr(chunk, "chunk_id", "") or ""): chunk for chunk in chunks}
+    chunks_by_source: dict[str, list[Any]] = {}
+    for document in documents:
+        documents_by_source.setdefault(str(getattr(document, "source_item_id", "") or ""), []).append(document)
+    for chunk in chunks:
+        chunks_by_source.setdefault(str(getattr(chunk, "source_item_id", "") or ""), []).append(chunk)
+    for source_chunks in chunks_by_source.values():
+        source_chunks.sort(key=lambda chunk: (str(getattr(chunk, "document_id", "") or ""), int(getattr(chunk, "ordinal", 0) or 0)))
+
+    source_windows: list[dict[str, Any]] = []
+    window_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    for result in results[:max_windows]:
+        window = _ask_source_window_for_result(
+            result,
+            items_by_id=visible_items,
+            documents_by_id=documents_by_id,
+            documents_by_source=documents_by_source,
+            chunks_by_id=chunks_by_id,
+            chunks_by_source=chunks_by_source,
+            query=query,
+            max_chars=max_chars,
+        )
+        if not window:
+            continue
+        key = (str(window.get("source_item_id") or ""), str(window.get("chunk_id") or window.get("passage_window_id") or ""))
+        window_by_key[key] = window
+        source_windows.append(window)
+        snippet = _ask_clean_evidence_text(str(window.get("text") or ""))[:900]
+        result["document_id"] = window.get("document_id")
+        result["passage_window_id"] = window.get("passage_window_id")
+        result["snippet"] = snippet
+        result["source_window"] = window
+        citation = result.get("citation") if isinstance(result.get("citation"), dict) else {}
+        result["citation"] = {
+            **citation,
+            "source_item_id": window.get("source_item_id"),
+            "document_id": window.get("document_id"),
+            "chunk_id": window.get("chunk_id") or citation.get("chunk_id"),
+            "passage_window_id": window.get("passage_window_id"),
+            "title": citation.get("title") or window.get("title"),
+            "url": citation.get("url") or window.get("url"),
+            "snippet": snippet[:600],
+        }
+
+    hydrated_citations: list[dict[str, Any]] = []
+    for citation in citations:
+        key = (str(citation.get("source_item_id") or ""), str(citation.get("chunk_id") or citation.get("passage_window_id") or ""))
+        window = window_by_key.get(key)
+        if not window and citation.get("source_item_id"):
+            window = _ask_source_window_for_result(
+                citation,
+                items_by_id=visible_items,
+                documents_by_id=documents_by_id,
+                documents_by_source=documents_by_source,
+                chunks_by_id=chunks_by_id,
+                chunks_by_source=chunks_by_source,
+                query=query,
+                max_chars=max_chars,
+            )
+        if window:
+            snippet = _ask_clean_evidence_text(str(window.get("text") or ""))[:600]
+            hydrated_citations.append(
+                {
+                    **citation,
+                    "document_id": citation.get("document_id") or window.get("document_id"),
+                    "passage_window_id": citation.get("passage_window_id") or window.get("passage_window_id"),
+                    "title": citation.get("title") or window.get("title"),
+                    "url": citation.get("url") or window.get("url"),
+                    "snippet": snippet,
+                    "source_window": window,
+                }
+            )
+        else:
+            hydrated_citations.append(citation)
+    retrieval["results"] = results
+    retrieval["citations"] = hydrated_citations
+    retrieval["source_windows"] = source_windows
+    diagnostics = retrieval.get("diagnostics") if isinstance(retrieval.get("diagnostics"), dict) else {}
+    diagnostics["source_window_count"] = len(source_windows)
+    retrieval["diagnostics"] = diagnostics
+    return retrieval
+
+
+def _ask_source_window_for_result(
+    ref: dict[str, Any],
+    *,
+    items_by_id: dict[str, Any],
+    documents_by_id: dict[str, Any],
+    documents_by_source: dict[str, list[Any]],
+    chunks_by_id: dict[str, Any],
+    chunks_by_source: dict[str, list[Any]],
+    query: str,
+    max_chars: int,
+) -> dict[str, Any] | None:
+    source_item_id = str(ref.get("source_item_id") or "").strip()
+    item = items_by_id.get(source_item_id)
+    if item is None:
+        return None
+    chunk = chunks_by_id.get(str(ref.get("chunk_id") or "").strip())
+    document = documents_by_id.get(str(ref.get("document_id") or "").strip())
+    if document is None and chunk is not None:
+        document = documents_by_id.get(str(getattr(chunk, "document_id", "") or ""))
+    if document is None:
+        source_documents = documents_by_source.get(source_item_id) or []
+        document = source_documents[0] if source_documents else None
+    source_chunks = chunks_by_source.get(source_item_id) or []
+    if chunk is None and source_chunks:
+        chunk = _ask_best_chunk_for_window(source_chunks, query=query, fallback_snippet=str(ref.get("snippet") or ""))
+    body = str(getattr(document, "body", "") or "") if document is not None else str(getattr(item, "content_text", "") or "")
+    anchor_text = str(getattr(chunk, "text", "") or ref.get("snippet") or "")
+    if body:
+        text, start, end = _ask_document_window_text(body, anchor_text=anchor_text, query=query, max_chars=max_chars)
+        policy = "document_body_around_retrieved_chunk"
+    else:
+        text = _ask_neighbor_chunk_window(source_chunks, anchor_chunk=chunk, max_chars=max_chars)
+        start = 0
+        end = len(text)
+        policy = "neighbor_chunks"
+    if not text.strip():
+        return None
+    document_id = str(getattr(document, "document_id", "") or getattr(chunk, "document_id", "") or "")
+    chunk_id = str(getattr(chunk, "chunk_id", "") or ref.get("chunk_id") or "")
+    source_title = str(getattr(document, "title", "") or getattr(item, "title", "") or source_item_id)
+    ordinal = int(getattr(chunk, "ordinal", 0) or 0)
+    return {
+        "source_item_id": source_item_id,
+        "document_id": document_id,
+        "chunk_id": chunk_id,
+        "passage_window_id": f"askpw_{document_id or source_item_id}_{ordinal}_{start}_{end}",
+        "title": source_title,
+        "url": getattr(item, "url", None),
+        "text": text,
+        "start_char": start,
+        "end_char": end,
+        "window_policy": policy,
+    }
+
+
+def _ask_best_chunk_for_window(chunks: list[Any], *, query: str, fallback_snippet: str) -> Any | None:
+    if not chunks:
+        return None
+    anchors = [term.casefold() for term in _ask_query_terms(query)]
+    fallback = _ask_clean_evidence_text(fallback_snippet).casefold()
+
+    def score(chunk: Any) -> tuple[int, int]:
+        text = str(getattr(chunk, "text", "") or "").casefold()
+        anchor_score = sum(1 for anchor in anchors if anchor and anchor in text)
+        fallback_score = 1 if fallback and fallback[:80] in text else 0
+        return (anchor_score + fallback_score, -int(getattr(chunk, "ordinal", 0) or 0))
+
+    return max(chunks, key=score)
+
+
+def _ask_document_window_text(body: str, *, anchor_text: str, query: str, max_chars: int) -> tuple[str, int, int]:
+    normalized_body = body.casefold()
+    candidates = [anchor_text]
+    candidates.extend(_ask_query_terms(query))
+    index = -1
+    for candidate in candidates:
+        candidate = _ask_clean_evidence_text(candidate).strip()
+        if len(candidate) > 180:
+            candidate = candidate[:180]
+        if len(candidate) < 2:
+            continue
+        index = normalized_body.find(candidate.casefold())
+        if index >= 0:
+            break
+    if index < 0:
+        index = 0
+    start = max(0, index - max_chars // 4)
+    end = min(len(body), start + max_chars)
+    start, end = _ask_expand_to_paragraph_boundaries(body, start, end, max_chars=max_chars)
+    return body[start:end].strip(), start, end
+
+
+def _ask_expand_to_paragraph_boundaries(body: str, start: int, end: int, *, max_chars: int) -> tuple[int, int]:
+    paragraph_start = body.rfind("\n\n", 0, start)
+    if paragraph_start >= 0 and end - paragraph_start <= max_chars:
+        start = paragraph_start + 2
+    paragraph_end = body.find("\n\n", end)
+    if paragraph_end >= 0 and paragraph_end - start <= max_chars:
+        end = paragraph_end
+    return start, end
+
+
+def _ask_neighbor_chunk_window(chunks: list[Any], *, anchor_chunk: Any | None, max_chars: int) -> str:
+    if not chunks:
+        return ""
+    ordered = sorted(chunks, key=lambda chunk: int(getattr(chunk, "ordinal", 0) or 0))
+    if anchor_chunk is None:
+        anchor_index = 0
+    else:
+        anchor_id = str(getattr(anchor_chunk, "chunk_id", "") or "")
+        anchor_index = next((index for index, chunk in enumerate(ordered) if str(getattr(chunk, "chunk_id", "") or "") == anchor_id), 0)
+    selected = [ordered[anchor_index]]
+    left = anchor_index - 1
+    right = anchor_index + 1
+    while len("\n\n".join(str(getattr(chunk, "text", "") or "") for chunk in selected)) < max_chars and (left >= 0 or right < len(ordered)):
+        if left >= 0:
+            selected.insert(0, ordered[left])
+            left -= 1
+        if len("\n\n".join(str(getattr(chunk, "text", "") or "") for chunk in selected)) >= max_chars:
+            break
+        if right < len(ordered):
+            selected.append(ordered[right])
+            right += 1
+    return "\n\n".join(str(getattr(chunk, "text", "") or "") for chunk in selected)[:max_chars].strip()
 
 
 def _ask_clean_facts_from_results(results: list[dict[str, Any]], *, limit: int) -> list[str]:
@@ -5003,7 +5794,9 @@ def _ask_tool_call_detail(event: dict[str, Any]) -> str:
     return "；".join(pieces) if pieces else "正在读取当前租户可访问的知识证据。"
 
 
-def _ask_tool_result_detail(counts: dict[str, int]) -> str:
+def _ask_tool_result_detail(counts: dict[str, Any]) -> str:
+    if counts.get("error_count"):
+        return str(counts.get("error") or "工具调用失败，未返回可用证据。")
     evidence_count = counts.get("evidence_count", 0)
     source_ref_count = counts.get("source_ref_count", 0)
     if evidence_count or source_ref_count:
@@ -5011,8 +5804,16 @@ def _ask_tool_result_detail(counts: dict[str, int]) -> str:
     return "已返回工具结果，后续会进行引用校验。"
 
 
-def _ask_tool_result_counts(event: dict[str, Any]) -> dict[str, int]:
+def _ask_tool_result_counts(event: dict[str, Any]) -> dict[str, Any]:
     content = event.get("content") or event.get("result") or event.get("output")
+    error = _ask_tool_error_text(content)
+    if error:
+        return {
+            "evidence_count": 0,
+            "source_ref_count": 0,
+            "error_count": 1,
+            "error": error,
+        }
     parsed = _ask_json_object_from_text(str(content or "")) if content is not None else None
     payload = parsed if isinstance(parsed, dict) else {}
     evidence = payload.get("workspace", {}).get("evidence") if isinstance(payload.get("workspace"), dict) else payload.get("evidence")
@@ -5023,7 +5824,26 @@ def _ask_tool_result_counts(event: dict[str, Any]) -> dict[str, int]:
     return {
         "evidence_count": len(results) or len(_list_of_dicts(payload.get("results"))),
         "source_ref_count": len(citations),
+        "error_count": 0,
     }
+
+
+def _ask_tool_error_text(content: Any) -> str | None:
+    text = str(content or "").strip()
+    if not text:
+        return None
+    if text.startswith("[MCP_ERROR]"):
+        return text[:240]
+    if text.startswith("[ERROR]"):
+        return text[:240]
+    if "ConnectionResetError" in text or "Connection lost" in text:
+        return text[:240]
+    parsed = _ask_json_object_from_text(text)
+    if isinstance(parsed, dict):
+        error = parsed.get("error") or parsed.get("detail")
+        if error:
+            return str(error)[:240]
+    return None
 
 
 def _ask_json_object_from_text(text: str) -> dict[str, Any] | None:
@@ -5060,6 +5880,45 @@ def _ask_with_quality_signals(payload: dict[str, Any]) -> dict[str, Any]:
     return enriched
 
 
+def _agentic_pska_mcp_ok(agentic_check: Any) -> bool:
+    if not isinstance(agentic_check, dict):
+        return False
+    if agentic_check.get("ok") is False:
+        return False
+    if agentic_check.get("missing_pska_tools"):
+        return False
+    if agentic_check.get("pska_tools_loaded") is False:
+        return False
+    ready = agentic_check.get("ready") if isinstance(agentic_check.get("ready"), dict) else {}
+    mcp = ready.get("mcp") if isinstance(ready.get("mcp"), dict) else {}
+    servers = _list_of_dicts(mcp.get("servers"))
+    pska_servers = [
+        server
+        for server in servers
+        if str(server.get("name") or "") == "pska"
+        or any(str(tool).startswith("pska_") for tool in (server.get("tools") or []))
+    ]
+    if pska_servers:
+        return all(server.get("alive") is not False for server in pska_servers)
+    if mcp.get("ready") is False:
+        return False
+    return True
+
+
+def _ask_trace_tool_errors(trace: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    for event in _list_of_dicts(trace.get("events")):
+        if str(event.get("type") or "").lower() != "tool_result":
+            continue
+        summary = event.get("result_summary") if isinstance(event.get("result_summary"), dict) else {}
+        error = summary.get("error") if isinstance(summary, dict) else None
+        if not error:
+            error = _ask_tool_error_text(event.get("content") or event.get("result") or event.get("output"))
+        if error:
+            errors.append(str(error)[:240])
+    return list(dict.fromkeys(errors))
+
+
 def _ask_no_answer_diagnostics(
     *,
     payload: dict[str, Any],
@@ -5075,6 +5934,7 @@ def _ask_no_answer_diagnostics(
 ) -> dict[str, Any]:
     dimensions: list[dict[str, Any]] = []
     reasons: list[str] = []
+    tool_errors = _ask_trace_tool_errors(trace)
 
     def add(dimension: str, status: str, detail: str) -> None:
         dimensions.append({"dimension": dimension, "status": status, "detail": detail})
@@ -5104,6 +5964,8 @@ def _ask_no_answer_diagnostics(
 
     if route.get("fallback_from") or trace.get("fallback_reason"):
         add("fastreact", str(trace.get("fallback_reason") or "fallback"), "Deep Ask fell back to PSKA direct retrieval.")
+    elif tool_errors and route.get("requires_agentic_service_online"):
+        add("fastreact", "tool_channel_error", "FastReAct ran, but one or more PSKA tool calls failed.")
     elif route.get("requires_agentic_service_online"):
         add("fastreact", "ok", "FastReAct handled the deep Ask path.")
     else:
@@ -5111,6 +5973,8 @@ def _ask_no_answer_diagnostics(
 
     if denied_tool_calls:
         add("mcp", "tool_denied", f"{len(denied_tool_calls)} tool calls were denied by policy.")
+    elif tool_errors:
+        add("mcp", "tool_error", "; ".join(tool_errors[:2]))
     elif route.get("retrieval_owner") == "fastreact_pska_mcp":
         add("mcp", "ok", "FastReAct used the PSKA read-only MCP boundary.")
     else:
@@ -5501,6 +6365,109 @@ def _ask_sse_events(payload: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]
     return events
 
 
+def _ask_conversation_payload(conversation: Any) -> dict[str, Any]:
+    return {
+        "conversation_id": getattr(conversation, "conversation_id", ""),
+        "tenant_id": getattr(conversation, "tenant_id", DEFAULT_TENANT_ID),
+        "owner_user_id": getattr(conversation, "owner_user_id", ""),
+        "title": getattr(conversation, "title", ""),
+        "status": getattr(conversation, "status", "active"),
+        "summary": getattr(conversation, "summary", ""),
+        "metadata": dict(getattr(conversation, "metadata", {}) or {}),
+        "created_at": getattr(conversation, "created_at", None),
+        "updated_at": getattr(conversation, "updated_at", None),
+    }
+
+
+def _ask_message_payload(message: Any) -> dict[str, Any]:
+    return {
+        "message_id": getattr(message, "message_id", ""),
+        "conversation_id": getattr(message, "conversation_id", ""),
+        "tenant_id": getattr(message, "tenant_id", DEFAULT_TENANT_ID),
+        "owner_user_id": getattr(message, "owner_user_id", ""),
+        "role": getattr(message, "role", ""),
+        "content": getattr(message, "content", ""),
+        "run_id": getattr(message, "run_id", None),
+        "citations": list(getattr(message, "citations", []) or []),
+        "source_refs": list(getattr(message, "source_refs", []) or []),
+        "metadata": dict(getattr(message, "metadata", {}) or {}),
+        "created_at": getattr(message, "created_at", None),
+    }
+
+
+def _ask_run_payload(run: Any) -> dict[str, Any]:
+    return {
+        "run_id": getattr(run, "run_id", ""),
+        "conversation_id": getattr(run, "conversation_id", ""),
+        "tenant_id": getattr(run, "tenant_id", DEFAULT_TENANT_ID),
+        "owner_user_id": getattr(run, "owner_user_id", ""),
+        "query": getattr(run, "query", ""),
+        "status": getattr(run, "status", ""),
+        "result": dict(getattr(run, "result", {}) or {}),
+        "prompt_profile_id": getattr(run, "prompt_profile_id", None),
+        "prompt_profile_version": getattr(run, "prompt_profile_version", None),
+        "started_at": getattr(run, "started_at", None),
+        "finished_at": getattr(run, "finished_at", None),
+    }
+
+
+def _ask_message_scope(message: Any) -> dict[str, Any]:
+    content = str(getattr(message, "content", "") or "")
+    return {
+        "role": getattr(message, "role", ""),
+        "content": _trim_words(content, 80),
+        "message_id": getattr(message, "message_id", ""),
+        "run_id": getattr(message, "run_id", None),
+    }
+
+
+def _empty_ask_stream_result(*, query: str, conversation_id: str, run_id: str, prompt_lineage: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "query": query,
+        "answer": "",
+        "citations": [],
+        "source_refs": [],
+        "progress": [],
+        "agent_steps": [],
+        "timing": {},
+        "evidence": {},
+        "trace": {},
+        "quality_signals": {},
+        "conversation_id": conversation_id,
+        "run_id": run_id,
+        **prompt_lineage,
+    }
+
+
+def _accumulate_ask_stream_result(result: dict[str, Any], event_name: str, event_payload: dict[str, Any]) -> None:
+    if event_name == "route":
+        result["route"] = event_payload.get("route") or {}
+        result["timing"] = event_payload.get("timing") or result.get("timing") or {}
+    elif event_name == "progress":
+        result.setdefault("progress", []).append(event_payload.get("progress") or {})
+        if event_payload.get("timing"):
+            result["timing"] = event_payload["timing"]
+    elif event_name == "agent_step":
+        result.setdefault("agent_steps", []).append(event_payload.get("step") or {})
+    elif event_name == "evidence":
+        result["evidence"] = event_payload.get("evidence") or {}
+        result["citations"] = _list_of_dicts(event_payload.get("citations"))
+        result["source_refs"] = _list_of_dicts((event_payload.get("evidence") or {}).get("source_refs")) or result["citations"]
+        result["quality_signals"] = event_payload.get("quality_signals") or {}
+    elif event_name == "answer_delta":
+        result["answer"] = str(result.get("answer") or "") + str(event_payload.get("delta") or "")
+    elif event_name == "trace":
+        result["trace"] = event_payload.get("trace") or {}
+        result["agentic_service"] = event_payload.get("agentic_service") or {}
+    elif event_name == "done":
+        result["ok"] = event_payload.get("ok") is not False
+        if event_payload.get("timing"):
+            result["timing"] = event_payload["timing"]
+        if event_payload.get("quality_signals"):
+            result["quality_signals"] = event_payload["quality_signals"]
+
+
 def _workspace_owner_user_id(context: RequestContext | None, requested_owner_user_id: str | None) -> str:
     if context is None:
         return requested_owner_user_id or "user_primary"
@@ -5524,6 +6491,78 @@ def _writing_request_scope(
 
 def _tenant_id_for_request(context: RequestContext | None, requested_tenant_id: str | None = None) -> str:
     return requested_tenant_id or (context.tenant_id if context else None) or DEFAULT_TENANT_ID
+
+
+def _prompt_profile_id(*, tenant_id: str, scope: str, owner_user_id: str | None, profile_type: str) -> str:
+    basis = f"{tenant_id}:{scope}:{owner_user_id or 'tenant'}:{profile_type}"
+    return f"pp_{uuid5(NAMESPACE_URL, basis).hex}"
+
+
+def _prompt_profile_default_name(profile_type: str, scope: str) -> str:
+    return f"{scope} {profile_type} profile"
+
+
+def _default_prompt_profiles_payload(*, tenant_id: str) -> dict[str, dict[str, Any]]:
+    return {
+        profile_type: {
+            "prompt_profile_id": _prompt_profile_id(tenant_id=tenant_id, scope="system", owner_user_id=None, profile_type=profile_type),
+            "profile_type": profile_type,
+            "scope": "system",
+            "name": _prompt_profile_default_name(profile_type, "system"),
+            "current_version": 1,
+            "config": dict(config),
+        }
+        for profile_type, config in DEFAULT_PROMPT_PROFILE_CONFIGS.items()
+    }
+
+
+def _effective_prompt_profiles(store: Any, *, tenant_id: str, owner_user_id: str) -> dict[str, Any]:
+    profiles = store.list_prompt_profiles(tenant_id=tenant_id, owner_user_id=owner_user_id)
+    by_type: dict[str, dict[str, Any]] = _default_prompt_profiles_payload(tenant_id=tenant_id)
+    precedence = {"system": 0, "tenant": 1, "user": 2}
+    selected_precedence = {profile_type: 0 for profile_type in PROMPT_PROFILE_TYPES}
+    for profile in profiles:
+        profile_type = str(getattr(profile, "profile_type", "") or "")
+        scope = str(getattr(profile, "scope", "") or "")
+        if profile_type not in PROMPT_PROFILE_TYPES:
+            continue
+        rank = precedence.get(scope, -1)
+        if rank < selected_precedence.get(profile_type, 0):
+            continue
+        current = dict(by_type.get(profile_type) or {})
+        merged_config = {**dict(current.get("config") or {}), **dict(getattr(profile, "config", {}) or {})}
+        current.update(_prompt_profile_payload(profile))
+        current["config"] = merged_config
+        by_type[profile_type] = current
+        selected_precedence[profile_type] = rank
+    return by_type
+
+
+def _prompt_profile_payload(profile: Any) -> dict[str, Any]:
+    return {
+        "prompt_profile_id": getattr(profile, "prompt_profile_id", None),
+        "profile_type": getattr(profile, "profile_type", None),
+        "scope": getattr(profile, "scope", None),
+        "name": getattr(profile, "name", None),
+        "owner_user_id": getattr(profile, "owner_user_id", None),
+        "status": getattr(profile, "status", None),
+        "current_version": getattr(profile, "current_version", None),
+        "config": dict(getattr(profile, "config", {}) or {}),
+        "created_at": getattr(profile, "created_at", None),
+        "updated_at": getattr(profile, "updated_at", None),
+        "tenant_id": getattr(profile, "tenant_id", None),
+    }
+
+
+def _prompt_profile_lineage(store: Any, *, tenant_id: str, owner_user_id: str, profile_type: str) -> dict[str, Any]:
+    effective = _effective_prompt_profiles(store, tenant_id=tenant_id, owner_user_id=owner_user_id)
+    profile = dict(effective.get(profile_type) or {})
+    return {
+        "prompt_profile_id": profile.get("prompt_profile_id"),
+        "prompt_profile_version": profile.get("current_version"),
+        "prompt_profile_type": profile_type,
+        "prompt_profile_scope": profile.get("scope"),
+    }
 
 
 def _assert_job_context_tenant(job: Any, context: RequestContext | None) -> None:
@@ -8103,6 +9142,92 @@ def _draft_knowledge_source_from_payload(payload: dict[str, Any], *, context: Re
     )
 
 
+def _inline_knowledge_source_from_payload(
+    payload: dict[str, Any],
+    *,
+    context: RequestContext | None,
+    source_type: str,
+    title: str,
+    text: str,
+) -> KnowledgeSource:
+    owner_user_id = _owner_user_id_for_write(payload, context)
+    tenant_id = str(payload.get("tenant_id") or (context.tenant_id if context else DEFAULT_TENANT_ID))
+    source_id = str(payload.get("source_id") or payload.get("upload_id") or f"{source_type}_{uuid4().hex}").strip()
+    safe_source_id = re.sub(r"[^A-Za-z0-9_.:-]+", "_", source_id).strip("_") or f"{source_type}_{uuid4().hex}"
+    uri = str(payload.get("uri") or f"pska-{source_type}://{tenant_id}/{owner_user_id}/{safe_source_id}")
+    processing_config = payload.get("processing_config") if isinstance(payload.get("processing_config"), dict) else None
+    config: dict[str, Any] = {
+        "source_id": safe_source_id,
+        "title": title,
+        "content": {"text": text},
+        "record_type": "uploaded_document" if source_type == "upload" else "pasted_text",
+        "metadata": {
+            **dict(payload.get("metadata") or {}),
+            "product_input": True,
+            "origin": payload.get("origin") or ("upload" if source_type == "upload" else "paste"),
+        },
+    }
+    for key in ["filename", "content_type", "size_bytes"]:
+        if payload.get(key) is not None:
+            config[key] = payload[key]
+    if processing_config:
+        config["processing"] = processing_config
+    return KnowledgeSource(
+        knowledge_source_id=knowledge_source_id(owner_user_id, uri, tenant_id=tenant_id),
+        owner_user_id=owner_user_id,
+        name=title,
+        source_type=source_type,
+        uri=uri,
+        mode="manual",
+        status="authorized",
+        connector_id=source_type,
+        space_id=str(payload.get("space_id") or "private_primary"),
+        visibility=Visibility(str(payload.get("visibility") or Visibility.PRIVATE)),
+        visible_team_ids=_string_list(payload.get("visible_team_ids")),
+        permission_scope={"read_scope": "user_submitted", "source_type": source_type},
+        config=config,
+        tenant_id=tenant_id,
+    )
+
+
+def _upload_text_from_payload(payload: dict[str, Any]) -> tuple[str, str, int, dict[str, Any]]:
+    content_type = str(payload.get("content_type") or payload.get("mime_type") or "text/plain").strip() or "text/plain"
+    if payload.get("text") is not None or payload.get("content") is not None:
+        text = str(payload.get("text") if payload.get("text") is not None else payload.get("content"))
+        return text, content_type, len(text.encode("utf-8")), {"ok": True, "extractor": "direct_text"}
+    raw = b""
+    filename = str(payload.get("filename") or payload.get("name") or "upload.txt").strip() or "upload.txt"
+    if payload.get("bytes_base64"):
+        raw = base64.b64decode(str(payload["bytes_base64"]))
+    elif payload.get("file") and isinstance(payload.get("file"), dict):
+        file_payload = payload["file"]
+        filename = str(file_payload.get("filename") or filename).strip() or filename
+        content_type = str(file_payload.get("content_type") or content_type)
+        if file_payload.get("bytes_base64"):
+            raw = base64.b64decode(str(file_payload["bytes_base64"]))
+    extraction = extract_text_from_bytes(filename, raw) if raw else {"ok": False, "reason": "empty_upload"}
+    if extraction.get("ok"):
+        return str(extraction.get("text") or ""), content_type, len(raw), {key: value for key, value in extraction.items() if key != "text"}
+    encoding = str(payload.get("encoding") or "utf-8").strip() or "utf-8"
+    text = raw.decode(encoding, errors="replace")
+    return text, content_type, len(raw), {**extraction, "fallback_extractor": "decode_replace", "encoding": encoding}
+
+
+def _default_inline_title(text: str, *, fallback: str) -> str:
+    first = re.sub(r"\s+", " ", str(text or "")).strip()[:80]
+    return first or fallback
+
+
+def _chunk_stats(chunks: list[Any]) -> dict[str, Any]:
+    lengths = [len(str(getattr(chunk, "text", "") or "")) for chunk in chunks]
+    return {
+        "count": len(chunks),
+        "min_chars": min(lengths) if lengths else 0,
+        "max_chars": max(lengths) if lengths else 0,
+        "total_chars": sum(lengths),
+    }
+
+
 def _source_value_from_payload(payload: dict[str, Any], source_type: str) -> str:
     if source_type == "folder":
         value = payload.get("path") or payload.get("root") or payload.get("uri") or payload.get("url")
@@ -8220,6 +9345,140 @@ def _workspace_excluded_paths(config: PSKAConfig) -> list[Path]:
         config.workspace.run_dir.expanduser(),
         config.workspace.log_dir.expanduser(),
     ]
+
+
+def _lifecycle_status(item: Any) -> str:
+    return str(getattr(item, "lifecycle_status", None) or "active")
+
+
+def _is_active_lifecycle(item: Any) -> bool:
+    return _lifecycle_status(item) == "active"
+
+
+def _document_delete_impact(store: Any, *, tenant_id: str, source_item_ids: list[str]) -> dict[str, int]:
+    source_ids = set(source_item_ids)
+    documents = store.list_documents_for_sources(source_ids)
+    chunks = store.list_chunks_for_sources(source_ids)
+    counts = {
+        "source_items": len(source_ids),
+        "documents": len(documents),
+        "chunks": len(chunks),
+        "knowledge_claims": 0,
+        "digest_notes": 0,
+        "hyperedges": 0,
+        "review_items": 0,
+        "discovery_items": 0,
+        "memories": 0,
+        "agent_memories": 0,
+        "user_profile_cards": 0,
+        "jobs": 0,
+        "offline_index_states": 0,
+    }
+    if hasattr(store, "connect"):
+        with store.connect() as conn:
+            params = (list(source_ids),)
+            counts.update(
+                {
+                    "offline_index_states": _count_sql(
+                        conn,
+                        """
+                        select count(*) from offline_index_states
+                        where tenant_id = %s
+                          and (source_item_id = any(%s) or object_id = any(%s))
+                        """,
+                        (tenant_id, list(source_ids), list(source_ids)),
+                    ),
+                    "knowledge_claims": _count_source_refs(conn, "knowledge_claims", list(source_ids)),
+                    "digest_notes": _count_source_refs(conn, "digest_notes", list(source_ids)),
+                    "hyperedges": _count_source_refs(conn, "hyperedges", list(source_ids)),
+                    "review_items": _count_text_refs(conn, "review_items", "proposal", list(source_ids)),
+                    "discovery_items": _count_text_refs(conn, "discovery_items", "evidence", list(source_ids)),
+                    "memories": _count_source_refs(conn, "memories", list(source_ids)),
+                    "agent_memories": _count_source_refs(conn, "agent_memories", list(source_ids)),
+                    "user_profile_cards": _count_source_refs(conn, "user_profile_cards", list(source_ids), source_refs_column="source_refs"),
+                    "jobs": _count_text_refs(conn, "jobs", "payload", list(source_ids)),
+                }
+            )
+            _ = params
+    else:
+        claims = getattr(store, "knowledge_claims", {})
+        notes = getattr(store, "digest_notes", {})
+        reviews = getattr(store, "review_items", {})
+        counts["knowledge_claims"] = sum(1 for claim in claims.values() if _object_has_source_ref(claim, source_ids))
+        counts["digest_notes"] = sum(1 for note in notes.values() if _object_has_source_ref(note, source_ids))
+        counts["review_items"] = sum(1 for item in reviews.values() if any(source_id in json.dumps(to_jsonable(getattr(item, "proposal", {}))) for source_id in source_ids))
+    return counts
+
+
+def _object_has_source_ref(value: Any, source_ids: set[str]) -> bool:
+    refs = getattr(value, "source_refs", []) or []
+    for ref in refs:
+        if isinstance(ref, SourceRef) and ref.source_item_id in source_ids:
+            return True
+        if isinstance(ref, dict) and ref.get("source_item_id") in source_ids:
+            return True
+    return False
+
+
+def _document_delete_notes(*, restore: bool, hard_delete: bool) -> list[str]:
+    if restore:
+        return ["已恢复软删资料，资料、原文和检索片段会重新参与 Ask。"]
+    if hard_delete:
+        return ["彻底清除会删除资料条目、原文、检索片段、索引状态，以及未审阅的派生产物；已审阅知识不会静默删除。"]
+    return ["软删会让资料从检索中隐藏；已审阅的派生知识会标记为 stale/evidence_removed 并进入 Review。"]
+
+
+def _hard_delete_source_derivatives(store: Any, source_item_ids: list[str]) -> dict[str, int]:
+    if not hasattr(store, "connect"):
+        source_ids = set(source_item_ids)
+        store.knowledge_claims = {key: value for key, value in getattr(store, "knowledge_claims", {}).items() if not _object_has_source_ref(value, source_ids)}
+        store.digest_notes = {key: value for key, value in getattr(store, "digest_notes", {}).items() if not _object_has_source_ref(value, source_ids)}
+        return {"knowledge_claims": 0, "digest_notes": 0}
+    with store.connect() as conn:
+        deleted: dict[str, int] = {}
+        deleted["review_items"] = _delete_text_refs(conn, "review_items", "proposal", source_item_ids)
+        deleted["discovery_items"] = _delete_text_refs(conn, "discovery_items", "evidence", source_item_ids)
+        deleted["knowledge_claims"] = _delete_source_refs(conn, "knowledge_claims", source_item_ids)
+        deleted["digest_notes"] = _delete_source_refs(conn, "digest_notes", source_item_ids)
+        deleted["memories"] = _delete_source_refs(conn, "memories", source_item_ids)
+        deleted["agent_memories"] = _delete_source_refs(conn, "agent_memories", source_item_ids)
+        deleted["user_profile_cards"] = _delete_source_refs(conn, "user_profile_cards", source_item_ids)
+        deleted["hyperedges"] = _delete_source_refs(conn, "hyperedges", source_item_ids)
+        deleted["jobs"] = _delete_text_refs(conn, "jobs", "payload", source_item_ids)
+        return deleted
+
+
+def _mark_source_derivatives_stale(store: Any, source_item_ids: list[str], *, actor_user_id: str, reason: str) -> dict[str, int]:
+    if not hasattr(store, "connect"):
+        source_ids = set(source_item_ids)
+        counts = {"knowledge_claims": 0, "digest_notes": 0}
+        for collection_name in ["knowledge_claims", "digest_notes"]:
+            for value in getattr(store, collection_name, {}).values():
+                if _object_has_source_ref(value, source_ids):
+                    metadata = dict(getattr(value, "metadata", {}) or {})
+                    metadata["lifecycle"] = {"status": "stale", "reason": reason, "actor_user_id": actor_user_id}
+                    value.metadata = metadata
+                    counts[collection_name] += 1
+        return counts
+    lifecycle = Jsonb({"status": "stale", "reason": reason, "actor_user_id": actor_user_id, "source_item_ids": source_item_ids})
+    with store.connect() as conn:
+        counts = {}
+        for table in ["knowledge_claims", "digest_notes", "hyperedges", "memories", "agent_memories", "user_profile_cards"]:
+            if table in {"memories", "agent_memories", "user_profile_cards"}:
+                metadata_column = "source_refs"
+                _ = metadata_column
+            count = _count_source_refs(conn, table, source_item_ids)
+            if table in {"knowledge_claims", "digest_notes"}:
+                conn.execute(
+                    f"""
+                    update {table}
+                    set metadata = jsonb_set(coalesce(metadata, '{{}}'::jsonb), '{{lifecycle}}', %s, true)
+                    where {_source_ref_exists_sql()}
+                    """,  # noqa: S608 - fixed table allowlist.
+                    (lifecycle, source_item_ids),
+                )
+            counts[table] = count
+        return counts
 
 
 def _cleanup_knowledge_source_payload(
@@ -8618,6 +9877,10 @@ def _owner_user_id_for_write(payload: dict[str, Any], context: RequestContext | 
     return "user_primary"
 
 
+def _actor_user_id(context: RequestContext | None, payload: dict[str, Any]) -> str:
+    return str(payload.get("actor_user_id") or (context.user_id if context else None) or payload.get("user_id") or payload.get("owner_user_id") or "user_primary")
+
+
 def _allowed_tools_for_job(job) -> list[str]:
     if job.job_type in {"digest_via_fastreact", "extract_via_fastreact"}:
         return ["pska_job_context", "pska_search", "pska_write_candidates", "pska_review_items"]
@@ -8630,6 +9893,13 @@ def _first(values: list[str] | None) -> str | None:
 
 def _writing_path_parts(path: str) -> list[str]:
     prefix = "/workspace/writing/boards/"
+    if not path.startswith(prefix):
+        return []
+    return [part for part in path.removeprefix(prefix).split("/") if part]
+
+
+def _ask_conversation_path_parts(path: str) -> list[str]:
+    prefix = "/workspace/ask/conversations/"
     if not path.startswith(prefix):
         return []
     return [part for part in path.removeprefix(prefix).split("/") if part]
@@ -8650,6 +9920,42 @@ def _node_types_param(value: str | None) -> set[str] | None:
         return None
     node_types = {item.strip() for item in value.split(",") if item.strip()}
     return node_types or None
+
+
+def _parse_multipart_payload(content_type: str, raw: bytes) -> dict[str, Any]:
+    message = BytesParser(policy=email_policy).parsebytes(
+        f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n".encode("utf-8") + raw
+    )
+    payload: dict[str, Any] = {}
+    files: list[dict[str, Any]] = []
+    for part in message.iter_parts():
+        disposition = part.get("content-disposition", "")
+        if "form-data" not in disposition:
+            continue
+        name = part.get_param("name", header="content-disposition")
+        if not name:
+            continue
+        filename = part.get_filename()
+        data = part.get_payload(decode=True) or b""
+        if filename:
+            file_payload = {
+                "field": name,
+                "filename": filename,
+                "content_type": part.get_content_type() or "application/octet-stream",
+                "size_bytes": len(data),
+                "bytes_base64": base64.b64encode(data).decode("ascii"),
+            }
+            files.append(file_payload)
+            payload.setdefault("file", file_payload)
+            payload.setdefault("filename", filename)
+            payload.setdefault("content_type", file_payload["content_type"])
+            payload.setdefault("size_bytes", len(data))
+        else:
+            charset = part.get_content_charset() or "utf-8"
+            payload[str(name)] = data.decode(charset, errors="replace")
+    if files:
+        payload["files"] = files
+    return payload
 
 
 def _float_first(values: list[str] | None, default: float) -> float:

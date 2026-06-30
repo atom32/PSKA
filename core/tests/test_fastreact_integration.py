@@ -543,6 +543,38 @@ def test_api_ready_reports_fastreact_degraded(monkeypatch) -> None:
     assert ready["checks"]["agentic_service"]["ok"] is False
 
 
+def test_workspace_readiness_marks_fastreact_unready_when_pska_mcp_server_is_dead() -> None:
+    class DeadMCPAgenticService:
+        def ready(self):
+            return {
+                "ok": True,
+                "provider": "fastreact",
+                "adapter": "fastreact",
+                "pska_tools_loaded": True,
+                "missing_pska_tools": [],
+                "ready": {
+                    "mcp": {
+                        "ready": True,
+                        "servers": [
+                            {
+                                "name": "pska",
+                                "alive": False,
+                                "tools": ["pska_pska_search", "pska_pska_job_context"],
+                            }
+                        ],
+                    }
+                },
+            }
+
+    api = _api()
+    api.agentic_service = DeadMCPAgenticService()
+
+    readiness = api.workspace_readiness()
+
+    assert readiness["summary"]["fastreact_ok"] is False
+    assert readiness["summary"]["fastreact_pska_mcp_ok"] is False
+
+
 def test_api_ready_reports_job_worker_observability(monkeypatch) -> None:
     class DownAgenticService:
         def ready(self):
@@ -2324,6 +2356,67 @@ def test_workspace_ask_quick_explains_no_visible_evidence() -> None:
     assert by_dimension["evidence"]["status"] == "no_visible_evidence"
     assert by_dimension["retrieval"]["status"] == "no_relevant_chunks"
     assert by_dimension["permissions"]["status"] == "possibly_filtered_or_unindexed"
+
+
+def test_workspace_ask_deep_reports_mcp_tool_errors_in_no_answer_diagnostics() -> None:
+    class MCPErrorAgenticService:
+        def ready(self):
+            return {"ok": True, "provider": "test", "adapter": "fake"}
+
+        def search_event_stream(
+            self,
+            query,
+            user,
+            *,
+            represented_user_id=None,
+            max_iterations=3,
+            skills=None,
+            tool_policy=None,
+            session_id=None,
+        ):
+            yield {"type": "session_start", "content": query, "session_id": session_id or "mcp-error", "event_id": "mcp:0"}
+            yield {
+                "type": "tool_call",
+                "tool_name": "pska_pska_search",
+                "tool_args": {"query": query, "top_k": 5},
+                "tool_call_id": "call-mcp",
+                "session_id": session_id or "mcp-error",
+                "event_id": "mcp:1",
+            }
+            yield {
+                "type": "tool_result",
+                "tool_name": "pska_pska_search",
+                "content": "[MCP_ERROR] ConnectionResetError: Connection lost",
+                "tool_call_id": "call-mcp",
+                "session_id": session_id or "mcp-error",
+                "event_id": "mcp:2",
+            }
+            yield {
+                "type": "session_end",
+                "content": json.dumps({"answer": "知识检索服务当前不可用。", "source_refs": []}, ensure_ascii=False),
+                "session_id": session_id or "mcp-error",
+                "event_id": "mcp:3",
+            }
+
+    api = _api()
+    api.agentic_service = MCPErrorAgenticService()
+
+    payload = api.workspace_ask(
+        {
+            "query": "What does the deep path know?",
+            "intent": "deep",
+            "user_id": "user_primary",
+            "represented_user_id": "user_primary",
+        }
+    )
+
+    diagnostics = payload["quality_signals"]["no_answer_diagnostics"]
+    by_dimension = {item["dimension"]: item for item in diagnostics["dimensions"]}
+    tool_result = next(event for event in payload["trace"]["events"] if event["type"] == "tool_result")
+    assert tool_result["result_summary"]["error_count"] == 1
+    assert by_dimension["fastreact"]["status"] == "tool_channel_error"
+    assert by_dimension["mcp"]["status"] == "tool_error"
+    assert "ConnectionResetError" in by_dimension["mcp"]["detail"]
 
 
 def test_workspace_ask_quick_marks_raw_dump_answers_as_needing_review() -> None:

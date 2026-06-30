@@ -6,6 +6,9 @@ from uuid import uuid4
 
 from pska_core.models import (
     AgentMemory,
+    AskConversation,
+    AskMessage,
+    AskRun,
     Chunk,
     ConnectorState,
     DEFAULT_TENANT_ID,
@@ -22,6 +25,7 @@ from pska_core.models import (
     KnowledgeSource,
     OfflineIndexState,
     ProcessingSpan,
+    PromptProfile,
     ReviewItem,
     SourceRef,
     SourceItem,
@@ -43,6 +47,16 @@ class KnowledgeStore(Protocol):
     def get_user(self, user_id: str, *, tenant_id: str | None = None) -> User: ...
     def team_memberships_for_user(self, user_id: str, *, tenant_id: str | None = None) -> list[TeamMembership]: ...
     def upsert_source_item(self, item: SourceItem) -> SourceItem: ...
+    def update_source_lifecycle(
+        self,
+        source_item_ids: list[str],
+        *,
+        lifecycle_status: str,
+        actor_user_id: str,
+        reason: str,
+        tenant_id: str | None = None,
+        hard_delete: bool = False,
+    ) -> dict[str, int]: ...
     def upsert_knowledge_source(self, source: KnowledgeSource) -> KnowledgeSource: ...
     def get_knowledge_source(self, knowledge_source_id: str) -> KnowledgeSource: ...
     def list_knowledge_sources(
@@ -228,6 +242,16 @@ class KnowledgeStore(Protocol):
         limit: int = 50,
     ) -> list[DiscoveryItem]: ...
     def list_chunks_for_sources(self, source_item_ids: set[str]) -> list[Chunk]: ...
+    def create_ask_conversation(self, conversation: AskConversation) -> AskConversation: ...
+    def list_ask_conversations(self, *, tenant_id: str, owner_user_id: str, limit: int = 50) -> list[AskConversation]: ...
+    def get_ask_conversation(self, conversation_id: str, *, tenant_id: str, owner_user_id: str) -> AskConversation: ...
+    def add_ask_message(self, message: AskMessage) -> AskMessage: ...
+    def list_ask_messages(self, conversation_id: str, *, tenant_id: str, owner_user_id: str, limit: int = 100) -> list[AskMessage]: ...
+    def add_ask_run(self, run: AskRun) -> AskRun: ...
+    def finish_ask_run(self, run_id: str, *, status: str, result: dict[str, Any]) -> AskRun: ...
+    def list_ask_runs(self, conversation_id: str, *, tenant_id: str, owner_user_id: str, limit: int = 50) -> list[AskRun]: ...
+    def upsert_prompt_profile(self, profile: PromptProfile) -> PromptProfile: ...
+    def list_prompt_profiles(self, *, tenant_id: str, owner_user_id: str | None = None, profile_type: str | None = None) -> list[PromptProfile]: ...
     def list_chunks_missing_embedding(self, *, provider: str, model: str, limit: int | None = None) -> list[Chunk]: ...
     def update_chunk_embedding(self, chunk_id: str, embedding: list[float], *, provider: str, model: str) -> None: ...
     def vector_search_chunks(self, source_item_ids: set[str], query_embedding: list[float], *, top_k: int) -> list[tuple[Chunk, float]]: ...
@@ -281,6 +305,10 @@ class InMemoryKnowledgeStore:
         self.writing_nodes: dict[str, WritingNode] = {}
         self.writing_edges: dict[str, WritingEdge] = {}
         self.discovery_items: dict[str, DiscoveryItem] = {}
+        self.ask_conversations: dict[str, AskConversation] = {}
+        self.ask_messages: dict[str, AskMessage] = {}
+        self.ask_runs: dict[str, AskRun] = {}
+        self.prompt_profiles: dict[str, PromptProfile] = {}
 
     def add_user(self, user: User) -> None:
         self.users[user.user_id] = user
@@ -312,6 +340,89 @@ class InMemoryKnowledgeStore:
         self.source_items[item.source_item_id] = item
         self.source_items_by_hash[(item.tenant_id, item.content_hash)] = item.source_item_id
         return item
+
+    def update_source_lifecycle(
+        self,
+        source_item_ids: list[str],
+        *,
+        lifecycle_status: str,
+        actor_user_id: str,
+        reason: str,
+        tenant_id: str | None = None,
+        hard_delete: bool = False,
+    ) -> dict[str, int]:
+        ids = set(source_item_ids)
+        tenant = tenant_id or DEFAULT_TENANT_ID
+        if hard_delete:
+            document_ids = {
+                document.document_id
+                for document in self.documents.values()
+                if document.source_item_id in ids and document.tenant_id == tenant
+            }
+            chunk_count = len([chunk for chunk in self.chunks.values() if chunk.source_item_id in ids and chunk.tenant_id == tenant])
+            source_count = len([item for item in self.source_items.values() if item.source_item_id in ids and item.tenant_id == tenant])
+            offline_count = len(
+                [
+                    state
+                    for state in self.offline_index_states.values()
+                    if state.tenant_id == tenant and (state.source_item_id in ids or state.object_id in ids)
+                ]
+            )
+            self.source_items = {
+                key: item
+                for key, item in self.source_items.items()
+                if not (item.source_item_id in ids and item.tenant_id == tenant)
+            }
+            self.source_items_by_hash = {
+                key: source_item_id
+                for key, source_item_id in self.source_items_by_hash.items()
+                if source_item_id in self.source_items
+            }
+            self.documents = {
+                key: document
+                for key, document in self.documents.items()
+                if not (document.source_item_id in ids and document.tenant_id == tenant)
+            }
+            self.chunks = {
+                key: chunk
+                for key, chunk in self.chunks.items()
+                if not (chunk.source_item_id in ids and chunk.tenant_id == tenant and chunk.document_id in document_ids)
+            }
+            self.offline_index_states = {
+                key: state
+                for key, state in self.offline_index_states.items()
+                if not (state.tenant_id == tenant and (state.source_item_id in ids or state.object_id in ids))
+            }
+            return {"source_items": source_count, "documents": len(document_ids), "chunks": chunk_count, "offline_index_states": offline_count}
+
+        now = utc_now()
+        counts = {"source_items": 0, "documents": 0, "chunks": 0}
+        for item in self.source_items.values():
+            if item.source_item_id in ids and item.tenant_id == tenant:
+                item.lifecycle_status = lifecycle_status
+                item.deleted_at = None if lifecycle_status == "active" else now
+                item.deleted_by = None if lifecycle_status == "active" else actor_user_id
+                item.delete_reason = None if lifecycle_status == "active" else reason
+                item.updated_at = now
+                counts["source_items"] += 1
+        for document in self.documents.values():
+            if document.source_item_id in ids and document.tenant_id == tenant:
+                document.lifecycle_status = lifecycle_status
+                document.deleted_at = None if lifecycle_status == "active" else now
+                document.deleted_by = None if lifecycle_status == "active" else actor_user_id
+                document.delete_reason = None if lifecycle_status == "active" else reason
+                counts["documents"] += 1
+        for chunk in self.chunks.values():
+            if chunk.source_item_id in ids and chunk.tenant_id == tenant:
+                chunk.lifecycle_status = lifecycle_status
+                chunk.deleted_at = None if lifecycle_status == "active" else now
+                chunk.deleted_by = None if lifecycle_status == "active" else actor_user_id
+                chunk.delete_reason = None if lifecycle_status == "active" else reason
+                counts["chunks"] += 1
+        if lifecycle_status != "active":
+            for source_item_id in ids:
+                self.tombstone_offline_index_for_source(source_item_id, reason=reason)
+        return counts
 
     def upsert_knowledge_source(self, source: KnowledgeSource) -> KnowledgeSource:
         source.updated_at = utc_now()
@@ -1017,6 +1128,83 @@ class InMemoryKnowledgeStore:
 
     def list_documents_for_sources(self, source_item_ids: set[str]) -> list[Document]:
         return [document for document in self.documents.values() if document.source_item_id in source_item_ids]
+
+    def create_ask_conversation(self, conversation: AskConversation) -> AskConversation:
+        conversation.updated_at = utc_now()
+        if conversation.conversation_id in self.ask_conversations:
+            existing = self.ask_conversations[conversation.conversation_id]
+            conversation.created_at = existing.created_at
+        self.ask_conversations[conversation.conversation_id] = conversation
+        return conversation
+
+    def list_ask_conversations(self, *, tenant_id: str, owner_user_id: str, limit: int = 50) -> list[AskConversation]:
+        conversations = [
+            conversation
+            for conversation in self.ask_conversations.values()
+            if conversation.tenant_id == tenant_id and conversation.owner_user_id == owner_user_id and conversation.status != "archived"
+        ]
+        return sorted(conversations, key=lambda item: (item.updated_at, item.created_at), reverse=True)[:limit]
+
+    def get_ask_conversation(self, conversation_id: str, *, tenant_id: str, owner_user_id: str) -> AskConversation:
+        conversation = self.ask_conversations[conversation_id]
+        if conversation.tenant_id != tenant_id or conversation.owner_user_id != owner_user_id:
+            raise KeyError(conversation_id)
+        return conversation
+
+    def add_ask_message(self, message: AskMessage) -> AskMessage:
+        self.ask_messages[message.message_id] = message
+        conversation = self.ask_conversations.get(message.conversation_id)
+        if conversation:
+            conversation.updated_at = message.created_at
+        return message
+
+    def list_ask_messages(self, conversation_id: str, *, tenant_id: str, owner_user_id: str, limit: int = 100) -> list[AskMessage]:
+        messages = [
+            message
+            for message in self.ask_messages.values()
+            if message.conversation_id == conversation_id and message.tenant_id == tenant_id and message.owner_user_id == owner_user_id
+        ]
+        return sorted(messages, key=lambda item: item.created_at)[:limit]
+
+    def add_ask_run(self, run: AskRun) -> AskRun:
+        self.ask_runs[run.run_id] = run
+        return run
+
+    def finish_ask_run(self, run_id: str, *, status: str, result: dict[str, Any]) -> AskRun:
+        run = self.ask_runs[run_id]
+        run.status = status
+        run.result = dict(result)
+        run.finished_at = utc_now()
+        conversation = self.ask_conversations.get(run.conversation_id)
+        if conversation:
+            conversation.updated_at = run.finished_at
+        return run
+
+    def list_ask_runs(self, conversation_id: str, *, tenant_id: str, owner_user_id: str, limit: int = 50) -> list[AskRun]:
+        runs = [
+            run
+            for run in self.ask_runs.values()
+            if run.conversation_id == conversation_id and run.tenant_id == tenant_id and run.owner_user_id == owner_user_id
+        ]
+        return sorted(runs, key=lambda item: item.started_at, reverse=True)[:limit]
+
+    def upsert_prompt_profile(self, profile: PromptProfile) -> PromptProfile:
+        existing = self.prompt_profiles.get(profile.prompt_profile_id)
+        if existing:
+            profile.created_at = existing.created_at
+            profile.current_version = existing.current_version + 1
+        profile.updated_at = utc_now()
+        self.prompt_profiles[profile.prompt_profile_id] = profile
+        return profile
+
+    def list_prompt_profiles(self, *, tenant_id: str, owner_user_id: str | None = None, profile_type: str | None = None) -> list[PromptProfile]:
+        profiles = [profile for profile in self.prompt_profiles.values() if profile.tenant_id == tenant_id]
+        if owner_user_id is not None:
+            profiles = [profile for profile in profiles if profile.owner_user_id in {None, owner_user_id}]
+        if profile_type:
+            profiles = [profile for profile in profiles if profile.profile_type == profile_type]
+        scope_rank = {"tenant": 0, "user": 1}
+        return sorted(profiles, key=lambda item: (item.profile_type, scope_rank.get(item.scope, 9), item.owner_user_id or "", item.updated_at))
 
     def list_chunks_missing_embedding(self, *, provider: str, model: str, limit: int | None = None) -> list[Chunk]:
         chunks = [

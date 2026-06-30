@@ -132,6 +132,7 @@ export type WorkspaceCorpusSource = {
   source_channel?: string;
   url?: string;
   created_at?: string;
+  snippet?: string;
   chunk_count?: number;
   metadata?: Record<string, unknown>;
 };
@@ -164,6 +165,113 @@ export type WorkspaceCorpusResponse = {
     source_refs?: Array<{ source_item_id?: string; chunk_id?: string; title?: string; url?: string }>;
     members?: Array<{ entity_id?: string; label?: string; entity_type?: string; role?: string }>;
   }>;
+};
+
+export type WorkspaceSourceIngestResponse = {
+  ok?: boolean;
+  action?: "text" | "upload" | string;
+  knowledge_source?: {
+    knowledge_source_id?: string;
+    name?: string;
+    source_type?: string;
+    uri?: string;
+    status?: string;
+  };
+  source_item_ids?: string[];
+  documents?: Array<Record<string, unknown>>;
+  chunk_stats?: {
+    count?: number;
+    min_chars?: number;
+    max_chars?: number;
+    total_chars?: number;
+  };
+  sync_run?: Record<string, unknown>;
+  sync_report?: Record<string, unknown>;
+  digest?: {
+    scheduled_source_item_ids?: string[];
+    job?: Record<string, unknown> | null;
+  } | null;
+  error?: string;
+};
+
+export type WorkspaceDocumentEntry = WorkspaceCorpusSource & {
+  lifecycle_status?: string;
+  deleted_at?: string | null;
+  deleted_by?: string | null;
+  delete_reason?: string | null;
+  document_count?: number;
+  chunk_count?: number;
+  impact?: Record<string, number>;
+};
+
+export type WorkspaceDocumentsResponse = {
+  ok?: boolean;
+  tenant_id?: string;
+  owner_user_id?: string;
+  include_deleted?: boolean;
+  documents?: WorkspaceDocumentEntry[];
+  counts?: Record<string, number>;
+  error?: string;
+};
+
+export type WorkspaceDocumentDeleteResponse = {
+  ok?: boolean;
+  dry_run?: boolean;
+  execute?: boolean;
+  restore?: boolean;
+  hard_delete?: boolean;
+  source_item_ids?: string[];
+  counts?: Record<string, number>;
+  deleted?: Record<string, number>;
+  notes?: string[];
+  error?: string;
+};
+
+export type AskConversation = {
+  conversation_id?: string;
+  title?: string;
+  status?: string;
+  summary?: string;
+  created_at?: string;
+  updated_at?: string;
+};
+
+export type AskMessage = {
+  message_id?: string;
+  conversation_id?: string;
+  role?: string;
+  content?: string;
+  run_id?: string | null;
+  citations?: Array<Record<string, unknown>>;
+  source_refs?: Array<Record<string, unknown>>;
+  created_at?: string;
+};
+
+export type AskConversationResponse = {
+  ok?: boolean;
+  conversation?: AskConversation;
+  messages?: AskMessage[];
+  runs?: Array<Record<string, unknown>>;
+  conversations?: AskConversation[];
+  error?: string;
+};
+
+export type PromptProfile = {
+  prompt_profile_id?: string;
+  profile_type?: "ask" | "digest" | "review" | "writing" | string;
+  scope?: string;
+  name?: string;
+  owner_user_id?: string | null;
+  current_version?: number;
+  config?: Record<string, unknown>;
+};
+
+export type PromptProfilesResponse = {
+  ok?: boolean;
+  profiles?: PromptProfile[];
+  effective?: Record<string, PromptProfile>;
+  defaults?: Record<string, PromptProfile>;
+  error?: string;
 };
 
 export type WorkspaceGraphNode = {
@@ -333,6 +441,7 @@ export type WorkspaceAskResponse = {
     citations?: Array<Record<string, unknown>>;
     source_refs?: Array<Record<string, unknown>>;
     results?: Array<Record<string, unknown>>;
+    source_windows?: Array<Record<string, unknown>>;
     graph_paths?: Array<Record<string, unknown>>;
     memory_context?: Array<Record<string, unknown>>;
     profile_context?: Array<Record<string, unknown>>;

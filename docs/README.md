@@ -50,11 +50,12 @@ Directory-level material packs can opt into source collection ingest with
 - [Frontend README](../frontend/README.md): User Workspace run command and surfaces.
 - [Backend Feature Map](../frontend/BACKEND_FEATURES.md): frontend-to-backend capability map.
 
-Current frontend status: User Workspace includes Today, Discoveries, Knowledge
-Sources, Corpus/Brain, Ask, Graph, review-oriented flows, and
-Writing/Evidence Brief surfaces. Knowledge Sources now supports folder,
-RSS/Atom, and URL preview/create/sync flows with processing diagnostics and
-chunk preview.
+Current frontend status: User Workspace includes Today, Discoveries, the
+document library, multi-turn Ask, Graph, review-oriented flows, prompt
+profiles, and Writing/Evidence Brief surfaces. User-facing ingest supports
+upload, pasted text, URL, and RSS. Folder sources remain available for
+admin/dev migration flows. Internally these flows still use KnowledgeSource,
+source item, document, chunk, digest, and review models.
 
 ## Twitter/X
 

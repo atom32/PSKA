@@ -8,9 +8,14 @@ import type {
   FileSyncResponse,
   KnowledgeSourceCleanupResponse,
   KnowledgeSourceCreateResponse,
+  AskConversationResponse,
+  PromptProfilesResponse,
   ReviewCenterResponse,
   ReviewActionResponse,
   SourcePreviewResponse,
+  WorkspaceDocumentDeleteResponse,
+  WorkspaceDocumentsResponse,
+  WorkspaceSourceIngestResponse,
   SourceSyncResponse,
   TodayResponse,
   WorkspaceActivityResponse,
@@ -83,6 +88,12 @@ const headers = (auth: PSKAAuth) => {
   result["X-PSKA-User-Id"] = identity.userId;
   result["X-PSKA-Represented-User-Id"] = identity.representedUserId;
   result["X-PSKA-Subject"] = identity.userId.includes(":") ? identity.userId : `pska:${identity.userId}`;
+  return result;
+};
+
+const formHeaders = (auth: PSKAAuth) => {
+  const result = headers(auth);
+  delete result["Content-Type"];
   return result;
 };
 
@@ -286,7 +297,7 @@ export async function runDigestNow(serviceToken: PSKAAuth): Promise<DigestNowRes
       limit: 20,
       batch_size: 20,
       force: false,
-      skip_sync: false,
+      skip_sync: true,
       max_worker_runs: 1,
       reason: "manual frontend digest-now"
     })
@@ -360,17 +371,102 @@ export async function createKnowledgeSource(
   return (await response.json()) as KnowledgeSourceCreateResponse;
 }
 
-export async function syncKnowledgeSources(serviceToken: PSKAAuth, knowledgeSourceId?: string): Promise<SourceSyncResponse> {
+export async function createTextSource(
+  serviceToken: PSKAAuth,
+  payload: { title?: string; text: string; digest_mode?: "after_upload" | "manual" | "disabled" }
+): Promise<WorkspaceSourceIngestResponse> {
+  const response = await fetch("/workspace/sources/text", {
+    method: "POST",
+    headers: headers(serviceToken),
+    body: JSON.stringify({
+      ...payload,
+      digest_mode: payload.digest_mode || "after_upload",
+      ...requestUserPayload(serviceToken)
+    })
+  });
+  if (!response.ok) {
+    throw new Error(await responseError(response, "添加文本资料失败"));
+  }
+  return (await response.json()) as WorkspaceSourceIngestResponse;
+}
+
+export async function uploadWorkspaceSource(
+  serviceToken: PSKAAuth,
+  file: File,
+  payload: { title?: string; digest_mode?: "after_upload" | "manual" | "disabled" } = {}
+): Promise<WorkspaceSourceIngestResponse> {
+  const form = new FormData();
+  form.set("file", file);
+  form.set("filename", file.name);
+  form.set("title", payload.title || file.name);
+  form.set("digest_mode", payload.digest_mode || "after_upload");
+  const identity = resolveIdentity(serviceToken);
+  form.set("tenant_id", identity.tenantId);
+  form.set("user_id", identity.userId);
+  form.set("represented_user_id", identity.representedUserId);
+  const response = await fetch("/workspace/sources/upload", {
+    method: "POST",
+    headers: formHeaders(serviceToken),
+    body: form
+  });
+  if (!response.ok) {
+    throw new Error(await responseError(response, "上传资料失败"));
+  }
+  return (await response.json()) as WorkspaceSourceIngestResponse;
+}
+
+export async function loadWorkspaceDocuments(serviceToken: PSKAAuth, includeDeleted = true): Promise<WorkspaceDocumentsResponse> {
+  const params = new URLSearchParams({
+    owner_user_id: ownerUserId(serviceToken),
+    include_deleted: includeDeleted ? "true" : "false",
+    limit: "120"
+  });
+  const response = await fetch(`/workspace/documents/data?${params.toString()}`, { headers: headers(serviceToken) });
+  if (!response.ok) {
+    throw new Error(await responseError(response, "资料列表加载失败"));
+  }
+  return (await response.json()) as WorkspaceDocumentsResponse;
+}
+
+export async function deleteWorkspaceDocuments(
+  serviceToken: PSKAAuth,
+  sourceItemIds: string[],
+  options: { execute?: boolean; restore?: boolean; hardDelete?: boolean; reason?: string } = {}
+): Promise<WorkspaceDocumentDeleteResponse> {
+  const response = await fetch("/workspace/documents/delete", {
+    method: "POST",
+    headers: headers(serviceToken),
+    body: JSON.stringify({
+      source_item_ids: sourceItemIds,
+      execute: options.execute ?? false,
+      restore: options.restore ?? false,
+      hard_delete: options.hardDelete ?? false,
+      reason: options.reason,
+      ...requestUserPayload(serviceToken)
+    })
+  });
+  if (!response.ok) {
+    throw new Error(await responseError(response, "资料删除失败"));
+  }
+  return (await response.json()) as WorkspaceDocumentDeleteResponse;
+}
+
+export async function syncKnowledgeSources(
+  serviceToken: PSKAAuth,
+  knowledgeSourceId?: string,
+  options: { sourceTypes?: string[] } = {}
+): Promise<SourceSyncResponse> {
   const response = await fetch("/workspace/sources/sync", {
     method: "POST",
     headers: headers(serviceToken),
     body: JSON.stringify({
       ...(knowledgeSourceId ? { knowledge_source_ids: [knowledgeSourceId] } : {}),
+      ...(options.sourceTypes?.length ? { source_types: options.sourceTypes } : {}),
       ...requestUserPayload(serviceToken)
     })
   });
   if (!response.ok) {
-    throw new Error(await responseError(response, "同步 Knowledge Sources 失败"));
+    throw new Error(await responseError(response, "同步资料源失败"));
   }
   return (await response.json()) as SourceSyncResponse;
 }
@@ -391,7 +487,7 @@ export async function cleanupKnowledgeSource(
     })
   });
   if (!response.ok) {
-    throw new Error(await responseError(response, execute ? "清理资料来源失败" : "预览清理失败"));
+    throw new Error(await responseError(response, execute ? "清理高级资料源失败" : "预览清理失败"));
   }
   return (await response.json()) as KnowledgeSourceCleanupResponse;
 }
@@ -515,6 +611,126 @@ export async function askWorkspaceStream(
     }
   }
   return result;
+}
+
+export async function loadAskConversations(serviceToken: PSKAAuth): Promise<AskConversationResponse> {
+  const response = await fetch("/workspace/ask/conversations", { headers: headers(serviceToken) });
+  if (!response.ok) {
+    throw new Error(await responseError(response, "加载对话失败"));
+  }
+  return (await response.json()) as AskConversationResponse;
+}
+
+export async function createAskConversation(serviceToken: PSKAAuth, title?: string): Promise<AskConversationResponse> {
+  const response = await fetch("/workspace/ask/conversations", {
+    method: "POST",
+    headers: headers(serviceToken),
+    body: JSON.stringify({
+      title: title || "Ask PSKA",
+      ...requestUserPayload(serviceToken)
+    })
+  });
+  if (!response.ok) {
+    throw new Error(await responseError(response, "创建对话失败"));
+  }
+  return (await response.json()) as AskConversationResponse;
+}
+
+export async function loadAskConversation(serviceToken: PSKAAuth, conversationId: string): Promise<AskConversationResponse> {
+  const response = await fetch(`/workspace/ask/conversations/${encodeURIComponent(conversationId)}`, { headers: headers(serviceToken) });
+  if (!response.ok) {
+    throw new Error(await responseError(response, "加载对话记录失败"));
+  }
+  return (await response.json()) as AskConversationResponse;
+}
+
+export async function askConversationStream(
+  conversationId: string,
+  query: string,
+  serviceToken: PSKAAuth,
+  onUpdate?: (update: WorkspaceAskStreamUpdate) => void,
+  options: { surface?: string; topK?: number; temperature?: number; maxTokens?: number; sourceItemIds?: string[]; scope?: Record<string, unknown> } = {}
+): Promise<WorkspaceAskResponse> {
+  const scope = {
+    ...(options.scope || {}),
+    ...(options.sourceItemIds?.length ? { source_item_ids: options.sourceItemIds } : {})
+  };
+  const response = await fetch(`/workspace/ask/conversations/${encodeURIComponent(conversationId)}/messages/stream`, {
+    method: "POST",
+    headers: headers(serviceToken),
+    body: JSON.stringify({
+      query,
+      intent: "auto",
+      surface: options.surface || "ask",
+      ...(Object.keys(scope).length ? { scope } : {}),
+      ...requestUserPayload(serviceToken),
+      top_k: options.topK || 8,
+      temperature: options.temperature,
+      max_tokens: options.maxTokens
+    })
+  });
+  if (!response.ok) {
+    throw new Error(await responseError(response, "Ask PSKA 对话失败"));
+  }
+  if (!response.body) {
+    return askWorkspaceStream(query, serviceToken, "auto", "ask", onUpdate, {
+      sessionId: conversationId,
+      scope: Object.keys(scope).length ? scope : undefined
+    });
+  }
+  const result: WorkspaceAskResponse = {
+    ok: true,
+    query,
+    answer: "",
+    citations: [],
+    source_refs: [],
+    agent_steps: [],
+    progress: [],
+    timing: {},
+    evidence: {}
+  };
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (value) {
+      buffer += decoder.decode(value, { stream: !done });
+      buffer = consumeAskSseBuffer(buffer, result, onUpdate);
+    }
+    if (done) {
+      buffer += decoder.decode();
+      consumeAskSseBuffer(`${buffer}\n\n`, result, onUpdate);
+      break;
+    }
+  }
+  return result;
+}
+
+export async function loadPromptProfiles(serviceToken: PSKAAuth): Promise<PromptProfilesResponse> {
+  const response = await fetch("/workspace/prompt-profiles", { headers: headers(serviceToken) });
+  if (!response.ok) {
+    throw new Error(await responseError(response, "Prompt Profiles 加载失败"));
+  }
+  return (await response.json()) as PromptProfilesResponse;
+}
+
+export async function updatePromptProfiles(
+  serviceToken: PSKAAuth,
+  profiles: Array<{ profile_type: string; scope?: string; name?: string; config: Record<string, unknown> }>
+): Promise<PromptProfilesResponse> {
+  const response = await fetch("/workspace/prompt-profiles", {
+    method: "PUT",
+    headers: headers(serviceToken),
+    body: JSON.stringify({
+      profiles,
+      ...requestUserPayload(serviceToken)
+    })
+  });
+  if (!response.ok) {
+    throw new Error(await responseError(response, "Prompt Profiles 保存失败"));
+  }
+  return (await response.json()) as PromptProfilesResponse;
 }
 
 export async function listWritingBoards(serviceToken: PSKAAuth): Promise<WritingBoardsResponse> {
@@ -670,7 +886,7 @@ export async function createEvidenceBrief(
     body: JSON.stringify({ ...payload, ...requestUserPayload(serviceToken) })
   });
   if (!response.ok) {
-    throw new Error(await responseError(response, "生成 Evidence Brief 失败"));
+    throw new Error(await responseError(response, "生成 Brief 失败"));
   }
   return (await response.json()) as EvidenceBriefResponse;
 }

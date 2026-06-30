@@ -17,7 +17,7 @@ $ ./scripts/pska --config .pska/config.json search --query "What should I know b
       "citation": {
         "source_item_id": "src_384b289efc9356d0b9e4814e51529ed7",
         "chunk_id": "chk_384b289efc9356d0b9e4814e51529ed7_0",
-        "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx",
+        "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx",
         "title": "portfolio-pipeline.xlsx"
       },
       "score_debug": {
@@ -43,7 +43,7 @@ $ ./scripts/pska --config .pska/config.json search --query "What should I know b
       "citation": {
         "source_item_id": "src_c8e8b52cc6de59aaa47ab526532ce055",
         "chunk_id": "chk_c8e8b52cc6de59aaa47ab526532ce055_0",
-        "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
+        "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
         "title": "meeting-2026-04-17-hiring-charlie-example.md"
       },
       "score_debug": {
@@ -69,7 +69,7 @@ $ ./scripts/pska --config .pska/config.json search --query "What should I know b
       "citation": {
         "source_item_id": "src_c93645a224085289b69c14313ecdabe9",
         "chunk_id": "chk_c93645a224085289b69c14313ecdabe9_0",
-        "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md",
+        "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md",
         "title": "meeting-2026-04-10-fundraise-fund-a.md"
       },
       "score_debug": {
@@ -95,7 +95,7 @@ $ ./scripts/pska --config .pska/config.json search --query "What should I know b
       "citation": {
         "source_item_id": "src_c8e8b52cc6de59aaa47ab526532ce055",
         "chunk_id": "chk_c8e8b52cc6de59aaa47ab526532ce055_1",
-        "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
+        "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
         "title": "meeting-2026-04-17-hiring-charlie-example.md"
       },
       "score_debug": {
@@ -121,7 +121,7 @@ $ ./scripts/pska --config .pska/config.json search --query "What should I know b
       "citation": {
         "source_item_id": "src_abb33363e8f050c89287a6c0a3e7d6b9",
         "chunk_id": "chk_abb33363e8f050c89287a6c0a3e7d6b9_0",
-        "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/people-alice-example.md",
+        "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/people-alice-example.md",
         "title": "people-alice-example.md"
       },
       "score_debug": {
@@ -147,7 +147,7 @@ $ ./scripts/pska --config .pska/config.json search --query "What should I know b
       "citation": {
         "source_item_id": "src_c93645a224085289b69c14313ecdabe9",
         "chunk_id": "chk_c93645a224085289b69c14313ecdabe9_1",
-        "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md",
+        "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md",
         "title": "meeting-2026-04-10-fundraise-fund-a.md"
       },
       "score_debug": {
@@ -173,7 +173,7 @@ $ ./scripts/pska --config .pska/config.json search --query "What should I know b
       "citation": {
         "source_item_id": "src_1bfa0f5e9f05553db0cd98041e0b8b15",
         "chunk_id": "chk_1bfa0f5e9f05553db0cd98041e0b8b15_0",
-        "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-03.md",
+        "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-03.md",
         "title": "meeting-2026-04-03.md"
       },
       "score_debug": {
@@ -199,7 +199,7 @@ $ ./scripts/pska --config .pska/config.json search --query "What should I know b
       "citation": {
         "source_item_id": "src_55ca416c8eb3505cb1fb5d1fe99bb788",
         "chunk_id": "chk_55ca416c8eb3505cb1fb5d1fe99bb788_0",
-        "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/essay-on-conviction.md",
+        "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/holdout/essay-on-conviction.md",
         "title": "essay-on-conviction.md"
       },
       "score_debug": {
@@ -220,49 +220,49 @@ $ ./scripts/pska --config .pska/config.json search --query "What should I know b
     {
       "source_item_id": "src_384b289efc9356d0b9e4814e51529ed7",
       "chunk_id": "chk_384b289efc9356d0b9e4814e51529ed7_0",
-      "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx",
+      "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx",
       "title": "portfolio-pipeline.xlsx"
     },
     {
       "source_item_id": "src_c8e8b52cc6de59aaa47ab526532ce055",
       "chunk_id": "chk_c8e8b52cc6de59aaa47ab526532ce055_0",
-      "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
+      "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
       "title": "meeting-2026-04-17-hiring-charlie-example.md"
     },
     {
       "source_item_id": "src_c93645a224085289b69c14313ecdabe9",
       "chunk_id": "chk_c93645a224085289b69c14313ecdabe9_0",
-      "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md",
+      "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md",
       "title": "meeting-2026-04-10-fundraise-fund-a.md"
     },
     {
       "source_item_id": "src_c8e8b52cc6de59aaa47ab526532ce055",
       "chunk_id": "chk_c8e8b52cc6de59aaa47ab526532ce055_1",
-      "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
+      "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
       "title": "meeting-2026-04-17-hiring-charlie-example.md"
     },
     {
       "source_item_id": "src_abb33363e8f050c89287a6c0a3e7d6b9",
       "chunk_id": "chk_abb33363e8f050c89287a6c0a3e7d6b9_0",
-      "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/people-alice-example.md",
+      "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/people-alice-example.md",
       "title": "people-alice-example.md"
     },
     {
       "source_item_id": "src_c93645a224085289b69c14313ecdabe9",
       "chunk_id": "chk_c93645a224085289b69c14313ecdabe9_1",
-      "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md",
+      "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md",
       "title": "meeting-2026-04-10-fundraise-fund-a.md"
     },
     {
       "source_item_id": "src_1bfa0f5e9f05553db0cd98041e0b8b15",
       "chunk_id": "chk_1bfa0f5e9f05553db0cd98041e0b8b15_0",
-      "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-03.md",
+      "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-03.md",
       "title": "meeting-2026-04-03.md"
     },
     {
       "source_item_id": "src_55ca416c8eb3505cb1fb5d1fe99bb788",
       "chunk_id": "chk_55ca416c8eb3505cb1fb5d1fe99bb788_0",
-      "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/essay-on-conviction.md",
+      "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/holdout/essay-on-conviction.md",
       "title": "essay-on-conviction.md"
     }
   ],
@@ -281,21 +281,21 @@ $ ./scripts/pska --config .pska/config.json search --query "What should I know b
           "passage_window_id": null,
           "message_id": null,
           "path": null,
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-03.md"
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-03.md"
         }
       ],
       "evidence_citations": [
         {
           "source_item_id": "src_1bfa0f5e9f05553db0cd98041e0b8b15",
           "chunk_id": "chk_1bfa0f5e9f05553db0cd98041e0b8b15_0",
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-03.md",
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-03.md",
           "title": "meeting-2026-04-03.md",
           "snippet": "--- title: Meeting 2026-04-03 — alice-example office hours type: meetings date: 2026-04-03 attendees: [you, people/alice-example] --- # Office hours — alice-example, 2026-04-03 ## Notes Alice walked through current acme-example metrics. Ret"
         },
         {
           "source_item_id": "src_1bfa0f5e9f05553db0cd98041e0b8b15",
           "chunk_id": "chk_1bfa0f5e9f05553db0cd98041e0b8b15_1",
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-03.md",
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-03.md",
           "title": "meeting-2026-04-03.md",
           "snippet": "e to think through the timing tradeoff - follow up in 2 weeks"
         }
@@ -329,21 +329,21 @@ $ ./scripts/pska --config .pska/config.json search --query "What should I know b
           "passage_window_id": null,
           "message_id": null,
           "path": null,
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-03.md"
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-03.md"
         }
       ],
       "evidence_citations": [
         {
           "source_item_id": "src_1bfa0f5e9f05553db0cd98041e0b8b15",
           "chunk_id": "chk_1bfa0f5e9f05553db0cd98041e0b8b15_0",
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-03.md",
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-03.md",
           "title": "meeting-2026-04-03.md",
           "snippet": "--- title: Meeting 2026-04-03 — alice-example office hours type: meetings date: 2026-04-03 attendees: [you, people/alice-example] --- # Office hours — alice-example, 2026-04-03 ## Notes Alice walked through current acme-example metrics. Ret"
         },
         {
           "source_item_id": "src_1bfa0f5e9f05553db0cd98041e0b8b15",
           "chunk_id": "chk_1bfa0f5e9f05553db0cd98041e0b8b15_1",
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-03.md",
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-03.md",
           "title": "meeting-2026-04-03.md",
           "snippet": "e to think through the timing tradeoff - follow up in 2 weeks"
         }
@@ -383,21 +383,21 @@ $ ./scripts/pska --config .pska/config.json search --query "What should I know b
           "passage_window_id": null,
           "message_id": null,
           "path": null,
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md"
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md"
         }
       ],
       "evidence_citations": [
         {
           "source_item_id": "src_c8e8b52cc6de59aaa47ab526532ce055",
           "chunk_id": "chk_c8e8b52cc6de59aaa47ab526532ce055_0",
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
           "title": "meeting-2026-04-17-hiring-charlie-example.md",
           "snippet": "--- title: \"Hiring conversation — charlie-example for acme-example COO role\" type: meeting slug: meetings/2026-04-17-hiring-charlie-example date: 2026-04-17 attendees: [you, alice-example, charlie-example] --- # Hiring OH — charlie-example "
         },
         {
           "source_item_id": "src_c8e8b52cc6de59aaa47ab526532ce055",
           "chunk_id": "chk_c8e8b52cc6de59aaa47ab526532ce055_1",
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
           "title": "meeting-2026-04-17-hiring-charlie-example.md",
           "snippet": "hs in the COO role at acme-example's velocity. Moderate conviction, 0.6. - alice-example will hire him anyway despite my concern. Strong, 0.85. - I predict charlie-example's first 90 days will look strong before the velocity gap shows up ar"
         }
@@ -437,21 +437,21 @@ $ ./scripts/pska --config .pska/config.json search --query "What should I know b
           "passage_window_id": null,
           "message_id": null,
           "path": null,
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md"
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md"
         }
       ],
       "evidence_citations": [
         {
           "source_item_id": "src_c93645a224085289b69c14313ecdabe9",
           "chunk_id": "chk_c93645a224085289b69c14313ecdabe9_0",
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md",
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md",
           "title": "meeting-2026-04-10-fundraise-fund-a.md",
           "snippet": "--- title: \"Fundraise office hours — fund-a + alice-example\" type: meeting slug: meetings/2026-04-10-fundraise-fund-a date: 2026-04-10 attendees: [you, alice-example, fund-a] --- # Fundraise OH — fund-a / alice-example Office hours session "
         },
         {
           "source_item_id": "src_c93645a224085289b69c14313ecdabe9",
           "chunk_id": "chk_c93645a224085289b69c14313ecdabe9_1",
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md",
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md",
           "title": "meeting-2026-04-10-fundraise-fund-a.md",
           "snippet": "alice-example pushed back — she wants to grow into the pricing rather than annoy early adopters. Probably the right call for now, but I'd want to revisit by end of year. ## Takes - I bet acme-example closes the Series A on the timeline she'"
         }
@@ -485,21 +485,21 @@ $ ./scripts/pska --config .pska/config.json search --query "What should I know b
           "passage_window_id": null,
           "message_id": null,
           "path": null,
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/concept-founder-execution.md"
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/holdout/concept-founder-execution.md"
         }
       ],
       "evidence_citations": [
         {
           "source_item_id": "src_62aa58d5cf875ebc8533e101f9ec9f60",
           "chunk_id": "chk_62aa58d5cf875ebc8533e101f9ec9f60_0",
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/concept-founder-execution.md",
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/holdout/concept-founder-execution.md",
           "title": "concept-founder-execution.md",
           "snippet": "--- title: \"Founder Execution\" type: concept tweet_count: 8 created: 2026-04-01 updated: 2026-04-22 tags: [concept, calibration-fixture, holdout] --- # Founder Execution ## Summary Patterns in how high-performing founders ship versus how st"
         },
         {
           "source_item_id": "src_62aa58d5cf875ebc8533e101f9ec9f60",
           "chunk_id": "chk_62aa58d5cf875ebc8533e101f9ec9f60_1",
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/concept-founder-execution.md",
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/holdout/concept-founder-execution.md",
           "title": "concept-founder-execution.md",
           "snippet": "k alice-example outperforms her seed projections by year 2. - I bet at least one fund-c company hits a meaningful revenue milestone by mid-2026 despite the slow start."
         }
@@ -533,21 +533,21 @@ $ ./scripts/pska --config .pska/config.json search --query "What should I know b
           "passage_window_id": null,
           "message_id": null,
           "path": null,
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/concept-startup-market-dynamics.md"
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/concept-startup-market-dynamics.md"
         }
       ],
       "evidence_citations": [
         {
           "source_item_id": "src_d4fd21da5f23540db318c05705961c69",
           "chunk_id": "chk_d4fd21da5f23540db318c05705961c69_0",
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/concept-startup-market-dynamics.md",
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/concept-startup-market-dynamics.md",
           "title": "concept-startup-market-dynamics.md",
           "snippet": "--- title: \"Startup Market Dynamics\" type: concept tweet_count: 12 created: 2026-04-01 updated: 2026-04-24 tags: [concept, calibration-fixture] --- # Startup Market Dynamics ## Summary How early-stage market structure affects which startups"
         },
         {
           "source_item_id": "src_d4fd21da5f23540db318c05705961c69",
           "chunk_id": "chk_d4fd21da5f23540db318c05705961c69_1",
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/concept-startup-market-dynamics.md",
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/concept-startup-market-dynamics.md",
           "title": "concept-startup-market-dynamics.md",
           "snippet": " actually positioning problems — the founder hasn't picked a side of the marketplace narrow enough to bootstrap from. fund-a's recent losses fit this pattern. (Modest conviction, ~0.6.) - **2024-06-22** | widget-co's plateau is a marketing "
         }
@@ -587,14 +587,14 @@ $ ./scripts/pska --config .pska/config.json search --query "What should I know b
           "passage_window_id": null,
           "message_id": null,
           "path": null,
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx"
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx"
         }
       ],
       "evidence_citations": [
         {
           "source_item_id": "src_384b289efc9356d0b9e4814e51529ed7",
           "chunk_id": "chk_384b289efc9356d0b9e4814e51529ed7_0",
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx",
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx",
           "title": "portfolio-pipeline.xlsx",
           "snippet": "# Workbook: portfolio-pipeline.xlsx ## Sheet: Pipeline | Company | Lead | Status | ARR | Next Step | | --- | --- | --- | --- | --- | | Acme Example | Alice Example | active | 1200000 | Prepare partner meeting brief | | Widget Co | Charlie E"
         }
@@ -628,21 +628,21 @@ $ ./scripts/pska --config .pska/config.json search --query "What should I know b
           "passage_window_id": null,
           "message_id": null,
           "path": null,
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/concept-startup-market-dynamics.md"
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/concept-startup-market-dynamics.md"
         }
       ],
       "evidence_citations": [
         {
           "source_item_id": "src_d4fd21da5f23540db318c05705961c69",
           "chunk_id": "chk_d4fd21da5f23540db318c05705961c69_0",
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/concept-startup-market-dynamics.md",
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/concept-startup-market-dynamics.md",
           "title": "concept-startup-market-dynamics.md",
           "snippet": "--- title: \"Startup Market Dynamics\" type: concept tweet_count: 12 created: 2026-04-01 updated: 2026-04-24 tags: [concept, calibration-fixture] --- # Startup Market Dynamics ## Summary How early-stage market structure affects which startups"
         },
         {
           "source_item_id": "src_d4fd21da5f23540db318c05705961c69",
           "chunk_id": "chk_d4fd21da5f23540db318c05705961c69_1",
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/concept-startup-market-dynamics.md",
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/concept-startup-market-dynamics.md",
           "title": "concept-startup-market-dynamics.md",
           "snippet": " actually positioning problems — the founder hasn't picked a side of the marketplace narrow enough to bootstrap from. fund-a's recent losses fit this pattern. (Modest conviction, ~0.6.) - **2024-06-22** | widget-co's plateau is a marketing "
         }
@@ -676,21 +676,21 @@ $ ./scripts/pska --config .pska/config.json search --query "What should I know b
           "passage_window_id": null,
           "message_id": null,
           "path": null,
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/daily-2026-04-15.md"
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/daily-2026-04-15.md"
         }
       ],
       "evidence_citations": [
         {
           "source_item_id": "src_0d88e2d74eb5564daa5996459618cb9f",
           "chunk_id": "chk_0d88e2d74eb5564daa5996459618cb9f_0",
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/daily-2026-04-15.md",
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/daily-2026-04-15.md",
           "title": "daily-2026-04-15.md",
           "snippet": "--- title: \"2026-04-15\" type: daily slug: daily/2026-04-15 date: 2026-04-15 --- # Wednesday 2026-04-15 Coffee with alice-example this morning. She's pushing hard on the acme-example pricing change — wants to move enterprise tier 40% by end "
         },
         {
           "source_item_id": "src_0d88e2d74eb5564daa5996459618cb9f",
           "chunk_id": "chk_0d88e2d74eb5564daa5996459618cb9f_1",
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/daily-2026-04-15.md",
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/daily-2026-04-15.md",
           "title": "daily-2026-04-15.md",
           "snippet": "he AI conference circuit will quiet down by late 2026 as the actual revenue numbers start coming in. People are going to start asking hard questions about retention."
         }
@@ -724,21 +724,21 @@ $ ./scripts/pska --config .pska/config.json search --query "What should I know b
           "passage_window_id": null,
           "message_id": null,
           "path": null,
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/concept-founder-execution.md"
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/holdout/concept-founder-execution.md"
         }
       ],
       "evidence_citations": [
         {
           "source_item_id": "src_62aa58d5cf875ebc8533e101f9ec9f60",
           "chunk_id": "chk_62aa58d5cf875ebc8533e101f9ec9f60_0",
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/concept-founder-execution.md",
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/holdout/concept-founder-execution.md",
           "title": "concept-founder-execution.md",
           "snippet": "--- title: \"Founder Execution\" type: concept tweet_count: 8 created: 2026-04-01 updated: 2026-04-22 tags: [concept, calibration-fixture, holdout] --- # Founder Execution ## Summary Patterns in how high-performing founders ship versus how st"
         },
         {
           "source_item_id": "src_62aa58d5cf875ebc8533e101f9ec9f60",
           "chunk_id": "chk_62aa58d5cf875ebc8533e101f9ec9f60_1",
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/concept-founder-execution.md",
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/holdout/concept-founder-execution.md",
           "title": "concept-founder-execution.md",
           "snippet": "k alice-example outperforms her seed projections by year 2. - I bet at least one fund-c company hits a meaningful revenue milestone by mid-2026 despite the slow start."
         }
@@ -772,21 +772,21 @@ $ ./scripts/pska --config .pska/config.json search --query "What should I know b
           "passage_window_id": null,
           "message_id": null,
           "path": null,
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md"
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md"
         }
       ],
       "evidence_citations": [
         {
           "source_item_id": "src_c8e8b52cc6de59aaa47ab526532ce055",
           "chunk_id": "chk_c8e8b52cc6de59aaa47ab526532ce055_0",
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
           "title": "meeting-2026-04-17-hiring-charlie-example.md",
           "snippet": "--- title: \"Hiring conversation — charlie-example for acme-example COO role\" type: meeting slug: meetings/2026-04-17-hiring-charlie-example date: 2026-04-17 attendees: [you, alice-example, charlie-example] --- # Hiring OH — charlie-example "
         },
         {
           "source_item_id": "src_c8e8b52cc6de59aaa47ab526532ce055",
           "chunk_id": "chk_c8e8b52cc6de59aaa47ab526532ce055_1",
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
           "title": "meeting-2026-04-17-hiring-charlie-example.md",
           "snippet": "hs in the COO role at acme-example's velocity. Moderate conviction, 0.6. - alice-example will hire him anyway despite my concern. Strong, 0.85. - I predict charlie-example's first 90 days will look strong before the velocity gap shows up ar"
         }
@@ -820,14 +820,14 @@ $ ./scripts/pska --config .pska/config.json search --query "What should I know b
           "passage_window_id": null,
           "message_id": null,
           "path": null,
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx"
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx"
         }
       ],
       "evidence_citations": [
         {
           "source_item_id": "src_384b289efc9356d0b9e4814e51529ed7",
           "chunk_id": "chk_384b289efc9356d0b9e4814e51529ed7_0",
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx",
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx",
           "title": "portfolio-pipeline.xlsx",
           "snippet": "# Workbook: portfolio-pipeline.xlsx ## Sheet: Pipeline | Company | Lead | Status | ARR | Next Step | | --- | --- | --- | --- | --- | | Acme Example | Alice Example | active | 1200000 | Prepare partner meeting brief | | Widget Co | Charlie E"
         }
@@ -861,21 +861,21 @@ $ ./scripts/pska --config .pska/config.json search --query "What should I know b
           "passage_window_id": null,
           "message_id": null,
           "path": null,
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md"
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md"
         }
       ],
       "evidence_citations": [
         {
           "source_item_id": "src_c93645a224085289b69c14313ecdabe9",
           "chunk_id": "chk_c93645a224085289b69c14313ecdabe9_0",
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md",
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md",
           "title": "meeting-2026-04-10-fundraise-fund-a.md",
           "snippet": "--- title: \"Fundraise office hours — fund-a + alice-example\" type: meeting slug: meetings/2026-04-10-fundraise-fund-a date: 2026-04-10 attendees: [you, alice-example, fund-a] --- # Fundraise OH — fund-a / alice-example Office hours session "
         },
         {
           "source_item_id": "src_c93645a224085289b69c14313ecdabe9",
           "chunk_id": "chk_c93645a224085289b69c14313ecdabe9_1",
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md",
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md",
           "title": "meeting-2026-04-10-fundraise-fund-a.md",
           "snippet": "alice-example pushed back — she wants to grow into the pricing rather than annoy early adopters. Probably the right call for now, but I'd want to revisit by end of year. ## Takes - I bet acme-example closes the Series A on the timeline she'"
         }
@@ -915,21 +915,21 @@ $ ./scripts/pska --config .pska/config.json search --query "What should I know b
           "passage_window_id": null,
           "message_id": null,
           "path": null,
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/daily-2026-04-15.md"
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/daily-2026-04-15.md"
         }
       ],
       "evidence_citations": [
         {
           "source_item_id": "src_0d88e2d74eb5564daa5996459618cb9f",
           "chunk_id": "chk_0d88e2d74eb5564daa5996459618cb9f_0",
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/daily-2026-04-15.md",
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/daily-2026-04-15.md",
           "title": "daily-2026-04-15.md",
           "snippet": "--- title: \"2026-04-15\" type: daily slug: daily/2026-04-15 date: 2026-04-15 --- # Wednesday 2026-04-15 Coffee with alice-example this morning. She's pushing hard on the acme-example pricing change — wants to move enterprise tier 40% by end "
         },
         {
           "source_item_id": "src_0d88e2d74eb5564daa5996459618cb9f",
           "chunk_id": "chk_0d88e2d74eb5564daa5996459618cb9f_1",
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/daily-2026-04-15.md",
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/daily-2026-04-15.md",
           "title": "daily-2026-04-15.md",
           "snippet": "he AI conference circuit will quiet down by late 2026 as the actual revenue numbers start coming in. People are going to start asking hard questions about retention."
         }
@@ -963,21 +963,21 @@ $ ./scripts/pska --config .pska/config.json search --query "What should I know b
           "passage_window_id": null,
           "message_id": null,
           "path": null,
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/concept-founder-execution.md"
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/holdout/concept-founder-execution.md"
         }
       ],
       "evidence_citations": [
         {
           "source_item_id": "src_62aa58d5cf875ebc8533e101f9ec9f60",
           "chunk_id": "chk_62aa58d5cf875ebc8533e101f9ec9f60_0",
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/concept-founder-execution.md",
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/holdout/concept-founder-execution.md",
           "title": "concept-founder-execution.md",
           "snippet": "--- title: \"Founder Execution\" type: concept tweet_count: 8 created: 2026-04-01 updated: 2026-04-22 tags: [concept, calibration-fixture, holdout] --- # Founder Execution ## Summary Patterns in how high-performing founders ship versus how st"
         },
         {
           "source_item_id": "src_62aa58d5cf875ebc8533e101f9ec9f60",
           "chunk_id": "chk_62aa58d5cf875ebc8533e101f9ec9f60_1",
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/concept-founder-execution.md",
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/holdout/concept-founder-execution.md",
           "title": "concept-founder-execution.md",
           "snippet": "k alice-example outperforms her seed projections by year 2. - I bet at least one fund-c company hits a meaningful revenue milestone by mid-2026 despite the slow start."
         }
@@ -1011,21 +1011,21 @@ $ ./scripts/pska --config .pska/config.json search --query "What should I know b
           "passage_window_id": null,
           "message_id": null,
           "path": null,
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md"
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md"
         }
       ],
       "evidence_citations": [
         {
           "source_item_id": "src_c8e8b52cc6de59aaa47ab526532ce055",
           "chunk_id": "chk_c8e8b52cc6de59aaa47ab526532ce055_0",
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
           "title": "meeting-2026-04-17-hiring-charlie-example.md",
           "snippet": "--- title: \"Hiring conversation — charlie-example for acme-example COO role\" type: meeting slug: meetings/2026-04-17-hiring-charlie-example date: 2026-04-17 attendees: [you, alice-example, charlie-example] --- # Hiring OH — charlie-example "
         },
         {
           "source_item_id": "src_c8e8b52cc6de59aaa47ab526532ce055",
           "chunk_id": "chk_c8e8b52cc6de59aaa47ab526532ce055_1",
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
           "title": "meeting-2026-04-17-hiring-charlie-example.md",
           "snippet": "hs in the COO role at acme-example's velocity. Moderate conviction, 0.6. - alice-example will hire him anyway despite my concern. Strong, 0.85. - I predict charlie-example's first 90 days will look strong before the velocity gap shows up ar"
         }
@@ -1059,14 +1059,14 @@ $ ./scripts/pska --config .pska/config.json search --query "What should I know b
           "passage_window_id": null,
           "message_id": null,
           "path": null,
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx"
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx"
         }
       ],
       "evidence_citations": [
         {
           "source_item_id": "src_384b289efc9356d0b9e4814e51529ed7",
           "chunk_id": "chk_384b289efc9356d0b9e4814e51529ed7_0",
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx",
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx",
           "title": "portfolio-pipeline.xlsx",
           "snippet": "# Workbook: portfolio-pipeline.xlsx ## Sheet: Pipeline | Company | Lead | Status | ARR | Next Step | | --- | --- | --- | --- | --- | | Acme Example | Alice Example | active | 1200000 | Prepare partner meeting brief | | Widget Co | Charlie E"
         }
@@ -1100,21 +1100,21 @@ $ ./scripts/pska --config .pska/config.json search --query "What should I know b
           "passage_window_id": null,
           "message_id": null,
           "path": null,
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/concept-startup-market-dynamics.md"
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/concept-startup-market-dynamics.md"
         }
       ],
       "evidence_citations": [
         {
           "source_item_id": "src_d4fd21da5f23540db318c05705961c69",
           "chunk_id": "chk_d4fd21da5f23540db318c05705961c69_0",
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/concept-startup-market-dynamics.md",
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/concept-startup-market-dynamics.md",
           "title": "concept-startup-market-dynamics.md",
           "snippet": "--- title: \"Startup Market Dynamics\" type: concept tweet_count: 12 created: 2026-04-01 updated: 2026-04-24 tags: [concept, calibration-fixture] --- # Startup Market Dynamics ## Summary How early-stage market structure affects which startups"
         },
         {
           "source_item_id": "src_d4fd21da5f23540db318c05705961c69",
           "chunk_id": "chk_d4fd21da5f23540db318c05705961c69_1",
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/concept-startup-market-dynamics.md",
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/concept-startup-market-dynamics.md",
           "title": "concept-startup-market-dynamics.md",
           "snippet": " actually positioning problems — the founder hasn't picked a side of the marketplace narrow enough to bootstrap from. fund-a's recent losses fit this pattern. (Modest conviction, ~0.6.) - **2024-06-22** | widget-co's plateau is a marketing "
         }
@@ -1148,14 +1148,14 @@ $ ./scripts/pska --config .pska/config.json search --query "What should I know b
           "passage_window_id": null,
           "message_id": null,
           "path": null,
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx"
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx"
         }
       ],
       "evidence_citations": [
         {
           "source_item_id": "src_384b289efc9356d0b9e4814e51529ed7",
           "chunk_id": "chk_384b289efc9356d0b9e4814e51529ed7_0",
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx",
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx",
           "title": "portfolio-pipeline.xlsx",
           "snippet": "# Workbook: portfolio-pipeline.xlsx ## Sheet: Pipeline | Company | Lead | Status | ARR | Next Step | | --- | --- | --- | --- | --- | | Acme Example | Alice Example | active | 1200000 | Prepare partner meeting brief | | Widget Co | Charlie E"
         }
@@ -1189,14 +1189,14 @@ $ ./scripts/pska --config .pska/config.json search --query "What should I know b
           "passage_window_id": null,
           "message_id": null,
           "path": null,
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx"
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx"
         }
       ],
       "evidence_citations": [
         {
           "source_item_id": "src_384b289efc9356d0b9e4814e51529ed7",
           "chunk_id": "chk_384b289efc9356d0b9e4814e51529ed7_0",
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx",
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx",
           "title": "portfolio-pipeline.xlsx",
           "snippet": "# Workbook: portfolio-pipeline.xlsx ## Sheet: Pipeline | Company | Lead | Status | ARR | Next Step | | --- | --- | --- | --- | --- | | Acme Example | Alice Example | active | 1200000 | Prepare partner meeting brief | | Widget Co | Charlie E"
         }
@@ -1230,21 +1230,21 @@ $ ./scripts/pska --config .pska/config.json search --query "What should I know b
           "passage_window_id": null,
           "message_id": null,
           "path": null,
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/people-bob-example.md"
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/holdout/people-bob-example.md"
         }
       ],
       "evidence_citations": [
         {
           "source_item_id": "src_52a3d89297295673b30728fada7495ba",
           "chunk_id": "chk_52a3d89297295673b30728fada7495ba_0",
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/people-bob-example.md",
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/holdout/people-bob-example.md",
           "title": "people-bob-example.md",
           "snippet": "--- title: bob-example type: people slug: people/bob-example --- # Bob Example CEO of widget-co. Met him through fund-b in early 2024. Background: operator at a horizontal-SaaS company before founding widget-co. Strong sales background, wea"
         },
         {
           "source_item_id": "src_52a3d89297295673b30728fada7495ba",
           "chunk_id": "chk_52a3d89297295673b30728fada7495ba_1",
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/people-bob-example.md",
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/holdout/people-bob-example.md",
           "title": "people-bob-example.md",
           "snippet": " take a meeting with him for a different kind of company. The bet I want to record: widget-co either pivots hard in the next 12 months or wraps up. The middle path doesn't exist for them given where they are. Conviction ~0.65."
         }
@@ -1278,21 +1278,21 @@ $ ./scripts/pska --config .pska/config.json search --query "What should I know b
           "passage_window_id": null,
           "message_id": null,
           "path": null,
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md"
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md"
         }
       ],
       "evidence_citations": [
         {
           "source_item_id": "src_c8e8b52cc6de59aaa47ab526532ce055",
           "chunk_id": "chk_c8e8b52cc6de59aaa47ab526532ce055_0",
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
           "title": "meeting-2026-04-17-hiring-charlie-example.md",
           "snippet": "--- title: \"Hiring conversation — charlie-example for acme-example COO role\" type: meeting slug: meetings/2026-04-17-hiring-charlie-example date: 2026-04-17 attendees: [you, alice-example, charlie-example] --- # Hiring OH — charlie-example "
         },
         {
           "source_item_id": "src_c8e8b52cc6de59aaa47ab526532ce055",
           "chunk_id": "chk_c8e8b52cc6de59aaa47ab526532ce055_1",
-          "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
+          "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
           "title": "meeting-2026-04-17-hiring-charlie-example.md",
           "snippet": "hs in the COO role at acme-example's velocity. Moderate conviction, 0.6. - alice-example will hire him anyway despite my concern. Strong, 0.85. - I predict charlie-example's first 90 days will look strong before the velocity gap shows up ar"
         }
@@ -1349,21 +1349,21 @@ $ ./scripts/pska --config .pska/config.json search --query "What should I know b
               "passage_window_id": null,
               "message_id": null,
               "path": null,
-              "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md"
+              "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md"
             }
           ],
           "evidence_citations": [
             {
               "source_item_id": "src_c8e8b52cc6de59aaa47ab526532ce055",
               "chunk_id": "chk_c8e8b52cc6de59aaa47ab526532ce055_0",
-              "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
+              "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
               "title": "meeting-2026-04-17-hiring-charlie-example.md",
               "snippet": "--- title: \"Hiring conversation — charlie-example for acme-example COO role\" type: meeting slug: meetings/2026-04-17-hiring-charlie-example date: 2026-04-17 attendees: [you, alice-example, charlie-example] --- # Hiring OH — charlie-example "
             },
             {
               "source_item_id": "src_c8e8b52cc6de59aaa47ab526532ce055",
               "chunk_id": "chk_c8e8b52cc6de59aaa47ab526532ce055_1",
-              "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
+              "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
               "title": "meeting-2026-04-17-hiring-charlie-example.md",
               "snippet": "hs in the COO role at acme-example's velocity. Moderate conviction, 0.6. - alice-example will hire him anyway despite my concern. Strong, 0.85. - I predict charlie-example's first 90 days will look strong before the velocity gap shows up ar"
             }
@@ -1432,21 +1432,21 @@ $ ./scripts/pska --config .pska/config.json search --query "What should I know b
               "passage_window_id": null,
               "message_id": null,
               "path": null,
-              "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md"
+              "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md"
             }
           ],
           "evidence_citations": [
             {
               "source_item_id": "src_c8e8b52cc6de59aaa47ab526532ce055",
               "chunk_id": "chk_c8e8b52cc6de59aaa47ab526532ce055_0",
-              "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
+              "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
               "title": "meeting-2026-04-17-hiring-charlie-example.md",
               "snippet": "--- title: \"Hiring conversation — charlie-example for acme-example COO role\" type: meeting slug: meetings/2026-04-17-hiring-charlie-example date: 2026-04-17 attendees: [you, alice-example, charlie-example] --- # Hiring OH — charlie-example "
             },
             {
               "source_item_id": "src_c8e8b52cc6de59aaa47ab526532ce055",
               "chunk_id": "chk_c8e8b52cc6de59aaa47ab526532ce055_1",
-              "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
+              "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/holdout/meeting-2026-04-17-hiring-charlie-example.md",
               "title": "meeting-2026-04-17-hiring-charlie-example.md",
               "snippet": "hs in the COO role at acme-example's velocity. Moderate conviction, 0.6. - alice-example will hire him anyway despite my concern. Strong, 0.85. - I predict charlie-example's first 90 days will look strong before the velocity gap shows up ar"
             }
@@ -1515,21 +1515,21 @@ $ ./scripts/pska --config .pska/config.json search --query "What should I know b
               "passage_window_id": null,
               "message_id": null,
               "path": null,
-              "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/daily-2026-04-15.md"
+              "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/daily-2026-04-15.md"
             }
           ],
           "evidence_citations": [
             {
               "source_item_id": "src_0d88e2d74eb5564daa5996459618cb9f",
               "chunk_id": "chk_0d88e2d74eb5564daa5996459618cb9f_0",
-              "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/daily-2026-04-15.md",
+              "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/daily-2026-04-15.md",
               "title": "daily-2026-04-15.md",
               "snippet": "--- title: \"2026-04-15\" type: daily slug: daily/2026-04-15 date: 2026-04-15 --- # Wednesday 2026-04-15 Coffee with alice-example this morning. She's pushing hard on the acme-example pricing change — wants to move enterprise tier 40% by end "
             },
             {
               "source_item_id": "src_0d88e2d74eb5564daa5996459618cb9f",
               "chunk_id": "chk_0d88e2d74eb5564daa5996459618cb9f_1",
-              "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/daily-2026-04-15.md",
+              "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/daily-2026-04-15.md",
               "title": "daily-2026-04-15.md",
               "snippet": "he AI conference circuit will quiet down by late 2026 as the actual revenue numbers start coming in. People are going to start asking hard questions about retention."
             }
@@ -1598,21 +1598,21 @@ $ ./scripts/pska --config .pska/config.json search --query "What should I know b
               "passage_window_id": null,
               "message_id": null,
               "path": null,
-              "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md"
+              "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md"
             }
           ],
           "evidence_citations": [
             {
               "source_item_id": "src_c93645a224085289b69c14313ecdabe9",
               "chunk_id": "chk_c93645a224085289b69c14313ecdabe9_0",
-              "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md",
+              "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md",
               "title": "meeting-2026-04-10-fundraise-fund-a.md",
               "snippet": "--- title: \"Fundraise office hours — fund-a + alice-example\" type: meeting slug: meetings/2026-04-10-fundraise-fund-a date: 2026-04-10 attendees: [you, alice-example, fund-a] --- # Fundraise OH — fund-a / alice-example Office hours session "
             },
             {
               "source_item_id": "src_c93645a224085289b69c14313ecdabe9",
               "chunk_id": "chk_c93645a224085289b69c14313ecdabe9_1",
-              "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md",
+              "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md",
               "title": "meeting-2026-04-10-fundraise-fund-a.md",
               "snippet": "alice-example pushed back — she wants to grow into the pricing rather than annoy early adopters. Probably the right call for now, but I'd want to revisit by end of year. ## Takes - I bet acme-example closes the Series A on the timeline she'"
             }
@@ -1687,21 +1687,21 @@ $ ./scripts/pska --config .pska/config.json search --query "What should I know b
               "passage_window_id": null,
               "message_id": null,
               "path": null,
-              "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md"
+              "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md"
             }
           ],
           "evidence_citations": [
             {
               "source_item_id": "src_c93645a224085289b69c14313ecdabe9",
               "chunk_id": "chk_c93645a224085289b69c14313ecdabe9_0",
-              "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md",
+              "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md",
               "title": "meeting-2026-04-10-fundraise-fund-a.md",
               "snippet": "--- title: \"Fundraise office hours — fund-a + alice-example\" type: meeting slug: meetings/2026-04-10-fundraise-fund-a date: 2026-04-10 attendees: [you, alice-example, fund-a] --- # Fundraise OH — fund-a / alice-example Office hours session "
             },
             {
               "source_item_id": "src_c93645a224085289b69c14313ecdabe9",
               "chunk_id": "chk_c93645a224085289b69c14313ecdabe9_1",
-              "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md",
+              "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md",
               "title": "meeting-2026-04-10-fundraise-fund-a.md",
               "snippet": "alice-example pushed back — she wants to grow into the pricing rather than annoy early adopters. Probably the right call for now, but I'd want to revisit by end of year. ## Takes - I bet acme-example closes the Series A on the timeline she'"
             }
@@ -1776,21 +1776,21 @@ $ ./scripts/pska --config .pska/config.json search --query "What should I know b
               "passage_window_id": null,
               "message_id": null,
               "path": null,
-              "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/daily-2026-04-15.md"
+              "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/daily-2026-04-15.md"
             }
           ],
           "evidence_citations": [
             {
               "source_item_id": "src_0d88e2d74eb5564daa5996459618cb9f",
               "chunk_id": "chk_0d88e2d74eb5564daa5996459618cb9f_0",
-              "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/daily-2026-04-15.md",
+              "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/daily-2026-04-15.md",
               "title": "daily-2026-04-15.md",
               "snippet": "--- title: \"2026-04-15\" type: daily slug: daily/2026-04-15 date: 2026-04-15 --- # Wednesday 2026-04-15 Coffee with alice-example this morning. She's pushing hard on the acme-example pricing change — wants to move enterprise tier 40% by end "
             },
             {
               "source_item_id": "src_0d88e2d74eb5564daa5996459618cb9f",
               "chunk_id": "chk_0d88e2d74eb5564daa5996459618cb9f_1",
-              "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/daily-2026-04-15.md",
+              "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/daily-2026-04-15.md",
               "title": "daily-2026-04-15.md",
               "snippet": "he AI conference circuit will quiet down by late 2026 as the actual revenue numbers start coming in. People are going to start asking hard questions about retention."
             }
@@ -1859,21 +1859,21 @@ $ ./scripts/pska --config .pska/config.json search --query "What should I know b
               "passage_window_id": null,
               "message_id": null,
               "path": null,
-              "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-03.md"
+              "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-03.md"
             }
           ],
           "evidence_citations": [
             {
               "source_item_id": "src_1bfa0f5e9f05553db0cd98041e0b8b15",
               "chunk_id": "chk_1bfa0f5e9f05553db0cd98041e0b8b15_0",
-              "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-03.md",
+              "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-03.md",
               "title": "meeting-2026-04-03.md",
               "snippet": "--- title: Meeting 2026-04-03 — alice-example office hours type: meetings date: 2026-04-03 attendees: [you, people/alice-example] --- # Office hours — alice-example, 2026-04-03 ## Notes Alice walked through current acme-example metrics. Ret"
             },
             {
               "source_item_id": "src_1bfa0f5e9f05553db0cd98041e0b8b15",
               "chunk_id": "chk_1bfa0f5e9f05553db0cd98041e0b8b15_1",
-              "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-03.md",
+              "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-03.md",
               "title": "meeting-2026-04-03.md",
               "snippet": "e to think through the timing tradeoff - follow up in 2 weeks"
             }
@@ -1948,21 +1948,21 @@ $ ./scripts/pska --config .pska/config.json search --query "What should I know b
               "passage_window_id": null,
               "message_id": null,
               "path": null,
-              "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-03.md"
+              "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-03.md"
             }
           ],
           "evidence_citations": [
             {
               "source_item_id": "src_1bfa0f5e9f05553db0cd98041e0b8b15",
               "chunk_id": "chk_1bfa0f5e9f05553db0cd98041e0b8b15_0",
-              "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-03.md",
+              "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-03.md",
               "title": "meeting-2026-04-03.md",
               "snippet": "--- title: Meeting 2026-04-03 — alice-example office hours type: meetings date: 2026-04-03 attendees: [you, people/alice-example] --- # Office hours — alice-example, 2026-04-03 ## Notes Alice walked through current acme-example metrics. Ret"
             },
             {
               "source_item_id": "src_1bfa0f5e9f05553db0cd98041e0b8b15",
               "chunk_id": "chk_1bfa0f5e9f05553db0cd98041e0b8b15_1",
-              "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-03.md",
+              "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-03.md",
               "title": "meeting-2026-04-03.md",
               "snippet": "e to think through the timing tradeoff - follow up in 2 weeks"
             }
@@ -2139,7 +2139,7 @@ $ ./scripts/pska --config .pska/config.json search --query "What should I know b
             "passage_window_id": null,
             "message_id": null,
             "path": null,
-            "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/people-alice-example.md"
+            "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/people-alice-example.md"
           }
         ]
       },
@@ -2161,7 +2161,7 @@ $ ./scripts/pska --config .pska/config.json search --query "What should I know b
             "passage_window_id": null,
             "message_id": null,
             "path": null,
-            "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx"
+            "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx"
           }
         ]
       },
@@ -2183,7 +2183,7 @@ $ ./scripts/pska --config .pska/config.json search --query "What should I know b
             "passage_window_id": null,
             "message_id": null,
             "path": null,
-            "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md"
+            "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/gbrain-calibration/extract-takes-corpus/meeting-2026-04-10-fundraise-fund-a.md"
           }
         ]
       },
@@ -2208,7 +2208,7 @@ $ ./scripts/pska --config .pska/config.json search --query "What should I know b
             "passage_window_id": null,
             "message_id": null,
             "path": null,
-            "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx"
+            "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx"
           }
         ]
       },
@@ -2233,7 +2233,7 @@ $ ./scripts/pska --config .pska/config.json search --query "What should I know b
             "passage_window_id": null,
             "message_id": null,
             "path": null,
-            "url": "file:///Users/xudawei/PSKA_workspaces/default/notes/benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx"
+            "url": "file://$PSKA_WORKSPACE/notes/benchmark-2026-06-25/spreadsheets/portfolio-pipeline.xlsx"
           }
         ]
       }

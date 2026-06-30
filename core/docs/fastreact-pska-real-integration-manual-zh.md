@@ -4,6 +4,13 @@
 
 ## 一次性配置
 
+本文用占位变量表示本机 checkout：
+
+```bash
+export PSKA_REPO="/path/to/pska"
+export FASTREACT_NANO_REPO="/path/to/FastReAct/fastreact-nano"
+```
+
 推荐把 `~/api_key.txt` 写成 JSON：
 
 ```json
@@ -27,7 +34,7 @@ line 4: 可选 FastReAct service token
 生成 FastReAct 本地配置：
 
 ```bash
-cd "/Users/xudawei/Documents/personal archive"
+cd "$PSKA_REPO"
 ./scripts/fastreact-pska-service-config
 ```
 
@@ -63,7 +70,7 @@ PSKA service  <-- HTTP MCP -->  FastReAct service
 先启动 PSKA：
 
 ```bash
-cd "/Users/xudawei/Documents/personal archive"
+cd "$PSKA_REPO"
 ./start.sh
 ```
 
@@ -78,10 +85,10 @@ cd "/Users/xudawei/Documents/personal archive"
 启动 FastReAct：
 
 ```bash
-cd /Users/xudawei/FastReAct/fastreact-nano
+cd "$FASTREACT_NANO_REPO"
 NO_PROXY=127.0.0.1,localhost PYTHONPATH=src \
   python3 -m fastreact.adapters.http \
-  --config "/Users/xudawei/Documents/personal archive/.pska/fastreact-pska-http.json"
+  --config "$PSKA_REPO/.pska/fastreact-pska-http.json"
 ```
 
 如果 PSKA service 启用了 token，把同一个 token 写入
@@ -100,7 +107,7 @@ NO_PROXY=127.0.0.1,localhost PYTHONPATH=src \
 如果只是验证 FastReAct 能否加载 PSKA MCP 子进程，可以使用默认 stdio 配置：
 
 ```bash
-cd /Users/xudawei/FastReAct/fastreact-nano
+cd "$FASTREACT_NANO_REPO"
 python3 -m fastreact.adapters.http
 ```
 
@@ -170,7 +177,7 @@ curl -sS \
 PSKA repo 提供确定性 E2E smoke，验证真实 HTTP/SSE service、service auth、真实 PSKA MCP JSON-RPC 子进程和 SSE event contract：
 
 ```bash
-cd "/Users/xudawei/Documents/personal archive/core"
+cd "$PSKA_REPO/core"
 python3 scripts/fastreact_http_sse_e2e.py \
   --python ../.pska/venvs/pska-py312/bin/python
 ```
@@ -190,7 +197,7 @@ smoke 不依赖真实外部 LLM；它用于验证服务边界和 PSKA MCP 真实
 FastReAct service 启动后：
 
 ```bash
-cd "/Users/xudawei/Documents/personal archive/core"
+cd "$PSKA_REPO/core"
 TOKEN=$(python3 - <<'PY'
 import json
 from pathlib import Path
@@ -217,14 +224,14 @@ PSKA_LLM_API_KEY_FILE="$HOME/api_key.txt" \
 重新生成配置并重启 FastReAct：
 
 ```bash
-cd "/Users/xudawei/Documents/personal archive"
+cd "$PSKA_REPO"
 ./scripts/fastreact-pska-service-config
 ```
 
 确认 `~/.fastreact/config.json` 里的 MCP command 指向：
 
 ```text
-/Users/xudawei/Documents/personal archive/scripts/pska
+$PSKA_REPO/scripts/pska
 ```
 
 ### DeepSeek / OpenAI-compatible API 证书失败
@@ -232,5 +239,5 @@ cd "/Users/xudawei/Documents/personal archive"
 `scripts/fastreact-pska-service-config` 会尝试把 PSKA venv 的 `certifi` 路径写入 MCP 子进程 env。若仍失败，确认：
 
 ```bash
-"/Users/xudawei/Documents/personal archive/.pska/venvs/pska-py312/bin/python" -c 'import certifi; print(certifi.where())'
+"$PSKA_REPO/.pska/venvs/pska-py312/bin/python" -c 'import certifi; print(certifi.where())'
 ```

@@ -238,6 +238,77 @@ class URLPageSourceAdapter:
         return report
 
 
+class InlineTextSourceAdapter:
+    connector_id = "text"
+
+    def __init__(self, store: KnowledgeStore, source: KnowledgeSource, *, embedding_provider: Any = None, processing_config: dict[str, Any] | None = None) -> None:
+        self.store = store
+        self.source = source
+        self.embedding_provider = embedding_provider
+        self.processing_config = resolve_processing_config(source.config, processing_config)
+
+    def validate(self) -> dict[str, Any]:
+        text = _inline_text(self.source)
+        return {"ok": bool(text.strip()), "adapter": self.connector_id, "chars": len(text), "uri": self.source.uri}
+
+    def list_resources(self, *, limit: int = 20) -> list[SourceResource]:
+        if limit <= 0:
+            return []
+        text = _inline_text(self.source)
+        if not text.strip():
+            return []
+        title = str(self.source.config.get("title") or self.source.name or "Pasted text").strip()
+        resource_id = str(self.source.config.get("source_id") or self.source.uri).strip()
+        return [
+            SourceResource(
+                resource_id=resource_id,
+                title=title,
+                uri=self.source.uri,
+                record_type=str(self.source.config.get("record_type") or "pasted_text"),
+                content_hash=_content_hash(self.source.uri, title, text, str(self.source.config.get("updated_at") or "")),
+                summary=text,
+                metadata={
+                    "source_type": "text",
+                    "input_kind": "pasted_text",
+                    **dict(self.source.config.get("metadata") or {}),
+                },
+            )
+        ][:limit]
+
+    def preview(self, *, limit: int = 10) -> dict[str, Any]:
+        validation = self.validate()
+        resources = self.list_resources(limit=limit) if validation["ok"] else []
+        return {"ok": validation["ok"], "validation": validation, "resources": _resources_payload(resources), "count": len(resources)}
+
+    def sync(self, *, limit: int | None = None) -> SourceAdapterSyncReport:
+        return _sync_resources(
+            self.store,
+            self.source,
+            self.list_resources(limit=limit or 1),
+            connector_id=self.connector_id,
+            embedding_provider=self.embedding_provider,
+            processing_config=self.processing_config,
+        )
+
+
+class UploadSourceAdapter(InlineTextSourceAdapter):
+    connector_id = "upload"
+
+    def list_resources(self, *, limit: int = 20) -> list[SourceResource]:
+        resources = super().list_resources(limit=limit)
+        for resource in resources:
+            resource.record_type = str(self.source.config.get("record_type") or "uploaded_document")
+            resource.metadata = {
+                "source_type": "upload",
+                "input_kind": "uploaded_file",
+                "filename": self.source.config.get("filename"),
+                "content_type": self.source.config.get("content_type"),
+                "size_bytes": self.source.config.get("size_bytes"),
+                **dict(self.source.config.get("metadata") or {}),
+            }
+        return resources
+
+
 def build_source_adapter(
     store: KnowledgeStore,
     source: KnowledgeSource,
@@ -253,6 +324,10 @@ def build_source_adapter(
         return RSSAtomSourceAdapter(store, source, embedding_provider=embedding_provider, processing_config=processing_config)
     if connector_id == "url" or source_type in {"url", "web", "sitemap"}:
         return URLPageSourceAdapter(store, source, embedding_provider=embedding_provider, processing_config=processing_config)
+    if connector_id == "text" or source_type in {"text", "paste", "pasted_text"}:
+        return InlineTextSourceAdapter(store, source, embedding_provider=embedding_provider, processing_config=processing_config)
+    if connector_id == "upload" or source_type in {"upload", "uploaded_file", "uploaded_document"}:
+        return UploadSourceAdapter(store, source, embedding_provider=embedding_provider, processing_config=processing_config)
     raise ValueError(f"Unsupported source adapter: {source.connector_id or source.source_type}")
 
 
@@ -261,6 +336,8 @@ def supported_source_adapters() -> list[dict[str, Any]]:
         {"source_type": "folder", "connector_id": "files", "label": "Local folder"},
         {"source_type": "rss", "connector_id": "rss", "label": "RSS/Atom feed"},
         {"source_type": "url", "connector_id": "url", "label": "URL page or sitemap"},
+        {"source_type": "text", "connector_id": "text", "label": "Pasted text"},
+        {"source_type": "upload", "connector_id": "upload", "label": "Uploaded file"},
     ]
 
 
@@ -485,6 +562,13 @@ def _content_hash(*parts: str) -> str:
 
 def _source_url(source: KnowledgeSource) -> str:
     return str(source.config.get("url") or source.uri)
+
+
+def _inline_text(source: KnowledgeSource) -> str:
+    content = source.config.get("content")
+    if isinstance(content, dict):
+        return str(content.get("text") or content.get("raw_text") or "")
+    return str(source.config.get("text") or source.config.get("body") or "")
 
 
 def _source_path(source: KnowledgeSource) -> Path:

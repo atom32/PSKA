@@ -29,9 +29,11 @@ For the Chinese version, see [README.zh.md](README.zh.md).
 - Agentic work: Deep Ask and digest generation are delegated to FastReAct when
   configured. PSKA owns readiness checks, MCP boundaries, citations, review
   gating, and tenant visibility.
-- Core coverage: Knowledge Sources, processing spans, chunk preview, Digest,
-  Review, Ask with evidence, Evidence Briefs/Writing, and readiness diagnostics
-  are first-class tenant-version surfaces.
+- Core coverage: the user-facing document library, processing spans, chunk
+  preview, Digest, Review, multi-turn Ask with evidence, Evidence
+  Briefs/Writing, prompt profiles, and readiness diagnostics are first-class
+  tenant-version surfaces. Internally this still maps to KnowledgeSource,
+  source item, document, chunk, and review/digest models.
 
 ## Local Services
 
@@ -46,6 +48,15 @@ PSKA does not start AuthNode or FastReAct for you. Start those projects from
 their own repositories, then start PSKA from this repository with `./start.sh`.
 For PSKA verification, use the integrated `./start.sh` path unless you are
 explicitly doing isolated debugging.
+
+Command examples use path variables instead of machine-specific checkout paths:
+
+```bash
+export PSKA_REPO="$(pwd)"
+export AUTHNODE_REPO="/path/to/AuthNode"
+export FASTREACT_REPO="/path/to/FastReAct"
+export FASTREACT_NANO_REPO="$FASTREACT_REPO/fastreact-nano"
+```
 
 ## First-Time Setup
 
@@ -81,10 +92,10 @@ For login-protected multi-tenant browser testing, set the frontend mode to
 Then start AuthNode and PSKA:
 
 ```bash
-cd /Users/xudawei/Documents/AuthNode
+cd "$AUTHNODE_REPO"
 ./start.sh
 
-cd /Users/xudawei/Documents/personal\ archive
+cd "$PSKA_REPO"
 export AUTHNODE_URL=http://127.0.0.1:8788
 export PSKA_GATEWAY_SESSION_SECRET='<random-long-secret>'
 ./start.sh
@@ -105,13 +116,13 @@ for its lightweight identity context.
 Start dependencies:
 
 ```bash
-cd /Users/xudawei/Documents/AuthNode
+cd "$AUTHNODE_REPO"
 ./start.sh
 
-cd /Users/xudawei/FastReAct
+cd "$FASTREACT_REPO"
 ./start.sh
 
-cd /Users/xudawei/Documents/personal\ archive
+cd "$PSKA_REPO"
 ./start.sh
 ```
 
@@ -264,9 +275,9 @@ WeKnora core coverage acceptance:
 - `core/`: tenant-aware knowledge model, source adapters, ingestion, jobs,
   search, digest, review, Ask, Evidence Briefs, HTTP API, local daemon, and MCP
   tools.
-- `frontend/`: User Workspace with Today, Discoveries, Knowledge Sources,
-  Corpus/Brain, Ask, Graph, Review-oriented flows, and Writing/Evidence Brief
-  surfaces.
+- `frontend/`: User Workspace with Today, Discoveries, document library,
+  multi-turn Ask, Graph, Review-oriented flows, prompt profiles, and
+  Writing/Evidence Brief surfaces.
 - `channels/twitter-x/`: Twitter/X archive collector and archive schema.
 
 ## License

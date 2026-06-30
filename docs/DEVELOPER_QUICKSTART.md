@@ -3,6 +3,14 @@
 Goal: get a new developer from checkout to a working local PSKA UI in about 30
 minutes.
 
+Examples use path variables for sibling checkouts:
+
+```bash
+export PSKA_REPO="$(pwd)"
+export AUTHNODE_REPO="/path/to/AuthNode"
+export FASTREACT_NANO_REPO="/path/to/FastReAct/fastreact-nano"
+```
+
 ## One-Command Dev Stack
 
 From the repository root:
@@ -50,10 +58,10 @@ For the normal login-protected local entrypoint, use gateway mode on port
 Start AuthNode from its own repository, then start PSKA from this repository:
 
 ```bash
-cd /Users/xudawei/Documents/AuthNode
+cd "$AUTHNODE_REPO"
 ./start.sh
 
-cd /Users/xudawei/Documents/personal\ archive
+cd "$PSKA_REPO"
 export AUTHNODE_URL=http://127.0.0.1:8788
 export PSKA_GATEWAY_SESSION_SECRET='<random-long-secret>'
 ./start.sh
@@ -157,10 +165,10 @@ generate a FastReAct config that points to PSKA's HTTP MCP endpoint:
   --mcp-transport http \
   --output .pska/fastreact-pska-http.json
 
-cd /Users/xudawei/FastReAct/fastreact-nano
+cd "$FASTREACT_NANO_REPO"
 NO_PROXY=127.0.0.1,localhost PYTHONPATH=src \
   python3 -m fastreact.adapters.http \
-  --config "/Users/xudawei/Documents/personal archive/.pska/fastreact-pska-http.json"
+  --config "$PSKA_REPO/.pska/fastreact-pska-http.json"
 ```
 
 If PSKA service auth is enabled, store the PSKA service token in

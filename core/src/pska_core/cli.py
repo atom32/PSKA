@@ -2360,8 +2360,17 @@ def digest_now(args: argparse.Namespace, config: PSKAConfig) -> int:
             return 1
 
     scheduled = api.schedule_digest(_digest_schedule_payload(args))
+    scheduled_job = scheduled.get("job") if isinstance(scheduled.get("job"), dict) else None
+    args.job_id = str(scheduled_job.get("job_id")) if scheduled_job and scheduled_job.get("job_id") else None
     worker_runs = _run_fastreact_digest_worker(args, config)
     diagnostics = _digest_now_diagnostics(worker_runs)
+    candidate_summary = _digest_now_candidate_summary(
+        worker_runs,
+        store=api.store,
+        owner_user_id=args.owner_user_id,
+        tenant_id=tenant_id,
+    )
+    diagnostics = _digest_now_diagnostics_with_persisted_candidates(diagnostics, candidate_summary)
     fallback_review = _digest_now_fallback_review(
         api.store,
         owner_user_id=args.owner_user_id,
@@ -2384,12 +2393,6 @@ def digest_now(args: argparse.Namespace, config: PSKAConfig) -> int:
         job
         for job in api.store.list_jobs(tenant_id=tenant_id, status="failed", job_type=DIGEST_VIA_FASTREACT, limit=10)
     ]
-    candidate_summary = _digest_now_candidate_summary(
-        worker_runs,
-        store=api.store,
-        owner_user_id=args.owner_user_id,
-        tenant_id=tenant_id,
-    )
     candidate_summary["review_items"] += int(fallback_review.get("review_items") or 0)
     payload = {
         "ok": not any(run.get("ok") is False for run in worker_runs),
@@ -2430,7 +2433,12 @@ def _digest_now_fallback_review(
     worker_runs: list[dict[str, Any]],
 ) -> dict[str, Any]:
     warnings = set(diagnostics.get("warnings") or [])
-    if "fastreact_digest_completed_without_write_candidates" not in warnings:
+    actionable_warnings = {
+        "fastreact_digest_completed_without_write_candidates",
+        "fastreact_digest_completed_without_persisted_candidates",
+    }
+    matched_warning = next((warning for warning in actionable_warnings if warning in warnings), None)
+    if matched_warning is None:
         return {"created": False, "reason": "fastreact_wrote_candidates_or_no_processed_run", "review_items": 0}
     processed = sum(int(run.get("processed") or 0) for run in worker_runs if isinstance(run, dict))
     if processed <= 0:
@@ -2446,6 +2454,8 @@ def _digest_now_fallback_review(
     source_refs = [{"source_item_id": source_id} for source_id in source_ids if source_id in known_items]
     if not source_refs:
         return {"created": False, "reason": "scheduled_source_items_not_found", "review_items": 0}
+    job_ids = sorted(_digest_now_job_ids(worker_runs))
+    job_id = job_ids[0] if len(job_ids) == 1 else None
     titles = [known_items[ref["source_item_id"]].title for ref in source_refs[:3]]
     more = len(source_refs) - len(titles)
     title_suffix = "、".join(title for title in titles if title)
@@ -2456,6 +2466,7 @@ def _digest_now_fallback_review(
         "owner_user_id": owner_user_id,
         "tenant_id": tenant_id,
         "producer": "pska_digest_now_fallback",
+        "job_id": job_id,
         "request_id": "digest_now_fallback:" + ":".join(source_ids),
         "source_refs": source_refs,
         "review_items": [
@@ -2463,17 +2474,23 @@ def _digest_now_fallback_review(
                 "review_type": ReviewType.LOW_CONFIDENCE.value,
                 "title": f"Digest agent did not write candidates: {title_suffix or source_ids[0]}",
                 "proposal": {
-                    "reason": "fastreact_digest_completed_without_write_candidates",
-                    "message": "FastReact processed the digest job but did not call pska_write_candidates. Review these sources manually or rerun digest after fixing the agent/tool path.",
+                    "reason": matched_warning,
+                    "message": _digest_now_fallback_review_message(matched_warning),
                     "source_item_ids": source_ids,
                     "diagnostics": diagnostics,
-                    "plain_text_summary": "FastReAct digest completed but did not write any candidates; review these sources or rerun digest after fixing the agent/tool path.",
+                    "plain_text_summary": _digest_now_fallback_review_message(matched_warning),
                 },
             }
         ],
     }
     summary = CandidateWriteService(store).write_candidates(payload)
-    return {"created": True, "reason": "fastreact_digest_completed_without_write_candidates", "review_items": len(summary["review_items"]), "summary": summary}
+    return {"created": True, "reason": matched_warning, "review_items": len(summary["review_items"]), "summary": summary}
+
+
+def _digest_now_fallback_review_message(reason: str) -> str:
+    if reason == "fastreact_digest_completed_without_persisted_candidates":
+        return "FastReAct called the candidate write tool, but PSKA persisted no digest notes, claims, review items, memories, or profile cards for this job. Review these sources manually or rerun digest after fixing the agent/tool payload."
+    return "FastReAct processed the digest job but did not call pska_write_candidates. Review these sources manually or rerun digest after fixing the agent/tool path."
 
 
 def _digest_now_candidate_summary(
@@ -2514,9 +2531,9 @@ def _digest_now_candidate_summary(
             owner_user_id=owner_user_id,
             tenant_id=tenant_id,
             job_ids=_digest_now_job_ids(worker_runs),
-        )
+            )
         if persisted["job_ids"]:
-            for key in ("entities", "knowledge_claims", "digest_notes", "agent_memories", "profile_cards"):
+            for key in ("entities", "knowledge_claims", "digest_notes", "review_items", "agent_memories", "profile_cards"):
                 summary[key] = persisted[key]
             summary["saved_candidates"] = (
                 persisted["entities"]
@@ -2525,6 +2542,7 @@ def _digest_now_candidate_summary(
                 + persisted["agent_memories"]
                 + persisted["profile_cards"]
             )
+            summary["review_candidates"] = persisted["review_items"]
             summary["persisted_candidate_counts"] = persisted
     return summary
 
@@ -2579,14 +2597,34 @@ def _digest_now_persisted_candidate_summary(
         for card in store.list_profile_cards(owner_user_id=owner_user_id, tenant_id=tenant_id)
         if str((getattr(card, "metadata", {}) or {}).get("_job_id") or (getattr(card, "profile", {}) or {}).get("_job_id") or "") in job_ids
     ]
+    review_items = [
+        item
+        for item in store.list_review_items(tenant_id=tenant_id)
+        if getattr(item, "owner_user_id", "") == owner_user_id and str((getattr(item, "proposal", {}) or {}).get("job_id") or "") in job_ids
+    ]
     return {
         "job_ids": sorted(job_ids),
         "entities": len({getattr(entity, "entity_id", "") for entity in entities}),
         "knowledge_claims": len({getattr(claim, "knowledge_claim_id", "") for claim in claims}),
         "digest_notes": len({getattr(note, "digest_note_id", "") for note in notes}),
+        "review_items": len({getattr(item, "review_item_id", "") for item in review_items}),
         "agent_memories": len({getattr(memory, "agent_memory_id", "") for memory in memories}),
         "profile_cards": len({getattr(card, "profile_card_id", "") for card in profiles}),
     }
+
+
+def _digest_now_diagnostics_with_persisted_candidates(diagnostics: dict[str, Any], candidate_summary: dict[str, Any]) -> dict[str, Any]:
+    persisted = candidate_summary.get("persisted_candidate_counts") if isinstance(candidate_summary.get("persisted_candidate_counts"), dict) else {}
+    if not persisted:
+        return diagnostics
+    persisted_total = sum(
+        int(persisted.get(key) or 0)
+        for key in ("entities", "knowledge_claims", "digest_notes", "review_items", "agent_memories", "profile_cards")
+    )
+    if int(diagnostics.get("write_call_count") or 0) > 0 and persisted.get("job_ids") and persisted_total == 0:
+        warnings = [*list(diagnostics.get("warnings") or []), "fastreact_digest_completed_without_persisted_candidates"]
+        return {**diagnostics, "warnings": list(dict.fromkeys(warnings))}
+    return diagnostics
 
 
 def _digest_now_diagnostics(worker_runs: list[dict[str, Any]]) -> dict[str, Any]:
@@ -2642,7 +2680,8 @@ def _digest_now_diagnostics(worker_runs: list[dict[str, Any]]) -> dict[str, Any]
 
 
 def _run_fastreact_digest_worker(args: argparse.Namespace, config: PSKAConfig) -> list[dict[str, Any]]:
-    max_runs = max(1, int(args.max_worker_runs or 1))
+    job_id = str(getattr(args, "job_id", "") or "").strip()
+    max_runs = 1 if job_id else max(1, int(args.max_worker_runs or 1))
     command_args = argparse.Namespace(
         pska_url=args.pska_url,
         fastreact_url=args.fastreact_url,
@@ -2651,6 +2690,7 @@ def _run_fastreact_digest_worker(args: argparse.Namespace, config: PSKAConfig) -
         batch_limit=args.batch_size,
         tenant_id=args.tenant_id,
         represented_user_id=args.owner_user_id,
+        job_id=job_id,
     )
     command_payload = _fastreact_digest_worker_command_payload(command_args, config)
     fastreact_root = Path(command_payload["fastreact_root"])
@@ -4574,7 +4614,7 @@ def _pska_command(config_path: str | None = None) -> str:
 
 
 def _fastreact_digest_worker_command_payload(args: argparse.Namespace, config: PSKAConfig) -> dict[str, Any]:
-    pska_url = str(args.pska_url or f"http://{config.service.host}:{config.service.port}").rstrip("/")
+    pska_url = str(args.pska_url or _service_check_url(config.service.host, config.service.port)).rstrip("/")
     fastreact_url = str(args.fastreact_url or config.fastreact.url).rstrip("/")
     fastreact_root = args.fastreact_root.expanduser()
     command = [
@@ -4591,6 +4631,9 @@ def _fastreact_digest_worker_command_payload(args: argparse.Namespace, config: P
         "--represented-user-id",
         str(args.represented_user_id),
     ]
+    job_id = str(getattr(args, "job_id", "") or "").strip()
+    if job_id:
+        command.extend(["--job-id", job_id])
     return {
         "ok": True,
         "pska_database_url": config.database.url,

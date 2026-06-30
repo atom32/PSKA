@@ -626,6 +626,7 @@ class MCPServer:
         return [
             item
             for item in self.store.list_source_items(tenant_id=user.tenant_id)
+            if str(getattr(item, "lifecycle_status", "active") or "active") == "active"
             if self.retrieval.acl.can_read_item(user, item, represented_user_id=represented_user_id)
         ]
 
@@ -656,7 +657,9 @@ class MCPServer:
         candidate_items = [
             item
             for item in self.store.list_source_items(tenant_id=tenant_id)
-            if item.source_item_id in source_item_ids and item.owner_user_id == request_user_id
+            if item.source_item_id in source_item_ids
+            and item.owner_user_id == request_user_id
+            and str(getattr(item, "lifecycle_status", "active") or "active") == "active"
         ]
         candidate_items = sorted(candidate_items, key=lambda item: (item.created_at, item.source_item_id))
         offset = _cursor_offset(arguments.get("cursor"))

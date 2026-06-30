@@ -13,6 +13,9 @@ from psycopg.types.json import Jsonb
 from pska_core.enums import Directionality, MemoryLayer, ReviewType, UserRole, UserStatus, Visibility
 from pska_core.models import (
     AgentMemory,
+    AskConversation,
+    AskMessage,
+    AskRun,
     Chunk,
     ConnectorState,
     DEFAULT_TENANT_ID,
@@ -29,6 +32,7 @@ from pska_core.models import (
     KnowledgeSource,
     OfflineIndexState,
     ProcessingSpan,
+    PromptProfile,
     ReviewItem,
     SourceRef,
     SourceItem,
@@ -43,6 +47,11 @@ from pska_core.models import (
     utc_now,
 )
 from pska_core.serde import to_jsonable
+
+
+def _count_sql(conn: Any, sql: str, params: tuple[Any, ...]) -> int:
+    row = conn.execute(sql, params).fetchone()
+    return int((row or {}).get("count") or 0)
 
 
 class PostgresKnowledgeStore:
@@ -199,6 +208,10 @@ class PostgresKnowledgeStore:
                         content_text = %s,
                         content_hash = %s,
                         metadata = %s,
+                        lifecycle_status = %s,
+                        deleted_at = %s,
+                        deleted_by = %s,
+                        delete_reason = %s,
                         tenant_id = %s,
                         updated_at = now()
                     where source_item_id = %s
@@ -217,6 +230,10 @@ class PostgresKnowledgeStore:
                         item.content_text,
                         item.content_hash,
                         Jsonb(to_jsonable(item.metadata)),
+                        item.lifecycle_status,
+                        item.deleted_at,
+                        item.deleted_by,
+                        item.delete_reason,
                         item.tenant_id,
                         item.source_item_id,
                     ),
@@ -227,9 +244,9 @@ class PostgresKnowledgeStore:
                 insert into source_items(
                     source_item_id, source_channel, record_type, source_id, owner_user_id,
                     space_id, visibility, visible_team_ids, title, url, content_text,
-                    content_hash, metadata, tenant_id
+                    content_hash, metadata, lifecycle_status, deleted_at, deleted_by, delete_reason, tenant_id
                 )
-                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     item.source_item_id,
@@ -245,10 +262,88 @@ class PostgresKnowledgeStore:
                     item.content_text,
                     item.content_hash,
                     Jsonb(to_jsonable(item.metadata)),
+                    item.lifecycle_status,
+                    item.deleted_at,
+                    item.deleted_by,
+                    item.delete_reason,
                     item.tenant_id,
                 ),
             )
             return item
+
+    def update_source_lifecycle(
+        self,
+        source_item_ids: list[str],
+        *,
+        lifecycle_status: str,
+        actor_user_id: str,
+        reason: str,
+        tenant_id: str | None = None,
+        hard_delete: bool = False,
+    ) -> dict[str, int]:
+        ids = list(dict.fromkeys(source_item_ids))
+        if not ids:
+            return {"source_items": 0, "documents": 0, "chunks": 0, "offline_index_states": 0}
+        tenant = tenant_id or DEFAULT_TENANT_ID
+        with self.connect() as conn:
+            counts = {
+                "source_items": _count_sql(conn, "select count(*) from source_items where tenant_id = %s and source_item_id = any(%s)", (tenant, ids)),
+                "documents": _count_sql(conn, "select count(*) from documents where tenant_id = %s and source_item_id = any(%s)", (tenant, ids)),
+                "chunks": _count_sql(conn, "select count(*) from chunks where tenant_id = %s and source_item_id = any(%s)", (tenant, ids)),
+                "offline_index_states": _count_sql(
+                    conn,
+                    """
+                    select count(*)
+                    from offline_index_states
+                    where tenant_id = %s
+                      and (source_item_id = any(%s) or object_id = any(%s))
+                    """,
+                    (tenant, ids, ids),
+                ),
+            }
+            if hard_delete:
+                conn.execute(
+                    """
+                    delete from offline_index_states
+                    where tenant_id = %s
+                      and (source_item_id = any(%s) or object_id = any(%s))
+                    """,
+                    (tenant, ids, ids),
+                )
+                conn.execute("delete from chunks where tenant_id = %s and source_item_id = any(%s)", (tenant, ids))
+                conn.execute("delete from documents where tenant_id = %s and source_item_id = any(%s)", (tenant, ids))
+                conn.execute("delete from source_items where tenant_id = %s and source_item_id = any(%s)", (tenant, ids))
+                return counts
+
+            deleted_at = None if lifecycle_status == "active" else utc_now()
+            deleted_by = None if lifecycle_status == "active" else actor_user_id
+            delete_reason = None if lifecycle_status == "active" else reason
+            for table in ("source_items", "documents", "chunks"):
+                conn.execute(
+                    f"""
+                    update {table}
+                    set lifecycle_status = %s,
+                        deleted_at = %s,
+                        deleted_by = %s,
+                        delete_reason = %s,
+                        updated_at = now()
+                    where tenant_id = %s and source_item_id = any(%s)
+                    """,  # noqa: S608 - fixed table allowlist.
+                    (lifecycle_status, deleted_at, deleted_by, delete_reason, tenant, ids),
+                )
+            if lifecycle_status != "active":
+                conn.execute(
+                    """
+                    update offline_index_states
+                    set status = 'tombstoned',
+                        dirty_reason = %s,
+                        updated_at = now()
+                    where tenant_id = %s
+                      and (source_item_id = any(%s) or object_id = any(%s))
+                    """,
+                    (reason, tenant, ids, ids),
+                )
+        return counts
 
     def upsert_connector_state(self, state: ConnectorState) -> ConnectorState:
         with self.connect() as conn:
@@ -1506,6 +1601,262 @@ class PostgresKnowledgeStore:
             ).fetchall()
         return [self._document_from_row(row) for row in rows]
 
+    def create_ask_conversation(self, conversation: AskConversation) -> AskConversation:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                insert into ask_conversations(
+                    conversation_id, tenant_id, owner_user_id, title, status, summary, metadata
+                )
+                values (%s, %s, %s, %s, %s, %s, %s)
+                on conflict (conversation_id) do update
+                set title = excluded.title,
+                    status = excluded.status,
+                    summary = excluded.summary,
+                    metadata = excluded.metadata,
+                    updated_at = now()
+                returning *
+                """,
+                (
+                    conversation.conversation_id,
+                    conversation.tenant_id,
+                    conversation.owner_user_id,
+                    conversation.title,
+                    conversation.status,
+                    conversation.summary,
+                    Jsonb(to_jsonable(conversation.metadata)),
+                ),
+            ).fetchone()
+        return self._ask_conversation_from_row(row)
+
+    def list_ask_conversations(self, *, tenant_id: str, owner_user_id: str, limit: int = 50) -> list[AskConversation]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                select *
+                from ask_conversations
+                where tenant_id = %s and owner_user_id = %s and status <> 'archived'
+                order by updated_at desc, created_at desc, conversation_id
+                limit %s
+                """,
+                (tenant_id, owner_user_id, max(1, min(limit, 200))),
+            ).fetchall()
+        return [self._ask_conversation_from_row(row) for row in rows]
+
+    def get_ask_conversation(self, conversation_id: str, *, tenant_id: str, owner_user_id: str) -> AskConversation:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                select *
+                from ask_conversations
+                where conversation_id = %s and tenant_id = %s and owner_user_id = %s
+                """,
+                (conversation_id, tenant_id, owner_user_id),
+            ).fetchone()
+        if not row:
+            raise KeyError(conversation_id)
+        return self._ask_conversation_from_row(row)
+
+    def add_ask_message(self, message: AskMessage) -> AskMessage:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                insert into ask_messages(
+                    message_id, conversation_id, tenant_id, owner_user_id, role, content,
+                    run_id, citations, source_refs, metadata
+                )
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                on conflict (message_id) do update
+                set content = excluded.content,
+                    run_id = excluded.run_id,
+                    citations = excluded.citations,
+                    source_refs = excluded.source_refs,
+                    metadata = excluded.metadata
+                returning *
+                """,
+                (
+                    message.message_id,
+                    message.conversation_id,
+                    message.tenant_id,
+                    message.owner_user_id,
+                    message.role,
+                    message.content,
+                    message.run_id,
+                    Jsonb(to_jsonable(message.citations)),
+                    Jsonb(to_jsonable(message.source_refs)),
+                    Jsonb(to_jsonable(message.metadata)),
+                ),
+            ).fetchone()
+            conn.execute(
+                "update ask_conversations set updated_at = now() where conversation_id = %s",
+                (message.conversation_id,),
+            )
+        return self._ask_message_from_row(row)
+
+    def list_ask_messages(self, conversation_id: str, *, tenant_id: str, owner_user_id: str, limit: int = 100) -> list[AskMessage]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                select *
+                from ask_messages
+                where conversation_id = %s and tenant_id = %s and owner_user_id = %s
+                order by created_at, message_id
+                limit %s
+                """,
+                (conversation_id, tenant_id, owner_user_id, max(1, min(limit, 500))),
+            ).fetchall()
+        return [self._ask_message_from_row(row) for row in rows]
+
+    def add_ask_run(self, run: AskRun) -> AskRun:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                insert into ask_runs(
+                    run_id, conversation_id, tenant_id, owner_user_id, query, status,
+                    result, prompt_profile_id, prompt_profile_version
+                )
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                on conflict (run_id) do update
+                set status = excluded.status,
+                    result = excluded.result,
+                    prompt_profile_id = excluded.prompt_profile_id,
+                    prompt_profile_version = excluded.prompt_profile_version
+                returning *
+                """,
+                (
+                    run.run_id,
+                    run.conversation_id,
+                    run.tenant_id,
+                    run.owner_user_id,
+                    run.query,
+                    run.status,
+                    Jsonb(to_jsonable(run.result)),
+                    run.prompt_profile_id,
+                    run.prompt_profile_version,
+                ),
+            ).fetchone()
+        return self._ask_run_from_row(row)
+
+    def finish_ask_run(self, run_id: str, *, status: str, result: dict[str, Any]) -> AskRun:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                update ask_runs
+                set status = %s,
+                    result = %s,
+                    finished_at = now()
+                where run_id = %s
+                returning *
+                """,
+                (status, Jsonb(to_jsonable(result)), run_id),
+            ).fetchone()
+            if not row:
+                raise KeyError(run_id)
+            conn.execute(
+                "update ask_conversations set updated_at = now() where conversation_id = %s",
+                (row["conversation_id"],),
+            )
+        return self._ask_run_from_row(row)
+
+    def list_ask_runs(self, conversation_id: str, *, tenant_id: str, owner_user_id: str, limit: int = 50) -> list[AskRun]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                select *
+                from ask_runs
+                where conversation_id = %s and tenant_id = %s and owner_user_id = %s
+                order by started_at desc, run_id
+                limit %s
+                """,
+                (conversation_id, tenant_id, owner_user_id, max(1, min(limit, 200))),
+            ).fetchall()
+        return [self._ask_run_from_row(row) for row in rows]
+
+    def upsert_prompt_profile(self, profile: PromptProfile) -> PromptProfile:
+        with self.connect() as conn:
+            existing = conn.execute(
+                """
+                select *
+                from prompt_profiles
+                where tenant_id = %s and scope = %s and coalesce(owner_user_id, '') = coalesce(%s, '') and profile_type = %s
+                """,
+                (profile.tenant_id, profile.scope, profile.owner_user_id, profile.profile_type),
+            ).fetchone()
+            next_version = int(existing["current_version"] or 0) + 1 if existing else max(int(profile.current_version or 1), 1)
+            row = conn.execute(
+                """
+                insert into prompt_profiles(
+                    prompt_profile_id, tenant_id, owner_user_id, profile_type, scope,
+                    name, status, current_version, config
+                )
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                on conflict (prompt_profile_id) do update
+                set name = excluded.name,
+                    status = excluded.status,
+                    current_version = excluded.current_version,
+                    config = excluded.config,
+                    updated_at = now()
+                returning *
+                """,
+                (
+                    existing["prompt_profile_id"] if existing else profile.prompt_profile_id,
+                    profile.tenant_id,
+                    profile.owner_user_id,
+                    profile.profile_type,
+                    profile.scope,
+                    profile.name,
+                    profile.status,
+                    next_version,
+                    Jsonb(to_jsonable(profile.config)),
+                ),
+            ).fetchone()
+            version_hash = hashlib.sha256(f"{row['prompt_profile_id']}:{next_version}".encode("utf-8")).hexdigest()[:32]
+            conn.execute(
+                """
+                insert into prompt_profile_versions(
+                    prompt_profile_version_id, prompt_profile_id, tenant_id, profile_type,
+                    scope, owner_user_id, version, config
+                )
+                values (%s, %s, %s, %s, %s, %s, %s, %s)
+                on conflict (prompt_profile_id, version) do nothing
+                """,
+                (
+                    f"ppv_{version_hash}",
+                    row["prompt_profile_id"],
+                    profile.tenant_id,
+                    profile.profile_type,
+                    profile.scope,
+                    profile.owner_user_id,
+                    next_version,
+                    Jsonb(to_jsonable(profile.config)),
+                ),
+            )
+        return self._prompt_profile_from_row(row)
+
+    def list_prompt_profiles(self, *, tenant_id: str, owner_user_id: str | None = None, profile_type: str | None = None) -> list[PromptProfile]:
+        clauses = ["tenant_id = %s", "status = 'active'"]
+        params: list[Any] = [tenant_id]
+        if owner_user_id is not None:
+            clauses.append("(owner_user_id is null or owner_user_id = %s)")
+            params.append(owner_user_id)
+        if profile_type:
+            clauses.append("profile_type = %s")
+            params.append(profile_type)
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                select *
+                from prompt_profiles
+                where {' and '.join(clauses)}
+                order by profile_type,
+                         case scope when 'tenant' then 0 when 'user' then 1 else 9 end,
+                         owner_user_id nulls first,
+                         updated_at
+                """,  # noqa: S608 - fixed clauses only.
+                tuple(params),
+            ).fetchall()
+        return [self._prompt_profile_from_row(row) for row in rows]
+
     def list_chunks_missing_embedding(self, *, provider: str, model: str, limit: int | None = None) -> list[Chunk]:
         with self.connect() as conn:
             rows = conn.execute(
@@ -2453,6 +2804,10 @@ class PostgresKnowledgeStore:
             metadata=dict(row["metadata"] or {}),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+            lifecycle_status=str(row.get("lifecycle_status") or "active"),
+            deleted_at=row.get("deleted_at"),
+            deleted_by=row.get("deleted_by"),
+            delete_reason=row.get("delete_reason"),
             tenant_id=row.get("tenant_id") or DEFAULT_TENANT_ID,
         )
 
@@ -2669,6 +3024,10 @@ class PostgresKnowledgeStore:
                 "embedding_model": row.get("embedding_model"),
                 "embedding_created_at": row.get("embedding_created_at"),
             },
+            lifecycle_status=str(row.get("lifecycle_status") or "active"),
+            deleted_at=row.get("deleted_at"),
+            deleted_by=row.get("deleted_by"),
+            delete_reason=row.get("delete_reason"),
             tenant_id=row.get("tenant_id") or DEFAULT_TENANT_ID,
         )
 
@@ -2683,6 +3042,68 @@ class PostgresKnowledgeStore:
             title=row["title"],
             body=row["body"],
             metadata=dict(row.get("metadata") or {}),
+            lifecycle_status=str(row.get("lifecycle_status") or "active"),
+            deleted_at=row.get("deleted_at"),
+            deleted_by=row.get("deleted_by"),
+            delete_reason=row.get("delete_reason"),
+            tenant_id=row.get("tenant_id") or DEFAULT_TENANT_ID,
+        )
+
+    def _ask_conversation_from_row(self, row: dict[str, Any]) -> AskConversation:
+        return AskConversation(
+            conversation_id=row["conversation_id"],
+            owner_user_id=row["owner_user_id"],
+            title=row["title"],
+            status=row["status"],
+            summary=row.get("summary") or "",
+            metadata=dict(row.get("metadata") or {}),
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+            tenant_id=row.get("tenant_id") or DEFAULT_TENANT_ID,
+        )
+
+    def _ask_message_from_row(self, row: dict[str, Any]) -> AskMessage:
+        return AskMessage(
+            message_id=row["message_id"],
+            conversation_id=row["conversation_id"],
+            owner_user_id=row["owner_user_id"],
+            role=row["role"],
+            content=row["content"],
+            run_id=row.get("run_id"),
+            citations=list(row.get("citations") or []),
+            source_refs=list(row.get("source_refs") or []),
+            metadata=dict(row.get("metadata") or {}),
+            created_at=row["created_at"],
+            tenant_id=row.get("tenant_id") or DEFAULT_TENANT_ID,
+        )
+
+    def _ask_run_from_row(self, row: dict[str, Any]) -> AskRun:
+        return AskRun(
+            run_id=row["run_id"],
+            conversation_id=row["conversation_id"],
+            owner_user_id=row["owner_user_id"],
+            query=row["query"],
+            status=row["status"],
+            result=dict(row.get("result") or {}),
+            prompt_profile_id=row.get("prompt_profile_id"),
+            prompt_profile_version=row.get("prompt_profile_version"),
+            started_at=row["started_at"],
+            finished_at=row.get("finished_at"),
+            tenant_id=row.get("tenant_id") or DEFAULT_TENANT_ID,
+        )
+
+    def _prompt_profile_from_row(self, row: dict[str, Any]) -> PromptProfile:
+        return PromptProfile(
+            prompt_profile_id=row["prompt_profile_id"],
+            profile_type=row["profile_type"],
+            scope=row["scope"],
+            name=row["name"],
+            config=dict(row.get("config") or {}),
+            owner_user_id=row.get("owner_user_id"),
+            status=row["status"],
+            current_version=int(row.get("current_version") or 1),
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
             tenant_id=row.get("tenant_id") or DEFAULT_TENANT_ID,
         )
 

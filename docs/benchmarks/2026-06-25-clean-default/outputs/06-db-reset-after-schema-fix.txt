@@ -23,7 +23,7 @@ CREATE TABLE
 CREATE INDEX
 CREATE INDEX
 CREATE INDEX
-psql:/Users/xudawei/Documents/personal archive/core/src/pska_core/migrations/001_init.sql:118: NOTICE:  ivfflat index created with little data
+psql:$PSKA_REPO/core/src/pska_core/migrations/001_init.sql:118: NOTICE:  ivfflat index created with little data
 DETAIL:  This will cause low recall.
 HINT:  Drop the index until the table has more data.
 CREATE INDEX
@@ -45,14 +45,14 @@ CREATE TABLE
 INSERT 0 3
 INSERT 0 1
 INSERT 0 5
-psql:/Users/xudawei/Documents/personal archive/core/src/pska_core/migrations/002_bge_m3_embeddings.sql:4: NOTICE:  extension "vector" already exists, skipping
+psql:$PSKA_REPO/core/src/pska_core/migrations/002_bge_m3_embeddings.sql:4: NOTICE:  extension "vector" already exists, skipping
 CREATE EXTENSION
-psql:/Users/xudawei/Documents/personal archive/core/src/pska_core/migrations/002_bge_m3_embeddings.sql:9: NOTICE:  column "embedding_provider" of relation "chunks" already exists, skipping
-psql:/Users/xudawei/Documents/personal archive/core/src/pska_core/migrations/002_bge_m3_embeddings.sql:9: NOTICE:  column "embedding_model" of relation "chunks" already exists, skipping
-psql:/Users/xudawei/Documents/personal archive/core/src/pska_core/migrations/002_bge_m3_embeddings.sql:9: NOTICE:  column "embedding_created_at" of relation "chunks" already exists, skipping
+psql:$PSKA_REPO/core/src/pska_core/migrations/002_bge_m3_embeddings.sql:9: NOTICE:  column "embedding_provider" of relation "chunks" already exists, skipping
+psql:$PSKA_REPO/core/src/pska_core/migrations/002_bge_m3_embeddings.sql:9: NOTICE:  column "embedding_model" of relation "chunks" already exists, skipping
+psql:$PSKA_REPO/core/src/pska_core/migrations/002_bge_m3_embeddings.sql:9: NOTICE:  column "embedding_created_at" of relation "chunks" already exists, skipping
 ALTER TABLE
 DO
-psql:/Users/xudawei/Documents/personal archive/core/src/pska_core/migrations/002_bge_m3_embeddings.sql:30: NOTICE:  relation "chunks_embedding_idx" already exists, skipping
+psql:$PSKA_REPO/core/src/pska_core/migrations/002_bge_m3_embeddings.sql:30: NOTICE:  relation "chunks_embedding_idx" already exists, skipping
 CREATE INDEX
 CREATE TABLE
 CREATE INDEX
@@ -70,13 +70,13 @@ CREATE TABLE
 CREATE INDEX
 CREATE INDEX
 CREATE INDEX
-psql:/Users/xudawei/Documents/personal archive/core/src/pska_core/migrations/008_review_taxonomy.sql:1: NOTICE:  enum label "memory_candidate" already exists, skipping
+psql:$PSKA_REPO/core/src/pska_core/migrations/008_review_taxonomy.sql:1: NOTICE:  enum label "memory_candidate" already exists, skipping
 ALTER TYPE
-psql:/Users/xudawei/Documents/personal archive/core/src/pska_core/migrations/008_review_taxonomy.sql:2: NOTICE:  enum label "relationship_candidate" already exists, skipping
+psql:$PSKA_REPO/core/src/pska_core/migrations/008_review_taxonomy.sql:2: NOTICE:  enum label "relationship_candidate" already exists, skipping
 ALTER TYPE
-psql:/Users/xudawei/Documents/personal archive/core/src/pska_core/migrations/008_review_taxonomy.sql:3: NOTICE:  enum label "action_candidate" already exists, skipping
+psql:$PSKA_REPO/core/src/pska_core/migrations/008_review_taxonomy.sql:3: NOTICE:  enum label "action_candidate" already exists, skipping
 ALTER TYPE
-psql:/Users/xudawei/Documents/personal archive/core/src/pska_core/migrations/008_review_taxonomy.sql:4: NOTICE:  enum label "low_confidence" already exists, skipping
+psql:$PSKA_REPO/core/src/pska_core/migrations/008_review_taxonomy.sql:4: NOTICE:  enum label "low_confidence" already exists, skipping
 ALTER TYPE
 CREATE TABLE
 CREATE INDEX
@@ -93,7 +93,7 @@ CREATE INDEX
 ALTER TABLE
 CREATE INDEX
 CREATE INDEX
-psql:/Users/xudawei/Documents/personal archive/core/src/pska_core/migrations/012_discovery_quality.sql:14: NOTICE:  constraint "discovery_items_discovery_score_check" of relation "discovery_items" does not exist, skipping
+psql:$PSKA_REPO/core/src/pska_core/migrations/012_discovery_quality.sql:14: NOTICE:  constraint "discovery_items_discovery_score_check" of relation "discovery_items" does not exist, skipping
 ALTER TABLE
 ALTER TABLE
 CREATE TABLE

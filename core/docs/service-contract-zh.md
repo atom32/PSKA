@@ -6,6 +6,14 @@
 
 PSKA online service 是前台运行的本地 HTTP 服务。它不是 daemon supervisor；自动启动、重启、worker supervision 和运维手册属于 P0.5。
 
+命令示例使用占位变量表示本机目录：
+
+```bash
+export PSKA_REPO="/path/to/pska"
+export NOTES_ROOT="/path/to/notes"
+export FASTREACT_NANO_REPO="/path/to/FastReAct/fastreact-nano"
+```
+
 启动：
 
 ```bash
@@ -261,8 +269,8 @@ Minimal shape:
 {
   "schema_version": "pska.connector_record.v1",
   "connector_id": "files",
-  "external_id": "/Users/me/notes/project.md",
-  "source_uri": "file:///Users/me/notes/project.md",
+  "external_id": "/path/to/notes/project.md",
+  "source_uri": "file:///path/to/notes/project.md",
   "record_type": "file",
   "title": "Project note",
   "body": "Readable text extracted by the connector.",
@@ -273,7 +281,7 @@ Minimal shape:
   "created_at": "2026-06-16T10:00:00Z",
   "updated_at": "2026-06-16T10:05:00Z",
   "captured_at": "2026-06-16T10:06:00Z",
-  "artifacts": {"path": "/Users/me/notes/project.md"},
+  "artifacts": {"path": "/path/to/notes/project.md"},
   "permission_metadata": {"root_id": "notes", "read_scope": "explicit_directory"},
   "scan_cursor": "cursor_xxx",
   "content_hash": "sha256:..."
@@ -322,7 +330,7 @@ Example:
   "enabled": true,
   "scan_cursor": "cursor_xxx",
   "sync_status": "succeeded",
-  "permission_scope": {"roots": ["/Users/me/notes"]},
+  "permission_scope": {"roots": ["/path/to/notes"]},
   "config": {"ignore": ["*.tmp", ".git/**"]}
 }
 ```
@@ -334,7 +342,7 @@ Local CLI:
   --connector-id files \
   --owner-user-id user_primary \
   --scan-cursor cursor_xxx \
-  --permission-scope-json '{"roots":["/Users/me/notes"]}'
+  --permission-scope-json '{"roots":["/path/to/notes"]}'
 
 ./scripts/pska connector-state list --owner-user-id user_primary
 ./scripts/pska connector-state show conn_user_primary_files
@@ -349,7 +357,7 @@ Current files/source sync:
 ./scripts/pska files-watch --initial-sync
 
 ./scripts/pska files-scan \
-  --root ~/Documents/notes \
+  --root "$NOTES_ROOT" \
   --owner-user-id user_primary \
   --ignore '*.tmp'
 ```
@@ -599,10 +607,10 @@ Unknown methods or tool errors return JSON-RPC error objects.
 # ~/.fastreact/credentials.json
 # {"mcp_api_keys":{"pska":"..."}}
 
-cd ~/Fastreact/fastreact-nano
+cd "$FASTREACT_NANO_REPO"
 NO_PROXY=127.0.0.1,localhost PYTHONPATH=src \
   python3 -m fastreact.adapters.http \
-  --config "/Users/xudawei/Documents/personal archive/.pska/fastreact-pska-http.json"
+  --config "$PSKA_REPO/.pska/fastreact-pska-http.json"
 ```
 
 PSKA `/ready` accepts Fastreact namespaced MCP tools such as `pska_pska_search` and normalizes them when checking `checks.fastreact.pska_tools_loaded`.

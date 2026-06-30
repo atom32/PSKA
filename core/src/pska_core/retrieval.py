@@ -127,19 +127,22 @@ class RetrievalService:
         *,
         represented_user_id: str | None = None,
         top_k: int = 5,
+        source_item_ids: set[str] | None = None,
     ) -> RetrievalResponse:
         visible_items = self.acl.filter_visible_items(
             user,
-            self.store.list_source_items(tenant_id=user.tenant_id),
+            [item for item in self.store.list_source_items(tenant_id=user.tenant_id) if _is_active_source_item(item)],
             represented_user_id=represented_user_id,
         )
         source_ids = {item.source_item_id for item in visible_items}
+        scoped_source_item_ids = set(source_item_ids or set()) & source_ids
         chunks = self.store.list_chunks_for_sources(source_ids)
         ranked, rank_debug = self._rank(
             query,
             visible_items,
             chunks,
             source_ids,
+            scoped_source_item_ids=scoped_source_item_ids,
             user=user,
             represented_user_id=represented_user_id,
             top_k=top_k,
@@ -160,7 +163,13 @@ class RetrievalService:
         )
         profile_context = self._profile_context(query=query, user=user, represented_user_id=represented_user_id)
         memory_context = self._memory_context(query=query, user=user, represented_user_id=represented_user_id)
-        ranker = "exact_source" if rank_debug.get("exact_candidates", 0) else "hybrid_rrf"
+        ranker = (
+            "scoped_source"
+            if rank_debug.get("scoped_candidates", 0)
+            else "exact_source"
+            if rank_debug.get("exact_candidates", 0)
+            else "hybrid_rrf"
+        )
         graph_context_used = bool(hypergraph_context or graph_paths)
         diagnostics = self._diagnostics(
             query=query,
@@ -209,13 +218,15 @@ class RetrievalService:
         chunks: list[Chunk],
         source_ids: set[str],
         *,
+        scoped_source_item_ids: set[str],
         user: User,
         represented_user_id: str | None,
         top_k: int,
     ) -> tuple[list[RetrievalResult], dict[str, Any]]:
         item_by_id = {item.source_item_id: item for item in items}
-        exact_ranked = self._exact_source_results(query, items, chunks, item_by_id, top_k=top_k)
         query_terms = self._terms(query)
+        scoped_ranked = self._scoped_source_results(scoped_source_item_ids, chunks, item_by_id, query_terms=query_terms, top_k=top_k)
+        exact_ranked = self._exact_source_results(query, items, chunks, item_by_id, top_k=top_k)
         lexical_ranked, lexical_ranker = self._lexical_ranked_results(query_terms, chunks, item_by_id)
 
         vector_ranked: list[RetrievalResult] = []
@@ -235,6 +246,7 @@ class RetrievalService:
                 vector_error = f"{type(exc).__name__}: {exc}"
 
         combined = self._merge_exact_then_rrf(exact_ranked, lexical_ranked, vector_ranked, top_k=top_k)
+        combined = self._merge_priority_results(scoped_ranked, combined, top_k=top_k)
         combined = self._add_query_intent_candidates(query, combined, lexical_ranked, item_by_id, top_k=top_k)
         self._apply_query_intent_boosts(query, combined, item_by_id)
         combined = sorted(combined, key=lambda result: result.score, reverse=True)[:top_k]
@@ -254,6 +266,8 @@ class RetrievalService:
         self._annotate_result_sources(combined)
         self._apply_rank_quality_boosts(combined, item_by_id, reference_time=_latest_source_time(items))
         return combined, {
+            "scoped_source_items": len(scoped_source_item_ids),
+            "scoped_candidates": len(scoped_ranked),
             "exact_candidates": len(exact_ranked),
             "lexical_candidates": len(lexical_ranked),
             "lexical_ranker": lexical_ranker,
@@ -299,6 +313,47 @@ class RetrievalService:
         ]
         return exact_results[:top_k]
 
+    def _scoped_source_results(
+        self,
+        scoped_source_item_ids: set[str],
+        chunks: list[Chunk],
+        item_by_id: dict[str, SourceItem],
+        *,
+        query_terms: list[str],
+        top_k: int,
+    ) -> list[RetrievalResult]:
+        if not scoped_source_item_ids:
+            return []
+        candidates: list[RetrievalResult] = []
+        for index, chunk in enumerate(chunks):
+            if chunk.source_item_id not in scoped_source_item_ids:
+                continue
+            item = item_by_id.get(chunk.source_item_id)
+            if item is None:
+                continue
+            text_terms = self._terms(f"{item.title} {chunk.text} {item.url or ''}")
+            lexical = self._lexical_score(query_terms, text_terms)
+            score = 1.25 + min(lexical, 1.0) * 0.2 - index * 0.001
+            candidates.append(
+                self._result_for_chunk(
+                    chunk,
+                    item,
+                    score,
+                    {"scope": 1.0, "lexical": lexical, "vector": 0.0},
+                )
+            )
+        candidates.sort(key=lambda result: result.score, reverse=True)
+        source_counts: dict[str, int] = {}
+        results: list[RetrievalResult] = []
+        for result in candidates:
+            if source_counts.get(result.source_item_id, 0) >= 2:
+                continue
+            source_counts[result.source_item_id] = source_counts.get(result.source_item_id, 0) + 1
+            results.append(result)
+            if len(results) >= top_k:
+                break
+        return results
+
     def _result_for_chunk(self, chunk: Chunk, item: SourceItem, score: float, score_debug: dict[str, float]) -> RetrievalResult:
         citation = {
             "source_item_id": item.source_item_id,
@@ -325,7 +380,17 @@ class RetrievalService:
             result.source = _primary_result_source(result.score_debug)
 
     def _terms(self, text: str) -> list[str]:
-        return re.findall(r"[\w\u4e00-\u9fff]+", text.lower())
+        raw_tokens = re.findall(r"[a-z0-9_]+|[\u4e00-\u9fff]+", text.lower())
+        terms: list[str] = []
+        for token in raw_tokens:
+            if re.fullmatch(r"[\u4e00-\u9fff]+", token):
+                terms.append(token)
+                for ngram_size in (2, 3):
+                    if len(token) >= ngram_size:
+                        terms.extend(token[index : index + ngram_size] for index in range(len(token) - ngram_size + 1))
+            else:
+                terms.append(token)
+        return terms
 
     def _lexical_score(self, query_terms: list[str], text_terms: list[str]) -> float:
         if not query_terms or not text_terms:
@@ -404,6 +469,26 @@ class RetrievalService:
             top_k=max(top_k - len(exact_ranked), 0),
         )
         return [*exact_ranked, *remainder][:top_k]
+
+    def _merge_priority_results(
+        self,
+        priority_ranked: list[RetrievalResult],
+        combined: list[RetrievalResult],
+        *,
+        top_k: int,
+    ) -> list[RetrievalResult]:
+        if not priority_ranked:
+            return combined[:top_k]
+        seen: set[str] = set()
+        merged: list[RetrievalResult] = []
+        for result in [*priority_ranked, *combined]:
+            if result.result_id in seen:
+                continue
+            seen.add(result.result_id)
+            merged.append(result)
+            if len(merged) >= top_k:
+                break
+        return merged
 
     def _add_query_intent_candidates(
         self,
@@ -1093,6 +1178,7 @@ class RetrievalService:
             item.source_item_id
             for item in self.store.list_source_items(tenant_id=user.tenant_id)
             if item.source_item_id in source_item_ids
+            and _is_active_source_item(item)
             and self.acl.can_read_item(user, item, represented_user_id=represented_user_id)
         }
         return [ref for ref in edge.source_refs if ref.source_item_id in visible_ids]
@@ -1120,6 +1206,7 @@ class RetrievalService:
             item
             for item in self.store.list_source_items(tenant_id=user.tenant_id)
             if item.source_item_id in source_item_ids
+            and _is_active_source_item(item)
             and self.acl.can_read_item(user, item, represented_user_id=represented_user_id)
         ]
         chunks = self.store.list_chunks_for_sources({item.source_item_id for item in items})
@@ -1167,6 +1254,10 @@ def _conversation_message_ids(item: SourceItem, text: str) -> list[str]:
         if message_id and str(message_id) in text:
             message_ids.append(str(message_id))
     return message_ids
+
+
+def _is_active_source_item(item: Any) -> bool:
+    return str(getattr(item, "lifecycle_status", "active") or "active") == "active"
 
 
 def _context_owner_user_id(user: User, represented_user_id: str | None) -> str:
@@ -1233,6 +1324,8 @@ def _latest_source_time(items: list[SourceItem]) -> datetime | None:
 
 
 def _primary_result_source(score_debug: dict[str, float]) -> str:
+    if score_debug.get("scope", 0.0) > 0:
+        return "scope"
     if score_debug.get("exact_source", 0.0) > 0:
         return "exact_source"
     if score_debug.get("vector_rank", 0.0) > 0 or score_debug.get("vector", 0.0) > 0:

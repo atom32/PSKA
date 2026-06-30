@@ -20,16 +20,24 @@ Digest -> Candidates -> Review -> Discovery -> Graph/Memory -> Writing
 
 ## 一键验收脚本
 
+以下示例使用占位变量表示各项目 checkout：
+
+```bash
+export AUTHNODE_REPO="/path/to/AuthNode"
+export FASTREACT_REPO="/path/to/FastReAct"
+export PSKA_REPO="/path/to/pska"
+```
+
 前置条件：
 
 ```bash
-cd /Users/xudawei/Documents/AuthNode
+cd "$AUTHNODE_REPO"
 ./start.sh
 
-cd /Users/xudawei/FastReAct
+cd "$FASTREACT_REPO"
 ./start.sh
 
-cd /Users/xudawei/Documents/personal\ archive
+cd "$PSKA_REPO"
 ./start.sh
 ```
 
