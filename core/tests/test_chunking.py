@@ -30,3 +30,20 @@ def test_chunking_preview_profiles_tables_code_and_cjk() -> None:
     assert preview["profile"]["has_markdown_table"] is True
     assert preview["profile"]["has_code_fence"] is True
     assert preview["profile"]["cjk_chars"] >= 3
+
+
+def test_chunking_preview_heuristic_and_parent_windows() -> None:
+    text = "\n\n".join(
+        [
+            "| A | B |\n| - | - |\n| shared | topic |",
+            "```python\nprint('chunking')\n```",
+            "这是一段较长中文文本，用来验证 heuristic adaptive chunking 会保留结构块并返回父窗口。",
+        ]
+    )
+
+    preview = preview_chunking(text, {"strategy": "adaptive", "chunk_size": 60, "parent_chunk_size": 180})
+
+    assert preview["strategy"] == "heuristic"
+    assert preview["parent_windows"]
+    assert all(chunk["parent_window_ordinal"] is not None for chunk in preview["chunks"])
+    assert preview["strategy_diagnostics"]["reason"] == "tables_code_or_long_cjk_detected"

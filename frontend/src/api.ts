@@ -289,23 +289,35 @@ export async function runFileSync(serviceToken: PSKAAuth): Promise<FileSyncRespo
 }
 
 export async function runDigestNow(serviceToken: PSKAAuth): Promise<DigestNowResponse> {
-  const response = await fetch("/digest/now", {
+  const response = await fetch("/workspace/digest/run", {
     method: "POST",
     headers: headers(serviceToken),
     body: JSON.stringify({
-      owner_user_id: ownerUserId(serviceToken),
       limit: 20,
-      batch_size: 20,
+      batch_size: 8,
       force: false,
-      skip_sync: true,
-      max_worker_runs: 1,
-      reason: "manual frontend digest-now"
+      run_worker: false,
+      triggered_by: actorUserId(serviceToken),
+      reason: "manual workspace digest run",
+      ...requestUserPayload(serviceToken)
     })
   });
   if (!response.ok) {
-    throw new Error(await responseError(response, "同步并理解失败"));
+    throw new Error(await responseError(response, "整理资料失败"));
   }
   return (await response.json()) as DigestNowResponse;
+}
+
+export async function retryDigestJob(serviceToken: PSKAAuth, jobId: string): Promise<{ job?: unknown }> {
+  const response = await fetch(`/jobs/${encodeURIComponent(jobId)}/retry`, {
+    method: "POST",
+    headers: headers(serviceToken),
+    body: JSON.stringify(requestUserPayload(serviceToken))
+  });
+  if (!response.ok) {
+    throw new Error(await responseError(response, "重试 Digest 任务失败"));
+  }
+  return (await response.json()) as { job?: unknown };
 }
 
 export async function loadDigestLogs(serviceToken: PSKAAuth, limit = 8): Promise<DigestLogsResponse> {
@@ -967,11 +979,16 @@ function applyAskSseEvent(result: WorkspaceAskResponse, event: string, data: Rec
     result.evidence = isRecord(data.evidence) ? data.evidence as WorkspaceAskResponse["evidence"] : result.evidence;
     result.citations = Array.isArray(data.citations) ? data.citations as Array<Record<string, unknown>> : result.citations;
     result.source_refs = result.evidence?.source_refs || result.citations;
+    result.citation_audit = isRecord(data.citation_audit) ? data.citation_audit as WorkspaceAskResponse["citation_audit"] : result.citation_audit;
+    result.evidence_check = isRecord(data.evidence_check) ? data.evidence_check : result.evidence_check;
     result.quality_signals = isRecord(data.quality_signals) ? data.quality_signals : result.quality_signals;
     return;
   }
   if (event === "answer_delta") {
     result.answer = `${result.answer || ""}${typeof data.delta === "string" ? data.delta : ""}`;
+    if (typeof data.answer_type === "string") {
+      result.answer_type = data.answer_type;
+    }
     if (typeof data.time_to_first_answer_ms === "number") {
       result.timing = { ...(result.timing || {}), time_to_first_answer_ms: data.time_to_first_answer_ms };
     }
@@ -984,6 +1001,41 @@ function applyAskSseEvent(result: WorkspaceAskResponse, event: string, data: Rec
   }
   if (event === "done") {
     result.ok = data.ok !== false;
+    if (typeof data.answer === "string") {
+      result.answer = data.answer;
+    }
+    if (Array.isArray(data.citations)) {
+      result.citations = data.citations as Array<Record<string, unknown>>;
+    }
+    if (Array.isArray(data.source_refs)) {
+      result.source_refs = data.source_refs as Array<Record<string, unknown>>;
+    }
+    if (isRecord(data.evidence)) {
+      result.evidence = data.evidence as WorkspaceAskResponse["evidence"];
+    }
+    if (Array.isArray(data.source_windows)) {
+      result.source_windows = data.source_windows as Array<Record<string, unknown>>;
+      result.evidence = { ...(result.evidence || {}), source_windows: result.source_windows };
+    }
+    if (Array.isArray(data.evidence_claims)) {
+      result.evidence_claims = data.evidence_claims;
+      result.evidence = { ...(result.evidence || {}), evidence_claims: result.evidence_claims };
+    }
+    if (isRecord(data.scope_applied)) {
+      result.scope_applied = data.scope_applied;
+      result.route = { ...(result.route || {}), scope_applied: result.scope_applied };
+    }
+    if (isRecord(data.citation_audit)) {
+      result.citation_audit = data.citation_audit as WorkspaceAskResponse["citation_audit"];
+    }
+    result.intent = typeof data.intent === "string" ? data.intent : result.intent;
+    result.rewrite_query = typeof data.rewrite_query === "string" ? data.rewrite_query : result.rewrite_query;
+    result.answer_type = typeof data.answer_type === "string" ? data.answer_type : result.answer_type;
+    result.evidence_check = isRecord(data.evidence_check) ? data.evidence_check : result.evidence_check;
+    result.no_answer_reasons = Array.isArray(data.no_answer_reasons) ? data.no_answer_reasons : result.no_answer_reasons;
+    result.agent_steps = Array.isArray(data.agent_steps) ? data.agent_steps as WorkspaceAskResponse["agent_steps"] : result.agent_steps;
+    result.progress = Array.isArray(data.progress) ? data.progress as WorkspaceAskResponse["progress"] : result.progress;
+    result.trace = isRecord(data.trace) ? data.trace : result.trace;
     result.timing = { ...(result.timing || {}), ...(isRecord(data.timing) ? data.timing as WorkspaceAskResponse["timing"] : {}) };
     result.quality_signals = isRecord(data.quality_signals) ? data.quality_signals : result.quality_signals;
     return;

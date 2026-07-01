@@ -111,6 +111,9 @@ export type WritingComposeResponse = {
 
 export type EvidenceBriefResponse = {
   ok?: boolean;
+  reason?: string;
+  warnings?: string[];
+  source_refs?: Array<Record<string, unknown>>;
   brief?: {
     board_id?: string;
     title?: string;
@@ -247,11 +250,23 @@ export type AskMessage = {
   created_at?: string;
 };
 
+export type AskRun = {
+  run_id?: string;
+  conversation_id?: string;
+  status?: string;
+  query?: string;
+  result?: WorkspaceAskResponse;
+  route?: Record<string, unknown>;
+  evidence_check?: Record<string, unknown>;
+  started_at?: string;
+  finished_at?: string;
+};
+
 export type AskConversationResponse = {
   ok?: boolean;
   conversation?: AskConversation;
   messages?: AskMessage[];
-  runs?: Array<Record<string, unknown>>;
+  runs?: AskRun[];
   conversations?: AskConversation[];
   error?: string;
 };
@@ -283,6 +298,11 @@ export type WorkspaceGraphNode = {
   object_id?: string;
   confidence?: number;
   token_estimate?: number;
+  quality_tier?: string;
+  support_kinds?: string[];
+  promotion_reason?: string;
+  review_eligible?: boolean;
+  diagnostics?: Record<string, unknown>;
   source_refs?: Array<{ source_item_id?: string; document_id?: string; chunk_id?: string; passage_window_id?: string; title?: string; url?: string }>;
 };
 
@@ -293,6 +313,10 @@ export type WorkspaceGraphEdge = {
   type?: string;
   label?: string;
   confidence?: number;
+  quality_tier?: string;
+  support_kinds?: string[];
+  promotion_reason?: string;
+  review_eligible?: boolean;
   source_refs?: Array<{ source_item_id?: string; document_id?: string; chunk_id?: string; passage_window_id?: string }>;
 };
 
@@ -435,6 +459,10 @@ export type WorkspaceAskResponse = {
     surface?: string;
     requires_agentic_service_online?: boolean;
     fallback_from?: string;
+    requested_intent?: string;
+    rewrite_query?: string;
+    scope_applied?: Record<string, unknown>;
+    understand?: Record<string, unknown>;
     tool_policy?: Record<string, unknown>;
   };
   evidence?: {
@@ -447,9 +475,24 @@ export type WorkspaceAskResponse = {
     profile_context?: Array<Record<string, unknown>>;
     gaps?: unknown[];
     conflicts?: unknown[];
+    dropped_citations?: Array<Record<string, unknown>>;
+    evidence_claims?: unknown[];
+    no_answer_reasons?: unknown[];
   };
   citations?: Array<Record<string, unknown>>;
   source_refs?: Array<Record<string, unknown>>;
+  source_windows?: Array<Record<string, unknown>>;
+  intent?: string;
+  rewrite_query?: string;
+  scope_applied?: Record<string, unknown>;
+  evidence_claims?: unknown[];
+  answer_type?: string | null;
+  citation_audit?: {
+    used?: Array<Record<string, unknown>>;
+    dropped?: Array<Record<string, unknown>>;
+  };
+  evidence_check?: Record<string, unknown>;
+  no_answer_reasons?: unknown[];
   agent_steps?: Array<WorkspaceAskAgentStep>;
   progress?: Array<WorkspaceAskProgress>;
   trace?: Record<string, unknown>;
@@ -466,7 +509,7 @@ export type WorkspaceAskResponse = {
 };
 
 export type WorkspaceAskProgress = {
-  stage?: "understand" | "search" | "rerank" | "graph" | "read" | "generate" | "evidence_check" | string;
+  stage?: "query_understand" | "understand" | "search" | "rerank" | "graph" | "read" | "generate" | "evidence_check" | string;
   phase?: string;
   status?: string;
   title?: string;
@@ -587,14 +630,47 @@ export type SourceSyncResponse = {
 export type DigestNowResponse = {
   ok?: boolean;
   error?: string;
+  mode?: "queued" | "sync_worker" | string;
+  queued?: boolean;
+  job?: {
+    job_id?: string;
+    job_type?: string;
+    status?: string;
+    error?: string | null;
+    created_at?: string;
+    updated_at?: string;
+  } | null;
+  scheduled?: {
+    job?: {
+      job_id?: string;
+      job_type?: string;
+      status?: string;
+      error?: string | null;
+      created_at?: string;
+      updated_at?: string;
+    } | null;
+    scheduled_source_item_ids?: string[];
+    skipped_source_item_ids?: string[];
+    selected_source_items?: unknown[];
+    skipped_source_items?: unknown[];
+  };
   sync?: FileSyncResponse | null;
   digest?: {
     scheduled_source_item_ids?: string[];
+  };
+  worker_runs?: unknown[];
+  worker_status?: {
+    requested?: boolean;
+    ok?: boolean;
+    processed?: number;
+    failed_runs?: number;
+    diagnostics?: string[];
   };
   summary?: {
     synced?: FileSyncResponse["totals"] | null;
     scheduled_source_items?: number;
     worker_processed?: number;
+    worker_diagnostics?: string[];
     candidate_write?: {
       entities?: number;
       hyperedges?: number;
@@ -607,6 +683,8 @@ export type DigestNowResponse = {
     };
     pending_review_count?: number;
     failed_digest_jobs?: number;
+    queued_jobs?: number;
+    skipped_source_items?: number;
   };
   failed_digest_jobs?: unknown[];
 };
@@ -804,6 +882,15 @@ export type ChunkingPreviewResponse = {
       total_chars?: number;
     };
     chunks?: ChunkingPreviewChunk[];
+    parent_windows?: Array<{
+      ordinal?: number;
+      start?: number;
+      end?: number;
+      chars?: number;
+      text?: string;
+      child_ordinals?: number[];
+      window_policy?: string;
+    }>;
   };
   error?: string;
 };
@@ -941,8 +1028,14 @@ export type ReviewCenterItem = {
   status?: string;
   title: string;
   confidence?: number | null;
-  source_refs?: Array<{ source_item_id?: string; chunk_id?: string; url?: string; title?: string }>;
+  source_refs?: Array<{ source_item_id?: string; document_id?: string; chunk_id?: string; passage_window_id?: string; url?: string; title?: string }>;
   source_ref_status?: string;
+  support_ids?: string[];
+  support_kinds?: string[];
+  quality_tier?: string;
+  promotion_reason?: string;
+  review_eligible?: boolean;
+  proposal?: Record<string, unknown>;
   created_at?: string;
   recommended_action?: string;
   recommended_actions?: string[];

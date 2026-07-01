@@ -50,7 +50,7 @@ def normalize_chunking_config(value: Mapping[str, Any] | None) -> dict[str, Any]
     strategy = str(raw.get("strategy") or raw.get("mode") or "auto").strip().lower()
     if strategy in {"legacy", "chars", "character"}:
         strategy = "fixed"
-    if strategy not in {"auto", "heading", "recursive", "fixed"}:
+    if strategy not in {"auto", "adaptive", "heading", "heuristic", "recursive", "fixed"}:
         strategy = "auto"
 
     chunk_size = _positive_int(raw.get("chunk_size") or raw.get("chunk_chars"), 1200)

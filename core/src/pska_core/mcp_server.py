@@ -42,6 +42,8 @@ TOOLS = [
                 "top_k": {"type": "integer", "default": 5},
                 "max_results": {"type": "integer", "default": 3},
                 "max_snippet_chars": {"type": "integer", "default": 700},
+                "source_item_ids": {"type": "array", "items": {"type": "string"}},
+                "scope_mode": {"type": "string", "enum": ["soft", "hard"], "default": "soft"},
             },
             "required": ["query"],
         },
@@ -392,11 +394,15 @@ class MCPServer:
     def pska_search(self, arguments: dict[str, Any]) -> Any:
         tenant_id = str(arguments.get("tenant_id") or DEFAULT_TENANT_ID)
         user = self.store.get_user(arguments.get("user_id") or "user_primary", tenant_id=tenant_id)
+        source_item_ids = set(_string_list(arguments.get("source_item_ids")))
+        scope_mode = str(arguments.get("scope_mode") or "soft").strip().lower()
         response = self.retrieval.search(
             arguments["query"],
             user,
             represented_user_id=arguments.get("represented_user_id"),
             top_k=int(arguments.get("top_k") or 5),
+            source_item_ids=source_item_ids or None,
+            scope_mode="hard" if scope_mode == "hard" else "soft",
         )
         return _compact_search_response(
             to_jsonable(response),
@@ -516,7 +522,14 @@ class MCPServer:
                 if entity.entity_id in entity_ids or any(label in entity.label.casefold() for label in entity_labels)
             ]
         elif query:
-            search = self.retrieval.search(query, user, represented_user_id=represented_user_id, top_k=max_paths)
+            search = self.retrieval.search(
+                query,
+                user,
+                represented_user_id=represented_user_id,
+                top_k=max_paths,
+                source_item_ids=source_ids or None,
+                scope_mode="hard" if source_ids else "soft",
+            )
             ranked = search.results
             source_ids.update(result.source_item_id for result in ranked[:max_paths])
             selected_entities = self.retrieval._matching_entities(query, ranked, tenant_id=tenant_id)

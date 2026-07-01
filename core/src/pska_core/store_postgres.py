@@ -13,6 +13,7 @@ from psycopg.types.json import Jsonb
 from pska_core.enums import Directionality, MemoryLayer, ReviewType, UserRole, UserStatus, Visibility
 from pska_core.models import (
     AgentMemory,
+    ArtifactSupport,
     AskConversation,
     AskMessage,
     AskRun,
@@ -30,6 +31,7 @@ from pska_core.models import (
     AuditEvent,
     KnowledgeClaim,
     KnowledgeSource,
+    KnowledgeTopic,
     OfflineIndexState,
     ProcessingSpan,
     PromptProfile,
@@ -38,6 +40,7 @@ from pska_core.models import (
     SourceItem,
     SyncRun,
     TeamMembership,
+    TopicMention,
     User,
     UserProfileCard,
     WorkspaceActivityEvent,
@@ -1713,12 +1716,14 @@ class PostgresKnowledgeStore:
                 """
                 insert into ask_runs(
                     run_id, conversation_id, tenant_id, owner_user_id, query, status,
-                    result, prompt_profile_id, prompt_profile_version
+                    result, route, evidence_check, prompt_profile_id, prompt_profile_version
                 )
-                values (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 on conflict (run_id) do update
                 set status = excluded.status,
                     result = excluded.result,
+                    route = excluded.route,
+                    evidence_check = excluded.evidence_check,
                     prompt_profile_id = excluded.prompt_profile_id,
                     prompt_profile_version = excluded.prompt_profile_version
                 returning *
@@ -1731,6 +1736,8 @@ class PostgresKnowledgeStore:
                     run.query,
                     run.status,
                     Jsonb(to_jsonable(run.result)),
+                    Jsonb(to_jsonable(run.route)),
+                    Jsonb(to_jsonable(run.evidence_check)),
                     run.prompt_profile_id,
                     run.prompt_profile_version,
                 ),
@@ -1744,11 +1751,19 @@ class PostgresKnowledgeStore:
                 update ask_runs
                 set status = %s,
                     result = %s,
+                    route = %s,
+                    evidence_check = %s,
                     finished_at = now()
                 where run_id = %s
                 returning *
                 """,
-                (status, Jsonb(to_jsonable(result)), run_id),
+                (
+                    status,
+                    Jsonb(to_jsonable(result)),
+                    Jsonb(to_jsonable(result.get("route") or {})),
+                    Jsonb(to_jsonable(result.get("evidence_check") or result.get("quality_signals", {}).get("evidence_check") or {})),
+                    run_id,
+                ),
             ).fetchone()
             if not row:
                 raise KeyError(run_id)
@@ -2359,6 +2374,231 @@ class PostgresKnowledgeStore:
         if row is None:
             raise KeyError(discovery_id)
         return self._discovery_item_from_row(row)
+
+    def upsert_knowledge_topic(self, topic: KnowledgeTopic) -> KnowledgeTopic:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                insert into knowledge_topics(
+                    topic_id, tenant_id, owner_user_id, label, normalized_label,
+                    topic_type, description, confidence, producer, metadata
+                )
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                on conflict (topic_id) do update
+                set label = excluded.label,
+                    normalized_label = excluded.normalized_label,
+                    topic_type = excluded.topic_type,
+                    description = excluded.description,
+                    confidence = greatest(knowledge_topics.confidence, excluded.confidence),
+                    producer = excluded.producer,
+                    metadata = knowledge_topics.metadata || excluded.metadata,
+                    updated_at = now()
+                returning *
+                """,
+                (
+                    topic.topic_id,
+                    topic.tenant_id,
+                    topic.owner_user_id,
+                    topic.label,
+                    topic.normalized_label,
+                    topic.topic_type,
+                    topic.description,
+                    topic.confidence,
+                    topic.producer,
+                    Jsonb(to_jsonable(topic.metadata)),
+                ),
+            ).fetchone()
+        return self._knowledge_topic_from_row(row)
+
+    def list_knowledge_topics(
+        self,
+        *,
+        tenant_id: str,
+        owner_user_id: str,
+        query: str | None = None,
+        limit: int = 100,
+    ) -> list[KnowledgeTopic]:
+        clauses = ["tenant_id = %s", "owner_user_id = %s"]
+        params: list[Any] = [tenant_id, owner_user_id]
+        if query:
+            clauses.append("(label ilike %s or normalized_label ilike %s or description ilike %s)")
+            pattern = f"%{query}%"
+            params.extend([pattern, pattern, pattern])
+        params.append(max(1, min(limit, 1000)))
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                select *
+                from knowledge_topics
+                where {' and '.join(clauses)}
+                order by confidence desc, updated_at desc, topic_id
+                limit %s
+                """,  # noqa: S608 - fixed clauses only.
+                tuple(params),
+            ).fetchall()
+        return [self._knowledge_topic_from_row(row) for row in rows]
+
+    def upsert_topic_mention(self, mention: TopicMention) -> TopicMention:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                insert into topic_mentions(
+                    topic_mention_id, tenant_id, owner_user_id, topic_id, source_item_id,
+                    document_id, chunk_id, artifact_type, artifact_id, mention_text,
+                    confidence, producer, metadata
+                )
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                on conflict (topic_mention_id) do update
+                set mention_text = excluded.mention_text,
+                    confidence = greatest(topic_mentions.confidence, excluded.confidence),
+                    producer = excluded.producer,
+                    metadata = topic_mentions.metadata || excluded.metadata
+                returning *
+                """,
+                (
+                    mention.topic_mention_id,
+                    mention.tenant_id,
+                    mention.owner_user_id,
+                    mention.topic_id,
+                    mention.source_item_id,
+                    mention.document_id,
+                    mention.chunk_id,
+                    mention.artifact_type,
+                    mention.artifact_id,
+                    mention.mention_text,
+                    mention.confidence,
+                    mention.producer,
+                    Jsonb(to_jsonable(mention.metadata)),
+                ),
+            ).fetchone()
+        return self._topic_mention_from_row(row)
+
+    def list_topic_mentions(
+        self,
+        *,
+        tenant_id: str,
+        owner_user_id: str,
+        topic_ids: set[str] | None = None,
+        source_item_ids: set[str] | None = None,
+        limit: int = 500,
+    ) -> list[TopicMention]:
+        clauses = ["tenant_id = %s", "owner_user_id = %s"]
+        params: list[Any] = [tenant_id, owner_user_id]
+        if topic_ids:
+            clauses.append("topic_id = any(%s)")
+            params.append(list(topic_ids))
+        if source_item_ids:
+            clauses.append("source_item_id = any(%s)")
+            params.append(list(source_item_ids))
+        params.append(max(1, min(limit, 5000)))
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                select *
+                from topic_mentions
+                where {' and '.join(clauses)}
+                order by created_at desc, topic_mention_id
+                limit %s
+                """,  # noqa: S608 - fixed clauses only.
+                tuple(params),
+            ).fetchall()
+        return [self._topic_mention_from_row(row) for row in rows]
+
+    def upsert_artifact_support(self, support: ArtifactSupport) -> ArtifactSupport:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                insert into artifact_supports(
+                    artifact_support_id, tenant_id, owner_user_id, artifact_type, artifact_id,
+                    support_type, source_item_id, document_id, chunk_id, topic_id,
+                    status, confidence, metadata
+                )
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                on conflict (artifact_support_id) do update
+                set status = excluded.status,
+                    confidence = greatest(artifact_supports.confidence, excluded.confidence),
+                    metadata = artifact_supports.metadata || excluded.metadata,
+                    updated_at = now()
+                returning *
+                """,
+                (
+                    support.artifact_support_id,
+                    support.tenant_id,
+                    support.owner_user_id,
+                    support.artifact_type,
+                    support.artifact_id,
+                    support.support_type,
+                    support.source_item_id,
+                    support.document_id,
+                    support.chunk_id,
+                    support.topic_id,
+                    support.status,
+                    support.confidence,
+                    Jsonb(to_jsonable(support.metadata)),
+                ),
+            ).fetchone()
+        return self._artifact_support_from_row(row)
+
+    def list_artifact_supports(
+        self,
+        *,
+        tenant_id: str,
+        owner_user_id: str,
+        artifact_type: str | None = None,
+        artifact_ids: set[str] | None = None,
+        source_item_ids: set[str] | None = None,
+        status: str | None = None,
+        limit: int = 500,
+    ) -> list[ArtifactSupport]:
+        clauses = ["tenant_id = %s", "owner_user_id = %s"]
+        params: list[Any] = [tenant_id, owner_user_id]
+        if artifact_type:
+            clauses.append("artifact_type = %s")
+            params.append(artifact_type)
+        if artifact_ids:
+            clauses.append("artifact_id = any(%s)")
+            params.append(list(artifact_ids))
+        if source_item_ids:
+            clauses.append("source_item_id = any(%s)")
+            params.append(list(source_item_ids))
+        if status:
+            clauses.append("status = %s")
+            params.append(status)
+        params.append(max(1, min(limit, 5000)))
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                select *
+                from artifact_supports
+                where {' and '.join(clauses)}
+                order by updated_at desc, artifact_support_id
+                limit %s
+                """,  # noqa: S608 - fixed clauses only.
+                tuple(params),
+            ).fetchall()
+        return [self._artifact_support_from_row(row) for row in rows]
+
+    def update_artifact_support_status_for_sources(
+        self,
+        source_item_ids: set[str],
+        *,
+        tenant_id: str,
+        status: str,
+    ) -> int:
+        if not source_item_ids:
+            return 0
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                update artifact_supports
+                set status = %s,
+                    updated_at = now()
+                where tenant_id = %s and source_item_id = any(%s)
+                returning artifact_support_id
+                """,
+                (status, tenant_id, list(source_item_ids)),
+            ).fetchall()
+        return len(rows)
 
     def list_hyperedges_for_entities(self, entity_ids: set[str]) -> list[tuple[Hyperedge, list[HyperedgeMember]]]:
         if not entity_ids:
@@ -3085,6 +3325,8 @@ class PostgresKnowledgeStore:
             query=row["query"],
             status=row["status"],
             result=dict(row.get("result") or {}),
+            route=dict(row.get("route") or {}),
+            evidence_check=dict(row.get("evidence_check") or {}),
             prompt_profile_id=row.get("prompt_profile_id"),
             prompt_profile_version=row.get("prompt_profile_version"),
             started_at=row["started_at"],
@@ -3102,6 +3344,59 @@ class PostgresKnowledgeStore:
             owner_user_id=row.get("owner_user_id"),
             status=row["status"],
             current_version=int(row.get("current_version") or 1),
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+            tenant_id=row.get("tenant_id") or DEFAULT_TENANT_ID,
+        )
+
+    def _knowledge_topic_from_row(self, row: dict[str, Any]) -> KnowledgeTopic:
+        return KnowledgeTopic(
+            topic_id=row["topic_id"],
+            owner_user_id=row["owner_user_id"],
+            label=row["label"],
+            normalized_label=row["normalized_label"],
+            topic_type=row.get("topic_type") or "topic",
+            description=row.get("description") or "",
+            confidence=float(row.get("confidence") or 0.0),
+            producer=row.get("producer") or "pska.topic_linker",
+            metadata=dict(row.get("metadata") or {}),
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+            tenant_id=row.get("tenant_id") or DEFAULT_TENANT_ID,
+        )
+
+    def _topic_mention_from_row(self, row: dict[str, Any]) -> TopicMention:
+        return TopicMention(
+            topic_mention_id=row["topic_mention_id"],
+            topic_id=row["topic_id"],
+            owner_user_id=row["owner_user_id"],
+            source_item_id=row["source_item_id"],
+            document_id=row.get("document_id"),
+            chunk_id=row.get("chunk_id"),
+            artifact_type=row.get("artifact_type") or "chunk",
+            artifact_id=row.get("artifact_id") or "",
+            mention_text=row.get("mention_text") or "",
+            confidence=float(row.get("confidence") or 0.0),
+            producer=row.get("producer") or "pska.topic_linker",
+            metadata=dict(row.get("metadata") or {}),
+            created_at=row["created_at"],
+            tenant_id=row.get("tenant_id") or DEFAULT_TENANT_ID,
+        )
+
+    def _artifact_support_from_row(self, row: dict[str, Any]) -> ArtifactSupport:
+        return ArtifactSupport(
+            artifact_support_id=row["artifact_support_id"],
+            owner_user_id=row["owner_user_id"],
+            artifact_type=row["artifact_type"],
+            artifact_id=row["artifact_id"],
+            support_type=row["support_type"],
+            source_item_id=row["source_item_id"],
+            document_id=row.get("document_id"),
+            chunk_id=row.get("chunk_id"),
+            topic_id=row.get("topic_id"),
+            status=row.get("status") or "active",
+            confidence=float(row.get("confidence") or 0.0),
+            metadata=dict(row.get("metadata") or {}),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             tenant_id=row.get("tenant_id") or DEFAULT_TENANT_ID,

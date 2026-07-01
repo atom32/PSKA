@@ -174,10 +174,11 @@ def test_ingest_marks_source_and_chunks_dirty_for_offline_index() -> None:
     )
 
     states = store.list_offline_index_states(source_item_id=item.source_item_id)
+    chunk_count = len(store.list_chunks_for_sources({item.source_item_id}))
     assert {state.object_type for state in states} == {"source_item", "chunk"}
     assert all(state.status == "dirty" for state in states)
     assert all(state.dirty_reason == "source_ingested" for state in states)
-    assert store.offline_index_status()["dirty"] == 4
+    assert store.offline_index_status()["dirty"] == chunk_count + 1
 
 
 def test_offline_index_processes_only_dirty_chunks() -> None:

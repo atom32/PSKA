@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from pska_core.models import (
     AgentMemory,
+    ArtifactSupport,
     AskConversation,
     AskMessage,
     AskRun,
@@ -23,6 +24,7 @@ from pska_core.models import (
     AuditEvent,
     KnowledgeClaim,
     KnowledgeSource,
+    KnowledgeTopic,
     OfflineIndexState,
     ProcessingSpan,
     PromptProfile,
@@ -31,6 +33,7 @@ from pska_core.models import (
     SourceItem,
     SyncRun,
     TeamMembership,
+    TopicMention,
     User,
     UserProfileCard,
     WorkspaceActivityEvent,
@@ -241,6 +244,44 @@ class KnowledgeStore(Protocol):
         since=None,
         limit: int = 50,
     ) -> list[DiscoveryItem]: ...
+    def upsert_knowledge_topic(self, topic: KnowledgeTopic) -> KnowledgeTopic: ...
+    def list_knowledge_topics(
+        self,
+        *,
+        tenant_id: str,
+        owner_user_id: str,
+        query: str | None = None,
+        limit: int = 100,
+    ) -> list[KnowledgeTopic]: ...
+    def upsert_topic_mention(self, mention: TopicMention) -> TopicMention: ...
+    def list_topic_mentions(
+        self,
+        *,
+        tenant_id: str,
+        owner_user_id: str,
+        topic_ids: set[str] | None = None,
+        source_item_ids: set[str] | None = None,
+        limit: int = 500,
+    ) -> list[TopicMention]: ...
+    def upsert_artifact_support(self, support: ArtifactSupport) -> ArtifactSupport: ...
+    def list_artifact_supports(
+        self,
+        *,
+        tenant_id: str,
+        owner_user_id: str,
+        artifact_type: str | None = None,
+        artifact_ids: set[str] | None = None,
+        source_item_ids: set[str] | None = None,
+        status: str | None = None,
+        limit: int = 500,
+    ) -> list[ArtifactSupport]: ...
+    def update_artifact_support_status_for_sources(
+        self,
+        source_item_ids: set[str],
+        *,
+        tenant_id: str,
+        status: str,
+    ) -> int: ...
     def list_chunks_for_sources(self, source_item_ids: set[str]) -> list[Chunk]: ...
     def create_ask_conversation(self, conversation: AskConversation) -> AskConversation: ...
     def list_ask_conversations(self, *, tenant_id: str, owner_user_id: str, limit: int = 50) -> list[AskConversation]: ...
@@ -305,6 +346,9 @@ class InMemoryKnowledgeStore:
         self.writing_nodes: dict[str, WritingNode] = {}
         self.writing_edges: dict[str, WritingEdge] = {}
         self.discovery_items: dict[str, DiscoveryItem] = {}
+        self.knowledge_topics: dict[str, KnowledgeTopic] = {}
+        self.topic_mentions: dict[str, TopicMention] = {}
+        self.artifact_supports: dict[str, ArtifactSupport] = {}
         self.ask_conversations: dict[str, AskConversation] = {}
         self.ask_messages: dict[str, AskMessage] = {}
         self.ask_runs: dict[str, AskRun] = {}
@@ -1123,6 +1167,111 @@ class InMemoryKnowledgeStore:
         items = sorted(items, key=lambda item: (item.discovery_score, item.created_at, item.discovery_id), reverse=True)
         return items[: max(0, limit)]
 
+    def upsert_knowledge_topic(self, topic: KnowledgeTopic) -> KnowledgeTopic:
+        existing = self.knowledge_topics.get(topic.topic_id)
+        if existing:
+            topic.created_at = existing.created_at
+        topic.updated_at = utc_now()
+        self.knowledge_topics[topic.topic_id] = topic
+        return topic
+
+    def list_knowledge_topics(
+        self,
+        *,
+        tenant_id: str,
+        owner_user_id: str,
+        query: str | None = None,
+        limit: int = 100,
+    ) -> list[KnowledgeTopic]:
+        query_text = (query or "").strip().lower()
+        topics = [
+            topic
+            for topic in self.knowledge_topics.values()
+            if topic.tenant_id == tenant_id and topic.owner_user_id == owner_user_id
+        ]
+        if query_text:
+            topics = [
+                topic
+                for topic in topics
+                if query_text in topic.label.lower()
+                or query_text in topic.normalized_label.lower()
+                or query_text in topic.description.lower()
+            ]
+        return sorted(topics, key=lambda item: (item.confidence, item.updated_at, item.topic_id), reverse=True)[: max(0, limit)]
+
+    def upsert_topic_mention(self, mention: TopicMention) -> TopicMention:
+        self.topic_mentions[mention.topic_mention_id] = mention
+        return mention
+
+    def list_topic_mentions(
+        self,
+        *,
+        tenant_id: str,
+        owner_user_id: str,
+        topic_ids: set[str] | None = None,
+        source_item_ids: set[str] | None = None,
+        limit: int = 500,
+    ) -> list[TopicMention]:
+        mentions = [
+            mention
+            for mention in self.topic_mentions.values()
+            if mention.tenant_id == tenant_id and mention.owner_user_id == owner_user_id
+        ]
+        if topic_ids:
+            mentions = [mention for mention in mentions if mention.topic_id in topic_ids]
+        if source_item_ids:
+            mentions = [mention for mention in mentions if mention.source_item_id in source_item_ids]
+        return sorted(mentions, key=lambda item: (item.created_at, item.topic_mention_id), reverse=True)[: max(0, limit)]
+
+    def upsert_artifact_support(self, support: ArtifactSupport) -> ArtifactSupport:
+        existing = self.artifact_supports.get(support.artifact_support_id)
+        if existing:
+            support.created_at = existing.created_at
+        support.updated_at = utc_now()
+        self.artifact_supports[support.artifact_support_id] = support
+        return support
+
+    def list_artifact_supports(
+        self,
+        *,
+        tenant_id: str,
+        owner_user_id: str,
+        artifact_type: str | None = None,
+        artifact_ids: set[str] | None = None,
+        source_item_ids: set[str] | None = None,
+        status: str | None = None,
+        limit: int = 500,
+    ) -> list[ArtifactSupport]:
+        supports = [
+            support
+            for support in self.artifact_supports.values()
+            if support.tenant_id == tenant_id and support.owner_user_id == owner_user_id
+        ]
+        if artifact_type:
+            supports = [support for support in supports if support.artifact_type == artifact_type]
+        if artifact_ids:
+            supports = [support for support in supports if support.artifact_id in artifact_ids]
+        if source_item_ids:
+            supports = [support for support in supports if support.source_item_id in source_item_ids]
+        if status:
+            supports = [support for support in supports if support.status == status]
+        return sorted(supports, key=lambda item: (item.updated_at, item.artifact_support_id), reverse=True)[: max(0, limit)]
+
+    def update_artifact_support_status_for_sources(
+        self,
+        source_item_ids: set[str],
+        *,
+        tenant_id: str,
+        status: str,
+    ) -> int:
+        count = 0
+        for support in self.artifact_supports.values():
+            if support.tenant_id == tenant_id and support.source_item_id in source_item_ids:
+                support.status = status
+                support.updated_at = utc_now()
+                count += 1
+        return count
+
     def list_chunks_for_sources(self, source_item_ids: set[str]) -> list[Chunk]:
         return [chunk for chunk in self.chunks.values() if chunk.source_item_id in source_item_ids]
 
@@ -1174,6 +1323,8 @@ class InMemoryKnowledgeStore:
         run = self.ask_runs[run_id]
         run.status = status
         run.result = dict(result)
+        run.route = dict(result.get("route") or {})
+        run.evidence_check = dict(result.get("evidence_check") or result.get("quality_signals", {}).get("evidence_check") or {})
         run.finished_at = utc_now()
         conversation = self.ask_conversations.get(run.conversation_id)
         if conversation:

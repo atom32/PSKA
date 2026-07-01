@@ -27,7 +27,7 @@ from pska_core.config import DEFAULT_DATABASE_URL, DatabaseConfig, PSKAConfig, S
 from pska_core.connectors import connector_state_from_mapping, connector_record_to_payload
 from pska_core.discovery import DISCOVERY_TODAY_SCORE_THRESHOLD, DiscoveryService
 from pska_core.embeddings import EmbeddingConfig, build_embedding_provider
-from pska_core.enums import UserRole, Visibility
+from pska_core.enums import ReviewType, UserRole, Visibility
 from pska_core.extraction import ExtractionService
 from pska_core.fastreact_protocol import compact_trace_for_context
 from pska_core.files_connector import extract_text_from_bytes, scan_files
@@ -39,15 +39,18 @@ from pska_core.memory import MemoryService
 from pska_core.mcp_server import MCPServer, PROTOCOL_VERSION
 from pska_core.models import (
     DEFAULT_TENANT_ID,
+    ArtifactSupport,
     AskConversation,
     AskMessage,
     AskRun,
     ChannelIngestPayload,
     KnowledgeSource,
+    KnowledgeTopic,
     PassageWindow,
     PromptProfile,
     ReviewItem,
     SourceRef,
+    TopicMention,
     WorkspaceActivityEvent,
     WritingBoard,
     WritingEdge,
@@ -71,6 +74,21 @@ ASK_READ_ONLY_TOOLS = [
     "pska_pska_graph_context",
     "pska_pska_digest_context",
 ]
+
+ASK_EXECUTION_INTENTS = {"auto", "quick", "deep"}
+ASK_INTENTS = {
+    "greeting",
+    "chitchat",
+    "product_help",
+    "kb_search",
+    "doc_only",
+    "follow_up",
+    "clarification",
+    "graph_research",
+    "writing",
+}
+ASK_RETRIEVAL_INTENTS = {"kb_search", "doc_only", "follow_up", "graph_research", "writing"}
+ASK_NON_RETRIEVAL_INTENTS = {"greeting", "chitchat", "product_help", "clarification"}
 
 PROMPT_PROFILE_TYPES = {"ask", "digest", "review", "writing"}
 DEFAULT_PROMPT_PROFILE_CONFIGS: dict[str, dict[str, Any]] = {
@@ -590,6 +608,12 @@ class PSKAApi:
         processing_overrides = payload.get("processing_config") or payload.get("process_config")
         if processing_overrides is None and isinstance(payload.get("chunking"), dict):
             processing_overrides = {"chunking": payload["chunking"]}
+        if processing_overrides is None and isinstance(payload.get("config"), dict):
+            processing_overrides = {"chunking": payload["config"]}
+        if processing_overrides is None:
+            chunking_keys = {key: payload[key] for key in ["strategy", "chunk_size", "chunk_overlap", "separators"] if key in payload}
+            if chunking_keys:
+                processing_overrides = {"chunking": chunking_keys}
         processing_config = resolve_processing_config(source_config, processing_overrides)
         preview = preview_chunking(text, processing_config.get("chunking"))
         return {
@@ -1098,10 +1122,41 @@ class PSKAApi:
             },
             context=context,
         )
-        return {
+        worker_runs: list[dict[str, Any]] = []
+        worker_status: dict[str, Any] = {
+            "requested": False,
             "ok": True,
+            "processed": 0,
+            "failed_runs": 0,
+            "diagnostics": ["queued_for_background_worker"],
+        }
+        if _truthy(payload.get("run_worker"), default=False):
+            worker_runs = _workspace_digest_worker_runs(
+                self,
+                payload,
+                scheduled=scheduled,
+                tenant_id=tenant_id,
+                owner_user_id=owner_user_id,
+            )
+            worker_status = _workspace_digest_worker_status(worker_runs)
+        data = self.workspace_digest_data(owner_user_id=owner_user_id, tenant_id=tenant_id, context=context)
+        return {
+            "ok": bool(worker_status.get("ok", True)),
             "scheduled": scheduled,
-            "data": self.workspace_digest_data(owner_user_id=owner_user_id, tenant_id=tenant_id, context=context),
+            "mode": "sync_worker" if worker_status.get("requested") else "queued",
+            "queued": not bool(worker_status.get("requested")),
+            "job": scheduled.get("job"),
+            "worker_runs": worker_runs,
+            "worker_status": worker_status,
+            "data": data,
+            "summary": {
+                "scheduled_source_items": len(scheduled.get("scheduled_source_item_ids") or []),
+                "queued_jobs": 1 if scheduled.get("job") else 0,
+                "skipped_source_items": len(scheduled.get("skipped_source_item_ids") or []),
+                "worker_processed": int(worker_status.get("processed") or 0),
+                "worker_diagnostics": worker_status.get("diagnostics") or [],
+                **dict(data.get("summary") or {}),
+            },
         }
 
     def metrics(self, *, tenant_id: str | None = None) -> dict[str, Any]:
@@ -1388,6 +1443,31 @@ class PSKAApi:
             },
         }
 
+    def workspace_ask_understand(self, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
+        payload = context.apply_to_payload(payload) if context else payload
+        query = str(payload.get("query") or "").strip()
+        if not query:
+            raise ValueError("query is required")
+        raw_intent = str(payload.get("intent") or "auto").strip().lower()
+        execution_intent, forced_ask_intent = _ask_requested_intents(raw_intent, payload.get("routing_mode"))
+        scope = payload.get("scope") if isinstance(payload.get("scope"), dict) else {}
+        surface = str(payload.get("surface") or "ask").strip() or "ask"
+        understand = _ask_understand_payload(
+            query=query,
+            intent=raw_intent,
+            forced_ask_intent=forced_ask_intent,
+            scope=scope,
+            surface=surface,
+        )
+        understand["execution_intent"] = execution_intent
+        understand["selected_intent"] = _ask_route_intent(
+            understand.get("rewrite_query") or query,
+            intent=execution_intent,
+            ask_intent=str(understand.get("intent") or "kb_search"),
+            scope=scope,
+        )
+        return {"ok": True, "understand": understand}
+
     def workspace_ask(self, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
         started_at = time.perf_counter()
         payload = context.apply_to_payload(payload) if context else payload
@@ -1395,8 +1475,7 @@ class PSKAApi:
         if not query:
             raise ValueError("query is required")
         intent = str(payload.get("intent") or "auto").strip().lower()
-        if intent not in {"auto", "quick", "deep"}:
-            raise ValueError("intent must be one of auto, quick, deep")
+        execution_intent, forced_ask_intent = _ask_requested_intents(intent, payload.get("routing_mode"))
         tenant_id = str(payload.get("tenant_id") or DEFAULT_TENANT_ID)
         owner_user_id = _workspace_owner_user_id(context, payload.get("owner_user_id") or payload.get("represented_user_id"))
         user_id = str(payload.get("user_id") or owner_user_id)
@@ -1405,11 +1484,23 @@ class PSKAApi:
         scope = payload.get("scope") if isinstance(payload.get("scope"), dict) else {}
         top_k = max(1, min(int(payload.get("top_k") or 8), 20))
         session_id = str(payload.get("session_id") or "").strip() or None
-        selected_intent = _ask_route_intent(query, intent=intent)
+        understand = _ask_understand_payload(
+            query=query,
+            intent=intent,
+            forced_ask_intent=forced_ask_intent,
+            scope=scope,
+            surface=surface,
+        )
+        selected_intent = _ask_route_intent(
+            understand.get("rewrite_query") or query,
+            intent=execution_intent,
+            ask_intent=str(understand.get("intent") or "kb_search"),
+            scope=scope,
+        )
         user = self.store.get_user(user_id, tenant_id=tenant_id)
         if selected_intent == "deep":
             try:
-                deep_query = _ask_deep_query(query=query, surface=surface, scope=scope)
+                deep_query = _ask_deep_query(query=query, surface=surface, scope={**scope, "understand": understand})
                 deep = self._workspace_ask_deep_agentic(
                     deep_query,
                     user,
@@ -1427,6 +1518,7 @@ class PSKAApi:
                         tenant_id=tenant_id,
                         owner_user_id=owner_user_id,
                         selected_intent=selected_intent,
+                        understand=understand,
                         agentic=deep,
                         started_at=started_at,
                         allowed_tools=ASK_READ_ONLY_TOOLS,
@@ -1445,6 +1537,7 @@ class PSKAApi:
                     user=user,
                     top_k=top_k,
                     started_at=started_at,
+                    understand=understand,
                 )
                 quick["ok"] = False
                 quick["route"]["selected_intent"] = "quick"
@@ -1464,6 +1557,7 @@ class PSKAApi:
                 user=user,
                 top_k=top_k,
                 started_at=started_at,
+                understand=understand,
             )
         )
 
@@ -1519,8 +1613,7 @@ class PSKAApi:
         if not query:
             raise ValueError("query is required")
         intent = str(payload.get("intent") or "auto").strip().lower()
-        if intent not in {"auto", "quick", "deep"}:
-            raise ValueError("intent must be one of auto, quick, deep")
+        execution_intent, forced_ask_intent = _ask_requested_intents(intent, payload.get("routing_mode"))
         tenant_id = str(payload.get("tenant_id") or DEFAULT_TENANT_ID)
         owner_user_id = _workspace_owner_user_id(context, payload.get("owner_user_id") or payload.get("represented_user_id"))
         user_id = str(payload.get("user_id") or owner_user_id)
@@ -1529,38 +1622,53 @@ class PSKAApi:
         scope = payload.get("scope") if isinstance(payload.get("scope"), dict) else {}
         top_k = max(1, min(int(payload.get("top_k") or 8), 20))
         session_id = str(payload.get("session_id") or "").strip() or None
-        selected_intent = _ask_route_intent(query, intent=intent)
+        understand = _ask_understand_payload(
+            query=query,
+            intent=intent,
+            forced_ask_intent=forced_ask_intent,
+            scope=scope,
+            surface=surface,
+        )
+        selected_intent = _ask_route_intent(
+            understand.get("rewrite_query") or query,
+            intent=execution_intent,
+            ask_intent=str(understand.get("intent") or "kb_search"),
+            scope=scope,
+        )
         user = self.store.get_user(user_id, tenant_id=tenant_id)
         if selected_intent != "deep" or not hasattr(self.agentic_service, "search_event_stream"):
             if selected_intent != "deep":
                 route = _ask_route_payload(
-                    intent=intent,
+                    intent=str(understand.get("intent") or "kb_search"),
                     selected_intent="quick",
                     retrieval_owner="pska",
                     surface=surface,
                     requires_agentic_service_online=False,
                     tool_policy={"mode": "none"},
                     query=query,
+                    requested_intent=intent,
+                    understand=understand,
                 )
                 yield ("route", {"route": route, "timing": {}})
-                query_terms = _ask_query_terms(query)
+                query_terms = _ask_query_terms(str(understand.get("rewrite_query") or query))
                 emitted_steps = _ask_route_planner_steps(
                     query=query,
-                    intent=intent,
+                    intent=str(understand.get("intent") or "kb_search"),
                     selected_intent="quick",
                     query_terms=query_terms,
                     started_at=started_at,
                     start_sequence=1,
                     include_understand=True,
                 )
-                emitted_steps.append(
-                    _ask_quick_search_step(
-                        sequence=len(emitted_steps) + 1,
-                        query_terms=query_terms,
-                        top_k=top_k,
-                        started_at=started_at,
+                if understand.get("requires_retrieval", True):
+                    emitted_steps.append(
+                        _ask_quick_search_step(
+                            sequence=len(emitted_steps) + 1,
+                            query_terms=query_terms,
+                            top_k=top_k,
+                            started_at=started_at,
+                        )
                     )
-                )
                 time_to_first_agent_event_ms = emitted_steps[0].get("elapsed_ms") if emitted_steps else None
                 for step in emitted_steps:
                     timing = {"time_to_first_agent_event_ms": time_to_first_agent_event_ms}
@@ -1580,6 +1688,7 @@ class PSKAApi:
                         started_at=started_at,
                         agent_steps=emitted_steps,
                         query_terms=query_terms,
+                        understand=understand,
                     )
                 )
                 final_payload["timing"]["time_to_first_agent_event_ms"] = time_to_first_agent_event_ms
@@ -1599,7 +1708,8 @@ class PSKAApi:
             return
 
         route = {
-            "intent": intent,
+            "intent": str(understand.get("intent") or "kb_search"),
+            "requested_intent": intent,
             "selected_intent": selected_intent,
             "retrieval_owner": "fastreact_pska_mcp",
             "surface": surface,
@@ -1607,15 +1717,18 @@ class PSKAApi:
             "tool_policy": {"mode": "allowlist", "allowed_tools": ASK_READ_ONLY_TOOLS},
             "tool_profile": ASK_READ_TOOL_PROFILE,
             "routing_owner": "pska_planner",
-            "query_terms": _ask_query_terms(query),
+            "query_terms": _ask_query_terms(str(understand.get("rewrite_query") or query)),
+            "rewrite_query": understand.get("rewrite_query") or query,
+            "scope_applied": understand.get("scope_applied") or {},
+            "understand": understand,
         }
         yield ("route", {"route": route, "timing": {}})
         raw_events: list[dict[str, Any]] = []
         agent_steps: list[dict[str, Any]] = _ask_route_planner_steps(
             query=query,
-            intent=intent,
+            intent=str(understand.get("intent") or "kb_search"),
             selected_intent=selected_intent,
-            query_terms=_ask_query_terms(query),
+            query_terms=_ask_query_terms(str(understand.get("rewrite_query") or query)),
             started_at=started_at,
             start_sequence=1,
             include_understand=False,
@@ -1629,7 +1742,7 @@ class PSKAApi:
                 yield ("agent_step", {"step": step, "timing": timing})
         try:
             event_stream = self.agentic_service.search_event_stream(
-                _ask_deep_query(query=query, surface=surface, scope=scope),
+                _ask_deep_query(query=query, surface=surface, scope={**scope, "understand": understand}),
                 user,
                 represented_user_id=represented_user_id,
                 max_iterations=max(1, min(int(payload.get("max_iterations") or 4), 8)),
@@ -1675,6 +1788,7 @@ class PSKAApi:
                 user=user,
                 top_k=top_k,
                 started_at=started_at,
+                understand=understand,
             )
             quick["ok"] = False
             quick["route"]["selected_intent"] = "quick"
@@ -1710,6 +1824,7 @@ class PSKAApi:
             tenant_id=tenant_id,
             owner_user_id=owner_user_id,
             selected_intent=selected_intent,
+            understand=understand,
             agentic=agentic,
             started_at=started_at,
             allowed_tools=ASK_READ_ONLY_TOOLS,
@@ -1865,14 +1980,26 @@ class PSKAApi:
         started_at: float,
         agent_steps: list[dict[str, Any]] | None = None,
         query_terms: list[str] | None = None,
+        understand: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        query_terms = query_terms or _ask_query_terms(query)
+        scope = scope or {}
+        understand = understand or _ask_understand_payload(
+            query=query,
+            intent=intent,
+            forced_ask_intent=None,
+            scope=scope,
+            surface=surface,
+        )
+        ask_intent = str(understand.get("intent") or "kb_search")
+        rewrite_query = str(understand.get("rewrite_query") or query)
+        query_terms = query_terms or _ask_query_terms(rewrite_query)
+        requires_retrieval = bool(understand.get("requires_retrieval", _ask_requires_retrieval(ask_intent)))
         steps = list(agent_steps or [])
         if not steps:
             steps.extend(
                 _ask_route_planner_steps(
                     query=query,
-                    intent=intent,
+                    intent=ask_intent,
                     selected_intent="quick",
                     query_terms=query_terms,
                     started_at=started_at,
@@ -1880,22 +2007,101 @@ class PSKAApi:
                     include_understand=True,
                 )
             )
+            if requires_retrieval:
+                steps.append(
+                    _ask_quick_search_step(
+                        sequence=len(steps) + 1,
+                        query_terms=query_terms,
+                        top_k=top_k,
+                        started_at=started_at,
+                    )
+                )
+        if not requires_retrieval:
+            answer, answer_type = _ask_no_retrieval_answer(ask_intent, query)
             steps.append(
-                _ask_quick_search_step(
+                _ask_agent_step(
                     sequence=len(steps) + 1,
-                    query_terms=query_terms,
-                    top_k=top_k,
+                    phase="answer",
+                    status="complete",
+                    title="形成回答",
+                    detail="无需检索用户资料，已直接回答。",
                     started_at=started_at,
                 )
             )
-        scoped_source_item_ids = set(_string_list((scope or {}).get("source_item_ids")))
-        retrieval_query = _ask_query_with_scope(query, scope or {})
+            elapsed_ms = _elapsed_ms(started_at)
+            evidence_check = {
+                "schema": "pska.ask_evidence_check.v1",
+                "status": "not_applicable",
+                "scope_mode": _ask_scope_mode(scope, ask_intent=ask_intent),
+                "used_citations": [],
+                "dropped_citations": [],
+                "evidence_claims": [],
+                "no_answer_reasons": [],
+            }
+            return {
+                "ok": True,
+                "query": query,
+                "intent": ask_intent,
+                "rewrite_query": rewrite_query,
+                "answer": answer,
+                "answer_type": answer_type,
+                "route": _ask_route_payload(
+                    intent=ask_intent,
+                    selected_intent="quick",
+                    retrieval_owner="none",
+                    surface=surface,
+                    requires_agentic_service_online=False,
+                    tool_policy={"mode": "none"},
+                    query=query,
+                    requested_intent=intent,
+                    understand=understand,
+                ),
+                "evidence": {
+                    "citations": [],
+                    "source_refs": [],
+                    "results": [],
+                    "source_windows": [],
+                    "graph_paths": [],
+                    "memory_context": [],
+                    "profile_context": [],
+                    "gaps": [],
+                    "conflicts": [],
+                    "evidence_claims": [],
+                    "no_answer_reasons": [],
+                },
+                "citations": [],
+                "source_refs": [],
+                "citation_audit": {"used": [], "dropped": []},
+                "evidence_check": evidence_check,
+                "evidence_claims": [],
+                "no_answer_reasons": [],
+                "agent_steps": steps,
+                "trace": {
+                    "mode": "quick",
+                    "query_terms": query_terms,
+                    "retrieval_query": None,
+                    "scope": _ask_scope_trace(scope),
+                    "retrieval_owner": "none",
+                    "diagnostics": {"non_retrieval_intent": ask_intent},
+                },
+                "timing": {
+                    "total_ms": elapsed_ms,
+                    "time_to_first_answer_ms": elapsed_ms,
+                    "time_to_first_agent_event_ms": steps[0].get("elapsed_ms") if steps else None,
+                },
+                "tenant_id": tenant_id,
+                "owner_user_id": owner_user_id,
+            }
+        scoped_source_item_ids = _ask_scope_source_item_ids(scope)
+        scope_mode = _ask_scope_mode(scope, ask_intent=ask_intent)
+        retrieval_query = _ask_query_with_scope(rewrite_query, scope)
         retrieval_result = self.retrieval.search(
             retrieval_query,
             user,
             represented_user_id=represented_user_id,
             top_k=top_k,
             source_item_ids=scoped_source_item_ids or None,
+            scope_mode=scope_mode,
         )
         retrieval = _console_search_summary(to_jsonable(retrieval_result))
         retrieval = _ask_hydrate_retrieval_source_windows(
@@ -1906,8 +2112,16 @@ class PSKAApi:
             owner_user_id=owner_user_id,
         )
         evidence = _ask_evidence_from_retrieval(retrieval)
+        evidence_check = _ask_verify_evidence(query=rewrite_query, evidence=evidence, scope=scope, ask_intent=ask_intent)
+        evidence = _ask_apply_evidence_check(evidence, evidence_check)
+        retrieval = _ask_apply_evidence_check_to_retrieval(retrieval, evidence_check)
         steps.append(_ask_quick_read_step(sequence=len(steps) + 1, evidence=evidence, started_at=started_at))
-        answer = _ask_quick_answer(query, retrieval)
+        if evidence_check.get("status") == "supported":
+            answer = _ask_quick_answer(query, retrieval)
+            answer_type = "kb_answer"
+        else:
+            answer = _ask_no_answer_from_evidence_check(query, evidence_check)
+            answer_type = "no_answer"
         steps.append(
             _ask_agent_step(
                 sequence=len(steps) + 1,
@@ -1922,9 +2136,13 @@ class PSKAApi:
         return {
             "ok": True,
             "query": query,
+            "intent": ask_intent,
+            "rewrite_query": rewrite_query,
             "answer": answer,
+            "answer_type": answer_type,
             "route": {
-                "intent": intent,
+                "intent": ask_intent,
+                "requested_intent": intent,
                 "selected_intent": "quick",
                 "retrieval_owner": "pska",
                 "surface": surface,
@@ -1932,11 +2150,21 @@ class PSKAApi:
                 "tool_policy": {"mode": "none"},
                 "routing_owner": "pska_planner",
                 "query_terms": query_terms,
+                "rewrite_query": rewrite_query,
+                "scope_applied": understand.get("scope_applied") or _ask_scope_applied(scope, ask_intent=ask_intent),
+                "understand": understand,
                 "scope_context_nodes": len(_list_of_dicts((scope or {}).get("context_nodes"))),
             },
             "evidence": evidence,
             "citations": evidence["citations"],
             "source_refs": evidence["source_refs"],
+            "citation_audit": {
+                "used": evidence["citations"],
+                "dropped": _list_of_dicts(evidence_check.get("dropped_citations")),
+            },
+            "evidence_check": evidence_check,
+            "evidence_claims": list(evidence_check.get("evidence_claims") or []),
+            "no_answer_reasons": list(evidence_check.get("no_answer_reasons") or []),
             "agent_steps": steps,
             "trace": {
                 "mode": "quick",
@@ -1946,6 +2174,7 @@ class PSKAApi:
                 "retrieval_owner": "pska",
                 "retrieval": retrieval,
                 "diagnostics": retrieval.get("diagnostics") if isinstance(retrieval.get("diagnostics"), dict) else {},
+                "evidence_check": evidence_check,
             },
             "timing": {
                 "total_ms": elapsed_ms,
@@ -2274,6 +2503,9 @@ class PSKAApi:
                     tenant_id=tenant_id,
                 )
             )
+            updater = getattr(self.store, "update_artifact_support_status_for_sources", None)
+            if callable(updater):
+                deleted["artifact_supports_restored"] = updater(set(owned_ids), tenant_id=tenant_id, status="active")
         elif hard_delete:
             deleted.update(_hard_delete_source_derivatives(self.store, owned_ids))
             deleted.update(
@@ -2296,7 +2528,7 @@ class PSKAApi:
                     tenant_id=tenant_id,
                 )
             )
-            stale = _mark_source_derivatives_stale(self.store, owned_ids, actor_user_id=actor_user_id, reason=reason)
+            stale = _mark_source_derivatives_stale(self.store, owned_ids, tenant_id=tenant_id, actor_user_id=actor_user_id, reason=reason)
             deleted.update({f"stale_{key}": value for key, value in stale.items()})
         return {
             "ok": True,
@@ -2330,6 +2562,22 @@ class PSKAApi:
         passage_windows = _passage_windows_for_documents(documents, chunks)
         claims = self.store.list_knowledge_claims(owner_user_id=owner_user_id, tenant_id=tenant_id, source_item_ids=source_ids, limit=limit * 4)
         digest_notes = self.store.list_digest_notes(owner_user_id=owner_user_id, tenant_id=tenant_id, source_item_ids=source_ids, limit=limit)
+        topics = self.store.list_knowledge_topics(tenant_id=tenant_id, owner_user_id=owner_user_id, limit=limit * 2)
+        topic_ids = {topic.topic_id for topic in topics}
+        topic_mentions = self.store.list_topic_mentions(
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            topic_ids=topic_ids or None,
+            source_item_ids=source_ids or None,
+            limit=limit * 10,
+        )
+        artifact_supports = self.store.list_artifact_supports(
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            source_item_ids=source_ids or None,
+            status="active",
+            limit=limit * 10,
+        )
         memories = self.store.list_agent_memories(owner_user_id=owner_user_id, tenant_id=tenant_id)[:limit]
         review_items = [
             item
@@ -2353,6 +2601,9 @@ class PSKAApi:
             review_items=review_items,
             entities=entities[: limit * 2],
             hyperedges=hyperedges[: limit * 2],
+            topics=topics[: limit * 2],
+            topic_mentions=topic_mentions,
+            artifact_supports=artifact_supports,
         )
         unfiltered_counts = {"nodes": len(nodes), "edges": len(edges)}
         nodes, edges = _filter_workspace_graph_projection(nodes, edges, node_types=node_types)
@@ -2379,6 +2630,9 @@ class PSKAApi:
                 "memories": len(memories),
                 "review_items": len(review_items),
                 "entities": len(entities),
+                "topics": len(topics),
+                "topic_mentions": len(topic_mentions),
+                "artifact_supports": len(artifact_supports),
                 "phrases": sum(1 for node in nodes if node.get("type") == "phrase"),
                 "facts": len(hyperedges),
                 "hyperedges": len(hyperedges),
@@ -2627,6 +2881,371 @@ class PSKAApi:
             "deterministic": deterministic,
         }
 
+    def workspace_graph_topics(
+        self,
+        *,
+        owner_user_id: str | None = None,
+        query: str | None = None,
+        limit: int = 100,
+        context: RequestContext | None = None,
+    ) -> dict[str, Any]:
+        owner_user_id = _workspace_owner_user_id(context, owner_user_id)
+        tenant_id = _tenant_id_for_request(context)
+        topics = self.store.list_knowledge_topics(
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            query=query,
+            limit=max(1, min(int(limit or 100), 500)),
+        )
+        topic_ids = {topic.topic_id for topic in topics}
+        mentions = self.store.list_topic_mentions(
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            topic_ids=topic_ids or None,
+            limit=5000,
+        )
+        supports = self.store.list_artifact_supports(
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            artifact_type="topic",
+            artifact_ids=topic_ids or None,
+            status="active",
+            limit=5000,
+        )
+        source_ids = {mention.source_item_id for mention in mentions}
+        source_items = {
+            item.source_item_id: item
+            for item in self.store.list_source_items(tenant_id=tenant_id)
+            if item.owner_user_id == owner_user_id and item.source_item_id in source_ids and _is_active_lifecycle(item)
+        }
+        return {
+            "ok": True,
+            "tenant_id": tenant_id,
+            "owner_user_id": owner_user_id,
+            "topics": [
+                _knowledge_topic_payload(
+                    topic,
+                    mentions=[mention for mention in mentions if mention.topic_id == topic.topic_id],
+                    supports=[support for support in supports if support.topic_id == topic.topic_id or support.artifact_id == topic.topic_id],
+                    source_items=source_items,
+                )
+                for topic in topics
+            ],
+            "counts": {
+                "topics": len(topics),
+                "mentions": len(mentions),
+                "supports": len(supports),
+                "sources": len(source_items),
+            },
+        }
+
+    def workspace_graph_paths(
+        self,
+        *,
+        query: str,
+        owner_user_id: str | None = None,
+        top_k: int = 5,
+        context: RequestContext | None = None,
+    ) -> dict[str, Any]:
+        owner_user_id = _workspace_owner_user_id(context, owner_user_id)
+        tenant_id = _tenant_id_for_request(context)
+        topics_payload = self.workspace_graph_topics(owner_user_id=owner_user_id, query=query, limit=50, context=context)
+        path_payload = self.workspace_graph_path(query=query, owner_user_id=owner_user_id, top_k=top_k, mode="deterministic", context=context)
+        topics = _list_of_dicts(topics_payload.get("topics"))
+        return {
+            "ok": True,
+            "tenant_id": tenant_id,
+            "owner_user_id": owner_user_id,
+            "query": query,
+            "ontology_version": "pska.topic_fact_graph.v1",
+            "topic_paths": _topic_paths_from_topic_payloads(topics, limit=max(1, min(top_k, 20))),
+            "graph_paths": _list_of_dicts(path_payload.get("graph_paths")),
+            "citations": _list_of_dicts(path_payload.get("citations")),
+            "score_debug": path_payload.get("score_debug") or {},
+            "counts": {
+                "matching_topics": len(topics),
+                "graph_paths": len(_list_of_dicts(path_payload.get("graph_paths"))),
+            },
+        }
+
+    def workspace_digest_linking_run(self, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
+        payload = context.apply_to_payload(payload) if context else payload
+        tenant_id = _tenant_id_for_request(context, str(payload.get("tenant_id")) if payload.get("tenant_id") else None)
+        owner_user_id = _workspace_owner_user_id(context, payload.get("owner_user_id") or payload.get("represented_user_id"))
+        requested_source_ids = set(_string_list(payload.get("source_item_ids")))
+        limit = max(1, min(int(payload.get("limit") or 80), 300))
+        max_topics_per_source = max(3, min(int(payload.get("max_topics_per_source") or 12), 40))
+        source_items = [
+            item
+            for item in self.store.list_source_items(tenant_id=tenant_id)
+            if item.owner_user_id == owner_user_id and _is_active_lifecycle(item)
+        ]
+        if requested_source_ids:
+            source_items = [item for item in source_items if item.source_item_id in requested_source_ids]
+        source_items = source_items[:limit]
+        source_ids = {item.source_item_id for item in source_items}
+        documents = self.store.list_documents_for_sources(source_ids)
+        chunks = self.store.list_chunks_for_sources(source_ids)
+        claims = self.store.list_knowledge_claims(owner_user_id=owner_user_id, tenant_id=tenant_id, source_item_ids=source_ids, limit=limit * 4)
+        notes = self.store.list_digest_notes(owner_user_id=owner_user_id, tenant_id=tenant_id, source_item_ids=source_ids, limit=limit * 2)
+        documents_by_source: dict[str, list[Any]] = {}
+        chunks_by_source: dict[str, list[Any]] = {}
+        claims_by_source: dict[str, list[Any]] = {}
+        notes_by_source: dict[str, list[Any]] = {}
+        for document in documents:
+            documents_by_source.setdefault(str(getattr(document, "source_item_id", "") or ""), []).append(document)
+        for chunk in chunks:
+            chunks_by_source.setdefault(str(getattr(chunk, "source_item_id", "") or ""), []).append(chunk)
+        for claim in claims:
+            for ref in getattr(claim, "source_refs", []) or []:
+                if ref.source_item_id:
+                    claims_by_source.setdefault(ref.source_item_id, []).append(claim)
+        for note in notes:
+            for ref in getattr(note, "source_refs", []) or []:
+                if ref.source_item_id:
+                    notes_by_source.setdefault(ref.source_item_id, []).append(note)
+
+        topic_by_id: dict[str, KnowledgeTopic] = {}
+        mentions_by_topic: dict[str, list[TopicMention]] = {}
+        supports_written = 0
+        for item in source_items:
+            candidates = _linking_topic_candidates_for_source(
+                item=item,
+                documents=documents_by_source.get(item.source_item_id) or [],
+                chunks=chunks_by_source.get(item.source_item_id) or [],
+                claims=claims_by_source.get(item.source_item_id) or [],
+                digest_notes=notes_by_source.get(item.source_item_id) or [],
+                max_topics=max_topics_per_source,
+            )
+            for candidate in candidates:
+                normalized = _topic_normalized_label(str(candidate.get("label") or ""))
+                if not normalized:
+                    continue
+                topic_id = _topic_stable_id(tenant_id=tenant_id, owner_user_id=owner_user_id, normalized_label=normalized)
+                support_kinds = _string_list(candidate.get("support_kinds"))
+                quality_tier = str(candidate.get("quality_tier") or "diagnostic")
+                review_eligible = bool(candidate.get("review_eligible")) and quality_tier == "strong"
+                support_artifacts = _list_of_dicts(candidate.get("support_artifacts"))
+                source_refs = _list_of_dicts(candidate.get("source_refs")) or [
+                    {
+                        "source_item_id": item.source_item_id,
+                        "document_id": candidate.get("document_id"),
+                        "chunk_id": candidate.get("chunk_id"),
+                        "mention_text": candidate.get("mention_text"),
+                    }
+                ]
+                promotion_reason = str(candidate.get("promotion_reason") or ("strong_support" if review_eligible else "diagnostic_only"))
+                topic = self.store.upsert_knowledge_topic(
+                    KnowledgeTopic(
+                        topic_id=topic_id,
+                        owner_user_id=owner_user_id,
+                        label=str(candidate.get("label") or normalized),
+                        normalized_label=normalized,
+                        topic_type="topic",
+                        description=str(candidate.get("description") or ""),
+                        confidence=float(candidate.get("confidence") or 0.0),
+                        producer="pska.linking_digest",
+                        metadata={
+                            "quality_tier": quality_tier,
+                            "support_kinds": support_kinds,
+                            "promotion_reason": promotion_reason,
+                            "review_eligible": review_eligible,
+                            "support_artifacts": support_artifacts[:12],
+                            "diagnostics": {
+                                "lexical_only": not review_eligible,
+                                "note": "Diagnostic topics do not create Review items or GraphRAG evidence paths.",
+                            },
+                            "run_type": "linking_digest",
+                        },
+                        tenant_id=tenant_id,
+                    )
+                )
+                topic_by_id[topic.topic_id] = topic
+                mention = self.store.upsert_topic_mention(
+                    TopicMention(
+                        topic_mention_id=_topic_mention_stable_id(
+                            tenant_id=tenant_id,
+                            owner_user_id=owner_user_id,
+                            topic_id=topic.topic_id,
+                            source_item_id=item.source_item_id,
+                            artifact_id=str(candidate.get("artifact_id") or item.source_item_id),
+                        ),
+                        topic_id=topic.topic_id,
+                        owner_user_id=owner_user_id,
+                        source_item_id=item.source_item_id,
+                        document_id=str(candidate.get("document_id") or "") or None,
+                        chunk_id=str(candidate.get("chunk_id") or "") or None,
+                        artifact_type=str(candidate.get("artifact_type") or "source_item"),
+                        artifact_id=str(candidate.get("artifact_id") or item.source_item_id),
+                        mention_text=str(candidate.get("mention_text") or ""),
+                        confidence=float(candidate.get("confidence") or 0.0),
+                        producer="pska.linking_digest",
+                        metadata={
+                            "source_title": getattr(item, "title", ""),
+                            "run_type": "linking_digest",
+                            "quality_tier": quality_tier,
+                            "support_kinds": support_kinds,
+                            "support_artifacts": support_artifacts[:12],
+                            "source_refs": source_refs,
+                            "promotion_reason": promotion_reason,
+                            "review_eligible": review_eligible,
+                        },
+                        tenant_id=tenant_id,
+                    )
+                )
+                mentions_by_topic.setdefault(topic.topic_id, []).append(mention)
+                topic_support_id = _artifact_support_stable_id(
+                    tenant_id=tenant_id,
+                    owner_user_id=owner_user_id,
+                    artifact_type="topic",
+                    artifact_id=topic.topic_id,
+                    support_type="topic_mention",
+                    source_item_id=item.source_item_id,
+                    chunk_id=mention.chunk_id or "",
+                )
+                mention.metadata["artifact_support_id"] = topic_support_id
+                self.store.upsert_artifact_support(
+                    ArtifactSupport(
+                        artifact_support_id=topic_support_id,
+                        owner_user_id=owner_user_id,
+                        artifact_type="topic",
+                        artifact_id=topic.topic_id,
+                        support_type="topic_mention",
+                        source_item_id=item.source_item_id,
+                        document_id=mention.document_id,
+                        chunk_id=mention.chunk_id,
+                        topic_id=topic.topic_id,
+                        confidence=mention.confidence,
+                        metadata={
+                            "topic_mention_id": mention.topic_mention_id,
+                            "quality_tier": quality_tier,
+                            "support_kinds": support_kinds,
+                            "support_artifacts": support_artifacts[:12],
+                            "promotion_reason": promotion_reason,
+                            "review_eligible": review_eligible,
+                            "source_refs": source_refs,
+                        },
+                        tenant_id=tenant_id,
+                    )
+                )
+                supports_written += 1
+
+        review_items: list[ReviewItem] = []
+        for topic_id, mentions in mentions_by_topic.items():
+            eligible_mentions = [mention for mention in mentions if _topic_mention_review_eligible(mention)]
+            source_refs = _topic_source_refs_from_mentions(eligible_mentions)
+            if len({ref["source_item_id"] for ref in source_refs}) < 2:
+                continue
+            topic = topic_by_id.get(topic_id)
+            if topic is None:
+                continue
+            support_ids = [
+                _artifact_support_stable_id(
+                    tenant_id=tenant_id,
+                    owner_user_id=owner_user_id,
+                    artifact_type="topic",
+                    artifact_id=topic.topic_id,
+                    support_type="topic_mention",
+                    source_item_id=str(ref.get("source_item_id") or ""),
+                    chunk_id=str(ref.get("chunk_id") or ""),
+                )
+                for ref in source_refs
+                if ref.get("source_item_id")
+            ]
+            support_artifacts = _dedupe_support_artifacts(
+                [
+                    artifact
+                    for mention in eligible_mentions
+                    for artifact in _list_of_dicts((getattr(mention, "metadata", {}) or {}).get("support_artifacts"))
+                ]
+            )
+            claim_ids = sorted({str(item.get("artifact_id") or "") for item in support_artifacts if item.get("artifact_type") == "knowledge_claim" and item.get("artifact_id")})
+            support_kinds = sorted(
+                {
+                    kind
+                    for mention in eligible_mentions
+                    for kind in _string_list((getattr(mention, "metadata", {}) or {}).get("support_kinds"))
+                }
+            )
+            review_id = _linking_review_stable_id(tenant_id=tenant_id, owner_user_id=owner_user_id, topic_id=topic_id, source_refs=source_refs)
+            review_item = ReviewItem(
+                review_item_id=review_id,
+                owner_user_id=owner_user_id,
+                review_type=ReviewType.RELATIONSHIP_CANDIDATE,
+                title=f"共享主题：{topic.label}",
+                proposal={
+                    "kind": "linking_digest_relationship",
+                    "relationship": "shared_topic",
+                    "topic_id": topic.topic_id,
+                    "topic_label": topic.label,
+                    "source_refs": source_refs,
+                    "support_ids": support_ids,
+                    "support_kinds": support_kinds,
+                    "support_artifacts": support_artifacts,
+                    "entity_ids": [],
+                    "claim_ids": claim_ids,
+                    "quality_tier": "strong",
+                    "promotion_reason": "shared_strong_support",
+                    "review_eligible": True,
+                    "producer": "pska.linking_digest",
+                    "confidence": min(0.9, max(0.55, sum(mention.confidence for mention in eligible_mentions) / max(1, len(eligible_mentions)))),
+                    "plain_text_summary": f"{len(source_refs)} 个资料条目通过强支撑共同指向“{topic.label}”（{', '.join(support_kinds[:4]) or 'support'}），建议 Review 后决定是否写入长期图谱。",
+                },
+                tenant_id=tenant_id,
+            )
+            self.store.add_review_item(review_item)
+            review_items.append(review_item)
+            for ref in source_refs:
+                self.store.upsert_artifact_support(
+                    ArtifactSupport(
+                        artifact_support_id=_artifact_support_stable_id(
+                            tenant_id=tenant_id,
+                            owner_user_id=owner_user_id,
+                            artifact_type="review_item",
+                            artifact_id=review_id,
+                            support_type="shared_topic_source",
+                            source_item_id=ref["source_item_id"],
+                            chunk_id=str(ref.get("chunk_id") or ""),
+                        ),
+                        owner_user_id=owner_user_id,
+                        artifact_type="review_item",
+                        artifact_id=review_id,
+                        support_type="shared_topic_source",
+                        source_item_id=ref["source_item_id"],
+                        document_id=ref.get("document_id"),
+                        chunk_id=ref.get("chunk_id"),
+                        topic_id=topic.topic_id,
+                        confidence=review_item.proposal["confidence"],
+                        metadata={
+                            "topic_label": topic.label,
+                            "quality_tier": "strong",
+                            "support_kinds": support_kinds,
+                            "promotion_reason": "shared_strong_support",
+                            "review_eligible": True,
+                        },
+                        tenant_id=tenant_id,
+                    )
+                )
+                supports_written += 1
+
+        return {
+            "ok": True,
+            "tenant_id": tenant_id,
+            "owner_user_id": owner_user_id,
+            "run_type": "linking_digest",
+            "source_item_count": len(source_items),
+            "topic_count": len(topic_by_id),
+            "topic_mention_count": sum(len(items) for items in mentions_by_topic.values()),
+            "artifact_support_count": supports_written,
+            "relationship_candidate_count": len(review_items),
+            "topics": [_knowledge_topic_payload(topic, mentions=mentions_by_topic.get(topic.topic_id) or []) for topic in topic_by_id.values()],
+            "review_items": to_jsonable(review_items),
+            "notes": [
+                "linking_digest is deterministic and domain-agnostic.",
+                "Cross-document relationships are review candidates, not automatically approved long-term knowledge.",
+            ],
+        }
+
     def workspace_writer_suggest(self, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
         payload = context.apply_to_payload(payload) if context else payload
         selected_text = str(payload.get("selected_text") or "").strip()
@@ -2863,29 +3482,67 @@ class PSKAApi:
         digest_note_ids = set(_string_list(payload.get("digest_note_ids") or payload.get("digest_note_id")))
         claim_ids = set(_string_list(payload.get("knowledge_claim_ids") or payload.get("claim_ids") or payload.get("knowledge_claim_id")))
         review_item_ids = set(_string_list(payload.get("review_item_ids") or payload.get("review_item_id")))
-        notes, claims, review_items = _evidence_brief_artifacts(
-            self.store,
-            tenant_id=tenant_id,
-            owner_user_id=owner,
-            job_id=job_id,
-            digest_note_ids=digest_note_ids,
-            claim_ids=claim_ids,
-            review_item_ids=review_item_ids,
-            limit=limit,
-        )
-        artifacts = [*notes, *claims, *review_items]
+        ask_run_ids = set(_string_list(payload.get("ask_run_ids") or payload.get("ask_run_id")))
+        explicit_non_ask_selector = bool(job_id or digest_note_ids or claim_ids or review_item_ids)
+        if ask_run_ids and not explicit_non_ask_selector:
+            notes, claims, review_items = [], [], []
+        else:
+            notes, claims, review_items = _evidence_brief_artifacts(
+                self.store,
+                tenant_id=tenant_id,
+                owner_user_id=owner,
+                job_id=job_id,
+                digest_note_ids=digest_note_ids,
+                claim_ids=claim_ids,
+                review_item_ids=review_item_ids,
+                limit=limit,
+            )
+        ask_runs = _evidence_brief_ask_runs(self.store, tenant_id=tenant_id, owner_user_id=owner, ask_run_ids=ask_run_ids, limit=limit)
+        artifacts = [*notes, *claims, *review_items, *ask_runs]
         if not artifacts:
-            raise ValueError("evidence brief requires digest notes, claims, review items, or a job_id with outputs")
+            return _evidence_brief_unavailable(
+                reason="missing_artifacts",
+                error="Evidence Brief 需要至少一个 digest note、claim、review item、Ask run，或带输出的 job_id。",
+                tenant_id=tenant_id,
+                owner_user_id=owner,
+            )
         refs = _evidence_brief_refs(self.store, tenant_id=tenant_id, owner_user_id=owner, artifacts=artifacts)
-        warnings = _evidence_brief_warnings(notes, claims, review_items)
+        warnings = _evidence_brief_warnings(notes, claims, review_items, ask_runs)
+        active_refs = [ref for ref in refs if _source_ref_lifecycle_status(ref) == "active"]
         if not refs:
-            raise ValueError("evidence brief requires at least one source_ref")
-        title = str(payload.get("title") or _evidence_brief_title(notes, claims, review_items)).strip()
+            return _evidence_brief_unavailable(
+                reason="missing_source_refs",
+                error="Evidence Brief 需要至少一个可追溯 source_ref/citation。",
+                tenant_id=tenant_id,
+                owner_user_id=owner,
+                warnings=warnings,
+            )
+        if not active_refs:
+            return _evidence_brief_unavailable(
+                reason="stale_evidence",
+                error="Evidence Brief 的证据来源已删除或失效，请先恢复资料或选择仍然 active 的证据。",
+                tenant_id=tenant_id,
+                owner_user_id=owner,
+                warnings=warnings,
+                source_refs=refs,
+            )
+        if ask_runs and len(artifacts) == len(ask_runs) and any(item.get("warning") == "insufficient_evidence" for item in warnings):
+            return _evidence_brief_unavailable(
+                reason="unsupported_answer",
+                error="这轮 Ask 没有通过证据校验，不能生成 Evidence Brief。",
+                tenant_id=tenant_id,
+                owner_user_id=owner,
+                warnings=warnings,
+                source_refs=refs,
+            )
+        refs = active_refs
+        title = str(payload.get("title") or _evidence_brief_title(notes, claims, review_items, ask_runs)).strip()
         lineage = _evidence_brief_lineage(
             job_id=job_id,
             notes=notes,
             claims=claims,
             review_items=review_items,
+            ask_runs=ask_runs,
             source_refs=refs,
             warnings=warnings,
         )
@@ -2910,6 +3567,7 @@ class PSKAApi:
             notes=notes,
             claims=claims,
             review_items=review_items,
+            ask_runs=ask_runs,
             refs=refs,
             lineage=lineage,
         )
@@ -3523,6 +4181,16 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
                     context=context,
                 ),
             )
+        if path == "/workspace/graph/topics":
+            return self._json(
+                200,
+                self.api.workspace_graph_topics(
+                    owner_user_id=_first(query.get("owner_user_id")),
+                    query=_first(query.get("query")),
+                    limit=_int_first(query.get("limit")) or 100,
+                    context=context,
+                ),
+            )
         if path == "/workspace/graph/subgraph":
             return self._json(
                 200,
@@ -3545,6 +4213,16 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
                     hops=_int_first(query.get("hops")) or 1,
                     top_k=_int_first(query.get("top_k")) or 5,
                     node_types=_node_types_param(_first(query.get("node_types"))),
+                    context=context,
+                ),
+            )
+        if path == "/workspace/graph/paths":
+            return self._json(
+                200,
+                self.api.workspace_graph_paths(
+                    query=_first(query.get("query")) or "",
+                    owner_user_id=_first(query.get("owner_user_id")),
+                    top_k=_int_first(query.get("top_k")) or 5,
                     context=context,
                 ),
             )
@@ -3638,6 +4316,8 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
                 return self._json(200, self.api.console_search(payload, context=context))
             if path == "/workspace/ask":
                 return self._json(200, self.api.workspace_ask(payload, context=context))
+            if path == "/workspace/ask/understand":
+                return self._json(200, self.api.workspace_ask_understand(payload, context=context))
             if path == "/workspace/ask/stream":
                 return self._sse_events(200, self.api.workspace_ask_event_stream(payload, context=context))
             if path == "/workspace/ask/conversations":
@@ -3666,6 +4346,8 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
                 return self._json(200, self.api.update_workspace_prompt_profiles(payload, context=context))
             if path == "/workspace/digest/run":
                 return self._json(200, self.api.workspace_digest_run(payload, context=context))
+            if path == "/workspace/digest/linking/run":
+                return self._json(200, self.api.workspace_digest_linking_run(payload, context=context))
             if path == "/workspace/evidence-briefs":
                 return self._json(200, self.api.workspace_evidence_brief_create(payload, context=context))
             if path == "/workspace/writer/suggest":
@@ -4558,6 +5240,12 @@ def _console_review_item(item: dict[str, Any]) -> dict[str, Any]:
         "confidence": _console_review_confidence(proposal),
         "source_refs": source_refs,
         "source_ref_status": source_ref_status,
+        "proposal": proposal,
+        "support_ids": _string_list(proposal.get("support_ids")),
+        "support_kinds": _string_list(proposal.get("support_kinds")),
+        "quality_tier": proposal.get("quality_tier"),
+        "promotion_reason": proposal.get("promotion_reason"),
+        "review_eligible": bool(proposal.get("review_eligible")),
         "created_at": item.get("created_at"),
         "recommended_action": _console_review_recommended_action(review_type, apply_ready=apply_ready),
         "recommended_actions": actions,
@@ -4784,9 +5472,616 @@ def _elapsed_ms(started_at: float) -> float:
     return round((time.perf_counter() - started_at) * 1000, 2)
 
 
-def _ask_route_intent(query: str, *, intent: str) -> str:
+def _ask_requested_intents(raw_intent: Any, raw_routing_mode: Any = None) -> tuple[str, str | None]:
+    intent = str(raw_intent or "auto").strip().lower()
+    routing_mode = str(raw_routing_mode or "").strip().lower()
+    if intent in ASK_EXECUTION_INTENTS:
+        execution_intent = intent
+        forced_ask_intent = routing_mode if routing_mode in ASK_INTENTS else None
+    elif intent in ASK_INTENTS:
+        execution_intent = "auto"
+        forced_ask_intent = intent
+    else:
+        raise ValueError("intent must be one of auto, quick, deep or a supported AskIntent")
+    return execution_intent, forced_ask_intent
+
+
+def _ask_understand_payload(
+    *,
+    query: str,
+    intent: str,
+    forced_ask_intent: str | None,
+    scope: dict[str, Any],
+    surface: str,
+) -> dict[str, Any]:
+    local = _ask_local_intent_guess(query=query, forced_ask_intent=forced_ask_intent, scope=scope, surface=surface)
+    ask_intent = str(local.get("intent") or "kb_search")
+    scope_applied = _ask_scope_applied(scope, ask_intent=ask_intent)
+    rewrite_query = _ask_rewrite_query(query, scope=scope, ask_intent=ask_intent)
+    return {
+        "schema": "pska.ask_understand.v1",
+        "query": query,
+        "intent": ask_intent,
+        "requested_intent": intent,
+        "rewrite_query": rewrite_query,
+        "scope_applied": scope_applied,
+        "requires_retrieval": _ask_requires_retrieval(ask_intent),
+        "routing_owner": local.get("routing_owner") or "pska_local_intent_guard",
+        "routing_mode": "forced" if forced_ask_intent else "auto",
+        "confidence": local.get("confidence"),
+        "reasons": local.get("reasons") or [],
+        "surface": surface,
+    }
+
+
+def _ask_local_intent_guess(
+    *,
+    query: str,
+    forced_ask_intent: str | None,
+    scope: dict[str, Any],
+    surface: str,
+) -> dict[str, Any]:
+    if forced_ask_intent in ASK_INTENTS:
+        return {
+            "intent": forced_ask_intent,
+            "confidence": 1.0,
+            "routing_owner": "user_or_caller_override",
+            "reasons": ["explicit_routing_mode"],
+        }
+    text = re.sub(r"\s+", " ", str(query or "").strip().lower())
+    has_scope = bool(_ask_scope_source_item_ids(scope) or _string_list(scope.get("attachment_ids")) or _list_of_dicts(scope.get("context_nodes")))
+    if _ask_is_greeting_query(text):
+        return {"intent": "greeting", "confidence": 0.95, "reasons": ["short_greeting"]}
+    if _ask_is_product_help_query(text):
+        return {"intent": "product_help", "confidence": 0.9, "reasons": ["product_capability_question"]}
+    if has_scope and _ask_is_document_scoped_query(text):
+        return {"intent": "doc_only", "confidence": 0.82, "reasons": ["attached_or_selected_document_scope"]}
+    if _ask_is_clarification_query(text):
+        return {"intent": "clarification", "confidence": 0.72, "reasons": ["underspecified_query"]}
+    if surface == "writing" or _ask_is_writing_query(text):
+        return {"intent": "writing", "confidence": 0.72, "reasons": ["writing_surface_or_task"]}
+    if _ask_is_graph_research_query(text):
+        return {"intent": "graph_research", "confidence": 0.76, "reasons": ["relationship_or_path_question"]}
+    recent_messages = _list_of_dicts(scope.get("recent_messages"))
+    if recent_messages and _ask_is_follow_up_query(text):
+        return {"intent": "follow_up", "confidence": 0.7, "reasons": ["conversation_follow_up"]}
+    if text and len(text) <= 24 and not _ask_evidence_terms(text):
+        return {"intent": "chitchat", "confidence": 0.55, "reasons": ["short_non_retrieval_text"]}
+    return {"intent": "kb_search", "confidence": 0.55, "reasons": ["conservative_kb_search_fallback"]}
+
+
+def _ask_is_greeting_query(text: str) -> bool:
+    normalized = re.sub(r"[\s,，。.!！?？~～]+", "", text)
+    return normalized in {
+        "hi",
+        "hello",
+        "hey",
+        "你好",
+        "您好",
+        "嗨",
+        "早上好",
+        "晚上好",
+        "下午好",
+    }
+
+
+def _ask_is_product_help_query(text: str) -> bool:
+    if not text:
+        return False
+    capability_markers = [
+        "你能做什么",
+        "能做什么",
+        "怎么用",
+        "如何使用",
+        "使用说明",
+        "帮助",
+        "help",
+        "what can you do",
+        "how do i use",
+        "how to use",
+    ]
+    product_markers = ["pska", "你", "系统", "助手", "这个产品", "this app", "this product"]
+    return any(marker in text for marker in capability_markers) and any(marker in text for marker in product_markers)
+
+
+def _ask_is_document_scoped_query(text: str) -> bool:
+    document_markers = [
+        "这篇",
+        "这个文档",
+        "附件",
+        "上传的",
+        "这份",
+        "此文",
+        "summarize this",
+        "this document",
+        "attached",
+        "attachment",
+        "the file",
+    ]
+    task_markers = [
+        "总结",
+        "概括",
+        "提炼",
+        "翻译",
+        "抽取",
+        "看看",
+        "说明",
+        "讲讲",
+        "分析",
+        "summarize",
+        "extract",
+        "translate",
+        "analyze",
+    ]
+    return any(marker in text for marker in document_markers) or any(marker in text for marker in task_markers)
+
+
+def _ask_is_clarification_query(text: str) -> bool:
+    normalized = re.sub(r"[\s,，。.!！?？~～]+", "", text)
+    return normalized in {"这个呢", "那呢", "为什么", "怎么说", "继续", "然后呢", "tellmemore", "more"}
+
+
+def _ask_is_writing_query(text: str) -> bool:
+    return any(marker in text for marker in ["写成", "起草", "改写", "润色", "大纲", "章节", "draft", "rewrite", "outline", "polish"])
+
+
+def _ask_is_graph_research_query(text: str) -> bool:
+    return any(marker in text for marker in ["关系", "关联", "路径", "图谱", "影响", "因果", "互相", "network", "relationship", "path", "graph"])
+
+
+def _ask_is_follow_up_query(text: str) -> bool:
+    normalized = re.sub(r"[\s,，。.!！?？~～]+", "", text)
+    if any(marker in normalized for marker in ["资料库", "知识库", "文档", "附件", "能证明", "证明", "是否", "有没有"]):
+        return False
+    if len(normalized) <= 18 and any(marker in normalized for marker in ["继续", "展开", "详细", "为什么", "还有", "那", "这个", "上面"]):
+        return True
+    return any(marker in text for marker in ["上一个", "刚才", "前面", "继续说", "follow up", "previous answer"])
+
+
+def _ask_rewrite_query(query: str, *, scope: dict[str, Any], ask_intent: str) -> str:
+    if ask_intent == "follow_up":
+        recent_messages = _list_of_dicts(scope.get("recent_messages"))
+        previous = " ".join(str(message.get("content") or "") for message in recent_messages[-4:])
+        if previous.strip():
+            return f"{query}\n\nConversation context:\n{_trim_words(previous, 160)}"
+    return query
+
+
+def _ask_requires_retrieval(ask_intent: str) -> bool:
+    return ask_intent in ASK_RETRIEVAL_INTENTS
+
+
+def _ask_scope_source_item_ids(scope: dict[str, Any]) -> set[str]:
+    source_ids = set(_string_list(scope.get("source_item_ids")))
+    source_ids.update(_string_list(scope.get("attachment_source_item_ids")))
+    for attachment in _list_of_dicts(scope.get("attachments")):
+        source_id = str(attachment.get("source_item_id") or attachment.get("sourceItemId") or "").strip()
+        if source_id:
+            source_ids.add(source_id)
+    return source_ids
+
+
+def _ask_scope_mode(scope: dict[str, Any], *, ask_intent: str) -> str:
+    explicit_mode = str(scope.get("mode") or scope.get("scope_mode") or "").strip().lower()
+    if explicit_mode in {"hard", "soft"}:
+        return explicit_mode
+    if ask_intent == "doc_only":
+        return "hard"
+    if _string_list(scope.get("attachment_ids")) or _ask_scope_source_item_ids(scope):
+        return "hard"
+    return "soft"
+
+
+def _ask_scope_applied(scope: dict[str, Any], *, ask_intent: str) -> dict[str, Any]:
+    source_item_ids = sorted(_ask_scope_source_item_ids(scope))
+    return {
+        "mode": _ask_scope_mode(scope, ask_intent=ask_intent),
+        "source_item_ids": source_item_ids,
+        "source_item_count": len(source_item_ids),
+        "attachment_ids": _string_list(scope.get("attachment_ids")),
+        "allow_expand_scope": bool(scope.get("allow_expand_scope")),
+        "conversation_id": scope.get("conversation_id"),
+        "context_node_count": len(_list_of_dicts(scope.get("context_nodes"))),
+    }
+
+
+def _ask_no_retrieval_answer(ask_intent: str, query: str) -> tuple[str, str]:
+    if ask_intent == "greeting":
+        return (
+            "你好，我是 PSKA。你可以把资料上传、粘贴或加入资料库，然后让我基于证据回答、做 digest、生成待 Review 的知识和 Evidence Brief。",
+            "direct_greeting",
+        )
+    if ask_intent == "product_help":
+        return (
+            "我可以帮你做四类事：管理资料库，基于资料问答并保留引用，运行 Digest 生成可审阅的 claims/topics/relationships，以及把已审证据整理成写作节点或 Evidence Brief。普通问答不会自动写入长期知识，只有你明确保存或 Review 通过后才会沉淀。",
+            "product_help",
+        )
+    if ask_intent == "clarification":
+        return ("这个问题还缺少对象或范围。你可以指定一份资料、一个主题，或者说明希望我查资料库、只看附件，还是生成写作草稿。", "clarification")
+    return ("我可以继续聊，但 PSKA 的强项是基于你的资料给出有引用的回答。给我一个主题或上传资料后，我会按证据回答。", "chitchat")
+
+
+def _ask_evidence_terms(text: str) -> list[str]:
+    text = str(text or "").casefold()
+    stopwords = {
+        "what",
+        "who",
+        "where",
+        "when",
+        "why",
+        "how",
+        "the",
+        "this",
+        "that",
+        "with",
+        "about",
+        "please",
+        "can",
+        "could",
+        "would",
+        "does",
+        "do",
+        "prove",
+        "answer",
+        "knowledge",
+        "base",
+        "你",
+        "我",
+        "他",
+        "她",
+        "它",
+        "这个",
+        "那个",
+        "这些",
+        "那些",
+        "看看",
+        "是谁",
+        "什么",
+        "什么是",
+        "如何",
+        "为什么",
+        "请",
+        "一下",
+        "关于",
+        "总结",
+        "介绍",
+        "说明",
+        "分析",
+        "当前",
+        "系统",
+        "资料",
+        "资料库",
+        "知识库",
+        "文档",
+        "附件",
+        "能",
+        "能够",
+        "可以",
+        "证明",
+        "能证明",
+        "回答",
+        "问题",
+        "是否",
+        "有没有",
+        "找到",
+        "证据",
+    }
+    terms: list[str] = []
+    seen: set[str] = set()
+
+    def add(term: str) -> None:
+        term = term.strip(" _-.,?!?;:，。！？；：、()[]{}<>《》\"'")
+        if len(term) < 2 or term in stopwords or term in seen:
+            return
+        seen.add(term)
+        terms.append(term)
+
+    for token in re.findall(r"[a-z0-9_]{2,}", text):
+        add(token)
+    for chunk in re.findall(r"[\u4e00-\u9fff]+", text):
+        normalized = chunk
+        for stopword in sorted(stopwords, key=len, reverse=True):
+            normalized = normalized.replace(stopword, " ")
+        normalized = re.sub(r"[的和与及并、了是吗呢吧啊么在对中上里将把为给从到]", " ", normalized)
+        for term in re.findall(r"[\u4e00-\u9fff]{2,}", normalized):
+            add(term)
+            for ngram_size in (2, 3, 4):
+                if len(term) > ngram_size:
+                    for index in range(len(term) - ngram_size + 1):
+                        add(term[index : index + ngram_size])
+    return terms[:24]
+
+
+def _ask_query_anchor_terms(query: str, terms: list[str] | None = None) -> list[str]:
+    generic_terms = {
+        "can",
+        "could",
+        "would",
+        "does",
+        "do",
+        "prove",
+        "answer",
+        "evidence",
+        "knowledge",
+        "base",
+        "资料",
+        "资料库",
+        "知识库",
+        "文档",
+        "附件",
+        "证明",
+        "能证明",
+        "回答",
+        "问题",
+        "当前",
+        "系统",
+        "证据",
+        "找到",
+        "是否",
+        "有没有",
+        "多少",
+        "如何",
+        "什么",
+    }
+    candidates = list(terms or _ask_evidence_terms(query))
+    anchors: list[str] = []
+    seen: set[str] = set()
+    for term in candidates:
+        normalized = str(term or "").strip().casefold()
+        if len(normalized) < 2 or normalized in generic_terms or normalized in seen:
+            continue
+        if re.fullmatch(r"\d+(?:\.\d+)?", normalized):
+            continue
+        seen.add(normalized)
+        anchors.append(normalized)
+    # Prefer the more specific phrase when both a phrase and its n-grams are present.
+    specific: list[str] = []
+    for term in anchors:
+        if any(term != other and term in other and len(other) > len(term) for other in anchors):
+            continue
+        specific.append(term)
+    return specific[:8]
+
+
+def _text_has_negated_label(text: str, label: str) -> bool:
+    normalized_label = str(label or "").strip().casefold()
+    if len(normalized_label) < 2:
+        return False
+    haystack = str(text or "").casefold()
+    if not haystack:
+        return False
+    patterns = [re.escape(normalized_label)]
+    if re.fullmatch(r"[a-z0-9_-]+", normalized_label):
+        patterns.append(r"\b" + re.escape(normalized_label) + r"\b")
+    for pattern in patterns:
+        for match in re.finditer(pattern, haystack):
+            start = max(0, match.start() - 90)
+            end = min(len(haystack), match.end() + 90)
+            window = haystack[start:end]
+            if _negation_window_matches(window):
+                return True
+    return False
+
+
+def _negation_window_matches(window: str) -> bool:
+    english_markers = [
+        "does not mention",
+        "do not mention",
+        "did not mention",
+        "doesn't mention",
+        "don't mention",
+        "not mention",
+        "not mentioned",
+        "no mention",
+        "not related to",
+        "no relation to",
+        "unrelated to",
+        "not involve",
+        "does not involve",
+        "did not involve",
+        "without mentioning",
+        "without reference to",
+        "not cite",
+        "not cited",
+    ]
+    chinese_markers = ["没有提到", "未提到", "未提及", "不提及", "不涉及", "没有涉及", "无关", "没有关系", "并非", "不是"]
+    return any(marker in window for marker in english_markers) or any(marker in window for marker in chinese_markers)
+
+
+def _ask_verify_evidence(
+    *,
+    query: str,
+    evidence: dict[str, Any],
+    scope: dict[str, Any],
+    ask_intent: str,
+) -> dict[str, Any]:
+    citations = _list_of_dicts(evidence.get("citations"))
+    results = _list_of_dicts(evidence.get("results"))
+    source_windows = _list_of_dicts(evidence.get("source_windows"))
+    allowed_source_ids = _ask_scope_source_item_ids(scope)
+    scope_mode = _ask_scope_mode(scope, ask_intent=ask_intent)
+    hard_scope = scope_mode == "hard"
+    query_terms = _ask_evidence_terms(query)
+    anchor_terms = _ask_query_anchor_terms(query, query_terms)
+    text_by_key: dict[tuple[str, str], str] = {}
+    window_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    windows_by_source: dict[str, list[dict[str, Any]]] = {}
+    result_by_source: dict[str, list[dict[str, Any]]] = {}
+
+    def remember_window(window: dict[str, Any]) -> None:
+        source_id = str(window.get("source_item_id") or "")
+        if not source_id or not str(window.get("text") or "").strip():
+            return
+        key = (source_id, str(window.get("chunk_id") or window.get("passage_window_id") or ""))
+        text_by_key[key] = str(window.get("text") or "")
+        window_by_key[key] = window
+        windows_by_source.setdefault(source_id, []).append(window)
+
+    for result in results:
+        source_id = str(result.get("source_item_id") or result.get("citation", {}).get("source_item_id") or "")
+        chunk_id = str(result.get("chunk_id") or result.get("citation", {}).get("chunk_id") or "")
+        source_window = result.get("source_window") if isinstance(result.get("source_window"), dict) else {}
+        if source_id:
+            result_by_source.setdefault(source_id, []).append(result)
+            if source_window.get("text"):
+                remember_window(source_window)
+            elif chunk_id:
+                text_by_key[(source_id, chunk_id)] = ""
+    for window in source_windows:
+        remember_window(window)
+
+    used: list[dict[str, Any]] = []
+    dropped: list[dict[str, Any]] = []
+    for citation in citations:
+        source_id = str(citation.get("source_item_id") or "")
+        chunk_id = str(citation.get("chunk_id") or "")
+        if hard_scope and (not source_id or source_id not in allowed_source_ids):
+            dropped.append({**citation, "drop_reason": "scope_violation"})
+            continue
+        source_window = citation.get("source_window") if isinstance(citation.get("source_window"), dict) else {}
+        if not source_window.get("text"):
+            source_window = window_by_key.get((source_id, chunk_id)) or window_by_key.get((source_id, str(citation.get("passage_window_id") or ""))) or {}
+        if not source_window.get("text") and source_id in windows_by_source and len(windows_by_source[source_id]) == 1:
+            source_window = windows_by_source[source_id][0]
+        evidence_text = str(source_window.get("text") or "")
+        if not evidence_text.strip():
+            dropped.append({**citation, "drop_reason": "missing_source_window"})
+            continue
+        evidence_terms = set(_ask_evidence_terms(evidence_text))
+        support_hits = [term for term in query_terms if term in evidence_terms or term in evidence_text.casefold()]
+        anchor_hits = [term for term in anchor_terms if term in evidence_terms or term in evidence_text.casefold()]
+        if ask_intent != "doc_only":
+            if anchor_terms and not anchor_hits:
+                dropped.append({**citation, "drop_reason": "missing_query_anchor", "query_anchors": anchor_terms[:8]})
+                continue
+            if anchor_hits and any(_text_has_negated_label(evidence_text, term) for term in anchor_hits):
+                dropped.append({**citation, "drop_reason": "negated_context", "query_anchors": anchor_hits[:8]})
+                continue
+            if query_terms and not support_hits:
+                dropped.append({**citation, "drop_reason": "lexically_unsupported"})
+                continue
+        used.append(
+            {
+                **citation,
+                "source_item_id": source_id,
+                "document_id": citation.get("document_id") or source_window.get("document_id"),
+                "chunk_id": citation.get("chunk_id") or source_window.get("chunk_id"),
+                "passage_window_id": citation.get("passage_window_id") or source_window.get("passage_window_id"),
+                "title": citation.get("title") or source_window.get("title"),
+                "url": citation.get("url") or source_window.get("url"),
+                "snippet": citation.get("snippet") or _ask_clean_evidence_text(evidence_text)[:600],
+                "source_window": source_window,
+                "support_hits": support_hits[:8],
+            }
+        )
+
+    no_answer_reasons: list[str] = []
+    if hard_scope and not allowed_source_ids:
+        no_answer_reasons.append("hard_scope_has_no_source_items")
+    if not citations and not results:
+        no_answer_reasons.append("no_retrieval_results")
+    if citations and not used:
+        reasons = [str(item.get("drop_reason") or "dropped") for item in dropped]
+        no_answer_reasons.append("all_citations_dropped")
+        no_answer_reasons.extend(list(dict.fromkeys(reasons))[:3])
+    if not used and results:
+        no_answer_reasons.append("no_supporting_citations_after_evidence_check")
+    evidence_claims = _ask_clean_facts_from_results(
+        [result for result in results if not used or str(result.get("source_item_id") or "") in {str(ref.get("source_item_id") or "") for ref in used}],
+        limit=6,
+    )
+    return {
+        "schema": "pska.ask_evidence_check.v1",
+        "status": "supported" if used else "insufficient",
+        "scope_mode": scope_mode,
+        "query_terms": query_terms,
+        "query_anchors": anchor_terms,
+        "used_citations": used,
+        "dropped_citations": dropped,
+        "evidence_claims": evidence_claims,
+        "no_answer_reasons": list(dict.fromkeys(no_answer_reasons)),
+        "supporting_citation_count": len(used),
+        "dropped_citation_count": len(dropped),
+    }
+
+
+def _ask_apply_evidence_check(evidence: dict[str, Any], evidence_check: dict[str, Any]) -> dict[str, Any]:
+    filtered = dict(evidence)
+    used = _list_of_dicts(evidence_check.get("used_citations"))
+    used_keys = {_ask_citation_key(ref) for ref in used}
+    filtered["citations"] = used
+    filtered["source_refs"] = used
+    filtered["dropped_citations"] = _list_of_dicts(evidence_check.get("dropped_citations"))
+    if used_keys:
+        used_source_ids = {str(ref.get("source_item_id") or "") for ref in used}
+        filtered["results"] = [
+            result
+            for result in _list_of_dicts(evidence.get("results"))
+            if _ask_citation_key(result.get("citation") if isinstance(result.get("citation"), dict) else result) in used_keys
+            or str(result.get("source_item_id") or "") in used_source_ids
+        ]
+        filtered["source_windows"] = [
+            window
+            for window in _list_of_dicts(evidence.get("source_windows"))
+            if _ask_citation_key(window) in used_keys or str(window.get("source_item_id") or "") in used_source_ids
+        ]
+    else:
+        filtered["results"] = []
+        filtered["source_windows"] = []
+    filtered["evidence_claims"] = list(evidence_check.get("evidence_claims") or [])
+    filtered["no_answer_reasons"] = list(evidence_check.get("no_answer_reasons") or [])
+    return filtered
+
+
+def _ask_apply_evidence_check_to_retrieval(retrieval: dict[str, Any], evidence_check: dict[str, Any]) -> dict[str, Any]:
+    filtered = dict(retrieval)
+    used = _list_of_dicts(evidence_check.get("used_citations"))
+    used_keys = {_ask_citation_key(ref) for ref in used}
+    if used_keys:
+        used_source_ids = {str(ref.get("source_item_id") or "") for ref in used}
+        filtered["results"] = [
+            result
+            for result in _list_of_dicts(retrieval.get("results"))
+            if _ask_citation_key(result.get("citation") if isinstance(result.get("citation"), dict) else result) in used_keys
+            or str(result.get("source_item_id") or "") in used_source_ids
+        ]
+        filtered["source_windows"] = [
+            window
+            for window in _list_of_dicts(retrieval.get("source_windows"))
+            if _ask_citation_key(window) in used_keys or str(window.get("source_item_id") or "") in used_source_ids
+        ]
+    else:
+        filtered["results"] = []
+        filtered["source_windows"] = []
+    filtered["citations"] = used
+    return filtered
+
+
+def _ask_citation_key(ref: dict[str, Any]) -> tuple[str, str, str]:
+    return (
+        str(ref.get("source_item_id") or ""),
+        str(ref.get("document_id") or ""),
+        str(ref.get("chunk_id") or ref.get("passage_window_id") or ""),
+    )
+
+
+def _ask_no_answer_from_evidence_check(query: str, evidence_check: dict[str, Any]) -> str:
+    reasons = list(evidence_check.get("no_answer_reasons") or [])
+    if not reasons:
+        reasons = ["evidence_insufficient"]
+    reason_text = "、".join(str(reason) for reason in reasons[:4])
+    return f"关键结论：当前 PSKA 没有找到足够证据回答“{query}”。原因：{reason_text}。建议补充相关资料、选择正确附件，或允许扩大检索范围后再问。"
+
+
+def _ask_route_intent(query: str, *, intent: str, ask_intent: str = "kb_search", scope: dict[str, Any] | None = None) -> str:
+    if ask_intent in ASK_NON_RETRIEVAL_INTENTS or ask_intent == "doc_only":
+        return "quick"
     if intent in {"quick", "deep"}:
         return intent
+    if _ask_scope_mode(scope or {}, ask_intent=ask_intent) == "hard":
+        return "quick"
+    if ask_intent == "graph_research":
+        return "deep"
     lowered = query.lower()
     deep_markers = [
         "深入",
@@ -4909,9 +6204,12 @@ def _ask_route_payload(
     tool_policy: dict[str, Any],
     query: str,
     fallback_from: str | None = None,
+    requested_intent: str | None = None,
+    understand: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     payload = {
         "intent": intent,
+        "requested_intent": requested_intent or intent,
         "selected_intent": selected_intent,
         "retrieval_owner": retrieval_owner,
         "surface": surface,
@@ -4919,8 +6217,12 @@ def _ask_route_payload(
         "tool_policy": tool_policy,
         "tool_profile": ASK_READ_TOOL_PROFILE if retrieval_owner == "fastreact_pska_mcp" else "none",
         "routing_owner": "pska_planner",
-        "query_terms": _ask_query_terms(query),
+        "query_terms": _ask_query_terms(str((understand or {}).get("rewrite_query") or query)),
+        "rewrite_query": (understand or {}).get("rewrite_query") or query,
+        "scope_applied": (understand or {}).get("scope_applied") or {},
     }
+    if understand:
+        payload["understand"] = understand
     if fallback_from:
         payload["fallback_from"] = fallback_from
     return payload
@@ -5015,6 +6317,9 @@ def _ask_deep_query(*, query: str, surface: str, scope: dict[str, Any]) -> str:
         "pska_index_status. Do not use host filesystem, shell, "
         "write, review mutation, job, or candidate-write tools. Do not mention FastReAct, MCP, GraphRAG, "
         "tool policy, or retrieval mechanics in the answer body. Put diagnostics in trace only.\n"
+        "If Scope.understand.scope_applied.mode is hard or source_item_ids are present, every PSKA read tool call "
+        "must include those source_item_ids and scope_mode=hard. Do not cite or infer from sources outside that "
+        "scope unless allow_expand_scope is explicitly true and you report expansion in trace.\n"
         "For deep research, run a bounded generic research loop: start with pska_search, then read fuller "
         "source windows with pska_read_evidence_context, expand entities/claims with pska_graph_context "
         "when relationships or conflicts matter, inspect pska_digest_context for prior digests, claims, "
@@ -5498,16 +6803,34 @@ def _ask_deep_response(
     tenant_id: str,
     owner_user_id: str,
     selected_intent: str,
+    understand: dict[str, Any] | None = None,
     agentic: dict[str, Any],
     started_at: float,
     allowed_tools: list[str],
     store: Any,
 ) -> dict[str, Any]:
+    understand = understand or _ask_understand_payload(
+        query=query,
+        intent=intent,
+        forced_ask_intent=None,
+        scope={},
+        surface=surface,
+    )
+    ask_intent = str(understand.get("intent") or "kb_search")
+    rewrite_query = str(understand.get("rewrite_query") or query)
     trace = agentic.get("trace") if isinstance(agentic.get("trace"), dict) else {}
     retrieval_payload = agentic.get("retrieval") if isinstance(agentic.get("retrieval"), dict) else {}
     retrieval = _console_search_summary(to_jsonable(retrieval_payload)) if retrieval_payload else {}
     if not _list_of_dicts(retrieval.get("results")):
         retrieval = _ask_retrieval_from_agentic_trace(trace)
+    if retrieval:
+        retrieval = _ask_hydrate_retrieval_source_windows(
+            store,
+            retrieval,
+            query=rewrite_query,
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+        )
     evidence = _ask_evidence_from_retrieval(retrieval)
     declared_source_refs = _ask_source_ref_dicts(agentic.get("source_refs"), string_field="source_item_id")
     declared_citation_refs = _ask_source_ref_dicts(agentic.get("citations"), string_field="title")
@@ -5519,16 +6842,43 @@ def _ask_deep_response(
     raw_refs = declared_refs or fallback_refs
     refs, dropped_refs = _ask_validate_source_refs(raw_refs, store=store, tenant_id=tenant_id, owner_user_id=owner_user_id)
     if refs:
+        ref_evidence = _ask_source_refs_as_evidence(
+            refs,
+            store=store,
+            query=rewrite_query,
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+        )
         if declared_refs:
             evidence = _ask_filter_evidence_to_refs(evidence, refs)
-        evidence["citations"] = refs
-        evidence["source_refs"] = refs
+        evidence["results"] = [*_list_of_dicts(evidence.get("results")), *_list_of_dicts(ref_evidence.get("results"))]
+        evidence["source_windows"] = [
+            *_list_of_dicts(evidence.get("source_windows")),
+            *_list_of_dicts(ref_evidence.get("source_windows")),
+        ]
+        hydrated_refs = _ask_merge_hydrated_source_refs(refs, _list_of_dicts(ref_evidence.get("citations")))
+        evidence["citations"] = hydrated_refs or refs
+        evidence["source_refs"] = hydrated_refs or refs
+    scope_applied = understand.get("scope_applied") if isinstance(understand.get("scope_applied"), dict) else {}
+    evidence_check = _ask_verify_evidence(
+        query=rewrite_query,
+        evidence=evidence,
+        scope={"source_item_ids": scope_applied.get("source_item_ids") or [], "mode": scope_applied.get("mode") or "soft"},
+        ask_intent=ask_intent,
+    )
+    evidence = _ask_apply_evidence_check(evidence, evidence_check)
+    answer = str(agentic.get("answer") or "").strip()
+    answer_type = "deep_answer"
+    if evidence_check.get("status") != "supported":
+        answer = _ask_no_answer_from_evidence_check(query, evidence_check)
+        answer_type = "no_answer"
     trace = {
         **trace,
         "mode": "deep",
         "retrieval_owner": "fastreact_pska_mcp",
         "tool_policy": {"mode": "allowlist", "allowed_tools": allowed_tools},
         "tool_profile": ASK_READ_TOOL_PROFILE,
+        "evidence_check": evidence_check,
     }
     agent_steps = _ask_agent_steps_from_events(trace.get("events") if isinstance(trace.get("events"), list) else [])
     if dropped_refs:
@@ -5538,9 +6888,13 @@ def _ask_deep_response(
     return {
         "ok": True,
         "query": query,
-        "answer": str(agentic.get("answer") or "").strip(),
+        "intent": ask_intent,
+        "rewrite_query": rewrite_query,
+        "answer": answer,
+        "answer_type": answer_type,
         "route": {
-            "intent": intent,
+            "intent": ask_intent,
+            "requested_intent": intent,
             "selected_intent": selected_intent,
             "retrieval_owner": "fastreact_pska_mcp",
             "surface": surface,
@@ -5548,11 +6902,21 @@ def _ask_deep_response(
             "tool_policy": {"mode": "allowlist", "allowed_tools": allowed_tools},
             "tool_profile": ASK_READ_TOOL_PROFILE,
             "routing_owner": "pska_planner",
-            "query_terms": _ask_query_terms(query),
+            "query_terms": _ask_query_terms(rewrite_query),
+            "rewrite_query": rewrite_query,
+            "scope_applied": scope_applied,
+            "understand": understand,
         },
         "evidence": evidence,
         "citations": evidence["citations"],
         "source_refs": evidence["source_refs"],
+        "citation_audit": {
+            "used": evidence["citations"],
+            "dropped": _list_of_dicts(evidence_check.get("dropped_citations")),
+        },
+        "evidence_check": evidence_check,
+        "evidence_claims": list(evidence_check.get("evidence_claims") or []),
+        "no_answer_reasons": list(evidence_check.get("no_answer_reasons") or []),
         "agent_steps": agent_steps,
         "trace": trace,
         "timing": {
@@ -5713,7 +7077,7 @@ def _ask_progress_stage(phase: str, tool_name: str) -> str:
     phase = phase.strip().lower()
     tool_name = tool_name.strip().lower()
     if phase in {"understand", "route", "think", "inspect"}:
-        return "understand"
+        return "query_understand"
     if phase in {"search", "tool"} or tool_name == "pska_pska_search":
         return "search"
     if phase == "rerank":
@@ -5876,8 +7240,37 @@ def _number_or_none(value: Any) -> float | None:
 
 def _ask_with_quality_signals(payload: dict[str, Any]) -> dict[str, Any]:
     enriched = dict(payload)
+    evidence = enriched.get("evidence") if isinstance(enriched.get("evidence"), dict) else {}
+    route = enriched.get("route") if isinstance(enriched.get("route"), dict) else {}
+    if "source_windows" not in enriched:
+        enriched["source_windows"] = _list_of_dicts(evidence.get("source_windows"))
+    if "scope_applied" not in enriched:
+        enriched["scope_applied"] = route.get("scope_applied") if isinstance(route.get("scope_applied"), dict) else {}
+    if not _list_of_dicts(enriched.get("progress")):
+        progress = [_ask_progress_from_step(step) for step in _list_of_dicts(enriched.get("agent_steps"))]
+        quality = enriched.get("quality_signals") if isinstance(enriched.get("quality_signals"), dict) else {}
+        progress.append(_ask_evidence_check_progress(quality))
+        enriched["progress"] = progress
     enriched["quality_signals"] = _ask_quality_signals(enriched)
+    if enriched.get("progress"):
+        enriched["progress"] = [
+            _ask_evidence_check_progress(enriched["quality_signals"]) if str(item.get("stage") or "") == "evidence_check" else item
+            for item in _list_of_dicts(enriched.get("progress"))
+        ]
     return enriched
+
+
+def _ask_evidence_check_progress(quality_signals: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "stage": "evidence_check",
+        "phase": "evidence_check",
+        "status": "warning" if quality_signals.get("quality_band") in {"no_answerable_evidence", "needs_citation_review", "failed"} else "complete",
+        "title": "证据校验",
+        "detail": "已检查引用、证据数量和可回答性。",
+        "step_id": "evidence_check",
+        "evidence_count": quality_signals.get("evidence_result_count"),
+        "source_ref_count": quality_signals.get("citation_count"),
+    }
 
 
 def _agentic_pska_mcp_ok(agentic_check: Any) -> bool:
@@ -6010,6 +7403,7 @@ def _ask_quality_signals(payload: dict[str, Any]) -> dict[str, Any]:
     route = payload.get("route") if isinstance(payload.get("route"), dict) else {}
     trace = payload.get("trace") if isinstance(payload.get("trace"), dict) else {}
     timing = payload.get("timing") if isinstance(payload.get("timing"), dict) else {}
+    evidence_check = payload.get("evidence_check") if isinstance(payload.get("evidence_check"), dict) else {}
     citations = _list_of_dicts(payload.get("citations")) or _list_of_dicts(evidence.get("citations"))
     source_refs = _list_of_dicts(payload.get("source_refs")) or _list_of_dicts(evidence.get("source_refs"))
     results = _list_of_dicts(evidence.get("results"))
@@ -6023,6 +7417,41 @@ def _ask_quality_signals(payload: dict[str, Any]) -> dict[str, Any]:
     dropped_source_refs = trace.get("dropped_source_refs") if isinstance(trace.get("dropped_source_refs"), list) else []
     answer = str(payload.get("answer") or "")
     answer_chars = len(answer)
+    if evidence_check.get("status") == "not_applicable" or route.get("retrieval_owner") == "none":
+        return {
+            "schema": "pska.ask_quality_signals.v1",
+            "quality_band": "direct_answer",
+            "evidence_status": "not_applicable",
+            "report_readiness": "not_ready",
+            "flags": [],
+            "query_chars": len(str(payload.get("query") or "")),
+            "answer_chars": answer_chars,
+            "citation_count": 0,
+            "source_ref_count": 0,
+            "evidence_result_count": 0,
+            "graph_path_count": 0,
+            "memory_context_count": 0,
+            "profile_context_count": 0,
+            "gap_count": 0,
+            "conflict_count": 0,
+            "tool_call_count": 0,
+            "denied_tool_call_count": 0,
+            "retrieval_owner": route.get("retrieval_owner"),
+            "selected_intent": route.get("selected_intent") or route.get("intent"),
+            "surface": route.get("surface"),
+            "fallback_from": route.get("fallback_from"),
+            "no_answer_diagnostics": {
+                "schema": "pska.ask_no_answer_diagnostics.v1",
+                "primary_reason": "not_applicable",
+                "reasons": [],
+                "dimensions": [],
+                "display": False,
+                "query": payload.get("query"),
+            },
+            "total_ms": timing.get("total_ms"),
+            "time_to_first_answer_ms": timing.get("time_to_first_answer_ms"),
+            "time_to_first_agent_event_ms": timing.get("time_to_first_agent_event_ms"),
+        }
     flags: list[str] = []
     if not answer_chars:
         flags.append("empty_answer")
@@ -6170,6 +7599,51 @@ def _ask_source_ref_dicts(value: Any, *, string_field: str) -> list[dict[str, An
         if isinstance(item, str) and item.strip():
             refs.append({string_field: item.strip()})
     return refs
+
+
+def _ask_source_refs_as_evidence(
+    refs: list[dict[str, Any]],
+    *,
+    store: Any,
+    query: str,
+    tenant_id: str,
+    owner_user_id: str,
+) -> dict[str, Any]:
+    if not refs:
+        return {"results": [], "citations": [], "source_windows": []}
+    retrieval = {
+        "results": [dict(ref) for ref in refs if ref.get("source_item_id")],
+        "citations": [dict(ref) for ref in refs if ref.get("source_item_id")],
+        "diagnostics": {},
+    }
+    retrieval = _ask_hydrate_retrieval_source_windows(
+        store,
+        retrieval,
+        query=query,
+        tenant_id=tenant_id,
+        owner_user_id=owner_user_id,
+    )
+    return _ask_evidence_from_retrieval(retrieval)
+
+
+def _ask_merge_hydrated_source_refs(refs: list[dict[str, Any]], hydrated_refs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not refs:
+        return []
+    hydrated_by_source: dict[str, dict[str, Any]] = {}
+    for ref in hydrated_refs:
+        source_item_id = str(ref.get("source_item_id") or "")
+        if source_item_id and source_item_id not in hydrated_by_source:
+            hydrated_by_source[source_item_id] = ref
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for ref in refs:
+        source_item_id = str(ref.get("source_item_id") or "")
+        if not source_item_id or source_item_id in seen:
+            continue
+        seen.add(source_item_id)
+        hydrated = hydrated_by_source.get(source_item_id) or {}
+        merged.append({**ref, **hydrated})
+    return merged
 
 
 def _ask_filter_evidence_to_refs(evidence: dict[str, Any], refs: list[dict[str, Any]]) -> dict[str, Any]:
@@ -6327,16 +7801,7 @@ def _ask_sse_events(payload: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]
         (
             "progress",
             {
-                "progress": {
-                    "stage": "evidence_check",
-                    "phase": "evidence_check",
-                    "status": "complete" if not quality_signals.get("low_evidence") else "warning",
-                    "title": "证据校验",
-                    "detail": "已检查引用、证据数量和可回答性。",
-                    "step_id": "evidence_check",
-                    "evidence_count": quality_signals.get("evidence_count"),
-                    "source_ref_count": quality_signals.get("citation_count"),
-                },
+                "progress": _ask_evidence_check_progress(quality_signals),
                 "timing": timing,
             },
         )
@@ -6348,6 +7813,8 @@ def _ask_sse_events(payload: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]
                 {
                     "evidence": payload.get("evidence") or {},
                     "citations": payload.get("citations") or [],
+                    "citation_audit": payload.get("citation_audit") or {},
+                    "evidence_check": payload.get("evidence_check") or {},
                     "quality_signals": payload.get("quality_signals") or {},
                 },
             ),
@@ -6355,11 +7822,35 @@ def _ask_sse_events(payload: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]
                 "answer_delta",
                 {
                     "delta": str(payload.get("answer") or ""),
+                    "answer_type": payload.get("answer_type"),
                     "time_to_first_answer_ms": timing.get("time_to_first_answer_ms"),
                 },
             ),
             ("trace", {"trace": payload.get("trace") or {}, "agentic_service": payload.get("agentic_service") or {}}),
-            ("done", {"ok": payload.get("ok") is not False, "timing": timing, "quality_signals": payload.get("quality_signals") or {}}),
+            (
+                "done",
+                {
+                    "ok": payload.get("ok") is not False,
+                    "answer": str(payload.get("answer") or ""),
+                    "citations": payload.get("citations") or [],
+                    "source_refs": payload.get("source_refs") or [],
+                    "evidence": payload.get("evidence") or {},
+                    "citation_audit": payload.get("citation_audit") or {},
+                    "intent": payload.get("intent") or (payload.get("route") or {}).get("intent"),
+                    "rewrite_query": payload.get("rewrite_query"),
+                    "scope_applied": (payload.get("route") or {}).get("scope_applied") if isinstance(payload.get("route"), dict) else {},
+                    "answer_type": payload.get("answer_type"),
+                    "evidence_check": payload.get("evidence_check") or {},
+                    "evidence_claims": payload.get("evidence_claims") or [],
+                    "no_answer_reasons": payload.get("no_answer_reasons") or [],
+                    "source_windows": payload.get("source_windows") or _list_of_dicts((payload.get("evidence") or {}).get("source_windows")),
+                    "agent_steps": payload.get("agent_steps") or [],
+                    "progress": payload.get("progress") or [],
+                    "trace": payload.get("trace") or {},
+                    "timing": timing,
+                    "quality_signals": payload.get("quality_signals") or {},
+                },
+            ),
         ]
     )
     return events
@@ -6404,6 +7895,8 @@ def _ask_run_payload(run: Any) -> dict[str, Any]:
         "query": getattr(run, "query", ""),
         "status": getattr(run, "status", ""),
         "result": dict(getattr(run, "result", {}) or {}),
+        "route": dict(getattr(run, "route", {}) or {}),
+        "evidence_check": dict(getattr(run, "evidence_check", {}) or {}),
         "prompt_profile_id": getattr(run, "prompt_profile_id", None),
         "prompt_profile_version": getattr(run, "prompt_profile_version", None),
         "started_at": getattr(run, "started_at", None),
@@ -6428,6 +7921,10 @@ def _empty_ask_stream_result(*, query: str, conversation_id: str, run_id: str, p
         "answer": "",
         "citations": [],
         "source_refs": [],
+        "citation_audit": {"used": [], "dropped": []},
+        "evidence_check": {},
+        "answer_type": None,
+        "no_answer_reasons": [],
         "progress": [],
         "agent_steps": [],
         "timing": {},
@@ -6454,14 +7951,41 @@ def _accumulate_ask_stream_result(result: dict[str, Any], event_name: str, event
         result["evidence"] = event_payload.get("evidence") or {}
         result["citations"] = _list_of_dicts(event_payload.get("citations"))
         result["source_refs"] = _list_of_dicts((event_payload.get("evidence") or {}).get("source_refs")) or result["citations"]
+        result["citation_audit"] = event_payload.get("citation_audit") or {}
+        result["evidence_check"] = event_payload.get("evidence_check") or {}
         result["quality_signals"] = event_payload.get("quality_signals") or {}
     elif event_name == "answer_delta":
         result["answer"] = str(result.get("answer") or "") + str(event_payload.get("delta") or "")
+        if event_payload.get("answer_type"):
+            result["answer_type"] = event_payload["answer_type"]
     elif event_name == "trace":
         result["trace"] = event_payload.get("trace") or {}
         result["agentic_service"] = event_payload.get("agentic_service") or {}
     elif event_name == "done":
         result["ok"] = event_payload.get("ok") is not False
+        for key in (
+            "intent",
+            "rewrite_query",
+            "scope_applied",
+            "answer_type",
+            "evidence_check",
+            "evidence_claims",
+            "no_answer_reasons",
+            "source_windows",
+            "agent_steps",
+            "progress",
+            "trace",
+        ):
+            if event_payload.get(key) is not None:
+                result[key] = event_payload[key]
+        if event_payload.get("citations") is not None:
+            result["citations"] = _list_of_dicts(event_payload.get("citations"))
+        if event_payload.get("source_refs") is not None:
+            result["source_refs"] = _list_of_dicts(event_payload.get("source_refs"))
+        if event_payload.get("citation_audit") is not None:
+            result["citation_audit"] = event_payload.get("citation_audit") or {}
+        if event_payload.get("evidence") is not None:
+            result["evidence"] = event_payload.get("evidence") or {}
         if event_payload.get("timing"):
             result["timing"] = event_payload["timing"]
         if event_payload.get("quality_signals"):
@@ -6694,6 +8218,564 @@ def _estimate_tokens(text: str) -> int:
     return max(1, len(text) // 4)
 
 
+def _topic_normalized_label(label: str) -> str:
+    text = str(label or "").casefold().strip()
+    text = re.sub(r"[\s/_|,，。.!！?？;；:：()（）\\[\\]{}<>《》\"'`]+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text or text.isdigit() or len(text) > 80:
+        return ""
+    return text
+
+
+def _topic_stable_id(*, tenant_id: str, owner_user_id: str, normalized_label: str) -> str:
+    return f"topic_{uuid5(NAMESPACE_URL, f'pska.topic:{tenant_id}:{owner_user_id}:{normalized_label}').hex}"
+
+
+def _topic_mention_stable_id(
+    *,
+    tenant_id: str,
+    owner_user_id: str,
+    topic_id: str,
+    source_item_id: str,
+    artifact_id: str,
+) -> str:
+    return f"topicmention_{uuid5(NAMESPACE_URL, f'pska.topic_mention:{tenant_id}:{owner_user_id}:{topic_id}:{source_item_id}:{artifact_id}').hex}"
+
+
+def _artifact_support_stable_id(
+    *,
+    tenant_id: str,
+    owner_user_id: str,
+    artifact_type: str,
+    artifact_id: str,
+    support_type: str,
+    source_item_id: str,
+    chunk_id: str = "",
+) -> str:
+    return f"support_{uuid5(NAMESPACE_URL, f'pska.support:{tenant_id}:{owner_user_id}:{artifact_type}:{artifact_id}:{support_type}:{source_item_id}:{chunk_id}').hex}"
+
+
+def _linking_review_stable_id(*, tenant_id: str, owner_user_id: str, topic_id: str, source_refs: list[dict[str, Any]]) -> str:
+    source_key = ",".join(sorted(str(ref.get("source_item_id") or "") for ref in source_refs))
+    return f"rev_link_{uuid5(NAMESPACE_URL, f'pska.linking_review:{tenant_id}:{owner_user_id}:{topic_id}:{source_key}').hex}"
+
+
+def _knowledge_topic_payload(
+    topic: Any,
+    *,
+    mentions: list[Any] | None = None,
+    supports: list[Any] | None = None,
+    source_items: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    mentions = mentions or []
+    supports = supports or []
+    source_items = source_items or {}
+    if source_items:
+        active_source_ids = set(source_items)
+        mentions = [mention for mention in mentions if str(getattr(mention, "source_item_id", "") or "") in active_source_ids]
+        supports = [support for support in supports if str(getattr(support, "source_item_id", "") or "") in active_source_ids]
+    quality = _topic_quality_fields(topic, mentions, supports)
+    eligible_mentions = [mention for mention in mentions if _topic_mention_review_eligible(mention)]
+    diagnostic_refs = _topic_source_refs_from_mentions(mentions)
+    strong_refs = _topic_source_refs_from_mentions(eligible_mentions)
+    display_refs = strong_refs if quality["review_eligible"] else diagnostic_refs
+    source_ids = sorted({str(ref.get("source_item_id") or "") for ref in display_refs if ref.get("source_item_id")})
+    return {
+        "topic_id": getattr(topic, "topic_id", ""),
+        "tenant_id": getattr(topic, "tenant_id", DEFAULT_TENANT_ID),
+        "owner_user_id": getattr(topic, "owner_user_id", ""),
+        "label": getattr(topic, "label", ""),
+        "normalized_label": getattr(topic, "normalized_label", ""),
+        "topic_type": getattr(topic, "topic_type", "topic"),
+        "description": getattr(topic, "description", ""),
+        "confidence": getattr(topic, "confidence", 0.0),
+        "producer": getattr(topic, "producer", ""),
+        "metadata": dict(getattr(topic, "metadata", {}) or {}),
+        "created_at": getattr(topic, "created_at", None),
+        "updated_at": getattr(topic, "updated_at", None),
+        "mention_count": len(mentions),
+        "support_count": len(supports),
+        "source_count": len(source_ids),
+        "source_refs": display_refs,
+        "diagnostic_source_refs": diagnostic_refs,
+        "strong_source_refs": strong_refs,
+        **quality,
+        "sources": [
+            {
+                "source_item_id": source_id,
+                "title": str(getattr(source_items.get(source_id), "title", "") or source_id),
+                "source_type": str(getattr(source_items.get(source_id), "source_type", "") or ""),
+            }
+            for source_id in source_ids[:12]
+        ],
+        "mentions": [_topic_mention_payload(mention) for mention in mentions[:20]],
+    }
+
+
+def _topic_mention_payload(mention: Any) -> dict[str, Any]:
+    return {
+        "topic_mention_id": getattr(mention, "topic_mention_id", ""),
+        "topic_id": getattr(mention, "topic_id", ""),
+        "tenant_id": getattr(mention, "tenant_id", DEFAULT_TENANT_ID),
+        "owner_user_id": getattr(mention, "owner_user_id", ""),
+        "source_item_id": getattr(mention, "source_item_id", ""),
+        "document_id": getattr(mention, "document_id", None),
+        "chunk_id": getattr(mention, "chunk_id", None),
+        "artifact_type": getattr(mention, "artifact_type", ""),
+        "artifact_id": getattr(mention, "artifact_id", ""),
+        "mention_text": getattr(mention, "mention_text", ""),
+        "confidence": getattr(mention, "confidence", 0.0),
+        "producer": getattr(mention, "producer", ""),
+        "metadata": dict(getattr(mention, "metadata", {}) or {}),
+        "created_at": getattr(mention, "created_at", None),
+    }
+
+
+def _topic_source_refs_from_mentions(mentions: list[Any]) -> list[dict[str, Any]]:
+    refs: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for mention in mentions:
+        mention_metadata = dict(getattr(mention, "metadata", {}) or {})
+        metadata_refs = _list_of_dicts(mention_metadata.get("source_refs"))
+        if metadata_refs:
+            for metadata_ref in metadata_refs:
+                source_item_id = str(metadata_ref.get("source_item_id") or getattr(mention, "source_item_id", "") or "")
+                if not source_item_id:
+                    continue
+                ref = {
+                    **metadata_ref,
+                    "source_item_id": source_item_id,
+                    "document_id": metadata_ref.get("document_id") or getattr(mention, "document_id", None),
+                    "chunk_id": metadata_ref.get("chunk_id") or getattr(mention, "chunk_id", None),
+                    "mention_text": metadata_ref.get("mention_text") or getattr(mention, "mention_text", ""),
+                }
+                key = (source_item_id, str(ref.get("document_id") or ""), str(ref.get("chunk_id") or ""))
+                if key in seen:
+                    continue
+                seen.add(key)
+                refs.append(ref)
+            continue
+        source_item_id = str(getattr(mention, "source_item_id", "") or "")
+        if not source_item_id:
+            continue
+        ref = {
+            "source_item_id": source_item_id,
+            "document_id": getattr(mention, "document_id", None),
+            "chunk_id": getattr(mention, "chunk_id", None),
+            "mention_text": getattr(mention, "mention_text", ""),
+        }
+        key = (source_item_id, str(ref.get("document_id") or ""), str(ref.get("chunk_id") or ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        refs.append(ref)
+    return refs
+
+
+def _topic_mention_review_eligible(mention: Any) -> bool:
+    metadata = getattr(mention, "metadata", {}) if isinstance(getattr(mention, "metadata", {}), dict) else {}
+    return (
+        bool(metadata.get("review_eligible"))
+        and str(metadata.get("quality_tier") or "").lower() == "strong"
+        and bool(_list_of_dicts(metadata.get("source_refs")))
+    )
+
+
+def _topic_quality_fields(topic: Any, mentions: list[Any], supports: list[Any]) -> dict[str, Any]:
+    metadata = dict(getattr(topic, "metadata", {}) or {})
+    mention_support_kinds = {
+        kind
+        for mention in mentions
+        for kind in _string_list((getattr(mention, "metadata", {}) or {}).get("support_kinds"))
+    }
+    support_kinds = sorted(set(_string_list(metadata.get("support_kinds"))) | mention_support_kinds)
+    eligible_mentions = [mention for mention in mentions if _topic_mention_review_eligible(mention)]
+    active_strong_supports = [
+        support
+        for support in supports
+        if getattr(support, "status", "active") == "active"
+        and str((getattr(support, "metadata", {}) or {}).get("quality_tier") or "").lower() == "strong"
+    ]
+    review_eligible = bool(metadata.get("review_eligible")) and len({getattr(mention, "source_item_id", "") for mention in eligible_mentions}) >= 2
+    quality_tier = "strong" if review_eligible or active_strong_supports else str(metadata.get("quality_tier") or "diagnostic")
+    return {
+        "quality_tier": quality_tier,
+        "support_kinds": support_kinds,
+        "promotion_reason": metadata.get("promotion_reason") or ("shared_strong_support" if review_eligible else "diagnostic_only"),
+        "review_eligible": review_eligible,
+        "diagnostics": metadata.get("diagnostics")
+        or {
+            "lexical_only": quality_tier != "strong",
+            "strong_source_count": len({getattr(mention, "source_item_id", "") for mention in eligible_mentions}),
+        },
+    }
+
+
+def _topic_paths_from_topic_payloads(topics: list[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:
+    paths: list[dict[str, Any]] = []
+    for topic in topics:
+        if not bool(topic.get("review_eligible")) or str(topic.get("quality_tier") or "") != "strong":
+            continue
+        refs = _list_of_dicts(topic.get("source_refs"))
+        source_ids = sorted({str(ref.get("source_item_id") or "") for ref in refs if ref.get("source_item_id")})
+        if len(source_ids) < 2:
+            continue
+        paths.append(
+            {
+                "path_id": f"topic_path_{topic.get('topic_id')}",
+                "path_type": "shared_topic",
+                "topic_id": topic.get("topic_id"),
+                "topic_label": topic.get("label"),
+                "source_item_ids": source_ids,
+                "source_refs": refs,
+                "confidence": topic.get("confidence"),
+                "summary": f"{len(source_ids)} 个资料条目通过主题“{topic.get('label')}”相连。",
+            }
+        )
+        if len(paths) >= limit:
+            break
+    return paths
+
+
+def _linking_topic_candidates_for_source(
+    *,
+    item: Any,
+    documents: list[Any],
+    chunks: list[Any],
+    claims: list[Any],
+    digest_notes: list[Any],
+    max_topics: int,
+) -> list[dict[str, Any]]:
+    stats: dict[str, dict[str, Any]] = {}
+    source_negation_text = _source_negation_guard_text(documents=documents, chunks=chunks)
+
+    def add_labels(
+        text: str,
+        *,
+        weight: float,
+        artifact_type: str,
+        artifact_id: str,
+        support_kind: str,
+        quality_tier: str,
+        review_eligible: bool,
+        promotion_reason: str,
+        document_id: str | None = None,
+        chunk_id: str | None = None,
+        source_refs: list[dict[str, Any]] | None = None,
+    ) -> None:
+        for label in _topic_labels_from_text(text):
+            normalized = _topic_normalized_label(label)
+            if not normalized:
+                continue
+            if _topic_label_is_generic(normalized):
+                continue
+            if _text_has_negated_label(text, label) or _text_has_negated_label(text, normalized):
+                continue
+            if _text_has_negated_label(source_negation_text, label) or _text_has_negated_label(source_negation_text, normalized):
+                continue
+            refs = source_refs or [
+                {
+                    "source_item_id": getattr(item, "source_item_id", ""),
+                    "document_id": document_id,
+                    "chunk_id": chunk_id,
+                    "mention_text": _trim_words(_ask_clean_evidence_text(text), 40),
+                }
+            ]
+            current = stats.setdefault(
+                normalized,
+                {
+                    "label": label,
+                    "score": 0.0,
+                    "sources": set(),
+                    "support_kinds": set(),
+                    "support_artifacts": [],
+                    "source_refs": [],
+                    "promotion_reasons": [],
+                    "mention_text": "",
+                    "artifact_type": artifact_type,
+                    "artifact_id": artifact_id,
+                    "document_id": document_id,
+                    "chunk_id": chunk_id,
+                    "quality_tier": "diagnostic",
+                    "review_eligible": False,
+                },
+            )
+            current["score"] = float(current.get("score") or 0.0) + weight
+            current["sources"].add(artifact_type)
+            current["support_kinds"].add(support_kind)
+            current["support_artifacts"].append(
+                {
+                    "artifact_type": artifact_type,
+                    "artifact_id": artifact_id,
+                    "support_kind": support_kind,
+                    "quality_tier": quality_tier,
+                    "document_id": document_id,
+                    "chunk_id": chunk_id,
+                }
+            )
+            current["source_refs"].extend(ref for ref in refs if ref.get("source_item_id"))
+            if promotion_reason:
+                current["promotion_reasons"].append(promotion_reason)
+            if quality_tier == "strong":
+                current["quality_tier"] = "strong"
+            if review_eligible:
+                current["review_eligible"] = True
+                current["artifact_type"] = artifact_type
+                current["artifact_id"] = artifact_id
+                current["document_id"] = document_id
+                current["chunk_id"] = chunk_id
+            if not current.get("mention_text"):
+                current["mention_text"] = _trim_words(_ask_clean_evidence_text(text), 40)
+
+    title_text = str(getattr(item, "title", "") or "")
+    add_labels(
+        title_text,
+        weight=2.2,
+        artifact_type="source_item",
+        artifact_id=getattr(item, "source_item_id", ""),
+        support_kind="source_title",
+        quality_tier="strong",
+        review_eligible=True,
+        promotion_reason="source_title",
+    )
+    for document in documents[:10]:
+        document_id = getattr(document, "document_id", None)
+        document_title = str(getattr(document, "title", "") or "")
+        add_labels(
+            document_title,
+            weight=1.8,
+            artifact_type="document",
+            artifact_id=getattr(document, "document_id", "") or getattr(item, "source_item_id", ""),
+            support_kind="document_title",
+            quality_tier="strong",
+            review_eligible=True,
+            promotion_reason="document_title",
+            document_id=document_id,
+        )
+        for heading in _document_heading_texts(str(getattr(document, "body", "") or ""))[:12]:
+            add_labels(
+                heading,
+                weight=1.6,
+                artifact_type="document",
+                artifact_id=getattr(document, "document_id", "") or getattr(item, "source_item_id", ""),
+                support_kind="document_heading",
+                quality_tier="strong",
+                review_eligible=True,
+                promotion_reason="document_heading",
+                document_id=document_id,
+            )
+        body_text = str(getattr(document, "body", "") or "")[:3000]
+        add_labels(
+            body_text,
+            weight=0.6,
+            artifact_type="document",
+            artifact_id=getattr(document, "document_id", "") or getattr(item, "source_item_id", ""),
+            support_kind="document_body_lexical",
+            quality_tier="diagnostic",
+            review_eligible=False,
+            promotion_reason="diagnostic_document_body",
+            document_id=document_id,
+        )
+    for chunk in sorted(chunks, key=lambda value: int(getattr(value, "ordinal", 0) or 0))[:80]:
+        text = str(getattr(chunk, "text", "") or "")[:1800]
+        add_labels(
+            text,
+            weight=0.5,
+            artifact_type="chunk",
+            artifact_id=getattr(chunk, "chunk_id", "") or getattr(item, "source_item_id", ""),
+            support_kind="chunk_lexical",
+            quality_tier="diagnostic",
+            review_eligible=False,
+            promotion_reason="diagnostic_chunk_lexical",
+            document_id=getattr(chunk, "document_id", None),
+            chunk_id=getattr(chunk, "chunk_id", None),
+        )
+    for claim in claims[:20]:
+        text = " ".join(
+            str(getattr(claim, field, "") or "")
+            for field in ("subject", "predicate", "object", "statement", "evidence_text")
+        )
+        add_labels(
+            text,
+            weight=2.0,
+            artifact_type="knowledge_claim",
+            artifact_id=getattr(claim, "knowledge_claim_id", "") or getattr(item, "source_item_id", ""),
+            support_kind="knowledge_claim",
+            quality_tier="strong",
+            review_eligible=bool(_source_refs_payload(getattr(claim, "source_refs", []))),
+            promotion_reason="source_ref_claim",
+            source_refs=_source_refs_payload(getattr(claim, "source_refs", [])),
+        )
+    for note in digest_notes[:12]:
+        text = " ".join(
+            [
+                str(getattr(note, "title", "") or ""),
+                str(getattr(note, "synopsis", "") or ""),
+                " ".join(str(value) for value in getattr(note, "key_points", []) or []),
+                " ".join(str(value) for value in getattr(note, "open_questions", []) or []),
+            ]
+        )
+        add_labels(
+            text,
+            weight=1.9,
+            artifact_type="digest_note",
+            artifact_id=getattr(note, "digest_note_id", "") or getattr(item, "source_item_id", ""),
+            support_kind="digest_note",
+            quality_tier="strong",
+            review_eligible=bool(_source_refs_payload(getattr(note, "source_refs", []))),
+            promotion_reason="source_ref_digest",
+            source_refs=_source_refs_payload(getattr(note, "source_refs", [])),
+        )
+
+    candidates = []
+    for normalized, data in stats.items():
+        score = float(data.get("score") or 0.0)
+        if score < 0.5:
+            continue
+        support_kinds = sorted(data.get("support_kinds") or [])
+        support_artifacts = _dedupe_support_artifacts(data.get("support_artifacts") or [])
+        source_refs = _dedupe_source_ref_dicts(_list_of_dicts(data.get("source_refs")))
+        quality_tier = str(data.get("quality_tier") or "diagnostic")
+        review_eligible = bool(data.get("review_eligible")) and bool(source_refs) and quality_tier == "strong"
+        candidates.append(
+            {
+                "label": data.get("label") or normalized,
+                "normalized_label": normalized,
+                "confidence": min(0.95, 0.28 + score * 0.08 + len(support_kinds) * 0.04 + (0.12 if review_eligible else 0.0)),
+                "mention_text": data.get("mention_text") or "",
+                "artifact_type": data.get("artifact_type") or "source_item",
+                "artifact_id": data.get("artifact_id") or getattr(item, "source_item_id", ""),
+                "document_id": data.get("document_id"),
+                "chunk_id": data.get("chunk_id"),
+                "score": score,
+                "quality_tier": quality_tier,
+                "support_kinds": support_kinds,
+                "support_artifacts": support_artifacts,
+                "source_refs": source_refs,
+                "promotion_reason": next(iter(data.get("promotion_reasons") or []), "diagnostic"),
+                "review_eligible": review_eligible,
+            }
+        )
+    candidates.sort(key=lambda candidate: (float(candidate.get("score") or 0.0), float(candidate.get("confidence") or 0.0)), reverse=True)
+    return candidates[:max_topics]
+
+
+def _source_negation_guard_text(*, documents: list[Any], chunks: list[Any]) -> str:
+    parts: list[str] = []
+    for document in documents[:10]:
+        parts.append(str(getattr(document, "title", "") or ""))
+        parts.append(str(getattr(document, "body", "") or "")[:3000])
+    for chunk in sorted(chunks, key=lambda value: int(getattr(value, "ordinal", 0) or 0))[:20]:
+        parts.append(str(getattr(chunk, "text", "") or "")[:1200])
+    return "\n".join(part for part in parts if part)
+
+
+def _document_heading_texts(text: str) -> list[str]:
+    headings = []
+    for line in str(text or "").splitlines():
+        match = re.match(r"^\s{0,3}#{1,6}\s+(.+?)\s*$", line)
+        if match:
+            headings.append(match.group(1).strip())
+    return headings
+
+
+def _topic_label_is_generic(normalized_label: str) -> bool:
+    label = str(normalized_label or "").casefold().strip()
+    if not label:
+        return True
+    if re.fullmatch(r"\d+(?:\.\d+)?", label):
+        return True
+    generic = {
+        "article",
+        "also",
+        "and",
+        "attachment",
+        "chunk",
+        "content",
+        "data",
+        "digest",
+        "doc",
+        "document",
+        "evidence",
+        "file",
+        "first",
+        "for",
+        "graph",
+        "heading",
+        "in",
+        "integration",
+        "is",
+        "memo",
+        "note",
+        "of",
+        "project",
+        "report",
+        "review",
+        "second",
+        "source",
+        "summary",
+        "system",
+        "text",
+        "the",
+        "to",
+        "topic",
+        "use",
+        "uses",
+        "资料",
+        "文档",
+        "文件",
+        "材料",
+        "主题",
+        "内容",
+        "摘要",
+        "总结",
+        "系统",
+        "项目",
+        "报告",
+        "证据",
+        "图谱",
+    }
+    return label in generic
+
+
+def _dedupe_support_artifacts(values: list[Any]) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for value in values:
+        if not isinstance(value, dict):
+            continue
+        item = {key: value.get(key) for key in ["artifact_type", "artifact_id", "support_kind", "quality_tier", "document_id", "chunk_id"] if value.get(key)}
+        key = (
+            str(item.get("artifact_type") or ""),
+            str(item.get("artifact_id") or ""),
+            str(item.get("support_kind") or ""),
+            str(item.get("chunk_id") or item.get("document_id") or ""),
+        )
+        if not key[0] or not key[1] or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
+def _topic_labels_from_text(text: str) -> list[str]:
+    labels: list[str] = []
+    seen: set[str] = set()
+    for term in _ask_evidence_terms(text):
+        normalized = _topic_normalized_label(term)
+        if not normalized or normalized in seen:
+            continue
+        if len(normalized) < 2 or len(normalized) > 40:
+            continue
+        if re.fullmatch(r"\d+(?:\.\d+)?", normalized):
+            continue
+        seen.add(normalized)
+        labels.append(term)
+        if len(labels) >= 24:
+            break
+    return labels
+
+
 def _workspace_graph_nodes_edges(
     *,
     source_items: list[Any],
@@ -6705,6 +8787,9 @@ def _workspace_graph_nodes_edges(
     review_items: list[Any],
     entities: list[Any],
     hyperedges: list[tuple[Any, list[Any]]],
+    topics: list[Any],
+    topic_mentions: list[Any],
+    artifact_supports: list[Any],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     nodes: dict[str, dict[str, Any]] = {}
     edges: dict[str, dict[str, Any]] = {}
@@ -6851,6 +8936,67 @@ def _workspace_graph_nodes_edges(
             source_refs=source_refs,
         )
         _add_source_ref_edges(add_edge, source_refs, f"{node_type}:{review_id}", "needs_review_from", passage_by_document, passage_by_source)
+    for topic in topics:
+        topic_id = getattr(topic, "topic_id", "")
+        topic_topic_mentions = [mention for mention in topic_mentions if getattr(mention, "topic_id", "") == topic_id]
+        topic_supports = [support for support in artifact_supports if getattr(support, "topic_id", "") == topic_id or getattr(support, "artifact_id", "") == topic_id]
+        quality = _topic_quality_fields(topic, topic_topic_mentions, topic_supports)
+        add_node(
+            f"topic:{topic_id}",
+            "topic",
+            getattr(topic, "label", "") or topic_id,
+            getattr(topic, "description", "") or f"confidence {float(getattr(topic, 'confidence', 0.0) or 0.0):.2f}",
+            object_type="knowledge_topic",
+            object_id=topic_id,
+            confidence=getattr(topic, "confidence", 0.0),
+            source_refs=_topic_source_refs_from_mentions([mention for mention in topic_topic_mentions if _topic_mention_review_eligible(mention)])
+            or _topic_source_refs_from_mentions(topic_topic_mentions),
+            **quality,
+        )
+    for mention in topic_mentions:
+        topic_node_id = f"topic:{getattr(mention, 'topic_id', '')}"
+        source_id = str(getattr(mention, "source_item_id", "") or "")
+        if topic_node_id not in nodes or not source_id:
+            continue
+        mention_metadata = dict(getattr(mention, "metadata", {}) or {})
+        source_ref = {
+            "source_item_id": source_id,
+            "document_id": getattr(mention, "document_id", None),
+            "chunk_id": getattr(mention, "chunk_id", None),
+        }
+        passage = passage_by_document.get(str(getattr(mention, "document_id", "") or "")) or passage_by_source.get(source_id)
+        if passage and f"passage:{passage.passage_window_id}" in nodes:
+            add_edge(
+                f"passage:{passage.passage_window_id}",
+                topic_node_id,
+                "mentions_topic",
+                "mentions_topic",
+                confidence=getattr(mention, "confidence", 0.0),
+                source_refs=[source_ref],
+                quality_tier=mention_metadata.get("quality_tier") or "diagnostic",
+                review_eligible=bool(mention_metadata.get("review_eligible")),
+            )
+        add_edge(
+            f"source:{source_id}",
+            topic_node_id,
+            "mentions_topic",
+            "mentions_topic",
+            confidence=getattr(mention, "confidence", 0.0),
+            source_refs=[source_ref],
+            quality_tier=mention_metadata.get("quality_tier") or "diagnostic",
+            review_eligible=bool(mention_metadata.get("review_eligible")),
+        )
+    for support in artifact_supports:
+        if getattr(support, "artifact_type", "") != "review_item" or getattr(support, "support_type", "") != "shared_topic_source":
+            continue
+        topic_node_id = f"topic:{getattr(support, 'topic_id', '')}"
+        review_node_ids = [
+            f"action:{getattr(support, 'artifact_id', '')}",
+            f"memory_suggestion:{getattr(support, 'artifact_id', '')}",
+        ]
+        for review_node_id in review_node_ids:
+            if topic_node_id in nodes and review_node_id in nodes:
+                add_edge(topic_node_id, review_node_id, "supports_review_candidate", "supports_review_candidate")
     for entity in entities:
         entity_id = getattr(entity, "entity_id", "")
         add_node(
@@ -8340,14 +10486,58 @@ def _evidence_brief_artifacts(
     return notes, claims, review_items
 
 
+def _evidence_brief_ask_runs(
+    store: Any,
+    *,
+    tenant_id: str,
+    owner_user_id: str,
+    ask_run_ids: set[str],
+    limit: int,
+) -> list[Any]:
+    if not ask_run_ids:
+        return []
+    if hasattr(store, "connect"):
+        with store.connect() as conn:
+            rows = conn.execute(
+                """
+                select *
+                from ask_runs
+                where tenant_id = %s and owner_user_id = %s and run_id = any(%s)
+                order by started_at desc, run_id
+                limit %s
+                """,
+                (tenant_id, owner_user_id, list(ask_run_ids), max(1, min(limit, 100))),
+            ).fetchall()
+        mapper = getattr(store, "_ask_run_from_row", None)
+        return [mapper(row) for row in rows] if callable(mapper) else list(rows)
+    runs = [
+        run
+        for run in getattr(store, "ask_runs", {}).values()
+        if getattr(run, "tenant_id", DEFAULT_TENANT_ID) == tenant_id
+        and getattr(run, "owner_user_id", "") == owner_user_id
+        and getattr(run, "run_id", "") in ask_run_ids
+    ]
+    return sorted(runs, key=lambda run: getattr(run, "started_at", datetime.min.replace(tzinfo=UTC)), reverse=True)[:limit]
+
+
 def _evidence_brief_refs(store: Any, *, tenant_id: str, owner_user_id: str, artifacts: list[Any]) -> list[dict[str, Any]]:
     raw_refs: list[dict[str, Any]] = []
     for artifact in artifacts:
+        artifact_refs: list[dict[str, Any]] = []
+        query_anchors: list[str] = []
         if isinstance(artifact, ReviewItem):
             proposal = artifact.proposal or {}
-            raw_refs.extend(_source_refs_payload(proposal.get("source_refs") or proposal.get("sourceRefs") or []))
+            artifact_refs.extend(_source_refs_payload(proposal.get("source_refs") or proposal.get("sourceRefs") or []))
+        elif _is_ask_run_artifact(artifact):
+            result = _ask_run_result_payload(artifact)
+            evidence = result.get("evidence") if isinstance(result.get("evidence"), dict) else {}
+            artifact_refs.extend(_source_refs_payload(result.get("source_refs") or result.get("citations") or evidence.get("source_refs") or evidence.get("citations") or []))
+            query_anchors = _ask_query_anchor_terms(_ask_run_query(artifact))
         else:
-            raw_refs.extend(_source_refs_payload(getattr(artifact, "source_refs", [])))
+            artifact_refs.extend(_source_refs_payload(getattr(artifact, "source_refs", [])))
+        if query_anchors:
+            artifact_refs = [ref for ref in artifact_refs if not _source_ref_negated_for_terms(ref, query_anchors)]
+        raw_refs.extend(artifact_refs)
     refs = _dedupe_writing_refs(raw_refs)
     source_by_id = {
         item.source_item_id: item
@@ -8363,11 +10553,52 @@ def _evidence_brief_refs(store: Any, *, tenant_id: str, owner_user_id: str, arti
             next_ref.setdefault("title", source.title)
             next_ref.setdefault("url", source.url)
             next_ref.setdefault("source_channel", source.source_channel)
+            next_ref.setdefault("lifecycle_status", _lifecycle_status(source))
+        else:
+            next_ref.setdefault("lifecycle_status", "missing")
         enriched.append(next_ref)
     return enriched
 
 
-def _evidence_brief_warnings(notes: list[Any], claims: list[Any], review_items: list[ReviewItem]) -> list[dict[str, Any]]:
+def _source_ref_lifecycle_status(ref: dict[str, Any]) -> str:
+    return str(ref.get("lifecycle_status") or "active")
+
+
+def _source_ref_negated_for_terms(ref: dict[str, Any], terms: list[str]) -> bool:
+    texts = [
+        str(ref.get("mention_text") or ""),
+        str(ref.get("snippet") or ""),
+        str(ref.get("title") or ""),
+    ]
+    source_window = ref.get("source_window") if isinstance(ref.get("source_window"), dict) else {}
+    texts.append(str(source_window.get("text") or ""))
+    haystack = "\n".join(text for text in texts if text)
+    if not haystack.strip():
+        return False
+    return any(_text_has_negated_label(haystack, term) for term in terms)
+
+
+def _is_ask_run_artifact(artifact: Any) -> bool:
+    if isinstance(artifact, dict):
+        return bool(artifact.get("run_id") and artifact.get("query") is not None)
+    return bool(getattr(artifact, "run_id", None) and getattr(artifact, "query", None) is not None)
+
+
+def _ask_run_result_payload(run: Any) -> dict[str, Any]:
+    if isinstance(run, dict):
+        return dict(run.get("result") or {})
+    return dict(getattr(run, "result", {}) or {})
+
+
+def _ask_run_id(run: Any) -> str:
+    return str(run.get("run_id") if isinstance(run, dict) else getattr(run, "run_id", "") or "")
+
+
+def _ask_run_query(run: Any) -> str:
+    return str(run.get("query") if isinstance(run, dict) else getattr(run, "query", "") or "")
+
+
+def _evidence_brief_warnings(notes: list[Any], claims: list[Any], review_items: list[ReviewItem], ask_runs: list[Any] | None = None) -> list[dict[str, Any]]:
     warnings: list[dict[str, Any]] = []
     for note in notes:
         if not _source_refs_payload(getattr(note, "source_refs", [])):
@@ -8378,16 +10609,46 @@ def _evidence_brief_warnings(notes: list[Any], claims: list[Any], review_items: 
     for item in review_items:
         if not _source_refs_payload((item.proposal or {}).get("source_refs") or []):
             warnings.append({"artifact_type": "review_item", "artifact_id": item.review_item_id, "warning": "missing_source_refs"})
+    for run in ask_runs or []:
+        result = _ask_run_result_payload(run)
+        if result.get("answer_type") == "no_answer" or (result.get("evidence_check") or {}).get("status") == "insufficient":
+            warnings.append({"artifact_type": "ask_run", "artifact_id": _ask_run_id(run), "warning": "insufficient_evidence"})
     return warnings
 
 
-def _evidence_brief_title(notes: list[Any], claims: list[Any], review_items: list[ReviewItem]) -> str:
+def _evidence_brief_unavailable(
+    *,
+    reason: str,
+    error: str,
+    tenant_id: str,
+    owner_user_id: str,
+    warnings: list[dict[str, Any]] | None = None,
+    source_refs: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "reason": reason,
+        "error": error,
+        "tenant_id": tenant_id,
+        "owner_user_id": owner_user_id,
+        "brief": None,
+        "board": None,
+        "nodes": [],
+        "edges": [],
+        "warnings": warnings or [],
+        "source_refs": source_refs or [],
+    }
+
+
+def _evidence_brief_title(notes: list[Any], claims: list[Any], review_items: list[ReviewItem], ask_runs: list[Any] | None = None) -> str:
     if notes:
         return f"Brief: {notes[0].title}"
     if claims:
         return f"Brief: {_trim_words(claims[0].statement, 12)}"
     if review_items:
         return f"Brief: {review_items[0].title}"
+    if ask_runs:
+        return f"Brief: {_trim_words(_ask_run_query(ask_runs[0]), 12)}"
     return "Evidence Brief"
 
 
@@ -8405,6 +10666,7 @@ def _evidence_brief_lineage(
     notes: list[Any],
     claims: list[Any],
     review_items: list[ReviewItem],
+    ask_runs: list[Any],
     source_refs: list[dict[str, Any]],
     warnings: list[dict[str, Any]],
 ) -> dict[str, Any]:
@@ -8423,6 +10685,7 @@ def _evidence_brief_lineage(
         "digest_note_ids": [note.digest_note_id for note in notes],
         "knowledge_claim_ids": [claim.knowledge_claim_id for claim in claims],
         "review_item_ids": [item.review_item_id for item in review_items],
+        "ask_run_ids": [_ask_run_id(run) for run in (ask_runs or [])],
         "review_status": _evidence_brief_review_status(review_items),
     }
 
@@ -8434,6 +10697,7 @@ def _create_evidence_brief_writing_nodes(
     notes: list[Any],
     claims: list[Any],
     review_items: list[ReviewItem],
+    ask_runs: list[Any],
     refs: list[dict[str, Any]],
     lineage: dict[str, Any],
 ) -> tuple[list[WritingNode], list[WritingEdge]]:
@@ -8483,7 +10747,7 @@ def _create_evidence_brief_writing_nodes(
     draft = add_node(
         "draft",
         board.title,
-        _evidence_brief_markdown(board.title, notes=notes, claims=claims, review_items=review_items, refs=refs, lineage=lineage),
+        _evidence_brief_markdown(board.title, notes=notes, claims=claims, review_items=review_items, ask_runs=ask_runs, refs=refs, lineage=lineage),
         x=420,
         y=120,
         source_refs=refs,
@@ -8528,10 +10792,26 @@ def _create_evidence_brief_writing_nodes(
             status=item.status,
         )
         add_edge(node, draft, "raises" if item.status == "pending" else "supported_by", "Review")
+    ask_y_offset = 360 + max(len(notes), len(claims), len(review_items), 0) * 130
+    for index, run in enumerate(ask_runs[:8]):
+        result = _ask_run_result_payload(run)
+        evidence = result.get("evidence") if isinstance(result.get("evidence"), dict) else {}
+        run_refs = _source_refs_payload(result.get("source_refs") or result.get("citations") or evidence.get("source_refs") or evidence.get("citations") or [])
+        node = add_node(
+            "answer" if result.get("answer_type") != "no_answer" else "gap",
+            _trim_words(_ask_run_query(run), 14) or "Ask answer",
+            _ask_run_brief_body(run),
+            x=1080,
+            y=ask_y_offset + index * 130,
+            source_refs=run_refs,
+            metadata={"artifact_type": "ask_run", "artifact_id": _ask_run_id(run), "lineage": lineage, "answer_type": result.get("answer_type")},
+            status="needs_review" if result.get("answer_type") == "no_answer" else "draft",
+        )
+        add_edge(node, draft, "raises" if result.get("answer_type") == "no_answer" else "supported_by", "Ask")
     return nodes, edges
 
 
-def _evidence_brief_markdown(title: str, *, notes: list[Any], claims: list[Any], review_items: list[ReviewItem], refs: list[dict[str, Any]], lineage: dict[str, Any]) -> str:
+def _evidence_brief_markdown(title: str, *, notes: list[Any], claims: list[Any], review_items: list[ReviewItem], ask_runs: list[Any], refs: list[dict[str, Any]], lineage: dict[str, Any]) -> str:
     lines = [f"# {title}", "", "> Draft Evidence Brief. Review before publishing to long-term knowledge.", ""]
     if notes:
         lines.extend(["## Digest Notes", ""])
@@ -8558,6 +10838,19 @@ def _evidence_brief_markdown(title: str, *, notes: list[Any], claims: list[Any],
             summary = (item.proposal or {}).get("plain_text_summary") or (item.proposal or {}).get("reason") or item.review_type.value
             lines.append(f"- [{item.status}] {item.title}: {summary}")
         lines.append("")
+    if ask_runs:
+        lines.extend(["## Ask Answers", ""])
+        for run in ask_runs:
+            result = _ask_run_result_payload(run)
+            answer = _trim_words(str(result.get("answer") or ""), 80)
+            lines.append(f"### {_ask_run_query(run)}")
+            if answer:
+                lines.extend([answer, ""])
+            if result.get("answer_type"):
+                lines.append(f"- Answer type: {result.get('answer_type')}")
+            if (result.get("evidence_check") or {}).get("status"):
+                lines.append(f"- Evidence check: {(result.get('evidence_check') or {}).get('status')}")
+            lines.append("")
     lines.extend(["## Citations", ""])
     for index, ref in enumerate(refs[:20], start=1):
         title_ref = str(ref.get("title") or ref.get("source_item_id") or ref.get("chunk_id") or f"Source {index}")
@@ -8600,6 +10893,24 @@ def _review_item_brief_body(item: ReviewItem) -> str:
             f"Review type: {item.review_type.value if hasattr(item.review_type, 'value') else item.review_type}",
         ]
     ).strip()
+
+
+def _ask_run_brief_body(run: Any) -> str:
+    result = _ask_run_result_payload(run)
+    evidence_check = result.get("evidence_check") if isinstance(result.get("evidence_check"), dict) else {}
+    reasons = result.get("no_answer_reasons") or evidence_check.get("no_answer_reasons") or []
+    lines = [
+        f"Question: {_ask_run_query(run)}",
+        "",
+        str(result.get("answer") or "").strip(),
+        "",
+        f"Answer type: {result.get('answer_type') or 'ask_answer'}",
+        f"Evidence check: {evidence_check.get('status') or '-'}",
+    ]
+    if reasons:
+        lines.extend(["", "No-answer reasons:"])
+        lines.extend(f"- {reason}" for reason in reasons[:6])
+    return "\n".join(line for line in lines if line is not None).strip()
 
 
 def _writing_board_payload(board: WritingBoard) -> dict[str, Any]:
@@ -9373,6 +11684,8 @@ def _document_delete_impact(store: Any, *, tenant_id: str, source_item_ids: list
         "user_profile_cards": 0,
         "jobs": 0,
         "offline_index_states": 0,
+        "topic_mentions": 0,
+        "artifact_supports": 0,
     }
     if hasattr(store, "connect"):
         with store.connect() as conn:
@@ -9397,6 +11710,16 @@ def _document_delete_impact(store: Any, *, tenant_id: str, source_item_ids: list
                     "agent_memories": _count_source_refs(conn, "agent_memories", list(source_ids)),
                     "user_profile_cards": _count_source_refs(conn, "user_profile_cards", list(source_ids), source_refs_column="source_refs"),
                     "jobs": _count_text_refs(conn, "jobs", "payload", list(source_ids)),
+                    "topic_mentions": _count_sql(
+                        conn,
+                        "select count(*) from topic_mentions where tenant_id = %s and source_item_id = any(%s)",
+                        (tenant_id, list(source_ids)),
+                    ),
+                    "artifact_supports": _count_sql(
+                        conn,
+                        "select count(*) from artifact_supports where tenant_id = %s and source_item_id = any(%s)",
+                        (tenant_id, list(source_ids)),
+                    ),
                 }
             )
             _ = params
@@ -9404,9 +11727,13 @@ def _document_delete_impact(store: Any, *, tenant_id: str, source_item_ids: list
         claims = getattr(store, "knowledge_claims", {})
         notes = getattr(store, "digest_notes", {})
         reviews = getattr(store, "review_items", {})
+        topic_mentions = getattr(store, "topic_mentions", {})
+        artifact_supports = getattr(store, "artifact_supports", {})
         counts["knowledge_claims"] = sum(1 for claim in claims.values() if _object_has_source_ref(claim, source_ids))
         counts["digest_notes"] = sum(1 for note in notes.values() if _object_has_source_ref(note, source_ids))
         counts["review_items"] = sum(1 for item in reviews.values() if any(source_id in json.dumps(to_jsonable(getattr(item, "proposal", {}))) for source_id in source_ids))
+        counts["topic_mentions"] = sum(1 for item in topic_mentions.values() if getattr(item, "source_item_id", "") in source_ids)
+        counts["artifact_supports"] = sum(1 for item in artifact_supports.values() if getattr(item, "source_item_id", "") in source_ids)
     return counts
 
 
@@ -9431,12 +11758,71 @@ def _document_delete_notes(*, restore: bool, hard_delete: bool) -> list[str]:
 def _hard_delete_source_derivatives(store: Any, source_item_ids: list[str]) -> dict[str, int]:
     if not hasattr(store, "connect"):
         source_ids = set(source_item_ids)
+        before = {
+            "knowledge_claims": len(getattr(store, "knowledge_claims", {})),
+            "digest_notes": len(getattr(store, "digest_notes", {})),
+            "review_items": len(getattr(store, "review_items", {})),
+            "discovery_items": len(getattr(store, "discovery_items", {})),
+            "agent_memories": len(getattr(store, "agent_memories", {})),
+            "user_profile_cards": len(getattr(store, "profile_cards", {})),
+            "hyperedges": len(getattr(store, "hyperedges", {})),
+            "jobs": len(getattr(store, "jobs", {})),
+            "topic_mentions": len(getattr(store, "topic_mentions", {})),
+            "artifact_supports": len(getattr(store, "artifact_supports", {})),
+        }
         store.knowledge_claims = {key: value for key, value in getattr(store, "knowledge_claims", {}).items() if not _object_has_source_ref(value, source_ids)}
         store.digest_notes = {key: value for key, value in getattr(store, "digest_notes", {}).items() if not _object_has_source_ref(value, source_ids)}
-        return {"knowledge_claims": 0, "digest_notes": 0}
+        deleted_review_ids = {
+            key
+            for key, value in getattr(store, "review_items", {}).items()
+            if any(source_id in json.dumps(to_jsonable(getattr(value, "proposal", {}))) for source_id in source_ids)
+            and getattr(value, "status", "pending") in {"pending", "new"}
+        }
+        store.review_items = {key: value for key, value in getattr(store, "review_items", {}).items() if key not in deleted_review_ids}
+        for value in getattr(store, "review_items", {}).values():
+            if any(source_id in json.dumps(to_jsonable(getattr(value, "proposal", {}))) for source_id in source_ids):
+                proposal = dict(getattr(value, "proposal", {}) or {})
+                proposal["lifecycle"] = {"status": "stale", "reason": "evidence_removed", "source_item_ids": sorted(source_ids)}
+                value.proposal = proposal
+        store.discovery_items = {
+            key: value
+            for key, value in getattr(store, "discovery_items", {}).items()
+            if not any(source_id in json.dumps(to_jsonable(getattr(value, "evidence", []))) for source_id in source_ids)
+        }
+        store.agent_memories = {key: value for key, value in getattr(store, "agent_memories", {}).items() if not _object_has_source_ref(value, source_ids)}
+        store.profile_cards = {key: value for key, value in getattr(store, "profile_cards", {}).items() if not _object_has_source_ref(value, source_ids)}
+        store.hyperedges = {key: value for key, value in getattr(store, "hyperedges", {}).items() if not _object_has_source_ref(value, source_ids)}
+        store.jobs = {
+            key: value
+            for key, value in getattr(store, "jobs", {}).items()
+            if not any(source_id in json.dumps(to_jsonable(getattr(value, "payload", {}))) for source_id in source_ids)
+        }
+        store.topic_mentions = {
+            key: value for key, value in getattr(store, "topic_mentions", {}).items() if getattr(value, "source_item_id", "") not in source_ids
+        }
+        store.artifact_supports = {
+            key: value
+            for key, value in getattr(store, "artifact_supports", {}).items()
+            if getattr(value, "source_item_id", "") not in source_ids
+            and not (getattr(value, "artifact_type", "") == "review_item" and getattr(value, "artifact_id", "") in deleted_review_ids)
+        }
+        return {
+            "knowledge_claims": before["knowledge_claims"] - len(getattr(store, "knowledge_claims", {})),
+            "digest_notes": before["digest_notes"] - len(getattr(store, "digest_notes", {})),
+            "review_items": before["review_items"] - len(getattr(store, "review_items", {})),
+            "discovery_items": before["discovery_items"] - len(getattr(store, "discovery_items", {})),
+            "agent_memories": before["agent_memories"] - len(getattr(store, "agent_memories", {})),
+            "user_profile_cards": before["user_profile_cards"] - len(getattr(store, "profile_cards", {})),
+            "hyperedges": before["hyperedges"] - len(getattr(store, "hyperedges", {})),
+            "jobs": before["jobs"] - len(getattr(store, "jobs", {})),
+            "topic_mentions": before["topic_mentions"] - len(getattr(store, "topic_mentions", {})),
+            "artifact_supports": before["artifact_supports"] - len(getattr(store, "artifact_supports", {})),
+        }
     with store.connect() as conn:
         deleted: dict[str, int] = {}
-        deleted["review_items"] = _delete_text_refs(conn, "review_items", "proposal", source_item_ids)
+        pending_review_ids = _pending_review_item_ids_for_purge(conn, source_item_ids)
+        deleted["review_items"] = _delete_by_ids(conn, "review_items", "review_item_id", pending_review_ids)
+        deleted["stale_review_items"] = _mark_review_items_stale_for_purge(conn, source_item_ids)
         deleted["discovery_items"] = _delete_text_refs(conn, "discovery_items", "evidence", source_item_ids)
         deleted["knowledge_claims"] = _delete_source_refs(conn, "knowledge_claims", source_item_ids)
         deleted["digest_notes"] = _delete_source_refs(conn, "digest_notes", source_item_ids)
@@ -9444,11 +11830,13 @@ def _hard_delete_source_derivatives(store: Any, source_item_ids: list[str]) -> d
         deleted["agent_memories"] = _delete_source_refs(conn, "agent_memories", source_item_ids)
         deleted["user_profile_cards"] = _delete_source_refs(conn, "user_profile_cards", source_item_ids)
         deleted["hyperedges"] = _delete_source_refs(conn, "hyperedges", source_item_ids)
+        deleted["topic_mentions"] = _delete_where(conn, "delete from topic_mentions where source_item_id = any(%s)", (source_item_ids,))
+        deleted["artifact_supports"] = _delete_artifact_supports_for_purge(conn, source_item_ids, pending_review_ids)
         deleted["jobs"] = _delete_text_refs(conn, "jobs", "payload", source_item_ids)
         return deleted
 
 
-def _mark_source_derivatives_stale(store: Any, source_item_ids: list[str], *, actor_user_id: str, reason: str) -> dict[str, int]:
+def _mark_source_derivatives_stale(store: Any, source_item_ids: list[str], *, tenant_id: str, actor_user_id: str, reason: str) -> dict[str, int]:
     if not hasattr(store, "connect"):
         source_ids = set(source_item_ids)
         counts = {"knowledge_claims": 0, "digest_notes": 0}
@@ -9459,6 +11847,9 @@ def _mark_source_derivatives_stale(store: Any, source_item_ids: list[str], *, ac
                     metadata["lifecycle"] = {"status": "stale", "reason": reason, "actor_user_id": actor_user_id}
                     value.metadata = metadata
                     counts[collection_name] += 1
+        updater = getattr(store, "update_artifact_support_status_for_sources", None)
+        if callable(updater):
+            counts["artifact_supports"] = updater(source_ids, tenant_id=tenant_id, status="evidence_removed")
         return counts
     lifecycle = Jsonb({"status": "stale", "reason": reason, "actor_user_id": actor_user_id, "source_item_ids": source_item_ids})
     with store.connect() as conn:
@@ -9478,6 +11869,9 @@ def _mark_source_derivatives_stale(store: Any, source_item_ids: list[str], *, ac
                     (lifecycle, source_item_ids),
                 )
             counts[table] = count
+        updater = getattr(store, "update_artifact_support_status_for_sources", None)
+        if callable(updater):
+            counts["artifact_supports"] = updater(set(source_item_ids), tenant_id=tenant_id, status="evidence_removed")
         return counts
 
 
@@ -9737,6 +12131,56 @@ def _delete_text_refs(conn: Any, table: str, column: str, source_item_ids: list[
     )
 
 
+def _pending_review_item_ids_for_purge(conn: Any, source_item_ids: list[str]) -> list[str]:
+    rows = conn.execute(
+        """
+        select review_item_id
+        from review_items
+        where status in ('pending', 'new')
+          and exists (
+            select 1 from jsonb_array_elements(coalesce(proposal->'source_refs', '[]'::jsonb)) ref
+            where ref->>'source_item_id' = any(%s)
+          )
+        """,
+        (source_item_ids,),
+    ).fetchall()
+    return [str(row["review_item_id"]) for row in rows]
+
+
+def _delete_artifact_supports_for_purge(conn: Any, source_item_ids: list[str], review_item_ids: list[str]) -> int:
+    return _delete_where(
+        conn,
+        """
+        delete from artifact_supports
+        where source_item_id = any(%s)
+           or (artifact_type = 'review_item' and artifact_id = any(%s))
+        """,
+        (source_item_ids, review_item_ids),
+    )
+
+
+def _mark_review_items_stale_for_purge(conn: Any, source_item_ids: list[str]) -> int:
+    rows = conn.execute(
+        """
+        update review_items
+        set proposal = jsonb_set(
+              coalesce(proposal, '{}'::jsonb),
+              '{lifecycle}',
+              %s,
+              true
+            )
+        where status not in ('pending', 'new')
+          and exists (
+            select 1 from jsonb_array_elements(coalesce(proposal->'source_refs', '[]'::jsonb)) ref
+            where ref->>'source_item_id' = any(%s)
+          )
+        returning review_item_id
+        """,
+        (Jsonb({"status": "stale", "reason": "evidence_removed", "source_item_ids": source_item_ids}), source_item_ids),
+    ).fetchall()
+    return len(rows)
+
+
 def _orphan_entity_ids_after_source_cleanup(conn: Any, source_item_ids: list[str]) -> list[str]:
     rows = conn.execute(
         """
@@ -9977,12 +12421,91 @@ def _cursor_offset(value: str | int | None) -> int:
         return 0
 
 
+def _truthy(value: Any, *, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+
 def _batch_limit(value: Any) -> int:
     try:
         limit = int(value) if value is not None else 20
     except (TypeError, ValueError):
         limit = 20
     return min(max(limit, 1), 100)
+
+
+def _workspace_digest_worker_runs(
+    api: PSKAApi,
+    payload: dict[str, Any],
+    *,
+    scheduled: dict[str, Any],
+    tenant_id: str,
+    owner_user_id: str,
+) -> list[dict[str, Any]]:
+    scheduled_job = scheduled.get("job") if isinstance(scheduled.get("job"), dict) else None
+    job_id = str(scheduled_job.get("job_id") or "").strip() if scheduled_job else ""
+    if not job_id:
+        return [{"ok": True, "processed": 0, "stage": "fastreact_worker", "reason": "no_digest_job_scheduled"}]
+    max_worker_runs = max(0, min(int(payload.get("max_worker_runs") if payload.get("max_worker_runs") is not None else 1), 10))
+    if max_worker_runs <= 0:
+        return [{"ok": True, "processed": 0, "stage": "fastreact_worker", "reason": "worker_disabled"}]
+    try:
+        from pska_core.cli import _default_fastreact_root, _run_fastreact_digest_worker
+
+        fastreact_root_value = payload.get("fastreact_root")
+        args = argparse.Namespace(
+            database_url=getattr(api.store, "database_url", api.config.database.url),
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            job_id=job_id,
+            pska_url=payload.get("pska_url"),
+            fastreact_url=payload.get("fastreact_url"),
+            fastreact_root=Path(str(fastreact_root_value)).expanduser() if fastreact_root_value else _default_fastreact_root(),
+            python=str(payload.get("python") or "python3"),
+            batch_size=_batch_limit(payload.get("batch_size") or len(scheduled.get("scheduled_source_item_ids") or []) or 1),
+            max_worker_runs=max_worker_runs,
+            worker_timeout_seconds=float(payload.get("worker_timeout_seconds") or 300.0),
+        )
+        return _run_fastreact_digest_worker(args, api.config)
+    except Exception as exc:  # noqa: BLE001 - product API should expose worker diagnostics.
+        return [
+            {
+                "ok": False,
+                "processed": 0,
+                "stage": "fastreact_worker",
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+        ]
+
+
+def _workspace_digest_worker_status(worker_runs: list[dict[str, Any]]) -> dict[str, Any]:
+    diagnostics: list[str] = []
+    processed = 0
+    failed = 0
+    for run in worker_runs:
+        processed += int(run.get("processed") or 0)
+        if run.get("ok") is False:
+            failed += 1
+            diagnostics.append(str(run.get("error") or run.get("reason") or "worker_failed"))
+        elif run.get("reason"):
+            diagnostics.append(str(run.get("reason")))
+    return {
+        "requested": bool(worker_runs),
+        "ok": failed == 0,
+        "processed": processed,
+        "failed_runs": failed,
+        "diagnostics": list(dict.fromkeys(diagnostics)),
+    }
 
 
 _WORKSPACE_HTML = """<!doctype html>

@@ -1616,6 +1616,46 @@ button {
   overflow-wrap: anywhere;
 }
 
+.review-basis {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  border: 1px solid rgba(35, 90, 77, 0.12);
+  border-radius: 8px;
+  background: #f8fbf7;
+  padding: 10px;
+}
+
+.review-basis p {
+  margin: 0;
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.review-basis div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.review-basis span {
+  color: #235a4d;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.review-basis code {
+  border: 1px solid rgba(35, 90, 77, 0.16);
+  border-radius: 7px;
+  background: #fffefa;
+  color: #235a4d;
+  padding: 4px 7px;
+  font-size: 12px;
+}
+
 .review-meta-grid {
   margin: 12px 0 0;
   display: grid;
@@ -1801,7 +1841,8 @@ button {
 }
 
 .corpus-operation.syncing,
-.corpus-operation.digesting {
+.corpus-operation.digesting,
+.corpus-operation.queued {
   border-color: rgba(61, 102, 166, 0.32);
   background: rgba(242, 247, 255, 0.84);
 }
@@ -2083,7 +2124,7 @@ button {
   align-self: flex-start;
 }
 
-.ask-message.assistant.live .today-search-result {
+.ask-message.assistant .today-search-result {
   margin: 0;
   border: 0;
   background: transparent;
@@ -2231,6 +2272,44 @@ button {
   background: rgba(255, 254, 249, 0.84);
   padding: 14px;
   min-width: 0;
+}
+
+.corpus-advanced-details {
+  display: block;
+}
+
+.corpus-advanced-details > summary {
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  cursor: pointer;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 800;
+  list-style: none;
+}
+
+.corpus-advanced-details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.corpus-advanced-details > summary small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+  text-align: right;
+}
+
+.corpus-advanced-details[open] > summary {
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+}
+
+.corpus-advanced-details .connector-summary {
+  margin-top: 10px;
 }
 
 .corpus-source-list,

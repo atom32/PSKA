@@ -293,6 +293,8 @@ class AskRun:
     query: str
     status: str = "running"
     result: dict[str, Any] = field(default_factory=dict)
+    route: dict[str, Any] = field(default_factory=dict)
+    evidence_check: dict[str, Any] = field(default_factory=dict)
     prompt_profile_id: str | None = None
     prompt_profile_version: int | None = None
     started_at: datetime = field(default_factory=utc_now)
@@ -428,6 +430,59 @@ class DiscoveryItem:
     quality_signals: dict[str, Any] = field(default_factory=dict)
     status: str = "new"
     created_at: datetime = field(default_factory=utc_now)
+    tenant_id: str = DEFAULT_TENANT_ID
+
+
+@dataclass(slots=True)
+class KnowledgeTopic:
+    topic_id: str
+    owner_user_id: str
+    label: str
+    normalized_label: str
+    topic_type: str = "topic"
+    description: str = ""
+    confidence: float = 0.0
+    producer: str = "pska.topic_linker"
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
+    tenant_id: str = DEFAULT_TENANT_ID
+
+
+@dataclass(slots=True)
+class TopicMention:
+    topic_mention_id: str
+    topic_id: str
+    owner_user_id: str
+    source_item_id: str
+    document_id: str | None = None
+    chunk_id: str | None = None
+    artifact_type: str = "chunk"
+    artifact_id: str = ""
+    mention_text: str = ""
+    confidence: float = 0.0
+    producer: str = "pska.topic_linker"
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: datetime = field(default_factory=utc_now)
+    tenant_id: str = DEFAULT_TENANT_ID
+
+
+@dataclass(slots=True)
+class ArtifactSupport:
+    artifact_support_id: str
+    owner_user_id: str
+    artifact_type: str
+    artifact_id: str
+    support_type: str
+    source_item_id: str
+    document_id: str | None = None
+    chunk_id: str | None = None
+    topic_id: str | None = None
+    status: str = "active"
+    confidence: float = 0.0
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
     tenant_id: str = DEFAULT_TENANT_ID
 
 

@@ -128,6 +128,7 @@ class RetrievalService:
         represented_user_id: str | None = None,
         top_k: int = 5,
         source_item_ids: set[str] | None = None,
+        scope_mode: str = "soft",
     ) -> RetrievalResponse:
         visible_items = self.acl.filter_visible_items(
             user,
@@ -136,6 +137,10 @@ class RetrievalService:
         )
         source_ids = {item.source_item_id for item in visible_items}
         scoped_source_item_ids = set(source_item_ids or set()) & source_ids
+        hard_scope = scope_mode == "hard" and bool(source_item_ids)
+        if hard_scope:
+            visible_items = [item for item in visible_items if item.source_item_id in scoped_source_item_ids]
+            source_ids = {item.source_item_id for item in visible_items}
         chunks = self.store.list_chunks_for_sources(source_ids)
         ranked, rank_debug = self._rank(
             query,
@@ -149,20 +154,26 @@ class RetrievalService:
         )
         citations = [result.citation for result in ranked]
         visible_team_ids = sorted(self.acl.visible_team_ids_for_user(represented_user_id or user.user_id, tenant_id=user.tenant_id))
-        hypergraph_context = self._hypergraph_context(
-            query=query,
-            ranked=ranked,
-            user=user,
-            represented_user_id=represented_user_id,
-        )
-        graph_paths = self._graph_paths(
-            query=query,
-            ranked=ranked,
-            user=user,
-            represented_user_id=represented_user_id,
-        )
-        profile_context = self._profile_context(query=query, user=user, represented_user_id=represented_user_id)
-        memory_context = self._memory_context(query=query, user=user, represented_user_id=represented_user_id)
+        if hard_scope:
+            hypergraph_context: list[dict[str, Any]] = []
+            graph_paths: list[dict[str, Any]] = []
+            profile_context: list[dict[str, Any]] = []
+            memory_context: list[dict[str, Any]] = []
+        else:
+            hypergraph_context = self._hypergraph_context(
+                query=query,
+                ranked=ranked,
+                user=user,
+                represented_user_id=represented_user_id,
+            )
+            graph_paths = self._graph_paths(
+                query=query,
+                ranked=ranked,
+                user=user,
+                represented_user_id=represented_user_id,
+            )
+            profile_context = self._profile_context(query=query, user=user, represented_user_id=represented_user_id)
+            memory_context = self._memory_context(query=query, user=user, represented_user_id=represented_user_id)
         ranker = (
             "scoped_source"
             if rank_debug.get("scoped_candidates", 0)
@@ -207,6 +218,9 @@ class RetrievalService:
                 "graph_paths_used": bool(graph_paths),
                 "diagnostics": diagnostics["score_debug"],
                 "offline_index_freshness": offline_index_freshness,
+                "scope_mode": "hard" if hard_scope else "soft",
+                "scope_source_items": len(scoped_source_item_ids),
+                "scope_leak_prevention": hard_scope,
                 **rank_debug,
             },
         )

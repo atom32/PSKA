@@ -35,6 +35,8 @@ def chunk_text(text: str, config: Mapping[str, Any] | None = None) -> list[Chunk
     strategy = _select_strategy(source, chunking)
     if strategy == "heading":
         spans = _heading_chunks(source, chunking)
+    elif strategy == "heuristic":
+        spans = _heuristic_chunks(source, chunking)
     elif strategy == "recursive":
         spans = _window_chunks(source, chunking, strategy="recursive")
     else:
@@ -48,6 +50,7 @@ def preview_chunking(text: str, config: Mapping[str, Any] | None = None) -> dict
     selected = _select_strategy(source, chunking)
     spans = chunk_text(source, chunking)
     lengths = [len(span.text) for span in spans]
+    parent_windows = _parent_windows(source, spans, chunking)
     return {
         "ok": True,
         "strategy": selected,
@@ -71,19 +74,23 @@ def preview_chunking(text: str, config: Mapping[str, Any] | None = None) -> dict
                 "chars": len(span.text),
                 "strategy": span.strategy,
                 "context_header": span.context_header,
+                "parent_window_ordinal": _parent_window_ordinal(parent_windows, span),
             }
             for span in spans
         ],
+        "parent_windows": parent_windows,
     }
 
 
 def _select_strategy(text: str, config: Mapping[str, Any]) -> str:
     requested = str(config.get("strategy") or "auto")
-    if requested != "auto":
+    if requested not in {"auto", "adaptive"}:
         return requested
     profile = _profile(text)
     if profile["markdown_headings"] >= 2:
         return "heading"
+    if profile["has_markdown_table"] or profile["has_code_fence"] or profile["cjk_chars"] > 400:
+        return "heuristic"
     if profile["lines"] > 3 or any(separator in text for separator in config.get("separators", [])):
         return "recursive"
     return "fixed"
@@ -131,6 +138,148 @@ def _fixed_chunks(text: str, config: Mapping[str, Any]) -> list[ChunkSpan]:
         if end >= len(text):
             break
     return spans
+
+
+def _heuristic_chunks(text: str, config: Mapping[str, Any]) -> list[ChunkSpan]:
+    blocks = _structural_blocks(text)
+    if not blocks:
+        return _window_chunks(text, config, strategy="recursive")
+    chunk_size = int(config["chunk_size"])
+    spans: list[ChunkSpan] = []
+    current_start: int | None = None
+    current_end: int | None = None
+    for start, end, block_type in blocks:
+        if end <= start:
+            continue
+        if end - start > chunk_size:
+            if current_start is not None and current_end is not None and current_end > current_start:
+                spans.extend(_window_chunks_for_range(text, current_start, current_end, config, strategy="heuristic"))
+                current_start = None
+                current_end = None
+            spans.extend(_window_chunks_for_range(text, start, end, config, strategy="heuristic", context_header=block_type if block_type in {"code", "table"} else None))
+            continue
+        if current_start is None:
+            current_start = start
+            current_end = end
+            continue
+        proposed_end = end
+        if proposed_end - current_start <= chunk_size:
+            current_end = proposed_end
+            continue
+        spans.extend(_window_chunks_for_range(text, current_start, current_end or start, config, strategy="heuristic"))
+        current_start = start
+        current_end = end
+    if current_start is not None and current_end is not None and current_end > current_start:
+        spans.extend(_window_chunks_for_range(text, current_start, current_end, config, strategy="heuristic"))
+    return spans or _window_chunks(text, config, strategy="recursive")
+
+
+def _structural_blocks(text: str) -> list[tuple[int, int, str]]:
+    blocks: list[tuple[int, int, str]] = []
+    line_start = 0
+    lines: list[tuple[int, int, str]] = []
+    for raw_line in text.splitlines(keepends=True):
+        line_end = line_start + len(raw_line)
+        lines.append((line_start, line_end, raw_line))
+        line_start = line_end
+    if not lines:
+        return []
+    cursor = 0
+    in_code = False
+    while cursor < len(lines):
+        start, end, line = lines[cursor]
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            block_start = start
+            cursor += 1
+            in_code = not in_code
+            while cursor < len(lines):
+                _, block_end, next_line = lines[cursor]
+                cursor += 1
+                if next_line.strip().startswith("```"):
+                    in_code = False
+                    break
+            else:
+                block_end = len(text)
+            blocks.append((block_start, block_end, "code"))
+            continue
+        if stripped.startswith("|") and stripped.endswith("|"):
+            block_start = start
+            block_end = end
+            cursor += 1
+            while cursor < len(lines):
+                _, next_end, next_line = lines[cursor]
+                next_stripped = next_line.strip()
+                if not (next_stripped.startswith("|") and next_stripped.endswith("|")):
+                    break
+                block_end = next_end
+                cursor += 1
+            blocks.append((block_start, block_end, "table"))
+            continue
+        if not stripped:
+            cursor += 1
+            continue
+        block_start = start
+        block_end = end
+        cursor += 1
+        while cursor < len(lines):
+            _, next_end, next_line = lines[cursor]
+            next_stripped = next_line.strip()
+            if not next_stripped or next_stripped.startswith("```") or (next_stripped.startswith("|") and next_stripped.endswith("|")):
+                break
+            block_end = next_end
+            cursor += 1
+        blocks.append((block_start, block_end, "paragraph"))
+    if in_code:
+        return _paragraph_blocks(text)
+    return blocks
+
+
+def _paragraph_blocks(text: str) -> list[tuple[int, int, str]]:
+    blocks = []
+    for match in re.finditer(r"\S(?:.*?(?:\n\s*\n|$))", text, flags=re.DOTALL):
+        blocks.append((match.start(), match.end(), "paragraph"))
+    return blocks
+
+
+def _parent_windows(text: str, spans: list[ChunkSpan], config: Mapping[str, Any]) -> list[dict[str, Any]]:
+    if not spans:
+        return []
+    parent_size = int(config.get("parent_chunk_size") or config.get("parent_window_size") or max(int(config["chunk_size"]) * 3, int(config["chunk_size"])))
+    parent_size = max(parent_size, int(config["chunk_size"]))
+    windows: list[dict[str, Any]] = []
+    current_start = spans[0].start
+    current_end = spans[0].end
+    child_ordinals: list[int] = []
+    for span in spans:
+        if child_ordinals and span.end - current_start > parent_size:
+            windows.append(_parent_window_payload(text, current_start, current_end, len(windows), child_ordinals))
+            current_start = span.start
+            child_ordinals = []
+        current_end = max(current_end, span.end)
+        child_ordinals.append(span.ordinal)
+    if child_ordinals:
+        windows.append(_parent_window_payload(text, current_start, current_end, len(windows), child_ordinals))
+    return windows
+
+
+def _parent_window_payload(text: str, start: int, end: int, ordinal: int, child_ordinals: list[int]) -> dict[str, Any]:
+    return {
+        "ordinal": ordinal,
+        "start": start,
+        "end": end,
+        "chars": max(0, end - start),
+        "text": text[start:end].strip(),
+        "child_ordinals": list(child_ordinals),
+        "window_policy": "parent_child_preview",
+    }
+
+
+def _parent_window_ordinal(parent_windows: list[dict[str, Any]], span: ChunkSpan) -> int | None:
+    for window in parent_windows:
+        if span.ordinal in set(window.get("child_ordinals") or []):
+            return int(window.get("ordinal") or 0)
+    return None
 
 
 def _window_chunks_for_range(
@@ -212,9 +361,11 @@ def _strategy_diagnostics(text: str, config: Mapping[str, Any], selected: str) -
     requested = str(config.get("strategy") or "auto")
     profile = _profile(text)
     reason = "requested_explicit_strategy"
-    if requested == "auto":
+    if requested in {"auto", "adaptive"}:
         if selected == "heading":
             reason = "markdown_headings_detected"
+        elif selected == "heuristic":
+            reason = "tables_code_or_long_cjk_detected"
         elif selected == "recursive":
             reason = "paragraph_or_separator_boundaries_detected"
         else:

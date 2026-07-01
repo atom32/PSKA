@@ -98,6 +98,7 @@ import {
   previewKnowledgeSource,
   recordWorkspaceActivity,
   rejectReviewItem,
+  retryDigestJob,
   runDigestNow,
   snoozeDiscovery,
   syncKnowledgeSources,
@@ -117,6 +118,7 @@ import type {
   KnowledgeSourceCleanupResponse,
   AskConversation,
   AskMessage,
+  AskRun,
   ReviewCenterItem,
   SourcePreviewResponse,
   SourceSyncResponse,
@@ -739,6 +741,7 @@ function TodayWorkspace({
   const needsReview = normalizeReviewItems(data);
   const conversations = askConversationsQuery.data?.conversations || [];
   const conversationMessages = askConversationQuery.data?.messages || [];
+  const conversationRuns = askConversationQuery.data?.runs || [];
   const actionCount = continueWorking.length + discoveries.length + needsReview.length;
 
   useEffect(() => {
@@ -894,6 +897,7 @@ function TodayWorkspace({
         <section className="today-section today-search">
           <AskConversationPanel
             messages={conversationMessages}
+            runs={conversationRuns}
             isLoading={askConversationsQuery.isLoading || askConversationQuery.isLoading}
             liveQuery={searchQuery}
             liveResult={searching || conversationMessages.length === 0 ? searchResult : null}
@@ -1111,7 +1115,10 @@ function ReviewCenter({
         <div className="review-empty">当前没有 {statusLabel(status)}。</div>
       ) : (
         <div className="review-list">
-          {items.map((item) => (
+          {items.map((item) => {
+            const supportBasis = reviewSupportBasis(item);
+            const proposalSummary = reviewProposalSummary(item);
+            return (
             <article className="review-center-item" key={item.review_item_id}>
               <div className="review-item-main">
                 <div className="review-item-title">
@@ -1123,6 +1130,11 @@ function ReviewCenter({
                   <span className={`pill ${item.source_ref_status === "present" ? "" : "warning"}`}>
                     {item.source_ref_status === "present" ? "证据已连接" : "缺少证据"}
                   </span>
+                  {item.quality_tier ? (
+                    <span className={`pill ${item.quality_tier === "strong" ? "" : "muted"}`}>{reviewQualityTierLabel(item.quality_tier)}</span>
+                  ) : null}
+                  {item.promotion_reason ? <span className="pill muted">{reviewPromotionReasonLabel(item.promotion_reason)}</span> : null}
+                  {item.review_eligible === false ? <span className="pill warning">仅诊断，不入库</span> : null}
                   {!item.apply_supported && <span className="pill muted">不可应用</span>}
                   {item.apply_supported && !item.apply_ready && <span className="pill warning">需检查后应用</span>}
                 </div>
@@ -1144,6 +1156,17 @@ function ReviewCenter({
                     <dd>{item.review_item_id}</dd>
                   </div>
                 </dl>
+                {supportBasis.length || proposalSummary ? (
+                  <div className="review-basis">
+                    {proposalSummary ? <p>{proposalSummary}</p> : null}
+                    {supportBasis.length ? (
+                      <div>
+                        <span>依据</span>
+                        {supportBasis.map((basis) => <code key={`${item.review_item_id}-${basis}`}>{basis}</code>)}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
                 {item.source_refs?.length ? (
                   <div className="source-ref-row">
                     {item.source_refs.slice(0, 3).map((ref, index) => (
@@ -1177,7 +1200,8 @@ function ReviewCenter({
                 ) : null}
               </div>
             </article>
-          ))}
+            );
+          })}
         </div>
       )}
     </section>
@@ -1214,6 +1238,8 @@ function AskResult({ result, pending = false }: { result: WorkspaceAskResponse |
   const [selectedRefIndex, setSelectedRefIndex] = useState(0);
   const askEvidence = (result as WorkspaceAskResponse).evidence;
   const route = (result as WorkspaceAskResponse).route;
+  const evidenceCheck = (result as WorkspaceAskResponse).evidence_check;
+  const citationAudit = (result as WorkspaceAskResponse).citation_audit;
   const timing = (result as WorkspaceAskResponse).timing;
   const qualitySignals = (result as WorkspaceAskResponse).quality_signals;
   const workspaceEvidence = (result as WorkspaceSearchResponse).workspace?.evidence;
@@ -1228,6 +1254,7 @@ function AskResult({ result, pending = false }: { result: WorkspaceAskResponse |
     ...(parsed?.citations || []),
     ...(result.source_refs || []),
     ...(result.citations || []),
+    ...((result as WorkspaceAskResponse).source_windows || []),
     ...(askEvidence?.citations || []),
     ...(askEvidence?.results || []),
     ...(askEvidence?.source_windows || []),
@@ -1238,11 +1265,13 @@ function AskResult({ result, pending = false }: { result: WorkspaceAskResponse |
   ]);
   const gaps = normalizeAskNotes(askEvidence?.gaps);
   const conflicts = normalizeAskNotes(askEvidence?.conflicts);
+  const noAnswerReasons = normalizeAskNotes((result as WorkspaceAskResponse).no_answer_reasons || evidenceCheck?.no_answer_reasons || askEvidence?.no_answer_reasons);
+  const droppedCitations = normalizeDroppedCitations(citationAudit?.dropped || evidenceCheck?.dropped_citations || askEvidence?.dropped_citations);
   const diagnostics = normalizeAskNoAnswerDiagnostics(qualitySignals?.no_answer_diagnostics);
   const selectedRef = refs[Math.min(selectedRefIndex, Math.max(refs.length - 1, 0))];
   const agentSteps = normalizeAskAgentSteps((result as WorkspaceAskResponse).agent_steps);
   const progressEvents = normalizeAskProgress((result as WorkspaceAskResponse).progress);
-  const displaySteps = agentSteps.length ? agentSteps : pending ? pendingAskSteps() : [];
+  const displaySteps = agentSteps.length ? agentSteps : progressEvents.length ? progressToAgentSteps(progressEvents) : pending ? pendingAskSteps() : [];
   const rawEvents = agenticTraceEvents(result);
   const markdown = buildAskMarkdown((result as WorkspaceAskResponse).query || "", answer, refs, gaps, conflicts);
   const canCopy = Boolean(answer || refs.length || gaps.length || conflicts.length);
@@ -1265,6 +1294,8 @@ function AskResult({ result, pending = false }: { result: WorkspaceAskResponse |
       <div className="ask-result-header">
         <small className="search-note">
           {route ? askRouteLabel(route) : pending ? "Ask PSKA · 查询中" : "Ask PSKA"}
+          {(result as WorkspaceAskResponse).answer_type ? ` · ${askAnswerTypeLabel((result as WorkspaceAskResponse).answer_type || "")}` : ""}
+          {route?.intent ? ` · ${askIntentLabel(route.intent)}` : ""}
           {timing?.time_to_first_agent_event_ms !== undefined ? ` · 首过程 ${Math.round(timing.time_to_first_agent_event_ms)} ms` : ""}
           {timing?.time_to_first_answer_ms !== undefined ? ` · 首字 ${Math.round(timing.time_to_first_answer_ms)} ms` : ""}
           {timing?.total_ms !== undefined ? ` · 总耗时 ${Math.round(timing.total_ms)} ms` : ""}
@@ -1304,8 +1335,10 @@ function AskResult({ result, pending = false }: { result: WorkspaceAskResponse |
       ) : null}
       {qualitySignals ? <AskQualitySignals signals={qualitySignals} /> : null}
       {diagnostics ? <AskNoAnswerDiagnostics diagnostics={diagnostics} /> : null}
-      {gaps.length || conflicts.length ? (
+      {noAnswerReasons.length || droppedCitations.length || gaps.length || conflicts.length ? (
         <div className="ask-gap-list">
+          {noAnswerReasons.length ? <EvidenceNoteList title="为什么没找到" values={noAnswerReasons} /> : null}
+          {droppedCitations.length ? <EvidenceNoteList title="丢弃的引用" values={droppedCitations} /> : null}
           {gaps.length ? <EvidenceNoteList title="缺口" values={gaps} /> : null}
           {conflicts.length ? <EvidenceNoteList title="冲突" values={conflicts} /> : null}
         </div>
@@ -1703,6 +1736,17 @@ function pendingAskSteps(): AskAgentStepView[] {
   ];
 }
 
+function progressToAgentSteps(progress: AskProgressView[]): AskAgentStepView[] {
+  return progress.map((item, index) => ({
+    id: item.id || `progress-step-${index}`,
+    phase: item.stage || "progress",
+    status: item.status || "complete",
+    title: item.title || askProgressStageLabel(item.stage),
+    detail: askProgressStageDetail(item.stage, item.status),
+    meta: item.meta
+  }));
+}
+
 function AskProcessTimeline({
   steps,
   rawEvents,
@@ -1936,6 +1980,7 @@ function numberSignal(value: unknown) {
 
 function askQualityBandLabel(value: string) {
   const labels: Record<string, string> = {
+    direct_answer: "直接回答",
     grounded: "有引用",
     no_answerable_evidence: "无可答证据",
     needs_review: "需复核",
@@ -1947,6 +1992,7 @@ function askQualityBandLabel(value: string) {
 
 function askEvidenceStatusLabel(value: string) {
   const labels: Record<string, string> = {
+    not_applicable: "无需证据",
     grounded: "证据已引用",
     retrieved_without_citations: "检索未引用",
     no_evidence: "未检索到证据",
@@ -2055,9 +2101,15 @@ function normalizeSearchRefs(values: unknown[]): SearchEvidenceRef[] {
 function searchRefKey(ref: SearchEvidenceRef) {
   const sourceId = normalizeSearchRefIdentity(ref.source_item_id);
   const chunkId = normalizeSearchRefIdentity(ref.chunk_id);
+  if (sourceId) {
+    return `source:${sourceId}`;
+  }
+  if (chunkId) {
+    return `source:${sourceId}:chunk:${chunkId}`;
+  }
   const passageId = normalizeSearchRefIdentity(ref.passage_window_id);
-  if (sourceId || chunkId || passageId) {
-    return `source:${sourceId}:chunk:${chunkId}:passage:${passageId}`;
+  if (passageId) {
+    return `passage:${passageId}`;
   }
   const title = normalizeSearchRefIdentity(ref.title);
   if (title) {
@@ -2084,6 +2136,22 @@ function normalizeAskNotes(values: unknown): string[] {
         return trimText(firstString(value.message, value.detail, value.summary, value.reason) || compactJson(value), 220);
       }
       return trimText(String(value), 220);
+    })
+    .filter(Boolean);
+}
+
+function normalizeDroppedCitations(values: unknown): string[] {
+  if (!Array.isArray(values)) {
+    return [];
+  }
+  return values
+    .map((value) => {
+      if (!isRecord(value)) {
+        return "";
+      }
+      const reason = askDiagnosticLabel(displayText(value.drop_reason, "dropped"));
+      const source = displayText(value.title || value.source_item_id || value.chunk_id, "引用");
+      return trimText(`${source}：${reason}`, 220);
     })
     .filter(Boolean);
 }
@@ -2150,6 +2218,7 @@ function normalizeAskProgress(values: unknown): AskProgressView[] {
 
 function askProgressStageLabel(stage: string) {
   switch (stage) {
+    case "query_understand":
     case "understand":
       return "理解";
     case "search":
@@ -2166,6 +2235,73 @@ function askProgressStageLabel(stage: string) {
       return "生成";
     default:
       return displayText(stage, "处理");
+  }
+}
+
+function askProgressStageDetail(stage: string, status: string) {
+  const suffix = status === "running" ? "进行中" : status === "error" ? "失败" : "完成";
+  switch (stage) {
+    case "query_understand":
+    case "understand":
+      return `识别意图、范围和是否需要检索，${suffix}。`;
+    case "search":
+      return `按当前范围检索资料库或附件，${suffix}。`;
+    case "rerank":
+      return `重排候选证据，${suffix}。`;
+    case "graph":
+      return `展开可用的强支撑图谱路径，${suffix}。`;
+    case "read":
+      return `回读 source window 或 parent window，${suffix}。`;
+    case "evidence_check":
+      return `校验引用是否有窗口、范围和答案支撑，${suffix}。`;
+    case "generate":
+      return `生成最终回答，${suffix}。`;
+    default:
+      return `Ask PSKA 过程事件，${suffix}。`;
+  }
+}
+
+function askIntentLabel(intent?: string) {
+  switch (intent) {
+    case "greeting":
+      return "问候";
+    case "chitchat":
+      return "闲聊";
+    case "product_help":
+      return "产品帮助";
+    case "doc_only":
+      return "只看附件";
+    case "follow_up":
+      return "追问";
+    case "clarification":
+      return "澄清";
+    case "graph_research":
+      return "图谱研究";
+    case "writing":
+      return "写作";
+    case "kb_search":
+      return "资料库检索";
+    default:
+      return displayText(intent, "Ask");
+  }
+}
+
+function askAnswerTypeLabel(answerType?: string) {
+  switch (answerType) {
+    case "direct_greeting":
+      return "直接回应";
+    case "product_help":
+      return "产品说明";
+    case "kb_answer":
+      return "证据回答";
+    case "deep_answer":
+      return "深入回答";
+    case "no_answer":
+      return "证据不足";
+    case "clarification":
+      return "需要澄清";
+    default:
+      return displayText(answerType, "回答");
   }
 }
 
@@ -2575,6 +2711,74 @@ function recommendedActionLabel(action?: string) {
   return "待处理";
 }
 
+function reviewQualityTierLabel(value?: string) {
+  if (value === "strong") {
+    return "强支撑";
+  }
+  if (value === "diagnostic") {
+    return "诊断信号";
+  }
+  if (value === "weak") {
+    return "弱信号";
+  }
+  return displayText(value, "质量未标注");
+}
+
+function reviewPromotionReasonLabel(value?: string) {
+  const labels: Record<string, string> = {
+    source_title: "来自标题",
+    document_title: "来自文档标题",
+    document_heading: "来自标题层级",
+    source_ref_claim: "来自 Claim 证据",
+    digest_note: "来自 Digest 证据",
+    entity: "来自实体",
+    hyperedge: "来自关系",
+    lexical_overlap: "文本重合"
+  };
+  return labels[value || ""] || displayText(value, "依据已记录");
+}
+
+function reviewSupportKindLabel(value?: string) {
+  const labels: Record<string, string> = {
+    source_title: "资料标题",
+    document_title: "文档标题",
+    document_heading: "文档 heading",
+    source_ref_claim: "Claim + source_refs",
+    digest_note: "Digest note + source_refs",
+    entity: "实体候选",
+    hyperedge: "关系候选",
+    lexical_chunk: "片段词面信号",
+    document_body: "正文词面信号"
+  };
+  return labels[value || ""] || displayText(value, "");
+}
+
+function reviewSupportBasis(item: ReviewCenterItem) {
+  const proposal = isRecord(item.proposal) ? item.proposal : {};
+  const rawKinds = Array.isArray(item.support_kinds) && item.support_kinds.length
+    ? item.support_kinds
+    : Array.isArray(proposal.support_kinds)
+      ? proposal.support_kinds
+      : [];
+  const values = rawKinds.map((kind) => reviewSupportKindLabel(displayText(kind, ""))).filter(Boolean);
+  return Array.from(new Set(values));
+}
+
+function reviewProposalSummary(item: ReviewCenterItem) {
+  const proposal = isRecord(item.proposal) ? item.proposal : {};
+  const lifecycle = isRecord(proposal.lifecycle) ? proposal.lifecycle : {};
+  if (displayText(lifecycle.status, "") === "stale") {
+    return trimText(`证据状态已变化：${displayText(lifecycle.reason, "evidence_removed")}。请确认是否保留、移除或替换这条长期知识。`, 260);
+  }
+  return trimText(firstString(
+    proposal.summary,
+    proposal.statement,
+    proposal.description,
+    proposal.reason,
+    proposal.promotion_reason
+  ), 260);
+}
+
 function displayText(value: unknown, fallback = ""): string {
   if (value === null || value === undefined) {
     return fallback;
@@ -2712,18 +2916,21 @@ function CorpusWorkspace({
   const [sourcePreview, setSourcePreview] = useState<SourcePreviewResponse | null>(null);
   const [sourceFormStatus, setSourceFormStatus] = useState<"idle" | "previewing" | "adding" | "syncing" | "success" | "error">("idle");
   const [sourceFormError, setSourceFormError] = useState("");
-  const [operationStatus, setOperationStatus] = useState<"idle" | "syncing" | "digesting" | "cleaning" | "briefing" | "success" | "error">("idle");
+  const [operationStatus, setOperationStatus] = useState<"idle" | "syncing" | "digesting" | "queued" | "cleaning" | "briefing" | "success" | "error">("idle");
   const [operationMessage, setOperationMessage] = useState("");
   const [cleanupPreview, setCleanupPreview] = useState<KnowledgeSourceCleanupResponse | null>(null);
   const [cleanupTargetId, setCleanupTargetId] = useState<string | null>(null);
   const [cleanupConfirmText, setCleanupConfirmText] = useState("");
   const [briefingJobId, setBriefingJobId] = useState<string | null>(null);
+  const [trackedDigestJobIds, setTrackedDigestJobIds] = useState<string[]>([]);
   const [operationSummary, setOperationSummary] = useState<{
     scanned?: number;
     ingested?: number;
     changed?: number;
     failed?: number;
     scheduled?: number;
+    queuedJobs?: number;
+    skipped?: number;
     reviews?: number;
     claims?: number;
     digestNotes?: number;
@@ -2747,6 +2954,7 @@ function CorpusWorkspace({
   const digestLogsQuery = useQuery({
     queryKey: ["corpus-digest-logs", serviceToken],
     queryFn: () => loadDigestLogs(serviceToken, 8),
+    refetchInterval: operationStatus === "queued" || operationStatus === "digesting" ? 3000 : false,
     retry: 1
   });
   const documentsQuery = useQuery({
@@ -2790,6 +2998,27 @@ function CorpusWorkspace({
     setPromptReview(String((effective.review?.config?.review_policy || effective.review?.config?.custom_instruction || "") ?? ""));
     setPromptWriting(String((effective.writing?.config?.tone || effective.writing?.config?.custom_instruction || "") ?? ""));
   }, [promptProfilesQuery.dataUpdatedAt]);
+
+  useEffect(() => {
+    if (operationStatus !== "queued" || trackedDigestJobIds.length === 0) {
+      return;
+    }
+    const trackedLogs = (digestLogs?.logs || []).filter((log) => trackedDigestJobIds.includes(log.job_id));
+    if (trackedLogs.length === 0) {
+      return;
+    }
+    const active = trackedLogs.some((log) => log.status === "queued" || log.status === "running");
+    const failed = trackedLogs.find((log) => log.status === "failed" || log.status === "canceled");
+    if (failed) {
+      setOperationStatus("error");
+      setOperationMessage(`Digest 后台任务没有完成：${displayText(failed.error || failed.latest_event?.message, failed.status || "failed")}。`);
+      return;
+    }
+    if (!active && trackedLogs.every((log) => log.status === "succeeded")) {
+      setOperationStatus("success");
+      setOperationMessage("Digest 后台任务已完成，Review、Discoveries 和 Brief 入口已刷新。");
+    }
+  }, [operationStatus, trackedDigestJobIds, digestLogsQuery.dataUpdatedAt]);
 
   async function refetchAll() {
     await Promise.all([corpusQuery.refetch(), sourcesQuery.refetch(), digestLogsQuery.refetch(), documentsQuery.refetch()]);
@@ -2914,18 +3143,37 @@ function CorpusWorkspace({
 
   async function handleDigestNow() {
     setOperationStatus("digesting");
-    setOperationMessage("正在同步并整理新发现...");
+    setOperationMessage("正在把当前账号的资料整理任务加入队列...");
     setOperationSummary(undefined);
     try {
       const payload = await runDigestNow(serviceToken);
       const summary = digestNowSummary(payload);
-      setOperationStatus(payload.ok === false ? "error" : "success");
+      const jobId = payload.job?.job_id || payload.scheduled?.job?.job_id;
+      setTrackedDigestJobIds(jobId ? [jobId] : []);
+      const hasQueuedJob = (summary.queuedJobs ?? 0) > 0;
+      setOperationStatus(payload.ok === false ? "error" : hasQueuedJob ? "queued" : "success");
       setOperationSummary(summary);
-      setOperationMessage(payload.ok === false ? operationFailureMessage(payload.error, summary.failed) : summaryMessage(summary));
+      setOperationMessage(payload.ok === false ? operationFailureMessage(payload.error, summary.failed) : digestRunMessage(payload, summary));
       await refetchAll();
     } catch (error) {
       setOperationStatus("error");
-      setOperationMessage(error instanceof Error ? error.message : "同步并理解失败。");
+      setOperationMessage(error instanceof Error ? error.message : "整理资料失败。");
+    }
+  }
+
+  async function handleRetryDigestJob(jobId: string) {
+    setOperationStatus("digesting");
+    setOperationMessage("正在重新排队这个 Digest 任务...");
+    setOperationSummary(undefined);
+    try {
+      await retryDigestJob(serviceToken, jobId);
+      setTrackedDigestJobIds([jobId]);
+      setOperationStatus("queued");
+      setOperationMessage("Digest 任务已重新排队，后台 worker 会继续处理。");
+      await refetchAll();
+    } catch (error) {
+      setOperationStatus("error");
+      setOperationMessage(error instanceof Error ? error.message : "重试 Digest 任务失败。");
     }
   }
 
@@ -2937,7 +3185,7 @@ function CorpusWorkspace({
     try {
       const payload = await createEvidenceBrief(serviceToken, jobId ? { job_id: jobId } : {});
       setOperationStatus(payload.ok === false ? "error" : "success");
-      setOperationMessage(payload.ok === false ? payload.error || "Brief 没有生成：没有可用的 Digest、Claim 或 Review 证据。" : `Brief 已生成：${payload.board?.title || payload.brief?.title || "Brief 草稿"}。已打开写作页面。`);
+      setOperationMessage(payload.ok === false ? evidenceBriefUnavailableMessage(payload) : `Brief 已生成：${payload.board?.title || payload.brief?.title || "Brief 草稿"}。已打开写作页面。`);
       await refetchAll();
       if (payload.ok !== false && payload.board?.board_id) {
         onOpenWorkspace("writing");
@@ -3101,7 +3349,7 @@ function CorpusWorkspace({
           </button>
           <button type="button" onClick={() => void handleDigestNow()} disabled={actionRunning}>
             <Sparkles size={15} />
-            {operationStatus === "digesting" ? "整理中" : "整理资料"}
+            {operationStatus === "digesting" ? "入队中" : operationStatus === "queued" ? "再整理" : "整理资料"}
           </button>
         </div>
       </div>
@@ -3118,6 +3366,8 @@ function CorpusWorkspace({
             <span>变更 {operationSummary.changed ?? 0}</span>
             <span>失败 {operationSummary.failed ?? 0}</span>
             {operationSummary.scheduled !== undefined ? <span>调度 {operationSummary.scheduled}</span> : null}
+            {operationSummary.queuedJobs !== undefined ? <span>排队 {operationSummary.queuedJobs}</span> : null}
+            {operationSummary.skipped !== undefined ? <span>跳过 {operationSummary.skipped}</span> : null}
             {operationSummary.digestNotes !== undefined ? <span>Digest {operationSummary.digestNotes}</span> : null}
             {operationSummary.claims !== undefined ? <span>Claims {operationSummary.claims}</span> : null}
             {operationSummary.saved !== undefined ? <span>已保存 {operationSummary.saved}</span> : null}
@@ -3249,8 +3499,11 @@ function CorpusWorkspace({
             )}
           </section>
 
-          <aside className="corpus-panel connector-panel">
-            <SectionTitle icon={<Folder size={18} />} title="高级同步" subtitle="URL、RSS/Atom、Folder 与 connector inbox" />
+          <details className="corpus-panel connector-panel corpus-advanced-details">
+            <summary>
+              <span>高级同步</span>
+              <small>URL/RSS 与管理员同步状态</small>
+            </summary>
             <SourceAdapterPanel
               kind={sourceFormKind}
               value={sourceFormValue}
@@ -3282,7 +3535,7 @@ function CorpusWorkspace({
               onPreviewCleanup={(knowledgeSourceId) => void handleCleanupKnowledgeSource(knowledgeSourceId, false)}
               onConfirmCleanup={(knowledgeSourceId) => void handleCleanupKnowledgeSource(knowledgeSourceId, true)}
             />
-          </aside>
+          </details>
 
           <section className="corpus-panel digest-log-panel">
             <SectionTitle icon={<Sparkles size={18} />} title="Digest 任务日志" subtitle={`${digestLogs?.count ?? 0} 次最近理解任务`} />
@@ -3292,6 +3545,7 @@ function CorpusWorkspace({
               isError={digestLogsQuery.isError}
               actionRunning={actionRunning}
               briefingJobId={briefingJobId}
+              onRetryJob={(jobId) => void handleRetryDigestJob(jobId)}
               onCreateBrief={(jobId) => void handleCreateEvidenceBrief(jobId)}
             />
           </section>
@@ -3420,6 +3674,7 @@ function PromptProfilePanel({
 
 function AskConversationPanel({
   messages,
+  runs,
   isLoading,
   liveQuery,
   liveResult,
@@ -3427,6 +3682,7 @@ function AskConversationPanel({
   composer
 }: {
   messages: AskMessage[];
+  runs: AskRun[];
   isLoading: boolean;
   liveQuery?: string;
   liveResult?: WorkspaceAskResponse | null;
@@ -3434,6 +3690,17 @@ function AskConversationPanel({
   composer: ReactNode;
 }) {
   const showLiveResult = Boolean(liveResult);
+  const runById = useMemo(() => {
+    const mapped = new Map<string, WorkspaceAskResponse>();
+    runs.forEach((run) => {
+      const runId = displayText(run.run_id, "");
+      const result = askResultFromRun(run);
+      if (runId && result) {
+        mapped.set(runId, result);
+      }
+    });
+    return mapped;
+  }, [runs]);
   return (
     <div className="ask-conversation-panel">
       <div className="ask-chat-main">
@@ -3449,7 +3716,15 @@ function AskConversationPanel({
           {messages.slice(-12).map((message) => (
             <article className={`ask-message ${message.role || "message"}`} key={message.message_id || `${message.role}-${message.created_at}`}>
               <span>{message.role === "assistant" ? "PSKA" : "你"}</span>
-              <p>{trimText(message.content || "", 800)}</p>
+              {message.role === "assistant" ? (
+                runById.get(displayText(message.run_id, "")) ? (
+                  <AskResult result={runById.get(displayText(message.run_id, "")) as WorkspaceAskResponse} />
+                ) : (
+                  <p>{trimText(message.content || "", 800)}</p>
+                )
+              ) : (
+                <p>{trimText(message.content || "", 800)}</p>
+              )}
             </article>
           ))}
           {showLiveResult ? (
@@ -3471,6 +3746,34 @@ function AskConversationPanel({
       </div>
     </div>
   );
+}
+
+function askResultFromRun(run: AskRun): WorkspaceAskResponse | null {
+  const result = isRecord(run.result) ? { ...(run.result as WorkspaceAskResponse) } : null;
+  if (!result) {
+    return null;
+  }
+  const answer = displayText(result.answer, "");
+  const hasProcess = Array.isArray(result.agent_steps) && result.agent_steps.length > 0;
+  const hasProgress = Array.isArray(result.progress) && result.progress.length > 0;
+  const hasTrace = isRecord(result.trace) && Array.isArray(result.trace.events) && result.trace.events.length > 0;
+  const hasEvidence = Array.isArray(result.citations) && result.citations.length > 0;
+  if (!answer && !hasProcess && !hasProgress && !hasTrace && !hasEvidence) {
+    return null;
+  }
+  if (!result.query && run.query) {
+    result.query = run.query;
+  }
+  if (!result.route && isRecord(run.route)) {
+    result.route = run.route as WorkspaceAskResponse["route"];
+  }
+  if (!result.evidence_check && isRecord(run.evidence_check)) {
+    result.evidence_check = run.evidence_check;
+  }
+  if (!result.timing && (run.started_at || run.finished_at)) {
+    result.timing = {};
+  }
+  return result;
 }
 
 function CollapsibleTodayPanel({
@@ -3616,6 +3919,7 @@ function DigestLogPanel({
   isError,
   actionRunning = false,
   briefingJobId = null,
+  onRetryJob,
   onCreateBrief
 }: {
   payload?: DigestLogsResponse;
@@ -3623,6 +3927,7 @@ function DigestLogPanel({
   isError: boolean;
   actionRunning?: boolean;
   briefingJobId?: string | null;
+  onRetryJob?: (jobId: string) => void;
   onCreateBrief?: (jobId: string) => void;
 }) {
   const logs = payload?.logs || [];
@@ -3641,6 +3946,7 @@ function DigestLogPanel({
         const summary = log.candidate_summary || {};
         const note = (log.digest_notes || [])[0];
         const claim = (log.knowledge_claims || [])[0];
+        const retryable = log.status === "failed" || log.status === "canceled";
         return (
           <article className="digest-log-card" key={log.job_id}>
             <div className="card-row">
@@ -3656,12 +3962,20 @@ function DigestLogPanel({
               <span>记忆 {summary.agent_memories ?? 0}</span>
               <span>回顾 {summary.review_items ?? 0}</span>
             </div>
-            {onCreateBrief ? (
+            {onCreateBrief || (onRetryJob && retryable) ? (
               <div className="digest-log-actions">
-                <button type="button" onClick={() => onCreateBrief(log.job_id)} disabled={actionRunning || briefingJobId === log.job_id}>
-                  <BookOpen size={14} />
-                  {briefingJobId === log.job_id ? "生成中" : "生成 Brief"}
-                </button>
+                {onCreateBrief ? (
+                  <button type="button" onClick={() => onCreateBrief(log.job_id)} disabled={actionRunning || briefingJobId === log.job_id || log.status === "queued" || log.status === "running"}>
+                    <BookOpen size={14} />
+                    {briefingJobId === log.job_id ? "生成中" : log.status === "queued" || log.status === "running" ? "等待完成" : "生成 Brief"}
+                  </button>
+                ) : null}
+                {onRetryJob && retryable ? (
+                  <button className="secondary" type="button" onClick={() => onRetryJob(log.job_id)} disabled={actionRunning}>
+                    <RotateCcw size={14} />
+                    重试
+                  </button>
+                ) : null}
               </div>
             ) : null}
             <ol className="digest-timeline">
@@ -3741,6 +4055,7 @@ function SourceAdapterPanel({
   onSyncAll: () => void;
 }) {
   const resources = preview?.preview?.resources || [];
+  const visibleAdapters = adapters.filter((adapter) => !["folder", "files"].includes(displayText(adapter.source_type, "").toLocaleLowerCase()));
   const busy = status === "previewing" || status === "adding" || status === "syncing" || actionRunning;
   const hasValue = value.trim().length > 0;
   const count = preview?.preview?.count ?? resources.length;
@@ -3753,7 +4068,6 @@ function SourceAdapterPanel({
             <select value={kind} onChange={(event) => onKindChange(event.target.value as "url" | "rss" | "folder")}>
               <option value="url">URL</option>
               <option value="rss">RSS/Atom</option>
-              <option value="folder">Folder</option>
             </select>
           </label>
           <label>
@@ -3780,9 +4094,9 @@ function SourceAdapterPanel({
           </button>
         </div>
       </form>
-      {adapters.length ? (
+      {visibleAdapters.length ? (
         <div className="source-adapter-kinds" aria-label="支持的输入源">
-          {adapters.map((adapter) => (
+          {visibleAdapters.map((adapter) => (
             <span className="pill muted" key={adapter.connector_id || adapter.source_type || adapter.label}>{adapter.label || sourceKindLabel(adapter.source_type)}</span>
           ))}
         </div>
@@ -3837,15 +4151,17 @@ function ConnectorSummary({
   onConfirmCleanup: (knowledgeSourceId: string) => void;
 }) {
   const knowledgeSources = payload?.knowledge_sources?.sources || [];
-  const inputSources = payload?.input_sources || [];
+  const inputSources = (payload?.input_sources || []).filter((source) => source.kind !== "twitter_archive");
   const states = payload?.connector_state?.states || [];
-  const channels = Object.entries(payload?.source_channels || {}).sort((a, b) => channelCount(b[1]) - channelCount(a[1]));
+  const channels = Object.entries(payload?.source_channels || {})
+    .filter(([channel]) => !channel.toLocaleLowerCase().includes("twitter"))
+    .sort((a, b) => channelCount(b[1]) - channelCount(a[1]));
   return (
     <div className="connector-summary">
       <div className="connector-roots">
-        <h3>输入源总览</h3>
+        <h3>高级同步总览</h3>
         {inputSources.length === 0 ? (
-          <p>还没有输入源。可以添加本地文件夹，或放入 Twitter/X zip archive。</p>
+          <p>普通使用请直接上传文件或粘贴文本；这里仅显示管理员配置的 URL/RSS/Folder 同步源。</p>
         ) : inputSources.map((source, index) => (
           <article className="connector-state-card" key={`${source.kind || "input"}-${source.path || index}`}>
             <div className="card-row">
@@ -3864,7 +4180,7 @@ function ConnectorSummary({
         ))}
       </div>
       <div className="connector-roots">
-        <h3>高级资料源</h3>
+        <h3>高级同步源</h3>
         {knowledgeSources.length === 0 ? (
           <p>还没有高级同步源。普通用户可以直接上传文件或粘贴文本。</p>
         ) : knowledgeSources.map((source) => {
@@ -3995,6 +4311,8 @@ type OperationSummary = {
   twitterImported?: number;
   twitterSkipped?: number;
   scheduled?: number;
+  queuedJobs?: number;
+  skipped?: number;
   reviews?: number;
   claims?: number;
   digestNotes?: number;
@@ -4005,6 +4323,10 @@ function digestNowSummary(payload: DigestNowResponse) {
   const synced = payload.summary?.synced || payload.sync?.totals || {};
   const candidateWrite = payload.summary?.candidate_write || {};
   const twitterEnabled = payload.sync?.twitter_archives?.enabled === true;
+  const scheduledSourceItems = payload.summary?.scheduled_source_items
+    ?? payload.scheduled?.scheduled_source_item_ids?.length
+    ?? payload.digest?.scheduled_source_item_ids?.length
+    ?? 0;
   return {
     inputSources: (synced.roots || 0) + (twitterEnabled ? 1 : 0),
     scanned: synced.scanned || 0,
@@ -4015,12 +4337,26 @@ function digestNowSummary(payload: DigestNowResponse) {
     twitterImported: synced.twitter_imported ?? payload.sync?.twitter_archives?.imported ?? 0,
     twitterSkipped: synced.twitter_skipped ?? payload.sync?.twitter_archives?.skipped ?? 0,
     failed: payload.summary?.failed_digest_jobs ?? payload.failed_digest_jobs?.length ?? payload.sync?.totals?.failed ?? 0,
-    scheduled: payload.summary?.scheduled_source_items ?? payload.digest?.scheduled_source_item_ids?.length ?? 0,
+    scheduled: scheduledSourceItems,
+    queuedJobs: payload.summary?.queued_jobs ?? (payload.job || payload.scheduled?.job ? 1 : 0),
+    skipped: payload.summary?.skipped_source_items ?? payload.scheduled?.skipped_source_item_ids?.length ?? 0,
     digestNotes: candidateWrite.digest_notes ?? 0,
     claims: candidateWrite.knowledge_claims ?? 0,
     saved: candidateWrite.saved_candidates ?? 0,
     reviews: payload.summary?.pending_review_count ?? 0
   };
+}
+
+function digestRunMessage(payload: DigestNowResponse, summary: OperationSummary) {
+  if ((summary.scheduled ?? 0) === 0 && (summary.queuedJobs ?? 0) === 0) {
+    return (summary.skipped ?? 0) > 0
+      ? `没有新的资料需要整理，已跳过 ${summary.skipped ?? 0} 个已覆盖条目。`
+      : "没有新的资料需要整理。上传、粘贴或修改资料后会进入后台队列。";
+  }
+  if (payload.queued || payload.mode === "queued") {
+    return `Digest 任务已排队：${summary.scheduled ?? 0} 个资料条目等待后台整理。完成后会出现在 Digest 日志、Review 和 Discoveries。`;
+  }
+  return summaryMessage(summary);
 }
 
 function sourceSyncSummary(payload: SourceSyncResponse) {
@@ -4066,6 +4402,25 @@ function sourceIngestSummary(payload: WorkspaceSourceIngestResponse) {
     reviews: 0,
     chunks: chunkStats.count || 0
   };
+}
+
+function evidenceBriefUnavailableMessage(payload: { error?: string; reason?: string; warnings?: string[] }) {
+  if (payload.error) {
+    return payload.error;
+  }
+  if (payload.reason === "missing_source_refs") {
+    return "Brief 没有生成：当前候选没有可追溯的 source refs。";
+  }
+  if (payload.reason === "unsupported_answer") {
+    return "Brief 没有生成：当前 Ask 回答证据不足，不能直接沉淀为知识库草稿。";
+  }
+  if (payload.reason === "stale_evidence") {
+    return "Brief 没有生成：相关证据已经删除或失效，需要先处理 Review。";
+  }
+  if (payload.reason === "missing_artifacts") {
+    return "Brief 没有生成：没有可用的 Digest、Claim、Review 或 Ask 证据。";
+  }
+  return payload.warnings?.[0] || "Brief 没有生成：没有可用的证据。";
 }
 
 function documentLifecyclePreviewMessage(counts: Record<string, number>) {
@@ -4128,6 +4483,12 @@ function summaryMessage(summary: OperationSummary) {
   if (summary.scheduled !== undefined) {
     parts.push(`调度 ${summary.scheduled} 个`);
   }
+  if (summary.queuedJobs !== undefined) {
+    parts.push(`排队 ${summary.queuedJobs} 个`);
+  }
+  if (summary.skipped !== undefined) {
+    parts.push(`跳过 ${summary.skipped} 个`);
+  }
   if (summary.digestNotes !== undefined) {
     parts.push(`Digest ${summary.digestNotes} 条`);
   }
@@ -4179,12 +4540,15 @@ function operationFailureMessage(error: string | undefined, failed: number | und
   return failed ? `有 ${failed} 项没有完成。` : "操作没有完成，请稍后再试。";
 }
 
-function operationTitle(status: "idle" | "syncing" | "digesting" | "cleaning" | "briefing" | "success" | "error") {
+function operationTitle(status: "idle" | "syncing" | "digesting" | "queued" | "cleaning" | "briefing" | "success" | "error") {
   if (status === "syncing") {
     return "同步资料";
   }
   if (status === "digesting") {
     return "整理资料";
+  }
+  if (status === "queued") {
+    return "Digest 已排队";
   }
   if (status === "cleaning") {
     return "清理资料";
@@ -5599,6 +5963,11 @@ function GraphWorkspace({
                   <div><dt>类型</dt><dd>{selectedNode.object_type || selectedNode.type}</dd></div>
                   {selectedNode.confidence !== undefined ? <div><dt>置信度</dt><dd>{selectedNode.confidence}</dd></div> : null}
                   {selectedNode.token_estimate !== undefined ? <div><dt>Tokens</dt><dd>{selectedNode.token_estimate}</dd></div> : null}
+                  {selectedNode.quality_tier ? <div><dt>质量门</dt><dd>{reviewQualityTierLabel(selectedNode.quality_tier)}</dd></div> : null}
+                  {selectedNode.promotion_reason ? <div><dt>提升依据</dt><dd>{reviewPromotionReasonLabel(selectedNode.promotion_reason)}</dd></div> : null}
+                  {selectedNode.support_kinds?.length ? (
+                    <div><dt>支撑类型</dt><dd>{selectedNode.support_kinds.map((kind) => reviewSupportKindLabel(kind)).filter(Boolean).join(" · ")}</dd></div>
+                  ) : null}
                 </dl>
                 <div className="graph-inspector-actions">
                   <button type="button" onClick={() => void handleExpandSelectedNode()} disabled={expandStatus === "loading"}>
