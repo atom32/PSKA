@@ -5,7 +5,7 @@ from typing import Any
 from urllib.parse import urlparse
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
-from pska_core.config import PSKAConfig
+from pska_core.config import DEFAULT_FILES_MAX_BYTES, DEFAULT_SPREADSHEET_MAX_COLUMNS, DEFAULT_SPREADSHEET_MAX_ROWS_PER_SHEET, PSKAConfig
 from pska_core.enums import Visibility
 from pska_core.models import DEFAULT_TENANT_ID, KnowledgeSource, ProcessingSpan, SyncRun, utc_now
 from pska_core.serde import to_jsonable
@@ -41,7 +41,9 @@ class KnowledgeSourceService:
         visibility: Visibility = Visibility.PRIVATE,
         visible_team_ids: list[str] | None = None,
         ignore: list[str] | None = None,
-        max_bytes: int = 1_000_000,
+        max_bytes: int = DEFAULT_FILES_MAX_BYTES,
+        spreadsheet_max_rows_per_sheet: int = DEFAULT_SPREADSHEET_MAX_ROWS_PER_SHEET,
+        spreadsheet_max_columns: int = DEFAULT_SPREADSHEET_MAX_COLUMNS,
     ) -> KnowledgeSource:
         root = path.expanduser().resolve()
         source = KnowledgeSource(
@@ -57,7 +59,13 @@ class KnowledgeSourceService:
             visibility=visibility,
             visible_team_ids=visible_team_ids or [],
             permission_scope={"path": str(root), "read_scope": "explicit_directory"},
-            config={"path": str(root), "ignore": ignore or [], "max_bytes": max_bytes},
+            config={
+                "path": str(root),
+                "ignore": ignore or [],
+                "max_bytes": max_bytes,
+                "spreadsheet_max_rows_per_sheet": spreadsheet_max_rows_per_sheet,
+                "spreadsheet_max_columns": spreadsheet_max_columns,
+            },
             tenant_id=tenant_id,
         )
         return self.store.upsert_knowledge_source(source)
@@ -178,6 +186,8 @@ class KnowledgeSourceService:
                 visibility=Visibility(config.files.visibility),
                 ignore=list(config.files.ignore),
                 max_bytes=config.files.max_bytes,
+                spreadsheet_max_rows_per_sheet=config.files.spreadsheet_max_rows_per_sheet,
+                spreadsheet_max_columns=config.files.spreadsheet_max_columns,
                 status=existing.status if existing is not None else "authorized",
             )
             if existing is None or _folder_source_differs(existing, source):

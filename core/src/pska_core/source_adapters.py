@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 from xml.etree import ElementTree
 
+from pska_core.config import DEFAULT_FILES_MAX_BYTES, DEFAULT_SPREADSHEET_MAX_COLUMNS, DEFAULT_SPREADSHEET_MAX_ROWS_PER_SHEET
 from pska_core.connectors import connector_record_to_payload
 from pska_core.enums import Visibility
 from pska_core.files_connector import scan_files
@@ -113,7 +114,17 @@ class FilesSourceAdapter:
             visibility=self.source.visibility,
             visible_team_ids=self.source.visible_team_ids,
             ignore=list(self.source.config.get("ignore") or []),
-            max_bytes=int(self.source.config.get("max_bytes") or 1_000_000),
+            max_bytes=int(self.source.config.get("max_bytes") or DEFAULT_FILES_MAX_BYTES),
+            spreadsheet_max_rows_per_sheet=int(
+                self.source.config.get("spreadsheet_max_rows_per_sheet")
+                or self.source.config.get("spreadsheet_row_limit_per_sheet")
+                or DEFAULT_SPREADSHEET_MAX_ROWS_PER_SHEET
+            ),
+            spreadsheet_max_columns=int(
+                self.source.config.get("spreadsheet_max_columns")
+                or self.source.config.get("spreadsheet_column_limit")
+                or DEFAULT_SPREADSHEET_MAX_COLUMNS
+            ),
             embedding_provider=self.embedding_provider,
             processing_config=self.processing_config,
         )

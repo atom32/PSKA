@@ -34,7 +34,13 @@ def test_pska_config_loads_json_and_keyfile_token(tmp_path: Path, monkeypatch) -
                 "embedding": {"provider": "disabled"},
                 "ingest": {"chunk_size": 2048, "chunk_overlap": 256},
                 "workspace": {"root": str(tmp_path / "workspace")},
-                "files": {"roots": [str(tmp_path / "notes")], "ignore": ["*.tmp"], "max_bytes": 1234},
+                "files": {
+                    "roots": [str(tmp_path / "notes")],
+                    "ignore": ["*.tmp"],
+                    "max_bytes": 1234,
+                    "spreadsheet_max_rows_per_sheet": 345,
+                    "spreadsheet_max_columns": 67,
+                },
             }
         ),
         encoding="utf-8",
@@ -56,6 +62,8 @@ def test_pska_config_loads_json_and_keyfile_token(tmp_path: Path, monkeypatch) -
     assert config.files.roots == (tmp_path / "notes",)
     assert config.files.ignore == ("*.tmp",)
     assert config.files.max_bytes == 1234
+    assert config.files.spreadsheet_max_rows_per_sheet == 345
+    assert config.files.spreadsheet_max_columns == 67
     assert config.workspace.root == tmp_path / "workspace"
     assert config.workspace.run_dir == tmp_path / "workspace" / "_system" / "run"
     assert config.workspace.log_dir == tmp_path / "workspace" / "_system" / "logs"
@@ -304,12 +312,16 @@ def test_pska_config_from_env_remains_explicit_legacy_loader(tmp_path: Path, mon
     monkeypatch.setenv("PSKA_FILES_ROOTS", f"{notes}:{docs}")
     monkeypatch.setenv("PSKA_FILES_IGNORE", "*.tmp:*.bak")
     monkeypatch.setenv("PSKA_FILES_MAX_BYTES", "777")
+    monkeypatch.setenv("PSKA_FILES_SPREADSHEET_MAX_ROWS_PER_SHEET", "888")
+    monkeypatch.setenv("PSKA_FILES_SPREADSHEET_MAX_COLUMNS", "99")
     monkeypatch.setenv("PSKA_FILES_TENANT_ID", "tenant_env")
     reloaded = PSKAConfig.from_env(PSKAConfig.from_dict({}))
 
     assert reloaded.files.roots == (notes, docs)
     assert reloaded.files.ignore == ("*.tmp", "*.bak")
     assert reloaded.files.max_bytes == 777
+    assert reloaded.files.spreadsheet_max_rows_per_sheet == 888
+    assert reloaded.files.spreadsheet_max_columns == 99
     assert reloaded.files.tenant_id == "tenant_env"
 
 

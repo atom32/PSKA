@@ -23,7 +23,15 @@ from pska_core.agent_capture import capture_agent_conversation
 from pska_core.agentic_service import PSKA_QA_SKILL, AgenticServiceError, build_agentic_service_client, normalize_agentic_event_response
 from pska_core.auth import AuthError, RequestContext, authenticate_headers, context_from_headers, service_token_required
 from pska_core.candidates import CandidateWriteService
-from pska_core.config import DEFAULT_DATABASE_URL, DatabaseConfig, PSKAConfig, ServiceConfig
+from pska_core.config import (
+    DEFAULT_DATABASE_URL,
+    DEFAULT_FILES_MAX_BYTES,
+    DEFAULT_SPREADSHEET_MAX_COLUMNS,
+    DEFAULT_SPREADSHEET_MAX_ROWS_PER_SHEET,
+    DatabaseConfig,
+    PSKAConfig,
+    ServiceConfig,
+)
 from pska_core.connectors import connector_state_from_mapping, connector_record_to_payload
 from pska_core.discovery import DISCOVERY_TODAY_SCORE_THRESHOLD, DiscoveryService
 from pska_core.embeddings import EmbeddingConfig, build_embedding_provider
@@ -652,6 +660,14 @@ class PSKAApi:
                 Path(value),
                 ignore=_string_list(payload.get("ignore")),
                 max_bytes=_optional_positive_int(payload.get("max_bytes")) or self.config.files.max_bytes,
+                spreadsheet_max_rows_per_sheet=_optional_positive_int(
+                    payload.get("spreadsheet_max_rows_per_sheet") or payload.get("spreadsheet_row_limit_per_sheet")
+                )
+                or self.config.files.spreadsheet_max_rows_per_sheet,
+                spreadsheet_max_columns=_optional_positive_int(
+                    payload.get("spreadsheet_max_columns") or payload.get("spreadsheet_column_limit")
+                )
+                or self.config.files.spreadsheet_max_columns,
                 **common,
             )
         elif source_type == "rss":
@@ -678,7 +694,12 @@ class PSKAApi:
     def create_upload_source(self, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
         payload = context.apply_to_payload(payload) if context else payload
         filename = str(payload.get("filename") or payload.get("name") or "upload.txt").strip() or "upload.txt"
-        text, content_type, size_bytes, extraction = _upload_text_from_payload(payload)
+        text, content_type, size_bytes, extraction = _upload_text_from_payload(
+            payload,
+            max_bytes=self.config.files.max_bytes,
+            spreadsheet_max_rows_per_sheet=self.config.files.spreadsheet_max_rows_per_sheet,
+            spreadsheet_max_columns=self.config.files.spreadsheet_max_columns,
+        )
         if not text.strip():
             raise ValueError("uploaded file has no readable text")
         title = str(payload.get("title") or Path(filename).name or _default_inline_title(text, fallback="Uploaded file")).strip()
@@ -814,7 +835,16 @@ class PSKAApi:
         owner_user_id = str(payload.get("owner_user_id") or self.config.files.owner_user_id)
         requested_roots = [Path(str(root)).expanduser().resolve() for root in _string_list(payload.get("roots") or payload.get("root"))]
         ignore = _string_list(payload.get("ignore"))
-        max_bytes = _optional_positive_int(payload.get("max_bytes")) or self.config.files.max_bytes
+        requested_max_bytes = _optional_positive_int(payload.get("max_bytes"))
+        requested_spreadsheet_rows = _optional_positive_int(
+            payload.get("spreadsheet_max_rows_per_sheet") or payload.get("spreadsheet_row_limit_per_sheet")
+        )
+        requested_spreadsheet_columns = _optional_positive_int(
+            payload.get("spreadsheet_max_columns") or payload.get("spreadsheet_column_limit")
+        )
+        max_bytes = requested_max_bytes or self.config.files.max_bytes
+        spreadsheet_max_rows_per_sheet = requested_spreadsheet_rows or self.config.files.spreadsheet_max_rows_per_sheet
+        spreadsheet_max_columns = requested_spreadsheet_columns or self.config.files.spreadsheet_max_columns
         try:
             seeded = source_service.seed_from_config(self.config)
             configured_roots = [root.expanduser().resolve() for root in self.config.files.roots]
@@ -828,6 +858,8 @@ class PSKAApi:
                         visibility=Visibility(str(payload.get("visibility") or self.config.files.visibility)),
                         ignore=[*self.config.files.ignore, *ignore],
                         max_bytes=max_bytes,
+                        spreadsheet_max_rows_per_sheet=spreadsheet_max_rows_per_sheet,
+                        spreadsheet_max_columns=spreadsheet_max_columns,
                     )
                 )
             active_uris = {root.as_uri() for root in [*configured_roots, *requested_roots]}
@@ -863,6 +895,17 @@ class PSKAApi:
             root = source_service.source_path(source)
             try:
                 processing_config = resolve_processing_config(source.config, processing_overrides)
+                source_max_bytes = requested_max_bytes or int(source.config.get("max_bytes") or max_bytes)
+                source_spreadsheet_rows = requested_spreadsheet_rows or int(
+                    source.config.get("spreadsheet_max_rows_per_sheet")
+                    or source.config.get("spreadsheet_row_limit_per_sheet")
+                    or spreadsheet_max_rows_per_sheet
+                )
+                source_spreadsheet_columns = requested_spreadsheet_columns or int(
+                    source.config.get("spreadsheet_max_columns")
+                    or source.config.get("spreadsheet_column_limit")
+                    or spreadsheet_max_columns
+                )
                 report = scan_files(
                     self.store,
                     root=root,
@@ -872,7 +915,9 @@ class PSKAApi:
                     visibility=source.visibility,
                     visible_team_ids=source.visible_team_ids,
                     ignore=[*list(source.config.get("ignore") or []), *ignore],
-                    max_bytes=max_bytes,
+                    max_bytes=source_max_bytes,
+                    spreadsheet_max_rows_per_sheet=source_spreadsheet_rows,
+                    spreadsheet_max_columns=source_spreadsheet_columns,
                     embedding_provider=embedding_provider,
                     processing_config=processing_config,
                 )
@@ -11424,7 +11469,19 @@ def _draft_knowledge_source_from_payload(payload: dict[str, Any], *, context: Re
         root = Path(value).expanduser().resolve(strict=False)
         uri = root.as_uri()
         connector_id = "files"
-        config: dict[str, Any] = {"path": str(root), "ignore": _string_list(payload.get("ignore")), "max_bytes": _optional_positive_int(payload.get("max_bytes")) or 1_000_000}
+        config: dict[str, Any] = {
+            "path": str(root),
+            "ignore": _string_list(payload.get("ignore")),
+            "max_bytes": _optional_positive_int(payload.get("max_bytes")) or DEFAULT_FILES_MAX_BYTES,
+            "spreadsheet_max_rows_per_sheet": _optional_positive_int(
+                payload.get("spreadsheet_max_rows_per_sheet") or payload.get("spreadsheet_row_limit_per_sheet")
+            )
+            or DEFAULT_SPREADSHEET_MAX_ROWS_PER_SHEET,
+            "spreadsheet_max_columns": _optional_positive_int(
+                payload.get("spreadsheet_max_columns") or payload.get("spreadsheet_column_limit")
+            )
+            or DEFAULT_SPREADSHEET_MAX_COLUMNS,
+        }
         permission_scope = {"path": str(root), "read_scope": "explicit_directory"}
         name = str(payload.get("name") or root.name or str(root))
     else:
@@ -11501,11 +11558,20 @@ def _inline_knowledge_source_from_payload(
     )
 
 
-def _upload_text_from_payload(payload: dict[str, Any]) -> tuple[str, str, int, dict[str, Any]]:
+def _upload_text_from_payload(
+    payload: dict[str, Any],
+    *,
+    max_bytes: int,
+    spreadsheet_max_rows_per_sheet: int,
+    spreadsheet_max_columns: int,
+) -> tuple[str, str, int, dict[str, Any]]:
     content_type = str(payload.get("content_type") or payload.get("mime_type") or "text/plain").strip() or "text/plain"
     if payload.get("text") is not None or payload.get("content") is not None:
         text = str(payload.get("text") if payload.get("text") is not None else payload.get("content"))
-        return text, content_type, len(text.encode("utf-8")), {"ok": True, "extractor": "direct_text"}
+        size_bytes = len(text.encode("utf-8"))
+        if size_bytes > max_bytes:
+            raise ValueError(f"uploaded file exceeds max_bytes ({size_bytes} > {max_bytes})")
+        return text, content_type, size_bytes, {"ok": True, "extractor": "direct_text"}
     raw = b""
     filename = str(payload.get("filename") or payload.get("name") or "upload.txt").strip() or "upload.txt"
     if payload.get("bytes_base64"):
@@ -11516,9 +11582,27 @@ def _upload_text_from_payload(payload: dict[str, Any]) -> tuple[str, str, int, d
         content_type = str(file_payload.get("content_type") or content_type)
         if file_payload.get("bytes_base64"):
             raw = base64.b64decode(str(file_payload["bytes_base64"]))
-    extraction = extract_text_from_bytes(filename, raw) if raw else {"ok": False, "reason": "empty_upload"}
+    if len(raw) > max_bytes:
+        raise ValueError(f"uploaded file exceeds max_bytes ({len(raw)} > {max_bytes})")
+    extraction = (
+        extract_text_from_bytes(
+            filename,
+            raw,
+            spreadsheet_max_rows_per_sheet=spreadsheet_max_rows_per_sheet,
+            spreadsheet_max_columns=spreadsheet_max_columns,
+        )
+        if raw
+        else {"ok": False, "reason": "empty_upload"}
+    )
     if extraction.get("ok"):
-        return str(extraction.get("text") or ""), content_type, len(raw), {key: value for key, value in extraction.items() if key != "text"}
+        extraction_metadata = {
+            key: value
+            for key, value in extraction.items()
+            if key not in {"text", "metadata", "extractor"}
+        }
+        extraction_metadata["extractor"] = extraction.get("extractor")
+        extraction_metadata.update(dict(extraction.get("metadata") or {}))
+        return str(extraction.get("text") or ""), content_type, len(raw), extraction_metadata
     encoding = str(payload.get("encoding") or "utf-8").strip() or "utf-8"
     text = raw.decode(encoding, errors="replace")
     return text, content_type, len(raw), {**extraction, "fallback_extractor": "decode_replace", "encoding": encoding}

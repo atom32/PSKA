@@ -903,13 +903,18 @@ function TodayWorkspace({
             liveResult={searching || conversationMessages.length === 0 ? searchResult : null}
             livePending={searching}
             composer={(
-              <form className="today-search-form today-chat-composer" onSubmit={runTodaySearch}>
-                <textarea value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="询问资料库，或拖入附件后继续追问" />
+              <form className="today-search-form today-chat-composer" onSubmit={runTodaySearch} data-testid="today-ask-form">
+                <textarea
+                  value={searchQuery}
+                  onChange={(event) => setSearchQuery(event.target.value)}
+                  placeholder="询问资料库，或拖入附件后继续追问"
+                  data-testid="today-ask-input"
+                />
                 <div className="today-chat-tools">
                   <div className="today-chat-tool-left">
                     <label className="attachment-picker" title="上传到资料库，并用于本次提问">
                       <Paperclip size={16} />
-                      <input type="file" onChange={(event) => setAttachmentFile(event.target.files?.[0] || null)} />
+                      <input type="file" onChange={(event) => setAttachmentFile(event.target.files?.[0] || null)} data-testid="today-attachment-input" />
                       <span>{attachmentFile ? trimText(attachmentFile.name, 24) : "附件"}</span>
                     </label>
                     <details className="ask-settings">
@@ -931,12 +936,12 @@ function TodayWorkspace({
                       </label>
                     </details>
                   </div>
-                  <button className="today-send-button" type="submit" disabled={searching} title={searching ? "查询中" : "发送"}>
+                  <button className="today-send-button" type="submit" disabled={searching} title={searching ? "查询中" : "发送"} data-testid="today-ask-submit">
                     <Send size={18} />
                     <span>{searching ? "查询中" : "发送"}</span>
                   </button>
                 </div>
-                {attachmentStatus ? <small className="search-note">{attachmentStatus}</small> : null}
+                {attachmentStatus ? <small className="search-note" data-testid="today-attachment-status">{attachmentStatus}</small> : null}
                 {searchError ? <div className="review-empty error-state compact">{searchError}</div> : null}
               </form>
             )}
@@ -3354,7 +3359,7 @@ function CorpusWorkspace({
         </div>
       </div>
 
-      <div className={`corpus-operation ${operationStatus}`} role="status">
+      <div className={`corpus-operation ${operationStatus}`} role="status" data-testid="corpus-operation">
         <div>
           <strong>{operationTitle(operationStatus)}</strong>
           <p>{statusMessage}</p>
@@ -3457,7 +3462,7 @@ function CorpusWorkspace({
       <div className="corpus-tools">
         <label>
           <Search size={16} />
-          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索资料标题、片段内容或来源路径" />
+          <input data-testid="corpus-search-input" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索资料标题、片段内容或来源路径" />
         </label>
       </div>
 
@@ -3468,6 +3473,7 @@ function CorpusWorkspace({
         deletePreview={documentDeletePreview}
         deleteTarget={documentDeleteTarget}
         actionRunning={actionRunning}
+        query={query}
         onPreview={(sourceItemId) => void handleDocumentLifecycle(sourceItemId, false)}
         onDelete={(sourceItemId) => void handleDocumentLifecycle(sourceItemId, true)}
         onRestore={(sourceItemId) => void handleDocumentLifecycle(sourceItemId, true, true)}
@@ -3580,16 +3586,16 @@ function SourceIngestPanel({
     <section className="today-section product-ingest-panel">
       <SectionTitle icon={<UploadCloud size={18} />} title="加入资料库" subtitle="上传文件或粘贴文本" />
       <div className="ingest-forms">
-        <form className="ingest-form" onSubmit={onUploadSubmit}>
+        <form className="ingest-form" onSubmit={onUploadSubmit} data-testid="corpus-upload-form">
           <label>
             <span>上传文件</span>
-            <input name="source-file" type="file" />
+            <input name="source-file" type="file" data-testid="corpus-upload-input" />
           </label>
           <label className="inline-toggle">
-            <input type="checkbox" checked={digestAfter} onChange={(event) => onDigestAfterChange(event.target.checked)} />
+            <input type="checkbox" checked={digestAfter} onChange={(event) => onDigestAfterChange(event.target.checked)} data-testid="corpus-upload-digest-toggle" />
             <span>入库后自动 Digest</span>
           </label>
-          <button className="primary" type="submit" disabled={actionRunning}>
+          <button className="primary" type="submit" disabled={actionRunning} data-testid="corpus-upload-submit">
             <UploadCloud size={14} />
             上传入库
           </button>
@@ -3812,6 +3818,7 @@ function DocumentLifecyclePanel({
   deletePreview,
   deleteTarget,
   actionRunning,
+  query,
   onPreview,
   onDelete,
   onRestore,
@@ -3823,26 +3830,36 @@ function DocumentLifecyclePanel({
   deletePreview: WorkspaceDocumentDeleteResponse | null;
   deleteTarget: string;
   actionRunning: boolean;
+  query: string;
   onPreview: (sourceItemId: string) => void;
   onDelete: (sourceItemId: string) => void;
   onRestore: (sourceItemId: string) => void;
   onPurge: (sourceItemId: string) => void;
 }) {
-  const documents = payload?.documents || [];
+  const normalizedQuery = query.trim().toLowerCase();
+  const documents = (payload?.documents || []).filter((document) => {
+    if (!normalizedQuery) return true;
+    return corpusText([document.title, document.source_item_id, document.url, document.source_channel, document.snippet]).includes(normalizedQuery);
+  });
   return (
     <section className="today-section document-lifecycle-panel">
       <SectionTitle icon={<FileText size={18} />} title="资料条目" subtitle={`${documents.length} 条，可预览删除影响`} />
       {isError ? <div className="review-empty error-state compact">资料条目无法加载。</div> : null}
       {isLoading ? <div className="review-empty compact">正在加载资料条目...</div> : null}
       {!isLoading && documents.length === 0 ? <div className="review-empty compact">还没有可管理的资料。</div> : null}
-      <div className="document-lifecycle-list">
+      <div className="document-lifecycle-list" data-testid="document-lifecycle-list">
         {documents.slice(0, 12).map((document) => {
           const sourceItemId = document.source_item_id || "";
           const isDeleted = document.lifecycle_status === "deleted";
           const previewMatches = deletePreview?.source_item_ids?.includes(sourceItemId);
           const counts = previewMatches ? deletePreview?.counts || deletePreview?.deleted || {} : document.impact || {};
           return (
-            <article className="document-lifecycle-card" key={sourceItemId || document.title}>
+            <article
+              className="document-lifecycle-card"
+              key={sourceItemId || document.title}
+              data-testid="document-lifecycle-card"
+              data-source-item-id={sourceItemId}
+            >
               <div className="card-row">
                 <span className={`pill ${isDeleted ? "warning" : "muted"}`}>{document.lifecycle_status || "active"}</span>
                 <small>{formatSourceAge(document.created_at)}</small>
@@ -3857,21 +3874,21 @@ function DocumentLifecyclePanel({
                 <span>Review {counts.review_items ?? 0}</span>
               </div>
               <div className="source-cleanup-actions">
-                <button type="button" onClick={() => onPreview(sourceItemId)} disabled={actionRunning || !sourceItemId}>
+                <button type="button" onClick={() => onPreview(sourceItemId)} disabled={actionRunning || !sourceItemId} data-testid="document-preview-delete">
                   {deleteTarget === sourceItemId ? "预览中" : "预览影响"}
                 </button>
                 {isDeleted ? (
-                  <button type="button" onClick={() => onRestore(sourceItemId)} disabled={actionRunning || !sourceItemId}>
+                  <button type="button" onClick={() => onRestore(sourceItemId)} disabled={actionRunning || !sourceItemId} data-testid="document-restore">
                     <RotateCcw size={14} />
                     恢复
                   </button>
                 ) : (
-                  <button className="danger" type="button" onClick={() => onDelete(sourceItemId)} disabled={actionRunning || !sourceItemId}>
+                  <button className="danger" type="button" onClick={() => onDelete(sourceItemId)} disabled={actionRunning || !sourceItemId} data-testid="document-soft-delete">
                     <Trash2 size={14} />
                     软删
                   </button>
                 )}
-                <button className="danger ghost" type="button" onClick={() => onPurge(sourceItemId)} disabled={actionRunning || !sourceItemId}>
+                <button className="danger ghost" type="button" onClick={() => onPurge(sourceItemId)} disabled={actionRunning || !sourceItemId} data-testid="document-hard-purge">
                   彻底清除
                 </button>
               </div>

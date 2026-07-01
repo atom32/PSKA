@@ -55,7 +55,9 @@
       "*.tmp",
       "*.bak"
     ],
-    "max_bytes": 1000000,
+    "max_bytes": 52428800,
+    "spreadsheet_max_rows_per_sheet": 2000,
+    "spreadsheet_max_columns": 80,
     "tenant_id": "tenant_default",
     "owner_user_id": "user_primary",
     "space_id": "private_primary",

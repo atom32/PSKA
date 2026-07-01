@@ -20,7 +20,12 @@ from pska_core.agent_capture import capture_agent_conversation
 from pska_core.agentic_service import AgenticServiceError, build_agentic_service_client
 from pska_core.api import PSKAApi, serve
 from pska_core.candidates import CandidateWriteService
-from pska_core.config import DEFAULT_DATABASE_URL, PSKAConfig, WorkspaceConfig, expand_path
+from pska_core.config import (
+    DEFAULT_DATABASE_URL,
+    PSKAConfig,
+    WorkspaceConfig,
+    expand_path,
+)
 from pska_core.connectors import connector_state_from_mapping, connector_record_to_payload
 from pska_core.discovery import DiscoveryService
 from pska_core.embeddings import EmbeddingConfig, EmbeddingService, build_embedding_provider
@@ -136,7 +141,9 @@ def build_parser() -> argparse.ArgumentParser:
     knowledge_source_parser.add_argument("--visibility", choices=[item.value for item in Visibility], default=Visibility.PRIVATE.value)
     knowledge_source_parser.add_argument("--mode", choices=["manual", "watching", "paused"], default="manual")
     knowledge_source_parser.add_argument("--ignore", action="append", default=[])
-    knowledge_source_parser.add_argument("--max-bytes", type=int, default=1_000_000)
+    knowledge_source_parser.add_argument("--max-bytes", type=int, default=None)
+    knowledge_source_parser.add_argument("--spreadsheet-max-rows-per-sheet", type=int, default=None)
+    knowledge_source_parser.add_argument("--spreadsheet-max-columns", type=int, default=None)
 
     files_scan_parser = subparsers.add_parser("files-scan", help="Scan an authorized local directory through the Files connector")
     files_scan_parser.add_argument("--root", type=Path, required=True)
@@ -146,7 +153,9 @@ def build_parser() -> argparse.ArgumentParser:
     files_scan_parser.add_argument("--visibility", choices=[item.value for item in Visibility], default=Visibility.PRIVATE.value)
     files_scan_parser.add_argument("--visible-team-ids", default="")
     files_scan_parser.add_argument("--ignore", action="append", default=[])
-    files_scan_parser.add_argument("--max-bytes", type=int, default=1_000_000)
+    files_scan_parser.add_argument("--max-bytes", type=int, default=None)
+    files_scan_parser.add_argument("--spreadsheet-max-rows-per-sheet", type=int, default=None)
+    files_scan_parser.add_argument("--spreadsheet-max-columns", type=int, default=None)
     _add_embedding_args(files_scan_parser, default_provider="disabled")
 
     files_sync_parser = subparsers.add_parser("files-sync", help="Scan configured Files connector roots from PSKA config")
@@ -157,6 +166,8 @@ def build_parser() -> argparse.ArgumentParser:
     files_sync_parser.add_argument("--visibility", choices=[item.value for item in Visibility], default=None)
     files_sync_parser.add_argument("--ignore", action="append", default=[])
     files_sync_parser.add_argument("--max-bytes", type=int, default=None)
+    files_sync_parser.add_argument("--spreadsheet-max-rows-per-sheet", type=int, default=None)
+    files_sync_parser.add_argument("--spreadsheet-max-columns", type=int, default=None)
     files_sync_parser.add_argument("--twitter-archive", type=Path, default=None, help="Twitter/X zip inbox to import during files sync")
     files_sync_parser.add_argument("--archive-root", type=Path, default=None, help="Archive extraction root for imported Twitter/X zips")
     files_sync_parser.add_argument("--skip-twitter-archives", action="store_true")
@@ -170,6 +181,8 @@ def build_parser() -> argparse.ArgumentParser:
     files_watch_parser.add_argument("--visibility", choices=[item.value for item in Visibility], default=None)
     files_watch_parser.add_argument("--ignore", action="append", default=[])
     files_watch_parser.add_argument("--max-bytes", type=int, default=None)
+    files_watch_parser.add_argument("--spreadsheet-max-rows-per-sheet", type=int, default=None)
+    files_watch_parser.add_argument("--spreadsheet-max-columns", type=int, default=None)
     files_watch_parser.add_argument("--debounce-seconds", type=float, default=2.0)
     files_watch_parser.add_argument("--initial-sync", action="store_true")
     files_watch_parser.add_argument("--max-events", type=int, default=0, help="Stop after this many file events; 0 means no limit")
@@ -940,7 +953,9 @@ def knowledge_source(args: argparse.Namespace, config: PSKAConfig) -> int:
             space_id=args.space_id,
             visibility=Visibility(args.visibility),
             ignore=list(args.ignore or []),
-            max_bytes=args.max_bytes,
+            max_bytes=args.max_bytes or config.files.max_bytes,
+            spreadsheet_max_rows_per_sheet=args.spreadsheet_max_rows_per_sheet or config.files.spreadsheet_max_rows_per_sheet,
+            spreadsheet_max_columns=args.spreadsheet_max_columns or config.files.spreadsheet_max_columns,
         )
         print(dumps({"knowledge_source": source}))
         return 0
@@ -965,7 +980,9 @@ def files_scan(args: argparse.Namespace, config: PSKAConfig) -> int:
         visibility=Visibility(args.visibility),
         visible_team_ids=[item.strip() for item in args.visible_team_ids.split(",") if item.strip()],
         ignore=list(args.ignore or []),
-        max_bytes=args.max_bytes,
+        max_bytes=args.max_bytes or config.files.max_bytes,
+        spreadsheet_max_rows_per_sheet=args.spreadsheet_max_rows_per_sheet or config.files.spreadsheet_max_rows_per_sheet,
+        spreadsheet_max_columns=args.spreadsheet_max_columns or config.files.spreadsheet_max_columns,
         embedding_provider=_embedding_provider_from_args(args),
     )
     print(dumps(report))
@@ -1003,6 +1020,8 @@ def _files_sync_payload(args: argparse.Namespace, config: PSKAConfig) -> dict[st
                     visibility=Visibility(args.visibility or config.files.visibility),
                     ignore=[*config.files.ignore, *(args.ignore or [])],
                     max_bytes=args.max_bytes or config.files.max_bytes,
+                    spreadsheet_max_rows_per_sheet=args.spreadsheet_max_rows_per_sheet or config.files.spreadsheet_max_rows_per_sheet,
+                    spreadsheet_max_columns=args.spreadsheet_max_columns or config.files.spreadsheet_max_columns,
                 )
             )
         active_uris = {root.as_uri() for root in [*configured_roots, *requested_roots]}
@@ -1045,6 +1064,18 @@ def _files_sync_payload(args: argparse.Namespace, config: PSKAConfig) -> dict[st
                 visible_team_ids=source.visible_team_ids,
                 ignore=[*list(source.config.get("ignore") or []), *(args.ignore or [])],
                 max_bytes=args.max_bytes or int(source.config.get("max_bytes") or config.files.max_bytes),
+                spreadsheet_max_rows_per_sheet=args.spreadsheet_max_rows_per_sheet
+                or int(
+                    source.config.get("spreadsheet_max_rows_per_sheet")
+                    or source.config.get("spreadsheet_row_limit_per_sheet")
+                    or config.files.spreadsheet_max_rows_per_sheet
+                ),
+                spreadsheet_max_columns=args.spreadsheet_max_columns
+                or int(
+                    source.config.get("spreadsheet_max_columns")
+                    or source.config.get("spreadsheet_column_limit")
+                    or config.files.spreadsheet_max_columns
+                ),
                 embedding_provider=_embedding_provider_from_args(args),
                 processing_config=resolve_processing_config(source.config),
             )
@@ -1178,6 +1209,8 @@ def files_watch(args: argparse.Namespace, config: PSKAConfig) -> int:
             visibility=Visibility(args.visibility or config.files.visibility),
             ignore=[*config.files.ignore, *(args.ignore or [])],
             max_bytes=args.max_bytes or config.files.max_bytes,
+            spreadsheet_max_rows_per_sheet=args.spreadsheet_max_rows_per_sheet or config.files.spreadsheet_max_rows_per_sheet,
+            spreadsheet_max_columns=args.spreadsheet_max_columns or config.files.spreadsheet_max_columns,
             debounce_seconds=args.debounce_seconds,
             initial_sync=args.initial_sync,
             max_events=args.max_events,
@@ -1339,6 +1372,9 @@ def mvp_bootstrap(args: argparse.Namespace) -> int:
                     owner_user_id=args.owner_user_id,
                     space_id=args.space_id,
                     visibility=Visibility.PRIVATE,
+                    max_bytes=config.files.max_bytes,
+                    spreadsheet_max_rows_per_sheet=config.files.spreadsheet_max_rows_per_sheet,
+                    spreadsheet_max_columns=config.files.spreadsheet_max_columns,
                     embedding_provider=embedding_provider,
                 )
                 report["steps"].append({"name": "files", "root": str(root), "result": scan})

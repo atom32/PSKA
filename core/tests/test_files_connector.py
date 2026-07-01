@@ -97,6 +97,39 @@ def test_files_scan_extracts_xlsx_to_markdown_tables(tmp_path: Path) -> None:
     assert unchanged.unchanged_files == 1
 
 
+def test_files_scan_uses_configurable_spreadsheet_limits(tmp_path: Path) -> None:
+    root = tmp_path / "notes"
+    root.mkdir()
+    workbook = root / "wide-and-long.xlsx"
+    _write_minimal_xlsx(
+        workbook,
+        rows=[
+            ["Company", "Status", "ARR"],
+            ["Acme Example", "active", "1200000"],
+            ["Widget Co", "watch", "450000"],
+        ],
+    )
+    store = InMemoryKnowledgeStore()
+
+    report = scan_files(
+        store,
+        root=root,
+        spreadsheet_max_rows_per_sheet=2,
+        spreadsheet_max_columns=2,
+    )
+
+    source = store.source_items[report.source_item_ids[0]]
+    assert "| Company | Status |" in source.content_text
+    assert "| Acme Example | active |" in source.content_text
+    assert "1200000" not in source.content_text
+    assert "Widget Co" not in source.content_text
+    extraction = source.metadata["extra"]["extraction"]
+    assert extraction["row_limit_per_sheet"] == 2
+    assert extraction["column_limit"] == 2
+    assert extraction["sheets"][0]["truncated_rows"] is True
+    assert extraction["sheets"][0]["truncated_columns"] is True
+
+
 def test_files_scan_reports_xls_optional_dependency(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setitem(sys.modules, "xlrd", None)
     root = tmp_path / "notes"

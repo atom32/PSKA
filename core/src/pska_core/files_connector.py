@@ -13,6 +13,7 @@ from uuid import NAMESPACE_URL, uuid5
 import zipfile
 from xml.etree import ElementTree
 
+from pska_core.config import DEFAULT_FILES_MAX_BYTES, DEFAULT_SPREADSHEET_MAX_COLUMNS, DEFAULT_SPREADSHEET_MAX_ROWS_PER_SHEET
 from pska_core.connectors import connector_record_to_payload, connector_state_from_mapping, connector_state_id
 from pska_core.enums import Visibility
 from pska_core.ingest import IngestService
@@ -51,8 +52,6 @@ SPREADSHEET_SUFFIXES = {
 SUPPORTED_SUFFIXES = TEXT_SUFFIXES | DOCUMENT_SUFFIXES | SPREADSHEET_SUFFIXES
 DEFAULT_IGNORE = [".git/**", "**/.git/**", "__pycache__/**", "**/__pycache__/**", ".DS_Store", "**/.DS_Store"]
 COLLECTION_MARKERS = (".pska-source.json", "pska-source.json")
-MAX_SPREADSHEET_ROWS_PER_SHEET = 200
-MAX_SPREADSHEET_COLUMNS = 40
 
 
 @dataclass(slots=True)
@@ -83,7 +82,9 @@ def scan_files(
     visibility: Visibility = Visibility.PRIVATE,
     visible_team_ids: list[str] | None = None,
     ignore: list[str] | None = None,
-    max_bytes: int = 1_000_000,
+    max_bytes: int = DEFAULT_FILES_MAX_BYTES,
+    spreadsheet_max_rows_per_sheet: int = DEFAULT_SPREADSHEET_MAX_ROWS_PER_SHEET,
+    spreadsheet_max_columns: int = DEFAULT_SPREADSHEET_MAX_COLUMNS,
     embedding_provider=None,
     processing_config: dict[str, Any] | None = None,
 ) -> FilesScanReport:
@@ -211,7 +212,12 @@ def scan_files(
                 report.changes.append({"path": str(path), "status": "unchanged"})
                 latest_cursor = _max_scan_cursor(latest_cursor, str(int(stat.st_mtime_ns)))
                 continue
-            extracted = _extract_text(path, raw)
+            extracted = _extract_text(
+                path,
+                raw,
+                spreadsheet_max_rows_per_sheet=spreadsheet_max_rows_per_sheet,
+                spreadsheet_max_columns=spreadsheet_max_columns,
+            )
             if not extracted["ok"]:
                 report.skipped.append({"path": str(path), "reason": extracted["reason"], "detail": extracted.get("detail")})
                 continue
@@ -281,7 +287,13 @@ def scan_files(
     return report
 
 
-def _extract_text(path: Path, raw: bytes) -> dict[str, Any]:
+def _extract_text(
+    path: Path,
+    raw: bytes,
+    *,
+    spreadsheet_max_rows_per_sheet: int = DEFAULT_SPREADSHEET_MAX_ROWS_PER_SHEET,
+    spreadsheet_max_columns: int = DEFAULT_SPREADSHEET_MAX_COLUMNS,
+) -> dict[str, Any]:
     suffix = path.suffix.lower()
     if suffix in TEXT_SUFFIXES:
         return {"ok": True, "text": raw.decode("utf-8", errors="replace"), "extractor": "utf8"}
@@ -308,25 +320,58 @@ def _extract_text(path: Path, raw: bytes) -> dict[str, Any]:
             return {"ok": False, "reason": "extract_failed", "detail": f"{type(exc).__name__}: {exc}"}
         return {"ok": True, "text": text, "extractor": "python-docx"}
     if suffix == ".xlsx":
-        return _extract_xlsx_text(path, raw)
+        return _extract_xlsx_text(
+            path,
+            raw,
+            spreadsheet_max_rows_per_sheet=spreadsheet_max_rows_per_sheet,
+            spreadsheet_max_columns=spreadsheet_max_columns,
+        )
     if suffix == ".xls":
-        return _extract_xls_text(path)
+        return _extract_xls_text(
+            path,
+            spreadsheet_max_rows_per_sheet=spreadsheet_max_rows_per_sheet,
+            spreadsheet_max_columns=spreadsheet_max_columns,
+        )
     return {"ok": False, "reason": "unsupported_suffix"}
 
 
-def extract_text_from_bytes(filename: str, raw: bytes) -> dict[str, Any]:
+def extract_text_from_bytes(
+    filename: str,
+    raw: bytes,
+    *,
+    spreadsheet_max_rows_per_sheet: int = DEFAULT_SPREADSHEET_MAX_ROWS_PER_SHEET,
+    spreadsheet_max_columns: int = DEFAULT_SPREADSHEET_MAX_COLUMNS,
+) -> dict[str, Any]:
     """Extract uploaded file text with the same rules as folder sources."""
     safe_name = Path(filename or "upload.txt").name or "upload.txt"
     path = Path(safe_name)
     if path.suffix.lower() in TEXT_SUFFIXES:
-        return _extract_text(path, raw)
+        return _extract_text(
+            path,
+            raw,
+            spreadsheet_max_rows_per_sheet=spreadsheet_max_rows_per_sheet,
+            spreadsheet_max_columns=spreadsheet_max_columns,
+        )
     with tempfile.TemporaryDirectory(prefix="pska_upload_extract_") as tmpdir:
         temp_path = Path(tmpdir) / safe_name
         temp_path.write_bytes(raw)
-        return _extract_text(temp_path, raw)
+        return _extract_text(
+            temp_path,
+            raw,
+            spreadsheet_max_rows_per_sheet=spreadsheet_max_rows_per_sheet,
+            spreadsheet_max_columns=spreadsheet_max_columns,
+        )
 
 
-def _extract_xlsx_text(path: Path, raw: bytes) -> dict[str, Any]:
+def _extract_xlsx_text(
+    path: Path,
+    raw: bytes,
+    *,
+    spreadsheet_max_rows_per_sheet: int,
+    spreadsheet_max_columns: int,
+) -> dict[str, Any]:
+    row_limit = max(1, int(spreadsheet_max_rows_per_sheet))
+    column_limit = max(1, int(spreadsheet_max_columns))
     try:
         with zipfile.ZipFile(io.BytesIO(raw)) as archive:
             shared_strings = _xlsx_shared_strings(archive)
@@ -337,16 +382,16 @@ def _extract_xlsx_text(path: Path, raw: bytes) -> dict[str, Any]:
                 rows = _xlsx_sheet_rows(archive, sheet_path, shared_strings)
                 rows = _trim_empty_rows(rows)
                 max_columns = max((len(row) for row in rows), default=0)
-                truncated_rows = len(rows) > MAX_SPREADSHEET_ROWS_PER_SHEET
-                truncated_columns = max_columns > MAX_SPREADSHEET_COLUMNS
-                rows = [row[:MAX_SPREADSHEET_COLUMNS] for row in rows[:MAX_SPREADSHEET_ROWS_PER_SHEET]]
+                truncated_rows = len(rows) > row_limit
+                truncated_columns = max_columns > column_limit
+                rows = [row[:column_limit] for row in rows[:row_limit]]
                 rendered.append(f"\n## Sheet: {sheet_name}\n")
                 rendered.append(_rows_to_markdown_table(rows) if rows else "_Empty sheet._")
                 sheet_metadata.append(
                     {
                         "name": sheet_name,
                         "rows": len(rows),
-                        "columns": min(max_columns, MAX_SPREADSHEET_COLUMNS),
+                        "columns": min(max_columns, column_limit),
                         "truncated_rows": truncated_rows,
                         "truncated_columns": truncated_columns,
                     }
@@ -363,13 +408,20 @@ def _extract_xlsx_text(path: Path, raw: bytes) -> dict[str, Any]:
         "metadata": {
             "sheet_count": len(sheet_metadata),
             "sheets": sheet_metadata,
-            "row_limit_per_sheet": MAX_SPREADSHEET_ROWS_PER_SHEET,
-            "column_limit": MAX_SPREADSHEET_COLUMNS,
+            "row_limit_per_sheet": row_limit,
+            "column_limit": column_limit,
         },
     }
 
 
-def _extract_xls_text(path: Path) -> dict[str, Any]:
+def _extract_xls_text(
+    path: Path,
+    *,
+    spreadsheet_max_rows_per_sheet: int,
+    spreadsheet_max_columns: int,
+) -> dict[str, Any]:
+    row_limit = max(1, int(spreadsheet_max_rows_per_sheet))
+    column_limit = max(1, int(spreadsheet_max_columns))
     try:
         import xlrd  # type: ignore[import-not-found]
     except Exception as exc:  # noqa: BLE001 - optional dependency.
@@ -379,8 +431,8 @@ def _extract_xls_text(path: Path) -> dict[str, Any]:
         rendered: list[str] = [f"# Workbook: {path.name}"]
         sheet_metadata: list[dict[str, Any]] = []
         for sheet in workbook.sheets():
-            row_count = min(sheet.nrows, MAX_SPREADSHEET_ROWS_PER_SHEET)
-            col_count = min(sheet.ncols, MAX_SPREADSHEET_COLUMNS)
+            row_count = min(sheet.nrows, row_limit)
+            col_count = min(sheet.ncols, column_limit)
             rows = [
                 [_cell_to_text(sheet.cell_value(row_index, col_index)) for col_index in range(col_count)]
                 for row_index in range(row_count)
@@ -393,8 +445,8 @@ def _extract_xls_text(path: Path) -> dict[str, Any]:
                     "name": sheet.name,
                     "rows": len(rows),
                     "columns": col_count,
-                    "truncated_rows": sheet.nrows > MAX_SPREADSHEET_ROWS_PER_SHEET,
-                    "truncated_columns": sheet.ncols > MAX_SPREADSHEET_COLUMNS,
+                    "truncated_rows": sheet.nrows > row_limit,
+                    "truncated_columns": sheet.ncols > column_limit,
                 }
             )
     except Exception as exc:  # noqa: BLE001
@@ -403,7 +455,12 @@ def _extract_xls_text(path: Path) -> dict[str, Any]:
         "ok": True,
         "text": "\n\n".join(rendered),
         "extractor": "xlrd",
-        "metadata": {"sheet_count": len(sheet_metadata), "sheets": sheet_metadata},
+        "metadata": {
+            "sheet_count": len(sheet_metadata),
+            "sheets": sheet_metadata,
+            "row_limit_per_sheet": row_limit,
+            "column_limit": column_limit,
+        },
     }
 
 

@@ -209,8 +209,34 @@ initial seed/defaults. Runtime source state is database-backed.
 ```
 
 `files-sync` covers active folder sources, PDF/DOCX/XLSX extraction,
-optional legacy XLS extraction, manifest reconciliation, and the workspace Twitter/X archive inbox. The manual
-shortcut is:
+optional legacy XLS extraction, manifest reconciliation, and the workspace
+Twitter/X archive inbox. Uploads through the product UI use the same document
+extractors. Large-file and spreadsheet extraction limits are controlled by
+`files.max_bytes`, `files.spreadsheet_max_rows_per_sheet`, and
+`files.spreadsheet_max_columns` in `.pska/config.json`. Existing deployments
+must update their runtime `.pska/config.json`; pulling git changes only updates
+`core/config.pska.example.json`, not an already-created local config. For browser
+upload acceptance tests with annual-report spreadsheets, use at least:
+
+```json
+{
+  "files": {
+    "max_bytes": 52428800,
+    "spreadsheet_max_rows_per_sheet": 2000,
+    "spreadsheet_max_columns": 80
+  }
+}
+```
+
+The end-to-end browser path is covered by:
+
+```bash
+npm --prefix frontend run e2e:upload-delete
+```
+
+It uploads an XLSX through the product UI, asks over the uploaded workbook, then
+soft-deletes that source and confirms the deleted source is no longer returned
+as Ask evidence. The manual shortcut is:
 
 ```bash
 ./scripts/pska --config .pska/config.json digest-now

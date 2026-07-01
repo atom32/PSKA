@@ -18,6 +18,9 @@ if TYPE_CHECKING:
 
 DEFAULT_DATABASE_URL = "postgresql:///pska"
 DEFAULT_WORKSPACE_ROOT = Path("~/PSKA_workspaces")
+DEFAULT_FILES_MAX_BYTES = 50 * 1024 * 1024
+DEFAULT_SPREADSHEET_MAX_ROWS_PER_SHEET = 2_000
+DEFAULT_SPREADSHEET_MAX_COLUMNS = 80
 DEFAULT_JWT_TENANT_CLAIMS = ("tenant_id", "tenant_key", "tenant", "org_id")
 DEFAULT_TRUSTED_HEADER_USER_ID = "X-PSKA-User-Id"
 DEFAULT_TRUSTED_HEADER_TENANT_ID = "X-PSKA-Tenant-Id"
@@ -298,7 +301,9 @@ class IngestConfig:
 class FilesConfig:
     roots: tuple[Path, ...] = ()
     ignore: tuple[str, ...] = ()
-    max_bytes: int = 1_000_000
+    max_bytes: int = DEFAULT_FILES_MAX_BYTES
+    spreadsheet_max_rows_per_sheet: int = DEFAULT_SPREADSHEET_MAX_ROWS_PER_SHEET
+    spreadsheet_max_columns: int = DEFAULT_SPREADSHEET_MAX_COLUMNS
     owner_user_id: str = "user_primary"
     space_id: str = "private_primary"
     visibility: str = "private"
@@ -310,7 +315,15 @@ class FilesConfig:
         return cls(
             roots=tuple(expand_path(root) for root in data.get("roots") or []),
             ignore=tuple(str(item) for item in data.get("ignore") or []),
-            max_bytes=int(data.get("max_bytes") or 1_000_000),
+            max_bytes=_positive_int(data.get("max_bytes"), DEFAULT_FILES_MAX_BYTES),
+            spreadsheet_max_rows_per_sheet=_positive_int(
+                data.get("spreadsheet_max_rows_per_sheet") or data.get("spreadsheet_row_limit_per_sheet"),
+                DEFAULT_SPREADSHEET_MAX_ROWS_PER_SHEET,
+            ),
+            spreadsheet_max_columns=_positive_int(
+                data.get("spreadsheet_max_columns") or data.get("spreadsheet_column_limit"),
+                DEFAULT_SPREADSHEET_MAX_COLUMNS,
+            ),
             owner_user_id=str(data.get("owner_user_id") or "user_primary"),
             space_id=str(data.get("space_id") or "private_primary"),
             visibility=str(data.get("visibility") or "private"),
@@ -553,7 +566,17 @@ class PSKAConfig:
                 or base.files.roots,
                 ignore=tuple(item for item in os.getenv("PSKA_FILES_IGNORE", "").split(os.pathsep) if item)
                 or base.files.ignore,
-                max_bytes=int(os.getenv("PSKA_FILES_MAX_BYTES", str(base.files.max_bytes))),
+                max_bytes=_positive_int(os.getenv("PSKA_FILES_MAX_BYTES"), base.files.max_bytes),
+                spreadsheet_max_rows_per_sheet=_positive_int(
+                    os.getenv("PSKA_FILES_SPREADSHEET_MAX_ROWS_PER_SHEET")
+                    or os.getenv("PSKA_FILES_SPREADSHEET_ROW_LIMIT_PER_SHEET"),
+                    base.files.spreadsheet_max_rows_per_sheet,
+                ),
+                spreadsheet_max_columns=_positive_int(
+                    os.getenv("PSKA_FILES_SPREADSHEET_MAX_COLUMNS")
+                    or os.getenv("PSKA_FILES_SPREADSHEET_COLUMN_LIMIT"),
+                    base.files.spreadsheet_max_columns,
+                ),
                 owner_user_id=os.getenv("PSKA_FILES_OWNER_USER_ID", base.files.owner_user_id),
                 space_id=os.getenv("PSKA_FILES_SPACE_ID", base.files.space_id),
                 visibility=os.getenv("PSKA_FILES_VISIBILITY", base.files.visibility),
@@ -675,6 +698,13 @@ def _optional_int(value: Any) -> int | None:
     if value in {None, ""}:
         return None
     return int(value)
+
+
+def _positive_int(value: Any, default: int) -> int:
+    if value in {None, ""}:
+        return default
+    parsed = int(value)
+    return parsed if parsed > 0 else default
 
 
 def _workspace_path_segment(value: str) -> str:

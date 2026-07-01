@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import base64
+from pathlib import Path
 import time
+import zipfile
+
+import pytest
 
 from pska_core.acl import ACLService
 from pska_core.api import PSKAApi
 from pska_core.auth import RequestContext
 from pska_core.candidates import CandidateWriteService
-from pska_core.config import AuthConfig, PSKAConfig, ServiceConfig
+from pska_core.config import AuthConfig, FilesConfig, PSKAConfig, ServiceConfig
 from pska_core.enums import UserRole
 from pska_core.ingest import IngestService
 from pska_core.jobs import DIGEST_VIA_FASTREACT, JobService
@@ -66,6 +70,56 @@ def test_text_and_upload_sources_create_documents_and_digest_jobs() -> None:
     assert jobs[0].payload["producer"] == "pska.digest_scheduler"
     assert jobs[0].payload["prompt_profile_type"] == "digest"
     assert jobs[0].payload["prompt_profile_id"]
+
+
+def test_upload_source_uses_configured_spreadsheet_limits(tmp_path: Path) -> None:
+    api = _api()
+    api.config = PSKAConfig(
+        service=ServiceConfig(),
+        auth=AuthConfig(),
+        files=FilesConfig(spreadsheet_max_rows_per_sheet=2, spreadsheet_max_columns=2),
+    )
+    workbook = tmp_path / "annual-report.xlsx"
+    _write_minimal_xlsx(
+        workbook,
+        rows=[
+            ["Metric", "Value", "Comment"],
+            ["Revenue", "1200000", "audited"],
+            ["Margin", "0.42", "audited"],
+        ],
+    )
+
+    response = api.create_upload_source(
+        {
+            "filename": workbook.name,
+            "bytes_base64": base64.b64encode(workbook.read_bytes()).decode("ascii"),
+            "digest_mode": "manual",
+        }
+    )
+
+    upload_item = api.store.source_items[response["source_item_ids"][0]]
+    assert "| Metric | Value |" in upload_item.content_text
+    assert "Comment" not in upload_item.content_text
+    assert "Margin" not in upload_item.content_text
+    extraction = upload_item.metadata["extra"]["extraction"]
+    assert extraction["row_limit_per_sheet"] == 2
+    assert extraction["column_limit"] == 2
+    assert extraction["sheets"][0]["truncated_rows"] is True
+    assert extraction["sheets"][0]["truncated_columns"] is True
+
+
+def test_upload_source_honors_configured_max_bytes() -> None:
+    api = _api()
+    api.config = PSKAConfig(service=ServiceConfig(), auth=AuthConfig(), files=FilesConfig(max_bytes=4))
+
+    with pytest.raises(ValueError, match="uploaded file exceeds max_bytes"):
+        api.create_upload_source(
+            {
+                "filename": "too-large.txt",
+                "bytes_base64": base64.b64encode(b"12345").decode("ascii"),
+                "digest_mode": "manual",
+            }
+        )
 
 
 def test_document_soft_delete_hides_retrieval_and_restore_recovers_it() -> None:
@@ -600,6 +654,72 @@ def test_hard_purge_removes_unreviewed_topic_derivatives() -> None:
     assert all(review.review_item_id not in {item["review_item_id"] for item in linking["review_items"]} for review in api.store.review_items.values())
     assert first not in {ref["source_item_id"] for topic in topics["topics"] for ref in topic["source_refs"]}
     assert purged["deleted"]["source_items"] == 1
+
+
+def _write_minimal_xlsx(path: Path, *, rows: list[list[str]]) -> None:
+    def cell_name(row_index: int, column_index: int) -> str:
+        letters = ""
+        index = column_index
+        while index:
+            index, remainder = divmod(index - 1, 26)
+            letters = chr(ord("A") + remainder) + letters
+        return f"{letters}{row_index}"
+
+    sheet_rows = []
+    for row_index, row in enumerate(rows, start=1):
+        cells = []
+        for column_index, value in enumerate(row, start=1):
+            cells.append(
+                f'<c r="{cell_name(row_index, column_index)}" t="inlineStr">'
+                f"<is><t>{_xml_escape(value)}</t></is>"
+                "</c>"
+            )
+        sheet_rows.append(f'<row r="{row_index}">' + "".join(cells) + "</row>")
+    sheet_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        "<sheetData>"
+        + "".join(sheet_rows)
+        + "</sheetData></worksheet>"
+    )
+    files = {
+        "[Content_Types].xml": (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+            '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+            '<Default Extension="xml" ContentType="application/xml"/>'
+            '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+            '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+            "</Types>"
+        ),
+        "_rels/.rels": (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+            "</Relationships>"
+        ),
+        "xl/workbook.xml": (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+            'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+            '<sheets><sheet name="Pipeline" sheetId="1" r:id="rId1"/></sheets>'
+            "</workbook>"
+        ),
+        "xl/_rels/workbook.xml.rels": (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
+            "</Relationships>"
+        ),
+        "xl/worksheets/sheet1.xml": sheet_xml,
+    }
+    with zipfile.ZipFile(path, "w") as archive:
+        for filename, content in files.items():
+            archive.writestr(filename, content)
+
+
+def _xml_escape(value: str) -> str:
+    return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def _api() -> PSKAApi:
