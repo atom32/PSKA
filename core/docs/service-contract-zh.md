@@ -370,13 +370,17 @@ The current slice supports UTF-8 text-like files such as Markdown, text, JSON,
 YAML, CSV/TSV, logs, and Python files. With optional `pska-core[documents]`, it
 also uses mature extractors `pypdf` and `python-docx` for PDF/DOCX text,
 the built-in XLSX parser for workbook tables, and optional `xlrd` for legacy XLS
-extraction. UI uploads use the same extraction path; `files.max_bytes`,
-`files.spreadsheet_max_rows_per_sheet`, and `files.spreadsheet_max_columns`
-control upload/folder size and spreadsheet extraction limits. Sync records file path, file URI, mime type, size, scan cursor,
+extraction. The built-in PDF path is text-only; PDF table reconstruction, scanned
+PDFs, and parser-only image files use the optional `document_parser` bridge to an
+external service such as `~/DocParserServer` at
+`/rag/model_parser_file`. UI uploads use the same extraction path;
+`files.max_bytes`, `files.spreadsheet_max_rows_per_sheet`,
+`files.spreadsheet_max_columns`, and `document_parser.*` are runtime config
+knobs for upload/folder extraction. Sync records file path, file URI, mime type, size, scan cursor,
 content hash, authorized root, and lightweight manifests so reports can
 distinguish new, changed, unchanged, moved, and missing files without deleting
-canonical source history. Complex layout parsing, OCR, richer source versioning
-UI, and Knowledge Sources file/folder management remain later product work.
+canonical source history. Richer source versioning UI and Knowledge Sources
+file/folder management remain later product work.
 
 ## Jobs and Workers
 

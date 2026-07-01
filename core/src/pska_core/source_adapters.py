@@ -10,7 +10,12 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 from xml.etree import ElementTree
 
-from pska_core.config import DEFAULT_FILES_MAX_BYTES, DEFAULT_SPREADSHEET_MAX_COLUMNS, DEFAULT_SPREADSHEET_MAX_ROWS_PER_SHEET
+from pska_core.config import (
+    DEFAULT_FILES_MAX_BYTES,
+    DEFAULT_SPREADSHEET_MAX_COLUMNS,
+    DEFAULT_SPREADSHEET_MAX_ROWS_PER_SHEET,
+    DocumentParserConfig,
+)
 from pska_core.connectors import connector_record_to_payload
 from pska_core.enums import Visibility
 from pska_core.files_connector import scan_files
@@ -124,6 +129,11 @@ class FilesSourceAdapter:
                 self.source.config.get("spreadsheet_max_columns")
                 or self.source.config.get("spreadsheet_column_limit")
                 or DEFAULT_SPREADSHEET_MAX_COLUMNS
+            ),
+            document_parser=DocumentParserConfig.from_dict(
+                self.source.config.get("document_parser")
+                if isinstance(self.source.config.get("document_parser"), dict)
+                else None
             ),
             embedding_provider=self.embedding_provider,
             processing_config=self.processing_config,

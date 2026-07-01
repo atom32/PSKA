@@ -211,7 +211,9 @@ initial seed/defaults. Runtime source state is database-backed.
 `files-sync` covers active folder sources, PDF/DOCX/XLSX extraction,
 optional legacy XLS extraction, manifest reconciliation, and the workspace
 Twitter/X archive inbox. Uploads through the product UI use the same document
-extractors. Large-file and spreadsheet extraction limits are controlled by
+extractors. The built-in PDF extractor only reads text with `pypdf`; PDF table
+layout, scanned PDFs, and image-only files require the optional external
+document parser. Large-file and spreadsheet extraction limits are controlled by
 `files.max_bytes`, `files.spreadsheet_max_rows_per_sheet`, and
 `files.spreadsheet_max_columns` in `.pska/config.json`. Existing deployments
 must update their runtime `.pska/config.json`; pulling git changes only updates
@@ -227,6 +229,30 @@ upload acceptance tests with annual-report spreadsheets, use at least:
   }
 }
 ```
+
+To use `~/DocParserServer` for PDF tables, scanned PDFs, and images, start that
+service separately and enable PSKA's parser bridge:
+
+```json
+{
+  "document_parser": {
+    "enabled": true,
+    "url": "http://127.0.0.1:8083/rag/model_parser_file",
+    "timeout_seconds": 120,
+    "extract_image": false,
+    "extract_image_content": true,
+    "return_json": true,
+    "extensions": [".pdf", ".png", ".jpg", ".jpeg", ".webp", ".gif"]
+  }
+}
+```
+
+The same settings can be supplied with `PSKA_DOCUMENT_PARSER_ENABLED`,
+`PSKA_DOCUMENT_PARSER_URL`, `PSKA_DOCUMENT_PARSER_TIMEOUT_SECONDS`,
+`PSKA_DOCUMENT_PARSER_EXTRACT_IMAGE`,
+`PSKA_DOCUMENT_PARSER_EXTRACT_IMAGE_CONTENT`,
+`PSKA_DOCUMENT_PARSER_RETURN_JSON`, and
+`PSKA_DOCUMENT_PARSER_EXTENSIONS`.
 
 The end-to-end browser path is covered by:
 

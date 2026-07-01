@@ -62,5 +62,21 @@
     "owner_user_id": "user_primary",
     "space_id": "private_primary",
     "visibility": "private"
+  },
+  "document_parser": {
+    "enabled": false,
+    "url": "http://127.0.0.1:8083/rag/model_parser_file",
+    "timeout_seconds": 120,
+    "extract_image": false,
+    "extract_image_content": false,
+    "return_json": false,
+    "extensions": [
+      ".pdf",
+      ".png",
+      ".jpg",
+      ".jpeg",
+      ".webp",
+      ".gif"
+    ]
   }
 }

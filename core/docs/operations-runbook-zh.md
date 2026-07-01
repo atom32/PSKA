@@ -86,7 +86,7 @@ MVP 推荐先用有限数据源启动：
 ./scripts/pska --config .pska/config.json digest-schedule --owner-user-id user_primary --reason "files sync"
 ```
 
-`files-sync` 会从数据库中的 Knowledge Sources 和 `.pska/config.json` 的默认 seed 解析 active folder sources，把 UTF-8 文本类文件、PDF/DOCX/XLSX 文本抽取结果以及可选 legacy XLS 抽取结果写入 canonical DB，同时处理 workspace 的 Twitter/X archive inbox。产品 UI 上传文件复用同一套文档抽取器；`files.max_bytes`、`files.spreadsheet_max_rows_per_sheet`、`files.spreadsheet_max_columns` 分别控制上传/文件夹同步的文件大小和表格行列抽取上限。给测试方或部署方验收“浏览器上传年报表格 -> Ask 提问 -> 删除资料后不再作为证据返回”时，确认运行时 `.pska/config.json` 已包含足够大的限制，例如：
+`files-sync` 会从数据库中的 Knowledge Sources 和 `.pska/config.json` 的默认 seed 解析 active folder sources，把 UTF-8 文本类文件、PDF/DOCX/XLSX 文本抽取结果以及可选 legacy XLS 抽取结果写入 canonical DB，同时处理 workspace 的 Twitter/X archive inbox。产品 UI 上传文件复用同一套文档抽取器；`files.max_bytes`、`files.spreadsheet_max_rows_per_sheet`、`files.spreadsheet_max_columns` 分别控制上传/文件夹同步的文件大小和表格行列抽取上限。内置 PDF 路径只用 `pypdf` 做文本抽取，不负责还原 PDF 表格版面，也不做图片型 PDF 的 OCR。PDF 年报里的表格、扫描件和图片文件需要启用外部 `document_parser`。给测试方或部署方验收“浏览器上传年报表格 -> Ask 提问 -> 删除资料后不再作为证据返回”时，确认运行时 `.pska/config.json` 已包含足够大的限制，例如：
 
 ```json
 {
@@ -97,6 +97,24 @@ MVP 推荐先用有限数据源启动：
   }
 }
 ```
+
+如果部署机上有 `~/DocParserServer`，单独启动该服务后，在 PSKA 运行时 config 中加入：
+
+```json
+{
+  "document_parser": {
+    "enabled": true,
+    "url": "http://127.0.0.1:8083/rag/model_parser_file",
+    "timeout_seconds": 120,
+    "extract_image": false,
+    "extract_image_content": true,
+    "return_json": true,
+    "extensions": [".pdf", ".png", ".jpg", ".jpeg", ".webp", ".gif"]
+  }
+}
+```
+
+对应环境变量是 `PSKA_DOCUMENT_PARSER_ENABLED`、`PSKA_DOCUMENT_PARSER_URL`、`PSKA_DOCUMENT_PARSER_TIMEOUT_SECONDS`、`PSKA_DOCUMENT_PARSER_EXTRACT_IMAGE`、`PSKA_DOCUMENT_PARSER_EXTRACT_IMAGE_CONTENT`、`PSKA_DOCUMENT_PARSER_RETURN_JSON`、`PSKA_DOCUMENT_PARSER_EXTENSIONS`；旧别名 `PSKA_DOC_PARSER_URL` 和 `PSKA_DOC_PARSER_EXTENSIONS` 也可用。外部解析失败时，PSKA 会回退到内置抽取器；上传或抽取文本里的 NUL 字符会在入库前替换，避免 PostgreSQL JSON/text 报 `\u0000`。
 
 注意：已经部署过的机器拉取 git 后不会自动覆盖本地 `.pska/config.json`；如果原来显式写了较小的 `files.max_bytes`，必须手动改运行时 config 或用 `PSKA_FILES_MAX_BYTES`、`PSKA_FILES_SPREADSHEET_MAX_ROWS_PER_SHEET`、`PSKA_FILES_SPREADSHEET_MAX_COLUMNS` 覆盖。浏览器上传/提问/软删验收脚本是 `npm --prefix frontend run e2e:upload-delete`，运行前按本项目约定先用 `./start.sh` 拉起集成系统。后续同步按内容 hash 和 manifest 报告 new、changed、unchanged、moved、missing；missing 只记录为同步状态，不会删除 canonical source history。connector state 仍用于实现层运行时 cursor/manifest，但用户视角应看 Knowledge Source 和 sync report。`files-watch` 是基于 `watchdog` 的前台监听模式，适合在 notes/docs root 变化时自动触发同一套 files scan；安装方式是 `pska-core[watch]`。`digest-schedule` 只会为还没有被当前 digest job 覆盖、或已经发生更新的 source 创建 backlog。
 

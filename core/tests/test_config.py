@@ -41,6 +41,15 @@ def test_pska_config_loads_json_and_keyfile_token(tmp_path: Path, monkeypatch) -
                     "spreadsheet_max_rows_per_sheet": 345,
                     "spreadsheet_max_columns": 67,
                 },
+                "document_parser": {
+                    "enabled": True,
+                    "url": "http://127.0.0.1:8083/rag/model_parser_file/",
+                    "timeout_seconds": 45,
+                    "extract_image": True,
+                    "extract_image_content": True,
+                    "return_json": True,
+                    "extensions": ["pdf", ".png"],
+                },
             }
         ),
         encoding="utf-8",
@@ -64,6 +73,13 @@ def test_pska_config_loads_json_and_keyfile_token(tmp_path: Path, monkeypatch) -
     assert config.files.max_bytes == 1234
     assert config.files.spreadsheet_max_rows_per_sheet == 345
     assert config.files.spreadsheet_max_columns == 67
+    assert config.document_parser.enabled is True
+    assert config.document_parser.url == "http://127.0.0.1:8083/rag/model_parser_file"
+    assert config.document_parser.timeout_seconds == 45
+    assert config.document_parser.extract_image is True
+    assert config.document_parser.extract_image_content is True
+    assert config.document_parser.return_json is True
+    assert config.document_parser.extensions == (".pdf", ".png")
     assert config.workspace.root == tmp_path / "workspace"
     assert config.workspace.run_dir == tmp_path / "workspace" / "_system" / "run"
     assert config.workspace.log_dir == tmp_path / "workspace" / "_system" / "logs"
@@ -323,6 +339,26 @@ def test_pska_config_from_env_remains_explicit_legacy_loader(tmp_path: Path, mon
     assert reloaded.files.spreadsheet_max_rows_per_sheet == 888
     assert reloaded.files.spreadsheet_max_columns == 99
     assert reloaded.files.tenant_id == "tenant_env"
+
+
+def test_pska_config_document_parser_env_overrides(monkeypatch) -> None:
+    monkeypatch.setenv("PSKA_DOCUMENT_PARSER_ENABLED", "true")
+    monkeypatch.setenv("PSKA_DOCUMENT_PARSER_URL", "http://parser.test/rag/model_parser_file/")
+    monkeypatch.setenv("PSKA_DOCUMENT_PARSER_TIMEOUT_SECONDS", "75")
+    monkeypatch.setenv("PSKA_DOCUMENT_PARSER_EXTRACT_IMAGE", "true")
+    monkeypatch.setenv("PSKA_DOCUMENT_PARSER_EXTRACT_IMAGE_CONTENT", "yes")
+    monkeypatch.setenv("PSKA_DOCUMENT_PARSER_RETURN_JSON", "1")
+    monkeypatch.setenv("PSKA_DOCUMENT_PARSER_EXTENSIONS", "pdf,png,.jpg")
+
+    config = PSKAConfig.from_env(PSKAConfig.from_dict({}))
+
+    assert config.document_parser.enabled is True
+    assert config.document_parser.url == "http://parser.test/rag/model_parser_file"
+    assert config.document_parser.timeout_seconds == 75
+    assert config.document_parser.extract_image is True
+    assert config.document_parser.extract_image_content is True
+    assert config.document_parser.return_json is True
+    assert config.document_parser.extensions == (".pdf", ".png", ".jpg")
 
 
 def test_pska_config_agentic_authnode_env_overrides(monkeypatch) -> None:

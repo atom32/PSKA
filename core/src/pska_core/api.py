@@ -29,6 +29,7 @@ from pska_core.config import (
     DEFAULT_SPREADSHEET_MAX_COLUMNS,
     DEFAULT_SPREADSHEET_MAX_ROWS_PER_SHEET,
     DatabaseConfig,
+    DocumentParserConfig,
     PSKAConfig,
     ServiceConfig,
 )
@@ -40,7 +41,7 @@ from pska_core.extraction import ExtractionService
 from pska_core.fastreact_protocol import compact_trace_for_context
 from pska_core.files_connector import extract_text_from_bytes, scan_files
 from pska_core.importers.twitter_zip import TwitterZipImporter
-from pska_core.ingest import IngestService
+from pska_core.ingest import IngestService, postgres_safe_json, postgres_safe_text
 from pska_core.jobs import DIGEST_VIA_FASTREACT, JobService
 from pska_core.knowledge_sources import KnowledgeSourceService, knowledge_source_id
 from pska_core.memory import MemoryService
@@ -668,6 +669,7 @@ class PSKAApi:
                     payload.get("spreadsheet_max_columns") or payload.get("spreadsheet_column_limit")
                 )
                 or self.config.files.spreadsheet_max_columns,
+                document_parser=self.config.document_parser,
                 **common,
             )
         elif source_type == "rss":
@@ -699,6 +701,7 @@ class PSKAApi:
             max_bytes=self.config.files.max_bytes,
             spreadsheet_max_rows_per_sheet=self.config.files.spreadsheet_max_rows_per_sheet,
             spreadsheet_max_columns=self.config.files.spreadsheet_max_columns,
+            document_parser=self.config.document_parser,
         )
         if not text.strip():
             raise ValueError("uploaded file has no readable text")
@@ -860,6 +863,7 @@ class PSKAApi:
                         max_bytes=max_bytes,
                         spreadsheet_max_rows_per_sheet=spreadsheet_max_rows_per_sheet,
                         spreadsheet_max_columns=spreadsheet_max_columns,
+                        document_parser=self.config.document_parser,
                     )
                 )
             active_uris = {root.as_uri() for root in [*configured_roots, *requested_roots]}
@@ -918,6 +922,7 @@ class PSKAApi:
                     max_bytes=source_max_bytes,
                     spreadsheet_max_rows_per_sheet=source_spreadsheet_rows,
                     spreadsheet_max_columns=source_spreadsheet_columns,
+                    document_parser=self.config.document_parser,
                     embedding_provider=embedding_provider,
                     processing_config=processing_config,
                 )
@@ -11524,13 +11529,15 @@ def _inline_knowledge_source_from_payload(
     safe_source_id = re.sub(r"[^A-Za-z0-9_.:-]+", "_", source_id).strip("_") or f"{source_type}_{uuid4().hex}"
     uri = str(payload.get("uri") or f"pska-{source_type}://{tenant_id}/{owner_user_id}/{safe_source_id}")
     processing_config = payload.get("processing_config") if isinstance(payload.get("processing_config"), dict) else None
+    safe_title = postgres_safe_text(title)
+    safe_text = postgres_safe_text(text)
     config: dict[str, Any] = {
         "source_id": safe_source_id,
-        "title": title,
-        "content": {"text": text},
+        "title": safe_title,
+        "content": {"text": safe_text},
         "record_type": "uploaded_document" if source_type == "upload" else "pasted_text",
         "metadata": {
-            **dict(payload.get("metadata") or {}),
+            **dict(postgres_safe_json(payload.get("metadata") or {})),
             "product_input": True,
             "origin": payload.get("origin") or ("upload" if source_type == "upload" else "paste"),
         },
@@ -11540,10 +11547,11 @@ def _inline_knowledge_source_from_payload(
             config[key] = payload[key]
     if processing_config:
         config["processing"] = processing_config
+    config = postgres_safe_json(config)
     return KnowledgeSource(
         knowledge_source_id=knowledge_source_id(owner_user_id, uri, tenant_id=tenant_id),
         owner_user_id=owner_user_id,
-        name=title,
+        name=safe_title,
         source_type=source_type,
         uri=uri,
         mode="manual",
@@ -11564,10 +11572,11 @@ def _upload_text_from_payload(
     max_bytes: int,
     spreadsheet_max_rows_per_sheet: int,
     spreadsheet_max_columns: int,
+    document_parser: DocumentParserConfig | None = None,
 ) -> tuple[str, str, int, dict[str, Any]]:
     content_type = str(payload.get("content_type") or payload.get("mime_type") or "text/plain").strip() or "text/plain"
     if payload.get("text") is not None or payload.get("content") is not None:
-        text = str(payload.get("text") if payload.get("text") is not None else payload.get("content"))
+        text = postgres_safe_text(str(payload.get("text") if payload.get("text") is not None else payload.get("content")))
         size_bytes = len(text.encode("utf-8"))
         if size_bytes > max_bytes:
             raise ValueError(f"uploaded file exceeds max_bytes ({size_bytes} > {max_bytes})")
@@ -11590,6 +11599,7 @@ def _upload_text_from_payload(
             raw,
             spreadsheet_max_rows_per_sheet=spreadsheet_max_rows_per_sheet,
             spreadsheet_max_columns=spreadsheet_max_columns,
+            document_parser=document_parser,
         )
         if raw
         else {"ok": False, "reason": "empty_upload"}
@@ -11602,10 +11612,10 @@ def _upload_text_from_payload(
         }
         extraction_metadata["extractor"] = extraction.get("extractor")
         extraction_metadata.update(dict(extraction.get("metadata") or {}))
-        return str(extraction.get("text") or ""), content_type, len(raw), extraction_metadata
+        return postgres_safe_text(str(extraction.get("text") or "")), content_type, len(raw), postgres_safe_json(extraction_metadata)
     encoding = str(payload.get("encoding") or "utf-8").strip() or "utf-8"
-    text = raw.decode(encoding, errors="replace")
-    return text, content_type, len(raw), {**extraction, "fallback_extractor": "decode_replace", "encoding": encoding}
+    text = postgres_safe_text(raw.decode(encoding, errors="replace"))
+    return text, content_type, len(raw), postgres_safe_json({**extraction, "fallback_extractor": "decode_replace", "encoding": encoding})
 
 
 def _default_inline_title(text: str, *, fallback: str) -> str:

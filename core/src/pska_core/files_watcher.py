@@ -6,7 +6,12 @@ import time
 from pathlib import Path
 from typing import Callable
 
-from pska_core.config import DEFAULT_FILES_MAX_BYTES, DEFAULT_SPREADSHEET_MAX_COLUMNS, DEFAULT_SPREADSHEET_MAX_ROWS_PER_SHEET
+from pska_core.config import (
+    DEFAULT_FILES_MAX_BYTES,
+    DEFAULT_SPREADSHEET_MAX_COLUMNS,
+    DEFAULT_SPREADSHEET_MAX_ROWS_PER_SHEET,
+    DocumentParserConfig,
+)
 from pska_core.enums import Visibility
 from pska_core.files_connector import FilesScanReport, scan_files
 from pska_core.models import DEFAULT_TENANT_ID
@@ -33,6 +38,7 @@ def watch_files(
     max_bytes: int = DEFAULT_FILES_MAX_BYTES,
     spreadsheet_max_rows_per_sheet: int = DEFAULT_SPREADSHEET_MAX_ROWS_PER_SHEET,
     spreadsheet_max_columns: int = DEFAULT_SPREADSHEET_MAX_COLUMNS,
+    document_parser: DocumentParserConfig | None = None,
     debounce_seconds: float = 2.0,
     initial_sync: bool = False,
     max_events: int = 0,
@@ -69,6 +75,7 @@ def watch_files(
             max_bytes=max_bytes,
             spreadsheet_max_rows_per_sheet=spreadsheet_max_rows_per_sheet,
             spreadsheet_max_columns=spreadsheet_max_columns,
+            document_parser=document_parser,
             embedding_provider=embedding_provider,
         )
         summary.scans += 1

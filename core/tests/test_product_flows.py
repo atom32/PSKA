@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 from pathlib import Path
 import time
 import zipfile
@@ -11,7 +12,7 @@ from pska_core.acl import ACLService
 from pska_core.api import PSKAApi
 from pska_core.auth import RequestContext
 from pska_core.candidates import CandidateWriteService
-from pska_core.config import AuthConfig, FilesConfig, PSKAConfig, ServiceConfig
+from pska_core.config import AuthConfig, DocumentParserConfig, FilesConfig, PSKAConfig, ServiceConfig
 from pska_core.enums import UserRole
 from pska_core.ingest import IngestService
 from pska_core.jobs import DIGEST_VIA_FASTREACT, JobService
@@ -120,6 +121,68 @@ def test_upload_source_honors_configured_max_bytes() -> None:
                 "digest_mode": "manual",
             }
         )
+
+
+def test_upload_source_sanitizes_nul_characters_before_storing_config() -> None:
+    api = _api()
+
+    response = api.create_upload_source(
+        {
+            "filename": "nul-report.txt",
+            "text": "before\x00after",
+            "metadata": {"raw": "meta\x00value"},
+            "digest_mode": "manual",
+        }
+    )
+
+    source_item = api.store.source_items[response["source_item_ids"][0]]
+    knowledge_source = next(iter(api.store.knowledge_sources.values()))
+    assert "\x00" not in source_item.content_text
+    assert "before\ufffdafter" in source_item.content_text
+    assert "\x00" not in json.dumps(source_item.metadata, ensure_ascii=False)
+    assert "\x00" not in json.dumps(knowledge_source.config, ensure_ascii=False)
+
+
+def test_upload_source_uses_configured_document_parser_for_pdf_tables(monkeypatch) -> None:
+    api = _api()
+    api.config = PSKAConfig(
+        service=ServiceConfig(),
+        auth=AuthConfig(),
+        document_parser=DocumentParserConfig(
+            enabled=True,
+            url="http://parser.test/rag/model_parser_file",
+            return_json=True,
+        ),
+    )
+
+    def fake_parser(path: Path, raw: bytes, config: DocumentParserConfig) -> dict[str, object]:
+        assert path.name == "annual-report.pdf"
+        assert raw.startswith(b"%PDF")
+        assert config.return_json is True
+        return {
+            "code": "200",
+            "status": "success",
+            "content": "| Metric | Value |\n| --- | --- |\n| Revenue | 1200000 |",
+            "json_content": json.dumps(
+                {"parsing_res_list_merge": [{"block_label": "table", "block_content": "Revenue 1200000"}]}
+            ),
+        }
+
+    monkeypatch.setattr("pska_core.files_connector._call_document_parser_server", fake_parser)
+
+    response = api.create_upload_source(
+        {
+            "filename": "annual-report.pdf",
+            "bytes_base64": base64.b64encode(b"%PDF-1.4\nmock").decode("ascii"),
+            "digest_mode": "manual",
+        }
+    )
+
+    upload_item = api.store.source_items[response["source_item_ids"][0]]
+    assert "| Metric | Value |" in upload_item.content_text
+    extraction = upload_item.metadata["extra"]["extraction"]
+    assert extraction["extractor"] == "doc-parser-server"
+    assert extraction["json_block_labels"]["table"] == 1
 
 
 def test_document_soft_delete_hides_retrieval_and_restore_recovers_it() -> None:

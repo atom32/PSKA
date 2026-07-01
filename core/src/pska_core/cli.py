@@ -956,6 +956,7 @@ def knowledge_source(args: argparse.Namespace, config: PSKAConfig) -> int:
             max_bytes=args.max_bytes or config.files.max_bytes,
             spreadsheet_max_rows_per_sheet=args.spreadsheet_max_rows_per_sheet or config.files.spreadsheet_max_rows_per_sheet,
             spreadsheet_max_columns=args.spreadsheet_max_columns or config.files.spreadsheet_max_columns,
+            document_parser=config.document_parser,
         )
         print(dumps({"knowledge_source": source}))
         return 0
@@ -983,6 +984,7 @@ def files_scan(args: argparse.Namespace, config: PSKAConfig) -> int:
         max_bytes=args.max_bytes or config.files.max_bytes,
         spreadsheet_max_rows_per_sheet=args.spreadsheet_max_rows_per_sheet or config.files.spreadsheet_max_rows_per_sheet,
         spreadsheet_max_columns=args.spreadsheet_max_columns or config.files.spreadsheet_max_columns,
+        document_parser=config.document_parser,
         embedding_provider=_embedding_provider_from_args(args),
     )
     print(dumps(report))
@@ -1022,6 +1024,7 @@ def _files_sync_payload(args: argparse.Namespace, config: PSKAConfig) -> dict[st
                     max_bytes=args.max_bytes or config.files.max_bytes,
                     spreadsheet_max_rows_per_sheet=args.spreadsheet_max_rows_per_sheet or config.files.spreadsheet_max_rows_per_sheet,
                     spreadsheet_max_columns=args.spreadsheet_max_columns or config.files.spreadsheet_max_columns,
+                    document_parser=config.document_parser,
                 )
             )
         active_uris = {root.as_uri() for root in [*configured_roots, *requested_roots]}
@@ -1076,6 +1079,7 @@ def _files_sync_payload(args: argparse.Namespace, config: PSKAConfig) -> dict[st
                     or source.config.get("spreadsheet_column_limit")
                     or config.files.spreadsheet_max_columns
                 ),
+                document_parser=config.document_parser,
                 embedding_provider=_embedding_provider_from_args(args),
                 processing_config=resolve_processing_config(source.config),
             )
@@ -1211,6 +1215,7 @@ def files_watch(args: argparse.Namespace, config: PSKAConfig) -> int:
             max_bytes=args.max_bytes or config.files.max_bytes,
             spreadsheet_max_rows_per_sheet=args.spreadsheet_max_rows_per_sheet or config.files.spreadsheet_max_rows_per_sheet,
             spreadsheet_max_columns=args.spreadsheet_max_columns or config.files.spreadsheet_max_columns,
+            document_parser=config.document_parser,
             debounce_seconds=args.debounce_seconds,
             initial_sync=args.initial_sync,
             max_events=args.max_events,
@@ -1375,6 +1380,7 @@ def mvp_bootstrap(args: argparse.Namespace) -> int:
                     max_bytes=config.files.max_bytes,
                     spreadsheet_max_rows_per_sheet=config.files.spreadsheet_max_rows_per_sheet,
                     spreadsheet_max_columns=config.files.spreadsheet_max_columns,
+                    document_parser=config.document_parser,
                     embedding_provider=embedding_provider,
                 )
                 report["steps"].append({"name": "files", "root": str(root), "result": scan})

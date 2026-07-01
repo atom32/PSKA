@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import sys
+import types
 import zipfile
 
+from pska_core.config import DocumentParserConfig
 from pska_core.connectors import connector_state_from_mapping
 from pska_core.files_connector import scan_files
 from pska_core.store import InMemoryKnowledgeStore
@@ -95,6 +97,110 @@ def test_files_scan_extracts_xlsx_to_markdown_tables(tmp_path: Path) -> None:
     unchanged = scan_files(store, root=root)
     assert unchanged.ingested == 0
     assert unchanged.unchanged_files == 1
+
+
+def test_files_scan_uses_external_document_parser_for_pdf_tables(tmp_path: Path, monkeypatch) -> None:
+    root = tmp_path / "notes"
+    root.mkdir()
+    pdf = root / "annual-report.pdf"
+    pdf.write_bytes(b"%PDF-1.4\nnot important for mocked parser")
+    parser_payload = {
+        "code": "200",
+        "status": "success",
+        "message": "ok",
+        "content": "# Parsed Report\n\n| Metric | Value |\n| --- | --- |\n| Revenue | 1200000 |",
+        "json_content": json.dumps(
+            {
+                "parsing_res_list_merge": [
+                    {"block_label": "title", "block_content": "Parsed Report"},
+                    {"block_label": "table", "block_content": "Revenue 1200000"},
+                ]
+            }
+        ),
+        "trace_id": "trace-123",
+    }
+
+    def fake_parser(path: Path, raw: bytes, config: DocumentParserConfig) -> dict[str, object]:
+        assert path.name == pdf.name
+        assert raw == pdf.read_bytes()
+        assert config.return_json is True
+        return parser_payload
+
+    monkeypatch.setattr("pska_core.files_connector._call_document_parser_server", fake_parser)
+    store = InMemoryKnowledgeStore()
+
+    report = scan_files(
+        store,
+        root=root,
+        document_parser=DocumentParserConfig(
+            enabled=True,
+            url="http://parser.test/rag/model_parser_file",
+            return_json=True,
+        ),
+    )
+
+    assert report.ingested == 1
+    assert report.skipped == []
+    source = store.source_items[report.source_item_ids[0]]
+    assert "| Metric | Value |" in source.content_text
+    extraction = source.metadata["extra"]["extraction"]
+    assert extraction["extractor"] == "doc-parser-server"
+    assert extraction["trace_id"] == "trace-123"
+    assert extraction["json_block_count"] == 2
+    assert extraction["json_block_labels"]["table"] == 1
+
+
+def test_files_scan_accepts_parser_only_image_uploads_when_configured(tmp_path: Path, monkeypatch) -> None:
+    root = tmp_path / "notes"
+    root.mkdir()
+    image = root / "scanned-table.png"
+    image.write_bytes(b"\x89PNG\r\n")
+
+    def fake_parser(path: Path, raw: bytes, config: DocumentParserConfig) -> dict[str, object]:
+        assert path.name == image.name
+        assert config.extract_image_content is True
+        return {"code": "200", "status": "success", "content": "OCR table text"}
+
+    monkeypatch.setattr("pska_core.files_connector._call_document_parser_server", fake_parser)
+    store = InMemoryKnowledgeStore()
+
+    report = scan_files(
+        store,
+        root=root,
+        document_parser=DocumentParserConfig(
+            enabled=True,
+            url="http://parser.test/rag/model_parser_file",
+            extract_image_content=True,
+        ),
+    )
+
+    assert report.ingested == 1
+    source = store.source_items[report.source_item_ids[0]]
+    assert source.content_text == "OCR table text"
+
+
+def test_files_scan_replaces_nul_bytes_from_pdf_text_extraction(tmp_path: Path, monkeypatch) -> None:
+    class FakePage:
+        def extract_text(self) -> str:
+            return "before\x00after"
+
+    class FakeReader:
+        def __init__(self, _path: Path) -> None:
+            self.pages = [FakePage()]
+
+    monkeypatch.setitem(sys.modules, "pypdf", types.SimpleNamespace(PdfReader=FakeReader))
+    root = tmp_path / "notes"
+    root.mkdir()
+    (root / "nul.pdf").write_bytes(b"%PDF-1.4\n")
+    store = InMemoryKnowledgeStore()
+
+    report = scan_files(store, root=root)
+
+    assert report.ingested == 1
+    source = store.source_items[report.source_item_ids[0]]
+    assert "\x00" not in source.content_text
+    assert "before\ufffdafter" in source.content_text
+    assert "\x00" not in json.dumps(source.metadata, ensure_ascii=False)
 
 
 def test_files_scan_uses_configurable_spreadsheet_limits(tmp_path: Path) -> None:

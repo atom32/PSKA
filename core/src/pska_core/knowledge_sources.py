@@ -5,7 +5,13 @@ from typing import Any
 from urllib.parse import urlparse
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
-from pska_core.config import DEFAULT_FILES_MAX_BYTES, DEFAULT_SPREADSHEET_MAX_COLUMNS, DEFAULT_SPREADSHEET_MAX_ROWS_PER_SHEET, PSKAConfig
+from pska_core.config import (
+    DEFAULT_FILES_MAX_BYTES,
+    DEFAULT_SPREADSHEET_MAX_COLUMNS,
+    DEFAULT_SPREADSHEET_MAX_ROWS_PER_SHEET,
+    DocumentParserConfig,
+    PSKAConfig,
+)
 from pska_core.enums import Visibility
 from pska_core.models import DEFAULT_TENANT_ID, KnowledgeSource, ProcessingSpan, SyncRun, utc_now
 from pska_core.serde import to_jsonable
@@ -44,8 +50,14 @@ class KnowledgeSourceService:
         max_bytes: int = DEFAULT_FILES_MAX_BYTES,
         spreadsheet_max_rows_per_sheet: int = DEFAULT_SPREADSHEET_MAX_ROWS_PER_SHEET,
         spreadsheet_max_columns: int = DEFAULT_SPREADSHEET_MAX_COLUMNS,
+        document_parser: DocumentParserConfig | dict[str, Any] | None = None,
     ) -> KnowledgeSource:
         root = path.expanduser().resolve()
+        document_parser_config = (
+            document_parser
+            if isinstance(document_parser, dict)
+            else to_jsonable(document_parser or DocumentParserConfig())
+        )
         source = KnowledgeSource(
             knowledge_source_id=knowledge_source_id(owner_user_id, root.as_uri(), tenant_id=tenant_id),
             owner_user_id=owner_user_id,
@@ -65,6 +77,7 @@ class KnowledgeSourceService:
                 "max_bytes": max_bytes,
                 "spreadsheet_max_rows_per_sheet": spreadsheet_max_rows_per_sheet,
                 "spreadsheet_max_columns": spreadsheet_max_columns,
+                "document_parser": document_parser_config,
             },
             tenant_id=tenant_id,
         )
@@ -188,6 +201,7 @@ class KnowledgeSourceService:
                 max_bytes=config.files.max_bytes,
                 spreadsheet_max_rows_per_sheet=config.files.spreadsheet_max_rows_per_sheet,
                 spreadsheet_max_columns=config.files.spreadsheet_max_columns,
+                document_parser=config.document_parser,
                 status=existing.status if existing is not None else "authorized",
             )
             if existing is None or _folder_source_differs(existing, source):

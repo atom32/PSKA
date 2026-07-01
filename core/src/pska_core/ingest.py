@@ -17,6 +17,25 @@ from pska_core.embeddings import EmbeddingProvider
 POSTGRES_NUL_REPLACEMENT = "\uFFFD"
 
 
+def postgres_safe_text(value: str) -> str:
+    return value.replace("\x00", POSTGRES_NUL_REPLACEMENT)
+
+
+def postgres_safe_json(value: Any) -> Any:
+    if isinstance(value, str):
+        return postgres_safe_text(value)
+    if isinstance(value, dict):
+        return {
+            postgres_safe_text(str(key)): postgres_safe_json(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [postgres_safe_json(item) for item in value]
+    if isinstance(value, tuple):
+        return [postgres_safe_json(item) for item in value]
+    return value
+
+
 class IngestService:
     """Converts channel payloads into source items, documents, and chunks."""
 
@@ -175,21 +194,10 @@ class IngestService:
         )
 
     def _postgres_safe_json(self, value: Any) -> Any:
-        if isinstance(value, str):
-            return self._postgres_safe_text(value)
-        if isinstance(value, dict):
-            return {
-                self._postgres_safe_text(str(key)): self._postgres_safe_json(item)
-                for key, item in value.items()
-            }
-        if isinstance(value, list):
-            return [self._postgres_safe_json(item) for item in value]
-        if isinstance(value, tuple):
-            return [self._postgres_safe_json(item) for item in value]
-        return value
+        return postgres_safe_json(value)
 
     def _postgres_safe_text(self, value: str) -> str:
-        return value.replace("\x00", POSTGRES_NUL_REPLACEMENT)
+        return postgres_safe_text(value)
 
     def _resolve_chunk_size(self, *, chunk_size: int | None, chunk_chars: int | None) -> int:
         value = chunk_size if chunk_size is not None else chunk_chars

@@ -21,6 +21,8 @@ DEFAULT_WORKSPACE_ROOT = Path("~/PSKA_workspaces")
 DEFAULT_FILES_MAX_BYTES = 50 * 1024 * 1024
 DEFAULT_SPREADSHEET_MAX_ROWS_PER_SHEET = 2_000
 DEFAULT_SPREADSHEET_MAX_COLUMNS = 80
+DEFAULT_DOCUMENT_PARSER_URL = "http://127.0.0.1:8083/rag/model_parser_file"
+DEFAULT_DOCUMENT_PARSER_EXTENSIONS = (".pdf", ".png", ".jpg", ".jpeg", ".webp", ".gif")
 DEFAULT_JWT_TENANT_CLAIMS = ("tenant_id", "tenant_key", "tenant", "org_id")
 DEFAULT_TRUSTED_HEADER_USER_ID = "X-PSKA-User-Id"
 DEFAULT_TRUSTED_HEADER_TENANT_ID = "X-PSKA-Tenant-Id"
@@ -332,6 +334,33 @@ class FilesConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class DocumentParserConfig:
+    enabled: bool = False
+    url: str = DEFAULT_DOCUMENT_PARSER_URL
+    timeout_seconds: float = 120.0
+    extract_image: bool = False
+    extract_image_content: bool = False
+    return_json: bool = False
+    extensions: tuple[str, ...] = DEFAULT_DOCUMENT_PARSER_EXTENSIONS
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> "DocumentParserConfig":
+        data = data or {}
+        extensions = data.get("extensions") or data.get("file_extensions") or DEFAULT_DOCUMENT_PARSER_EXTENSIONS
+        if isinstance(extensions, str):
+            extensions = tuple(item.strip() for item in extensions.split(",") if item.strip())
+        return cls(
+            enabled=_config_bool(data.get("enabled", False)),
+            url=str(data.get("url") or data.get("endpoint") or DEFAULT_DOCUMENT_PARSER_URL).rstrip("/"),
+            timeout_seconds=float(data.get("timeout_seconds") or data.get("timeout") or 120.0),
+            extract_image=_config_bool(data.get("extract_image", False)),
+            extract_image_content=_config_bool(data.get("extract_image_content", False)),
+            return_json=_config_bool(data.get("return_json", False)),
+            extensions=tuple(_normalize_extension(str(item)) for item in extensions if str(item).strip()),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class WorkspaceConfig:
     root: Path = DEFAULT_WORKSPACE_ROOT
 
@@ -429,6 +458,7 @@ class PSKAConfig:
     embedding: EmbeddingConfigFile = field(default_factory=EmbeddingConfigFile)
     ingest: IngestConfig = field(default_factory=IngestConfig)
     files: FilesConfig = field(default_factory=FilesConfig)
+    document_parser: DocumentParserConfig = field(default_factory=DocumentParserConfig)
     workspace: WorkspaceConfig = field(default_factory=WorkspaceConfig)
     startup: StartupConfig = field(default_factory=StartupConfig)
 
@@ -456,6 +486,7 @@ class PSKAConfig:
             embedding=EmbeddingConfigFile.from_dict(data.get("embedding")),
             ingest=IngestConfig.from_dict(data.get("ingest")),
             files=FilesConfig.from_dict(data.get("files")),
+            document_parser=DocumentParserConfig.from_dict(data.get("document_parser") or data.get("doc_parser")),
             workspace=WorkspaceConfig.from_dict(data.get("workspace")),
             startup=StartupConfig.from_dict(data.get("startup")),
         )
@@ -497,6 +528,7 @@ class PSKAConfig:
         agentic_authnode_ttl = os.getenv("PSKA_AGENTIC_SERVICE_AUTHNODE_TOKEN_TTL_SECONDS")
         if not agentic_authnode_ttl and base.agentic_service.authnode_token_ttl_seconds == default_agentic.authnode_token_ttl_seconds:
             agentic_authnode_ttl = os.getenv("PSKA_FASTREACT_AUTHNODE_TOKEN_TTL_SECONDS")
+        document_parser_extensions = os.getenv("PSKA_DOCUMENT_PARSER_EXTENSIONS") or os.getenv("PSKA_DOC_PARSER_EXTENSIONS")
         return cls(
             database=DatabaseConfig(url=os.getenv("PSKA_DATABASE_URL", base.database.url)),
             service=ServiceConfig(
@@ -581,6 +613,19 @@ class PSKAConfig:
                 space_id=os.getenv("PSKA_FILES_SPACE_ID", base.files.space_id),
                 visibility=os.getenv("PSKA_FILES_VISIBILITY", base.files.visibility),
                 tenant_id=os.getenv("PSKA_FILES_TENANT_ID", base.files.tenant_id),
+            ),
+            document_parser=DocumentParserConfig(
+                enabled=_env_bool("PSKA_DOCUMENT_PARSER_ENABLED", base.document_parser.enabled),
+                url=(os.getenv("PSKA_DOCUMENT_PARSER_URL") or os.getenv("PSKA_DOC_PARSER_URL") or base.document_parser.url).rstrip("/"),
+                timeout_seconds=float(os.getenv("PSKA_DOCUMENT_PARSER_TIMEOUT_SECONDS") or base.document_parser.timeout_seconds),
+                extract_image=_env_bool("PSKA_DOCUMENT_PARSER_EXTRACT_IMAGE", base.document_parser.extract_image),
+                extract_image_content=_env_bool("PSKA_DOCUMENT_PARSER_EXTRACT_IMAGE_CONTENT", base.document_parser.extract_image_content),
+                return_json=_env_bool("PSKA_DOCUMENT_PARSER_RETURN_JSON", base.document_parser.return_json),
+                extensions=tuple(
+                    _normalize_extension(item)
+                    for item in (document_parser_extensions.split(",") if document_parser_extensions else base.document_parser.extensions)
+                    if str(item).strip()
+                ),
             ),
             workspace=WorkspaceConfig(
                 root=expand_path(os.getenv("PSKA_WORKSPACE_ROOT")) if os.getenv("PSKA_WORKSPACE_ROOT") else base.workspace.root,
@@ -705,6 +750,26 @@ def _positive_int(value: Any, default: int) -> int:
         return default
     parsed = int(value)
     return parsed if parsed > 0 else default
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _config_bool(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _normalize_extension(value: str) -> str:
+    extension = value.strip().lower()
+    if not extension:
+        return extension
+    return extension if extension.startswith(".") else f".{extension}"
 
 
 def _workspace_path_segment(value: str) -> str:

@@ -9,14 +9,21 @@ import mimetypes
 from pathlib import Path
 import tempfile
 from typing import Any
+from urllib import error as urllib_error
+from urllib import request as urllib_request
 from uuid import NAMESPACE_URL, uuid5
 import zipfile
 from xml.etree import ElementTree
 
-from pska_core.config import DEFAULT_FILES_MAX_BYTES, DEFAULT_SPREADSHEET_MAX_COLUMNS, DEFAULT_SPREADSHEET_MAX_ROWS_PER_SHEET
+from pska_core.config import (
+    DEFAULT_FILES_MAX_BYTES,
+    DEFAULT_SPREADSHEET_MAX_COLUMNS,
+    DEFAULT_SPREADSHEET_MAX_ROWS_PER_SHEET,
+    DocumentParserConfig,
+)
 from pska_core.connectors import connector_record_to_payload, connector_state_from_mapping, connector_state_id
 from pska_core.enums import Visibility
-from pska_core.ingest import IngestService
+from pska_core.ingest import IngestService, postgres_safe_json, postgres_safe_text
 from pska_core.models import DEFAULT_TENANT_ID, Chunk, ConnectorState, Document, SourceItem
 from pska_core.offline_index import OfflineIndexService
 from pska_core.processing import resolve_processing_config
@@ -44,6 +51,13 @@ TEXT_SUFFIXES = {
 DOCUMENT_SUFFIXES = {
     ".docx",
     ".pdf",
+}
+DOCUMENT_PARSER_IMAGE_SUFFIXES = {
+    ".gif",
+    ".jpeg",
+    ".jpg",
+    ".png",
+    ".webp",
 }
 SPREADSHEET_SUFFIXES = {
     ".xls",
@@ -85,6 +99,7 @@ def scan_files(
     max_bytes: int = DEFAULT_FILES_MAX_BYTES,
     spreadsheet_max_rows_per_sheet: int = DEFAULT_SPREADSHEET_MAX_ROWS_PER_SHEET,
     spreadsheet_max_columns: int = DEFAULT_SPREADSHEET_MAX_COLUMNS,
+    document_parser: DocumentParserConfig | None = None,
     embedding_provider=None,
     processing_config: dict[str, Any] | None = None,
 ) -> FilesScanReport:
@@ -108,6 +123,8 @@ def scan_files(
     patterns = [*(ignore or []), *DEFAULT_IGNORE]
     root_key = str(root)
     state_config = dict(state.config or {})
+    document_parser = document_parser or DocumentParserConfig()
+    supported_suffixes = _supported_suffixes(document_parser)
     manifests_by_root = dict(state_config.get("files_manifests_by_root") or {})
     missing_by_root = dict(state_config.get("files_missing_by_root") or {})
     previous_manifest = dict(manifests_by_root.get(root_key) or {})
@@ -150,6 +167,9 @@ def scan_files(
                 visible_team_ids=visible_team_ids or [],
                 content_hash=classification["content_hash"],
                 files=classification["files"],
+                spreadsheet_max_rows_per_sheet=spreadsheet_max_rows_per_sheet,
+                spreadsheet_max_columns=spreadsheet_max_columns,
+                document_parser=document_parser,
             )
             report.scanned += len(documents)
             report.ingested += 1
@@ -188,7 +208,7 @@ def scan_files(
                 report.skipped.append({"path": str(path), "reason": "file_too_large", "size_bytes": stat.st_size})
                 continue
             suffix = path.suffix.lower()
-            if suffix not in SUPPORTED_SUFFIXES:
+            if suffix not in supported_suffixes:
                 report.skipped.append({"path": str(path), "reason": "unsupported_suffix"})
                 continue
             raw = path.read_bytes()
@@ -217,6 +237,7 @@ def scan_files(
                 raw,
                 spreadsheet_max_rows_per_sheet=spreadsheet_max_rows_per_sheet,
                 spreadsheet_max_columns=spreadsheet_max_columns,
+                document_parser=document_parser,
             )
             if not extracted["ok"]:
                 report.skipped.append({"path": str(path), "reason": extracted["reason"], "detail": extracted.get("detail")})
@@ -293,32 +314,49 @@ def _extract_text(
     *,
     spreadsheet_max_rows_per_sheet: int = DEFAULT_SPREADSHEET_MAX_ROWS_PER_SHEET,
     spreadsheet_max_columns: int = DEFAULT_SPREADSHEET_MAX_COLUMNS,
+    document_parser: DocumentParserConfig | None = None,
 ) -> dict[str, Any]:
     suffix = path.suffix.lower()
+    document_parser = document_parser or DocumentParserConfig()
+    external = _extract_with_document_parser(path, raw, document_parser)
+    external_error = None
+    if external.get("ok"):
+        return _sanitize_extraction(external)
+    if external.get("attempted"):
+        external_error = {key: value for key, value in external.items() if key != "text"}
     if suffix in TEXT_SUFFIXES:
-        return {"ok": True, "text": raw.decode("utf-8", errors="replace"), "extractor": "utf8"}
+        return _sanitize_extraction({"ok": True, "text": raw.decode("utf-8", errors="replace"), "extractor": "utf8"})
     if suffix == ".pdf":
         try:
             from pypdf import PdfReader  # type: ignore[import-not-found]
         except Exception as exc:  # noqa: BLE001 - optional dependency.
-            return {"ok": False, "reason": "missing_dependency", "detail": f"pypdf required for PDF extraction: {type(exc).__name__}"}
+            result = {"ok": False, "reason": "missing_dependency", "detail": f"pypdf required for PDF extraction: {type(exc).__name__}"}
+            if external_error:
+                result["external_parser"] = external_error
+            return _sanitize_extraction(result)
         try:
             reader = PdfReader(path)
             text = "\n\n".join(page.extract_text() or "" for page in reader.pages)
         except Exception as exc:  # noqa: BLE001 - per-file failure should not abort scan.
-            return {"ok": False, "reason": "extract_failed", "detail": f"{type(exc).__name__}: {exc}"}
-        return {"ok": True, "text": text, "extractor": "pypdf"}
+            result = {"ok": False, "reason": "extract_failed", "detail": f"{type(exc).__name__}: {exc}"}
+            if external_error:
+                result["external_parser"] = external_error
+            return _sanitize_extraction(result)
+        result = {"ok": True, "text": text, "extractor": "pypdf"}
+        if external_error:
+            result["metadata"] = {"external_parser_fallback": external_error}
+        return _sanitize_extraction(result)
     if suffix == ".docx":
         try:
             from docx import Document  # type: ignore[import-not-found]
         except Exception as exc:  # noqa: BLE001 - optional dependency.
-            return {"ok": False, "reason": "missing_dependency", "detail": f"python-docx required for DOCX extraction: {type(exc).__name__}"}
+            return _sanitize_extraction({"ok": False, "reason": "missing_dependency", "detail": f"python-docx required for DOCX extraction: {type(exc).__name__}"})
         try:
             document = Document(path)
             text = "\n".join(paragraph.text for paragraph in document.paragraphs)
         except Exception as exc:  # noqa: BLE001
-            return {"ok": False, "reason": "extract_failed", "detail": f"{type(exc).__name__}: {exc}"}
-        return {"ok": True, "text": text, "extractor": "python-docx"}
+            return _sanitize_extraction({"ok": False, "reason": "extract_failed", "detail": f"{type(exc).__name__}: {exc}"})
+        return _sanitize_extraction({"ok": True, "text": text, "extractor": "python-docx"})
     if suffix == ".xlsx":
         return _extract_xlsx_text(
             path,
@@ -332,7 +370,7 @@ def _extract_text(
             spreadsheet_max_rows_per_sheet=spreadsheet_max_rows_per_sheet,
             spreadsheet_max_columns=spreadsheet_max_columns,
         )
-    return {"ok": False, "reason": "unsupported_suffix"}
+    return _sanitize_extraction({"ok": False, "reason": "unsupported_suffix"})
 
 
 def extract_text_from_bytes(
@@ -341,6 +379,7 @@ def extract_text_from_bytes(
     *,
     spreadsheet_max_rows_per_sheet: int = DEFAULT_SPREADSHEET_MAX_ROWS_PER_SHEET,
     spreadsheet_max_columns: int = DEFAULT_SPREADSHEET_MAX_COLUMNS,
+    document_parser: DocumentParserConfig | None = None,
 ) -> dict[str, Any]:
     """Extract uploaded file text with the same rules as folder sources."""
     safe_name = Path(filename or "upload.txt").name or "upload.txt"
@@ -351,6 +390,7 @@ def extract_text_from_bytes(
             raw,
             spreadsheet_max_rows_per_sheet=spreadsheet_max_rows_per_sheet,
             spreadsheet_max_columns=spreadsheet_max_columns,
+            document_parser=document_parser,
         )
     with tempfile.TemporaryDirectory(prefix="pska_upload_extract_") as tmpdir:
         temp_path = Path(tmpdir) / safe_name
@@ -360,7 +400,188 @@ def extract_text_from_bytes(
             raw,
             spreadsheet_max_rows_per_sheet=spreadsheet_max_rows_per_sheet,
             spreadsheet_max_columns=spreadsheet_max_columns,
+            document_parser=document_parser,
         )
+
+
+def _supported_suffixes(document_parser: DocumentParserConfig) -> set[str]:
+    suffixes = set(SUPPORTED_SUFFIXES)
+    if document_parser.enabled:
+        suffixes.update(document_parser.extensions or DOCUMENT_PARSER_IMAGE_SUFFIXES)
+    return suffixes
+
+
+def _extract_with_document_parser(path: Path, raw: bytes, config: DocumentParserConfig) -> dict[str, Any]:
+    suffix = path.suffix.lower()
+    if not config.enabled or suffix not in set(config.extensions or ()):
+        return {"ok": False, "attempted": False, "reason": "document_parser_disabled"}
+    if not raw:
+        return {"ok": False, "attempted": True, "reason": "empty_upload"}
+    try:
+        payload = _call_document_parser_server(path, raw, config)
+    except Exception as exc:  # noqa: BLE001 - external parser is optional and should fall back locally.
+        return {
+            "ok": False,
+            "attempted": True,
+            "reason": "external_parser_failed",
+            "detail": f"{type(exc).__name__}: {exc}",
+            "extractor": "doc-parser-server",
+        }
+    code = str(payload.get("code") or "")
+    status = str(payload.get("status") or "").lower()
+    content = str(payload.get("content") or "")
+    json_content = payload.get("json_content")
+    if not content.strip() and json_content:
+        content = _text_from_doc_parser_json(json_content)
+    if code != "200" and status != "success":
+        return {
+            "ok": False,
+            "attempted": True,
+            "reason": "external_parser_failed",
+            "detail": str(payload.get("message") or status or code or "unknown parser failure"),
+            "extractor": "doc-parser-server",
+        }
+    if not content.strip():
+        return {
+            "ok": False,
+            "attempted": True,
+            "reason": "empty_text",
+            "detail": str(payload.get("message") or "document parser returned no content"),
+            "extractor": "doc-parser-server",
+        }
+    metadata = {
+        "code": code or None,
+        "status": status or None,
+        "message": payload.get("message"),
+        "trace_id": payload.get("trace_id"),
+        "version": payload.get("version"),
+        "prefix_image_url": payload.get("prefix_image_url"),
+        "json_content_present": bool(json_content),
+    }
+    metadata.update(_doc_parser_json_summary(json_content))
+    return _sanitize_extraction(
+        {
+            "ok": True,
+            "attempted": True,
+            "text": content,
+            "extractor": "doc-parser-server",
+            "metadata": {key: value for key, value in metadata.items() if value is not None and value != ""},
+        }
+    )
+
+
+def _call_document_parser_server(path: Path, raw: bytes, config: DocumentParserConfig) -> dict[str, Any]:
+    fields = {
+        "file_name": path.name,
+        "extract_image": "True" if config.extract_image else "False",
+        "extract_image_content": "1" if config.extract_image_content else "0",
+        "return_json": "true" if config.return_json else "false",
+    }
+    body, content_type = _multipart_form_data(
+        fields,
+        file_field="file",
+        filename=path.name,
+        content=raw,
+        mime_type=mimetypes.guess_type(path.name)[0] or "application/octet-stream",
+    )
+    request = urllib_request.Request(
+        config.url,
+        data=body,
+        headers={"Content-Type": content_type, "Accept": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib_request.urlopen(  # noqa: S310 - user-configured local parser endpoint.
+            request,
+            timeout=config.timeout_seconds,
+        ) as response:
+            response_body = response.read()
+    except urllib_error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"HTTP {exc.code}: {detail[:500]}") from exc
+    parsed = json.loads(response_body.decode("utf-8", errors="replace"))
+    if not isinstance(parsed, dict):
+        raise RuntimeError("document parser returned non-object JSON")
+    return parsed
+
+
+def _multipart_form_data(
+    fields: dict[str, str],
+    *,
+    file_field: str,
+    filename: str,
+    content: bytes,
+    mime_type: str,
+) -> tuple[bytes, str]:
+    boundary = f"pska-doc-parser-{uuid5(NAMESPACE_URL, filename + str(len(content))).hex}"
+    chunks: list[bytes] = []
+    for name, value in fields.items():
+        chunks.extend(
+            [
+                f"--{boundary}\r\n".encode("utf-8"),
+                f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode("utf-8"),
+                str(value).encode("utf-8"),
+                b"\r\n",
+            ]
+        )
+    safe_filename = filename.replace('"', "_")
+    chunks.extend(
+        [
+            f"--{boundary}\r\n".encode("utf-8"),
+            f'Content-Disposition: form-data; name="{file_field}"; filename="{safe_filename}"\r\n'.encode("utf-8"),
+            f"Content-Type: {mime_type}\r\n\r\n".encode("utf-8"),
+            content,
+            b"\r\n",
+            f"--{boundary}--\r\n".encode("utf-8"),
+        ]
+    )
+    return b"".join(chunks), f"multipart/form-data; boundary={boundary}"
+
+
+def _text_from_doc_parser_json(json_content: Any) -> str:
+    parsed = _parse_doc_parser_json(json_content)
+    if not isinstance(parsed, dict):
+        return ""
+    blocks = parsed.get("parsing_res_list_merge")
+    if not isinstance(blocks, list):
+        return ""
+    return "\n\n".join(
+        str(block.get("block_content") or "")
+        for block in blocks
+        if isinstance(block, dict) and block.get("block_content")
+    )
+
+
+def _doc_parser_json_summary(json_content: Any) -> dict[str, Any]:
+    parsed = _parse_doc_parser_json(json_content)
+    if not isinstance(parsed, dict):
+        return {}
+    blocks = parsed.get("parsing_res_list_merge")
+    if not isinstance(blocks, list):
+        return {}
+    labels: dict[str, int] = {}
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        label = str(block.get("block_label") or "unknown")
+        labels[label] = labels.get(label, 0) + 1
+    return {"json_block_count": len(blocks), "json_block_labels": labels}
+
+
+def _parse_doc_parser_json(json_content: Any) -> Any:
+    if isinstance(json_content, str):
+        try:
+            return json.loads(json_content)
+        except json.JSONDecodeError:
+            return None
+    return json_content
+
+
+def _sanitize_extraction(extraction: dict[str, Any]) -> dict[str, Any]:
+    sanitized = postgres_safe_json(extraction)
+    if isinstance(sanitized, dict) and isinstance(sanitized.get("text"), str):
+        sanitized["text"] = postgres_safe_text(sanitized["text"])
+    return sanitized if isinstance(sanitized, dict) else extraction
 
 
 def _extract_xlsx_text(
@@ -401,17 +622,19 @@ def _extract_xlsx_text(
     except Exception as exc:  # noqa: BLE001 - per-file failure should not abort scan.
         return {"ok": False, "reason": "extract_failed", "detail": f"{type(exc).__name__}: {exc}"}
     text = "\n\n".join(rendered)
-    return {
-        "ok": True,
-        "text": text,
-        "extractor": "xlsx-zip-xml",
-        "metadata": {
-            "sheet_count": len(sheet_metadata),
-            "sheets": sheet_metadata,
-            "row_limit_per_sheet": row_limit,
-            "column_limit": column_limit,
-        },
-    }
+    return _sanitize_extraction(
+        {
+            "ok": True,
+            "text": text,
+            "extractor": "xlsx-zip-xml",
+            "metadata": {
+                "sheet_count": len(sheet_metadata),
+                "sheets": sheet_metadata,
+                "row_limit_per_sheet": row_limit,
+                "column_limit": column_limit,
+            },
+        }
+    )
 
 
 def _extract_xls_text(
@@ -451,17 +674,19 @@ def _extract_xls_text(
             )
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "reason": "extract_failed", "detail": f"{type(exc).__name__}: {exc}"}
-    return {
-        "ok": True,
-        "text": "\n\n".join(rendered),
-        "extractor": "xlrd",
-        "metadata": {
-            "sheet_count": len(sheet_metadata),
-            "sheets": sheet_metadata,
-            "row_limit_per_sheet": row_limit,
-            "column_limit": column_limit,
-        },
-    }
+    return _sanitize_extraction(
+        {
+            "ok": True,
+            "text": "\n\n".join(rendered),
+            "extractor": "xlrd",
+            "metadata": {
+                "sheet_count": len(sheet_metadata),
+                "sheets": sheet_metadata,
+                "row_limit_per_sheet": row_limit,
+                "column_limit": column_limit,
+            },
+        }
+    )
 
 
 def _xlsx_shared_strings(archive: zipfile.ZipFile) -> list[str]:
@@ -714,6 +939,9 @@ def _ingest_collection(
     visible_team_ids: list[str],
     content_hash: str,
     files: list[Path],
+    spreadsheet_max_rows_per_sheet: int,
+    spreadsheet_max_columns: int,
+    document_parser: DocumentParserConfig,
     tenant_id: str = DEFAULT_TENANT_ID,
 ) -> tuple[SourceItem, list[Document]]:
     marker_path, marker = _collection_marker(collection_root)
@@ -723,7 +951,13 @@ def _ingest_collection(
     document_texts: list[tuple[Path, str]] = []
     for path in files:
         raw = path.read_bytes()
-        extracted = _extract_text(path, raw)
+        extracted = _extract_text(
+            path,
+            raw,
+            spreadsheet_max_rows_per_sheet=spreadsheet_max_rows_per_sheet,
+            spreadsheet_max_columns=spreadsheet_max_columns,
+            document_parser=document_parser,
+        )
         if extracted["ok"] and str(extracted["text"]).strip():
             document_texts.append((path, str(extracted["text"])))
     combined_text = "\n\n".join(
