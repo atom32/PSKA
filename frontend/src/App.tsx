@@ -824,6 +824,13 @@ function TodayWorkspace({
     setActions((current) => ({ ...current, [id]: value }));
   }
 
+  function refreshAskConversationData(conversationId: string) {
+    void Promise.all([
+      askConversationsQuery.refetch(),
+      conversationId ? askConversationQuery.refetch() : Promise.resolve()
+    ]).catch(() => undefined);
+  }
+
   async function runTodaySearch(event?: FormEvent<HTMLFormElement>) {
     event?.preventDefault();
     const query = searchQuery.trim();
@@ -865,7 +872,7 @@ function TodayWorkspace({
         if (result.error) {
           setSearchError(displaySearchError(result.error));
         }
-        await Promise.all([askConversationsQuery.refetch(), conversationId ? askConversationQuery.refetch() : Promise.resolve()]);
+        refreshAskConversationData(conversationId);
         return;
       }
       const result = conversationId ? await askConversationStream(conversationId, query, serviceToken, updateLiveResult, { surface: "today", topK: askTopK, temperature: askTemperature, maxTokens: askMaxTokens }) : await askWorkspaceStream(query, serviceToken, "auto", "today", updateLiveResult);
@@ -875,13 +882,13 @@ function TodayWorkspace({
       if (result.error) {
         setSearchError(displaySearchError(result.error));
       }
-      await Promise.all([askConversationsQuery.refetch(), conversationId ? askConversationQuery.refetch() : Promise.resolve()]);
+      refreshAskConversationData(conversationId);
     } catch (error) {
       const message = error instanceof Error ? error.message : "PSKA 查询失败。";
       const failedResult: WorkspaceAskResponse = { ...latestAskResult, ok: false, query, error: message };
       setSearchResult(failedResult);
       setSearchError(message);
-      await Promise.all([askConversationsQuery.refetch(), conversationId ? askConversationQuery.refetch() : Promise.resolve()]);
+      refreshAskConversationData(conversationId);
     } finally {
       setSearching(false);
     }
