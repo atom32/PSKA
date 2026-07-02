@@ -21,10 +21,13 @@ from pska_core.api import (
     _ask_agent_steps_from_events,
     _ask_answer_quality_flags,
     _ask_clean_evidence_text,
+    _ask_hydrate_retrieval_source_windows,
     _ask_is_stream_done_event,
     _ask_query_terms,
+    _ask_quick_answer,
     _ask_route_intent,
     _ask_retrieval_from_agentic_trace,
+    _ask_verify_evidence,
 )
 from pska_core.auth import context_from_headers
 from pska_core.candidates import CandidateWriteService
@@ -38,7 +41,7 @@ from pska_core.hypergraph import HypergraphService
 from pska_core.ingest import IngestService
 from pska_core.jobs import DIGEST_VIA_FASTREACT, EXTRACT_VIA_FASTREACT, JobService
 from pska_core.mcp_server import MCPServer
-from pska_core.models import AgentMemory, ConnectorState, DigestNote, DiscoveryItem, Entity, KnowledgeClaim, ReviewItem, SourceRef, User, UserProfileCard, utc_now
+from pska_core.models import AgentMemory, Chunk, ConnectorState, DigestNote, DiscoveryItem, Document, Entity, KnowledgeClaim, ReviewItem, SourceItem, SourceRef, User, UserProfileCard, utc_now
 from pska_core.retrieval import RetrievalService
 from pska_core.review import ReviewService
 from pska_core.serde import to_jsonable
@@ -344,6 +347,253 @@ def test_ask_quick_clean_evidence_removes_inline_frontmatter_and_headings() -> N
     assert "title:" not in cleaned
     assert "| --- |" not in cleaned
     assert "acme-example Founded 2024" in cleaned
+    assert "a / b" in cleaned
+
+
+def test_ask_source_window_uses_retrieved_chunk_for_large_table_rows() -> None:
+    store = InMemoryKnowledgeStore()
+    store.add_user(User("user_primary", "primary", UserRole.ADMIN))
+    source_item_id = "src_large_table"
+    document_id = "doc_large_table"
+    store.upsert_source_item(
+        SourceItem(
+            source_item_id=source_item_id,
+            source_channel="upload",
+            record_type="file",
+            source_id="large-table.xlsx",
+            owner_user_id="user_primary",
+            space_id="private_primary",
+            visibility=Visibility.PRIVATE,
+            visible_team_ids=[],
+            title="large-table.xlsx",
+            url=None,
+            content_text="table body",
+            content_hash="hash_large_table",
+        )
+    )
+    store.add_document(
+        Document(
+            document_id=document_id,
+            source_item_id=source_item_id,
+            owner_user_id="user_primary",
+            space_id="private_primary",
+            visibility=Visibility.PRIVATE,
+            visible_team_ids=[],
+            title="large-table.xlsx",
+            body="| RowNo | BorrowerId |\n| 1 | BOR-FIRST |",
+        )
+    )
+    store.add_chunk(
+        Chunk(
+            chunk_id="chk_large_table_834",
+            document_id=document_id,
+            source_item_id=source_item_id,
+            owner_user_id="user_primary",
+            space_id="private_primary",
+            visibility=Visibility.PRIVATE,
+            visible_team_ids=[],
+            text=(
+                "| RowNo | BorrowerId | DrawnCNYmm | LTV | InternalRating | ECLStage | Checksum |\n"
+                "| 1375 | BOR-NOISE | 11.00 | 0.1100 | BBB | Stage 1 | CHK-NOISE |\n"
+                "| 1376 | BOR-TXC-HLD-1376 | 654.32 | 0.7261 | AA- | Stage 2 | CHK-TXC-1376-4812 |"
+            ),
+            ordinal=834,
+        )
+    )
+    retrieval = {
+        "results": [
+            {
+                "source_item_id": source_item_id,
+                "document_id": document_id,
+                "chunk_id": "chk_large_table_834",
+                "title": "large-table.xlsx",
+                "snippet": "| 1376 | BOR-TXC-HLD-1376 |",
+                "citation": {"source_item_id": source_item_id, "chunk_id": "chk_large_table_834", "title": "large-table.xlsx"},
+            }
+        ],
+        "citations": [{"source_item_id": source_item_id, "chunk_id": "chk_large_table_834", "title": "large-table.xlsx"}],
+    }
+
+    hydrated = _ask_hydrate_retrieval_source_windows(
+        store,
+        retrieval,
+        query="RowNo 1376 BOR-TXC-HLD-1376 DrawnCNYmm LTV InternalRating ECLStage Checksum",
+        tenant_id="tenant_default",
+        owner_user_id="user_primary",
+    )
+
+    window_text = hydrated["source_windows"][0]["text"]
+    assert "BOR-TXC-HLD-1376" in window_text
+    assert "654.32" in window_text
+    assert "CHK-TXC-1376-4812" in window_text
+    assert "BOR-FIRST" not in window_text
+
+
+def test_mcp_read_evidence_context_focuses_wide_table_chunk() -> None:
+    store = InMemoryKnowledgeStore()
+    store.add_user(User("user_primary", "primary", UserRole.ADMIN))
+    source_item_id = "src_mcp_wide_table"
+    document_id = "doc_mcp_wide_table"
+    filler_columns = " | ".join(f"Filler{i}" for i in range(80))
+    store.upsert_source_item(
+        SourceItem(
+            source_item_id=source_item_id,
+            source_channel="upload",
+            record_type="file",
+            source_id="mcp-wide-table.xlsx",
+            owner_user_id="user_primary",
+            space_id="private_primary",
+            visibility=Visibility.PRIVATE,
+            visible_team_ids=[],
+            title="mcp-wide-table.xlsx",
+            url=None,
+            content_text="wide table body",
+            content_hash="hash_mcp_wide_table",
+        )
+    )
+    store.add_document(
+        Document(
+            document_id=document_id,
+            source_item_id=source_item_id,
+            owner_user_id="user_primary",
+            space_id="private_primary",
+            visibility=Visibility.PRIVATE,
+            visible_team_ids=[],
+            title="mcp-wide-table.xlsx",
+            body="| RowNo | BorrowerId |\n| 1 | BOR-FIRST |",
+        )
+    )
+    store.add_chunk(
+        Chunk(
+            chunk_id="chk_mcp_wide_table_01",
+            document_id=document_id,
+            source_item_id=source_item_id,
+            owner_user_id="user_primary",
+            space_id="private_primary",
+            visibility=Visibility.PRIVATE,
+            visible_team_ids=[],
+            text=(
+                "| CheckId | RowNo | RelatedFacilityId | Rule |\n"
+                "| AUDIT-1376 | 1376 | FAC-TXC-1376 | sample cross-check row |"
+            ),
+            ordinal=1,
+        )
+    )
+    store.add_chunk(
+        Chunk(
+            chunk_id="chk_mcp_wide_table_99",
+            document_id=document_id,
+            source_item_id=source_item_id,
+            owner_user_id="user_primary",
+            space_id="private_primary",
+            visibility=Visibility.PRIVATE,
+            visible_team_ids=[],
+            text=(
+                "| RowNo | BorrowerId | DrawnCNYmm | LTV | InternalRating | ECLStage | Checksum | Notes |\n"
+                f"| 1375 | BOR-NOISE | 11.00 | 0.1100 | BBB | Stage 1 | CHK-NOISE | {filler_columns} |\n"
+                "| 1376 | BOR-TXC-HLD-1376 | 654.32 | 0.7261 | AA- | Stage 2 | CHK-TXC-1376-4812 | target row |"
+            ),
+            ordinal=99,
+        )
+    )
+    server = MCPServer("postgresql:///unused", store=store)
+
+    payload = server.pska_read_evidence_context(
+        {
+            "query": "RowNo 1376 BOR-TXC-HLD-1376 DrawnCNYmm LTV InternalRating ECLStage Checksum",
+            "source_refs": [{"source_item_id": source_item_id}],
+            "max_chunk_chars": 700,
+        }
+    )
+
+    assert payload["chunks"][0]["chunk_id"] == "chk_mcp_wide_table_99"
+    assert payload["citations"][0]["chunk_id"] == "chk_mcp_wide_table_99"
+    chunk_text = payload["chunks"][0]["text"]
+    assert "BOR-TXC-HLD-1376" in chunk_text
+    assert "654.32" in chunk_text
+    assert "CHK-TXC-1376-4812" in chunk_text
+    assert "1375" not in chunk_text
+    assert max(len(line) for line in chunk_text.splitlines()) <= 500
+
+
+def test_ask_evidence_check_accepts_structural_contact_anchors() -> None:
+    evidence = {
+        "results": [
+            {
+                "source_item_id": "src_pdf",
+                "chunk_id": "chk_tail",
+                "title": "annual-report.pdf",
+                "snippet": "Corporate office tel 852-217 95122 web www.example.com",
+                "source_window": {
+                    "source_item_id": "src_pdf",
+                    "document_id": "doc_pdf",
+                    "chunk_id": "chk_tail",
+                    "title": "annual-report.pdf",
+                    "text": "Corporate office tel 852-217 95122 web www.example.com",
+                },
+            }
+        ],
+        "citations": [
+            {
+                "source_item_id": "src_pdf",
+                "document_id": "doc_pdf",
+                "chunk_id": "chk_tail",
+                "title": "annual-report.pdf",
+            }
+        ],
+        "source_windows": [],
+    }
+
+    check = _ask_verify_evidence(
+        query="年报最后一页的联系电话和网址是什么？",
+        evidence=evidence,
+        scope={},
+        ask_intent="quick",
+    )
+
+    assert check["status"] == "supported"
+    assert check["used_citations"][0]["support_hits"][-2:] == ["url", "phone"]
+
+
+def test_ask_quick_answer_prioritizes_structured_contact_values() -> None:
+    answer = _ask_quick_answer(
+        "年报最后一页的联系电话和网址是什么？",
+        {
+            "results": [
+                {
+                    "snippet": "tail page garbled label j852-217 95122 label jwww.example.com office j86-755-86013388",
+                }
+            ],
+            "diagnostics": {},
+        },
+    )
+
+    assert "网址：www.example.com" in answer
+    assert "联系电话：852-217 95122；86-755-86013388" in answer
+
+
+def test_workspace_ask_conversation_stream_marks_run_failed_when_closed() -> None:
+    api = object.__new__(PSKAApi)
+    api.store = InMemoryKnowledgeStore()
+    api.store.add_user(User("user_primary", "primary", UserRole.ADMIN))
+
+    def fake_event_stream(_payload, context=None):
+        yield ("progress", {"progress": {"step_id": "search"}})
+
+    api.workspace_ask_event_stream = fake_event_stream
+    stream = api.workspace_ask_conversation_event_stream(
+        "ask_close_test",
+        {"query": "hello", "owner_user_id": "user_primary", "tenant_id": "tenant_default"},
+    )
+    conversation_event = next(stream)
+    run_id = conversation_event[1]["run"]["run_id"]
+
+    stream.close()
+
+    runs = api.store.list_ask_runs("ask_close_test", tenant_id="tenant_default", owner_user_id="user_primary", limit=1)
+    assert runs[0].run_id == run_id
+    assert runs[0].status == "failed"
+    assert runs[0].result["error"] == "stream_closed_before_done"
 
 
 def test_ask_query_terms_splits_mixed_english_chinese() -> None:
@@ -472,6 +722,7 @@ def test_fastreact_pska_service_config_keeps_builtin_tools_under_fastreact_polic
     policy = config["policy"]
     pska_tools = policy["tool_rules"]
 
+    assert config["service"]["port"] == 18741
     assert policy["default_action"] == "deny"
     assert pska_tools["exec"] == "deny"
     assert pska_tools["read_file"] == "deny"

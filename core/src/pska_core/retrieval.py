@@ -239,8 +239,9 @@ class RetrievalService:
     ) -> tuple[list[RetrievalResult], dict[str, Any]]:
         item_by_id = {item.source_item_id: item for item in items}
         query_terms = self._terms(query)
-        scoped_ranked = self._scoped_source_results(scoped_source_item_ids, chunks, item_by_id, query_terms=query_terms, top_k=top_k)
-        exact_ranked = self._exact_source_results(query, items, chunks, item_by_id, top_k=top_k)
+        rank_pool_size = max(top_k, min(len(chunks) or top_k, max(top_k * 4, top_k + 8)))
+        scoped_ranked = self._scoped_source_results(scoped_source_item_ids, chunks, item_by_id, query_terms=query_terms, top_k=rank_pool_size)
+        exact_ranked = self._exact_source_results(query, items, chunks, item_by_id, top_k=rank_pool_size)
         lexical_ranked, lexical_ranker = self._lexical_ranked_results(query_terms, chunks, item_by_id)
 
         vector_ranked: list[RetrievalResult] = []
@@ -259,11 +260,11 @@ class RetrievalService:
                 query_embedding = None
                 vector_error = f"{type(exc).__name__}: {exc}"
 
-        combined = self._merge_exact_then_rrf(exact_ranked, lexical_ranked, vector_ranked, top_k=top_k)
-        combined = self._merge_priority_results(scoped_ranked, combined, top_k=top_k)
-        combined = self._add_query_intent_candidates(query, combined, lexical_ranked, item_by_id, top_k=top_k)
+        combined = self._merge_exact_then_rrf(exact_ranked, lexical_ranked, vector_ranked, top_k=rank_pool_size)
+        combined = self._merge_priority_results(scoped_ranked, combined, top_k=rank_pool_size)
+        combined = self._add_query_intent_candidates(query, combined, lexical_ranked, item_by_id, top_k=rank_pool_size)
         self._apply_query_intent_boosts(query, combined, item_by_id)
-        combined = sorted(combined, key=lambda result: result.score, reverse=True)[:top_k]
+        combined = sorted(combined, key=lambda result: result.score, reverse=True)[:rank_pool_size]
         combined, graph_rank_debug = self._graph_augmented_rank(
             query,
             combined=combined,
@@ -273,12 +274,14 @@ class RetrievalService:
             item_by_id=item_by_id,
             user=user,
             represented_user_id=represented_user_id,
-            top_k=top_k,
+            top_k=rank_pool_size,
             query_embedding=query_embedding,
         )
         self._apply_query_intent_boosts(query, combined, item_by_id)
         self._annotate_result_sources(combined)
         self._apply_rank_quality_boosts(combined, item_by_id, reference_time=_latest_source_time(items))
+        self._apply_query_focused_snippets(query, combined, chunks)
+        combined = sorted(combined, key=lambda result: result.score, reverse=True)[:top_k]
         return combined, {
             "scoped_source_items": len(scoped_source_item_ids),
             "scoped_candidates": len(scoped_ranked),
@@ -369,6 +372,7 @@ class RetrievalService:
         return results
 
     def _result_for_chunk(self, chunk: Chunk, item: SourceItem, score: float, score_debug: dict[str, float]) -> RetrievalResult:
+        score_debug = {**score_debug, "chunk_ordinal": float(chunk.ordinal)}
         citation = {
             "source_item_id": item.source_item_id,
             "chunk_id": chunk.chunk_id,
@@ -513,21 +517,66 @@ class RetrievalService:
         *,
         top_k: int,
     ) -> list[RetrievalResult]:
-        if not _spreadsheet_query_intent(query):
-            return combined
         seen = {result.result_id for result in combined}
         additions: list[RetrievalResult] = []
-        for result in lexical_ranked:
-            if result.result_id in seen:
-                continue
-            item = item_by_id.get(result.source_item_id)
-            if item is None or not _is_spreadsheet_source(item):
-                continue
-            additions.append(result)
-            seen.add(result.result_id)
-            if len(additions) >= max(1, min(2, top_k)):
-                break
+        if _spreadsheet_query_intent(query):
+            for result in lexical_ranked:
+                if result.result_id in seen:
+                    continue
+                item = item_by_id.get(result.source_item_id)
+                if item is None or not _is_spreadsheet_source(item):
+                    continue
+                additions.append(result)
+                seen.add(result.result_id)
+                if len(additions) >= max(1, min(2, top_k)):
+                    break
+        position_intent = _document_position_intent(query)
+        if position_intent:
+            position_results = self._document_position_results(query, combined, lexical_ranked, item_by_id, position_intent=position_intent)
+            for result in position_results:
+                boosted_score = max(result.score, (combined[0].score if combined else 0.0) + 0.025)
+                result.score = boosted_score
+                result.score_debug["document_position_intent"] = 1.0
+                result.score_debug["document_position"] = 1.0 if position_intent == "tail" else 0.0
+                if result.result_id in seen:
+                    continue
+                additions.append(result)
+                seen.add(result.result_id)
+                if len(additions) >= max(1, min(3, top_k)):
+                    break
         return [*combined, *additions]
+
+    def _document_position_results(
+        self,
+        query: str,
+        combined: list[RetrievalResult],
+        lexical_ranked: list[RetrievalResult],
+        item_by_id: dict[str, SourceItem],
+        *,
+        position_intent: str,
+    ) -> list[RetrievalResult]:
+        query_terms = set(self._terms(query))
+        source_ids: set[str] = {result.source_item_id for result in combined}
+        for result in lexical_ranked[:50]:
+            item = item_by_id.get(result.source_item_id)
+            if item is None:
+                continue
+            title_terms = set(self._terms(f"{item.title} {item.url or ''}"))
+            if query_terms.intersection(title_terms):
+                source_ids.add(result.source_item_id)
+        if not source_ids:
+            return []
+        by_source: dict[str, list[RetrievalResult]] = {}
+        for result in lexical_ranked:
+            if result.source_item_id in source_ids:
+                by_source.setdefault(result.source_item_id, []).append(result)
+        selected: list[RetrievalResult] = []
+        for results in by_source.values():
+            if position_intent == "tail":
+                selected.append(max(results, key=lambda result: result.score_debug.get("chunk_ordinal", 0.0)))
+            else:
+                selected.append(min(results, key=lambda result: result.score_debug.get("chunk_ordinal", 0.0)))
+        return sorted(selected, key=lambda result: result.score, reverse=True)
 
     def _apply_query_intent_boosts(
         self,
@@ -567,6 +616,46 @@ class RetrievalService:
             result.score_debug["source_authority"] = authority
             result.score_debug["quality_boost"] = boost
         results.sort(key=lambda result: result.score, reverse=True)
+
+    def _apply_query_focused_snippets(self, query: str, results: list[RetrievalResult], chunks: list[Chunk]) -> None:
+        chunk_by_id = {chunk.chunk_id: chunk for chunk in chunks}
+        chunks_by_document: dict[str, list[Chunk]] = {}
+        for chunk in chunks:
+            chunks_by_document.setdefault(chunk.document_id, []).append(chunk)
+        for document_chunks in chunks_by_document.values():
+            document_chunks.sort(key=lambda chunk: int(chunk.ordinal or 0))
+        terms = [term for term in self._terms(query) if len(term) >= 3]
+        for result in results:
+            chunk = chunk_by_id.get(result.result_id)
+            if chunk is None:
+                continue
+            context_text = self._chunk_text_with_table_header(chunk, chunks_by_document.get(chunk.document_id, []))
+            snippet = query_focused_evidence_snippet(context_text, query, max_chars=1200)
+            if not snippet:
+                continue
+            result.snippet = snippet
+            result.citation["snippet"] = snippet
+            result.score_debug["query_focused_snippet"] = 1.0
+            coverage = _focused_snippet_query_coverage(snippet, terms)
+            if coverage:
+                boost = min(coverage * 0.002, 0.02)
+                result.score += boost
+                result.score_debug["focused_snippet_query_coverage"] = float(coverage)
+                result.score_debug["focused_snippet_boost"] = boost
+        results.sort(key=lambda result: result.score, reverse=True)
+
+    def _chunk_text_with_table_header(self, chunk: Chunk, document_chunks: list[Chunk]) -> str:
+        text = str(chunk.text or "")
+        if not text or _text_has_table_header(text):
+            return text
+        if "|" not in text:
+            return text
+        header = _nearest_previous_table_header(chunk, document_chunks)
+        if not header:
+            return text
+        if not _text_has_table_row_with_cell_count(text, len(_table_cells(header))):
+            return text
+        return f"{header}\n{text}"
 
     def _graph_augmented_rank(
         self,
@@ -1306,6 +1395,36 @@ def _spreadsheet_query_intent(query: str) -> bool:
     )
 
 
+def _document_position_intent(query: str) -> str | None:
+    normalized = str(query or "").casefold()
+    tail_markers = (
+        "last page",
+        "final page",
+        "back page",
+        "end of document",
+        "最后一页",
+        "最后页",
+        "末页",
+        "尾页",
+        "文末",
+    )
+    head_markers = (
+        "first page",
+        "cover page",
+        "front page",
+        "beginning of document",
+        "第一页",
+        "首页",
+        "封面",
+        "文首",
+    )
+    if any(marker in normalized for marker in tail_markers):
+        return "tail"
+    if any(marker in normalized for marker in head_markers):
+        return "head"
+    return None
+
+
 def _is_spreadsheet_source(item: SourceItem) -> bool:
     fields = [item.title, item.url, item.source_id]
     raw_paths = item.metadata.get("raw_paths") if isinstance(item.metadata, dict) else None
@@ -1316,6 +1435,231 @@ def _is_spreadsheet_source(item: SourceItem) -> bool:
         fields.append(str(extraction.get("extractor") or ""))
     haystack = " ".join(str(value or "") for value in fields).casefold()
     return any(token in haystack for token in (".xlsx", ".xls", "xlsx-", "spreadsheet", "workbook"))
+
+
+def query_focused_evidence_snippet(text: str, query: str, *, max_chars: int = 420) -> str:
+    text = str(text or "").strip()
+    if not text:
+        return ""
+    anchors = _snippet_anchor_terms(query)
+    table = _focused_table_snippet(text, anchors, max_chars=max_chars)
+    if table:
+        return table
+    if len(text) <= max_chars:
+        return text
+    index = _best_anchor_index(text, anchors)
+    if index < 0:
+        return text[:max_chars].rstrip()
+    start = max(0, index - max_chars // 3)
+    end = min(len(text), start + max_chars)
+    start, end = _expand_snippet_to_line_boundaries(text, start, end, max_chars=max_chars)
+    return text[start:end].strip()
+
+
+def _snippet_anchor_terms(query: str) -> list[str]:
+    normalized = str(query or "").casefold()
+    raw_terms = re.findall(r"[a-z0-9]+(?:[-_][a-z0-9]+)+|[a-z0-9_]+|[\u4e00-\u9fff]{2,}", normalized)
+    stopwords = {
+        "what",
+        "which",
+        "where",
+        "when",
+        "last",
+        "first",
+        "page",
+        "final",
+        "row",
+        "rows",
+        "column",
+        "columns",
+        "please",
+        "answer",
+        "相关",
+        "问题",
+        "回答",
+        "最后",
+        "最后一页",
+        "第一页",
+        "附件",
+        "文档",
+        "资料",
+        "表格",
+    }
+    anchors: list[str] = []
+    seen: set[str] = set()
+    for term in raw_terms:
+        term = term.strip(" _-")
+        if len(term) < 2 or term in stopwords or term in seen:
+            continue
+        seen.add(term)
+        anchors.append(term)
+    return sorted(anchors, key=lambda value: (bool(re.search(r"\d", value)), len(value)), reverse=True)[:24]
+
+
+def _focused_table_snippet(text: str, anchors: list[str], *, max_chars: int) -> str:
+    if not anchors or "|" not in text:
+        return ""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    matched = [
+        (index, _line_anchor_score(line, anchors))
+        for index, line in enumerate(lines)
+        if _is_table_content_line(line)
+    ]
+    matched = [(index, score) for index, score in matched if score > 0]
+    if not matched:
+        return ""
+    matched_indices = [index for index, _score in sorted(matched, key=lambda item: (item[1], -item[0]), reverse=True)]
+    rendered: list[str] = []
+    seen: set[str] = set()
+    for row_index in matched_indices[:4]:
+        header_index = _table_header_index(lines, row_index)
+        row = lines[row_index]
+        if header_index is not None and header_index != row_index:
+            focused = _render_focused_table_row(lines[header_index], row, anchors, max_chars=max_chars)
+            parts = focused.splitlines() if focused else [lines[header_index], row]
+        else:
+            parts = [row]
+        for part in parts:
+            if part not in seen:
+                seen.add(part)
+                rendered.append(part)
+        if len("\n".join(rendered)) >= max_chars:
+            break
+    snippet = "\n".join(rendered).strip()
+    return snippet[:max_chars].rstrip()
+
+
+def _is_table_content_line(line: str) -> bool:
+    return "|" in line and not re.fullmatch(r"\s*\|?[\s:|-]+\|?\s*", line)
+
+
+def _text_has_table_header(text: str) -> bool:
+    lines = [line.strip() for line in str(text or "").splitlines() if line.strip()]
+    for index, line in enumerate(lines):
+        if not _is_table_content_line(line):
+            continue
+        if index + 1 < len(lines) and re.fullmatch(r"\s*\|?[\s:|-]+\|?\s*", lines[index + 1]):
+            return True
+    return False
+
+
+def _nearest_previous_table_header(chunk: Chunk, document_chunks: list[Chunk]) -> str:
+    previous = [candidate for candidate in document_chunks if int(candidate.ordinal or 0) < int(chunk.ordinal or 0)]
+    for candidate in reversed(previous):
+        header = _first_table_header_line(str(candidate.text or ""))
+        if header:
+            return header
+    return ""
+
+
+def _first_table_header_line(text: str) -> str:
+    lines = [line.strip() for line in str(text or "").splitlines() if line.strip()]
+    for index, line in enumerate(lines):
+        if not _is_table_content_line(line):
+            continue
+        has_separator = index + 1 < len(lines) and re.fullmatch(r"\s*\|?[\s:|-]+\|?\s*", lines[index + 1])
+        if has_separator:
+            return line
+    return ""
+
+
+def _text_has_table_row_with_cell_count(text: str, cell_count: int) -> bool:
+    if cell_count <= 0:
+        return False
+    for line in str(text or "").splitlines():
+        line = line.strip()
+        if _is_table_content_line(line) and len(_table_cells(line)) == cell_count:
+            return True
+    return False
+
+
+def _cell_looks_data_value(cell: str) -> bool:
+    value = str(cell or "").strip()
+    return bool(re.fullmatch(r"\d+(?:\.\d+)?", value) or re.fullmatch(r"[A-Z]{2,}-[A-Z0-9-]+", value))
+
+
+def _line_has_anchor(line: str, anchors: list[str]) -> bool:
+    folded = line.casefold()
+    return any(anchor and anchor in folded for anchor in anchors)
+
+
+def _focused_snippet_query_coverage(snippet: str, terms: list[str]) -> int:
+    folded = str(snippet or "").casefold()
+    return sum(1 for term in set(terms) if term.casefold() in folded)
+
+
+def _line_anchor_score(line: str, anchors: list[str]) -> int:
+    folded = line.casefold()
+    score = 0
+    for anchor in anchors:
+        if not anchor or anchor not in folded:
+            continue
+        score += 4 if re.search(r"\d", anchor) or "-" in anchor or "_" in anchor else 1
+    return score
+
+
+def _table_header_index(lines: list[str], row_index: int) -> int | None:
+    index = row_index
+    while index > 0 and ("|" in lines[index - 1] or re.fullmatch(r"\s*\|?[\s:|-]+\|?\s*", lines[index - 1])):
+        index -= 1
+    for candidate in range(index, row_index + 1):
+        if _is_table_content_line(lines[candidate]):
+            return candidate
+    return None
+
+
+def _render_focused_table_row(header: str, row: str, anchors: list[str], *, max_chars: int) -> str:
+    header_cells = _table_cells(header)
+    row_cells = _table_cells(row)
+    if not header_cells or len(header_cells) != len(row_cells):
+        return "\n".join([header, row])
+    selected: list[int] = []
+    for index, (header_cell, row_cell) in enumerate(zip(header_cells, row_cells)):
+        cell_text = f"{header_cell} {row_cell}".casefold()
+        if any(anchor in cell_text for anchor in anchors):
+            selected.append(index)
+    for index in range(min(3, len(header_cells))):
+        if index not in selected:
+            selected.insert(index, index)
+    selected = sorted(dict.fromkeys(selected))[:16]
+    focused_header = _render_table_cells([header_cells[index] for index in selected])
+    focused_row = _render_table_cells([row_cells[index] for index in selected])
+    focused = f"{focused_header}\n{focused_row}"
+    if len(focused) <= max_chars:
+        return focused
+    return focused[:max_chars].rstrip()
+
+
+def _table_cells(line: str) -> list[str]:
+    value = line.strip()
+    if value.startswith("|"):
+        value = value[1:]
+    if value.endswith("|"):
+        value = value[:-1]
+    return [cell.strip() for cell in value.split("|")]
+
+
+def _render_table_cells(cells: list[str]) -> str:
+    return "| " + " | ".join(cells) + " |"
+
+
+def _best_anchor_index(text: str, anchors: list[str]) -> int:
+    folded = text.casefold()
+    for anchor in anchors:
+        index = folded.find(anchor)
+        if index >= 0:
+            return index
+    return -1
+
+
+def _expand_snippet_to_line_boundaries(text: str, start: int, end: int, *, max_chars: int) -> tuple[int, int]:
+    line_start = text.rfind("\n", 0, start)
+    if line_start >= 0 and end - line_start <= max_chars:
+        start = line_start + 1
+    line_end = text.find("\n", end)
+    if line_end >= 0 and line_end - start <= max_chars:
+        end = line_end
+    return start, end
 
 
 def _bm25_scores(documents: list[list[str]], query_terms: list[str]) -> list[float] | None:

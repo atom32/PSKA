@@ -793,6 +793,15 @@ def _is_streaming_api_path(path: str) -> bool:
     return path in {"/workspace/ask/stream"}
 
 
+def _is_long_running_api_path(path: str) -> bool:
+    return path in {
+        "/workspace/ask",
+        "/workspace/ask/stream",
+        "/workspace/digest/run",
+        "/workspace/sources/upload",
+    }
+
+
 def _iter_streaming_response_chunks(response: Any, *, event_stream: bool):
     if event_stream and hasattr(response, "readline"):
         while True:
@@ -809,7 +818,7 @@ def _iter_streaming_response_chunks(response: Any, *, event_stream: bool):
 
 
 def _proxy_timeout_for_path(path: str, config: GatewayConfig) -> float:
-    if _is_streaming_api_path(urlparse(path).path):
+    if _is_long_running_api_path(urlparse(path).path):
         return max(float(config.request_timeout_seconds), 300.0)
     return float(config.request_timeout_seconds)
 

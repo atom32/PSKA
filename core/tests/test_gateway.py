@@ -229,7 +229,10 @@ def test_gateway_forces_ask_stream_to_streaming_timeout() -> None:
     assert _is_streaming_api_path("/workspace/ask/stream") is True
     assert _is_streaming_api_path("/workspace/ask") is False
     assert _proxy_timeout_for_path("/workspace/ask/stream", config) == 300.0
-    assert _proxy_timeout_for_path("/workspace/ask", config) == 15.0
+    assert _proxy_timeout_for_path("/workspace/ask", config) == 300.0
+    assert _proxy_timeout_for_path("/workspace/sources/upload", config) == 300.0
+    assert _proxy_timeout_for_path("/workspace/digest/run", config) == 300.0
+    assert _proxy_timeout_for_path("/workspace/search/query", config) == 15.0
 
 
 def test_gateway_streaming_relay_uses_sse_lines_instead_of_large_reads() -> None:

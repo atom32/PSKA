@@ -68,7 +68,7 @@ from pska_core.models import (
 from pska_core.offline_index import OfflineIndexService
 from pska_core.chunking import preview_chunking
 from pska_core.processing import resolve_processing_config
-from pska_core.retrieval import RetrievalService
+from pska_core.retrieval import RetrievalService, query_focused_evidence_snippet
 from pska_core.review import ReviewService
 from pska_core.serde import to_jsonable
 from pska_core.source_adapters import build_source_adapter, supported_source_adapters
@@ -1987,12 +1987,14 @@ class PSKAApi:
             },
         }
         result = _empty_ask_stream_result(query=query, conversation_id=conversation.conversation_id, run_id=run.run_id, prompt_lineage=prompt_lineage)
-        yield ("conversation", {"conversation": _ask_conversation_payload(conversation), "run": _ask_run_payload(run)})
+        finished = False
         try:
+            yield ("conversation", {"conversation": _ask_conversation_payload(conversation), "run": _ask_run_payload(run)})
             for event_name, event_payload in self.workspace_ask_event_stream(ask_payload, context=context):
                 _accumulate_ask_stream_result(result, event_name, event_payload)
                 if event_name == "done":
                     self.store.finish_ask_run(run.run_id, status="succeeded" if result.get("ok") is not False else "failed", result=result)
+                    finished = True
                     self.store.add_ask_message(
                         AskMessage(
                             message_id=f"askmsg_{uuid4().hex}",
@@ -2013,7 +2015,16 @@ class PSKAApi:
             result["ok"] = False
             result["error"] = f"{type(exc).__name__}: {exc}"
             self.store.finish_ask_run(run.run_id, status="failed", result=result)
+            finished = True
             raise
+        finally:
+            if not finished:
+                result["ok"] = False
+                result["error"] = "stream_closed_before_done"
+                try:
+                    self.store.finish_ask_run(run.run_id, status="failed", result=result)
+                except Exception:
+                    pass
 
     def _workspace_ask_quick(
         self,
@@ -4834,6 +4845,7 @@ def _response_metrics(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _digest_log_entry(job: Any, events: list[Any], claims: list[Any], notes: list[Any], source_ids: set[str]) -> dict[str, Any]:
     candidate_summary = _job_candidate_summary(job, events)
+    candidate_summary = _digest_candidate_summary_with_persisted(candidate_summary, claims=claims, notes=notes)
     latest_event = events[-1] if events else None
     return {
         "job_id": job.job_id,
@@ -4954,6 +4966,21 @@ def _job_candidate_summary(job: Any, events: list[Any]) -> dict[str, Any]:
         "review_candidates": int(summary.get("review_candidates") or len(summary.get("review_items") or [])),
         "warnings": list(summary.get("warnings") or []),
     }
+
+
+def _digest_candidate_summary_with_persisted(summary: dict[str, Any], *, claims: list[Any], notes: list[Any]) -> dict[str, Any]:
+    persisted_claims = len(claims)
+    persisted_notes = len(notes)
+    if not persisted_claims and not persisted_notes:
+        return summary
+    enriched = dict(summary)
+    enriched["knowledge_claims"] = max(int(enriched.get("knowledge_claims") or 0), persisted_claims)
+    enriched["digest_notes"] = max(int(enriched.get("digest_notes") or 0), persisted_notes)
+    enriched["persisted_candidate_counts"] = {
+        "knowledge_claims": persisted_claims,
+        "digest_notes": persisted_notes,
+    }
+    return enriched
 
 
 def _api_config(api: Any) -> PSKAConfig:
@@ -5893,6 +5920,28 @@ def _ask_query_anchor_terms(query: str, terms: list[str] | None = None) -> list[
     return specific[:8]
 
 
+def _ask_structural_evidence_hits(query: str, text: str) -> list[str]:
+    normalized_query = str(query or "").casefold()
+    haystack = str(text or "")
+    folded = haystack.casefold()
+    hits: list[str] = []
+    intent_patterns = (
+        ("url", ("url", "website", "web site", "link", "网址", "网站", "网页", "链接"), r"(?:https?://|www\.)[^\s|,，。；;]+|[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}"),
+        ("phone", ("phone", "telephone", "tel", "mobile", "联系电话", "电话", "热线", "手机号"), r"\+?\d[\d\s().-]{5,}\d"),
+        ("email", ("email", "e-mail", "mail", "邮箱", "电子邮件", "邮件地址"), r"[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}"),
+    )
+    for label, markers, pattern in intent_patterns:
+        if not any(marker in normalized_query for marker in markers):
+            continue
+        if label == "phone":
+            if _extract_phone_values(haystack, max_values=1):
+                hits.append(label)
+            continue
+        if re.search(pattern, folded):
+            hits.append(label)
+    return hits
+
+
 def _text_has_negated_label(text: str, label: str) -> bool:
     normalized_label = str(label or "").strip().casefold()
     if len(normalized_label) < 2:
@@ -5997,9 +6046,23 @@ def _ask_verify_evidence(
         if not evidence_text.strip():
             dropped.append({**citation, "drop_reason": "missing_source_window"})
             continue
-        evidence_terms = set(_ask_evidence_terms(evidence_text))
-        support_hits = [term for term in query_terms if term in evidence_terms or term in evidence_text.casefold()]
-        anchor_hits = [term for term in anchor_terms if term in evidence_terms or term in evidence_text.casefold()]
+        check_text = "\n".join(
+            part
+            for part in (
+                str(citation.get("title") or ""),
+                str(citation.get("snippet") or ""),
+                evidence_text,
+            )
+            if part
+        )
+        folded_check_text = check_text.casefold()
+        evidence_terms = set(_ask_evidence_terms(check_text))
+        structural_hits = _ask_structural_evidence_hits(query, check_text)
+        support_hits = [term for term in query_terms if term in evidence_terms or term in folded_check_text]
+        anchor_hits = [term for term in anchor_terms if term in evidence_terms or term in folded_check_text]
+        if structural_hits:
+            support_hits.extend(hit for hit in structural_hits if hit not in support_hits)
+            anchor_hits.extend(hit for hit in structural_hits if hit not in anchor_hits)
         if ask_intent != "doc_only":
             if anchor_terms and not anchor_hits:
                 dropped.append({**citation, "drop_reason": "missing_query_anchor", "query_anchors": anchor_terms[:8]})
@@ -6517,7 +6580,9 @@ def _ask_quick_answer(query: str, retrieval: dict[str, Any]) -> str:
     results = _list_of_dicts(retrieval.get("results"))
     if not results:
         return f"关键结论：当前 PSKA 没有找到足够证据回答“{query}”。建议补充相关资料或扩大检索范围后再问。"
-    facts = _ask_clean_facts_from_results(results, limit=4)
+    facts = _ask_structured_facts_from_results(query, results, limit=4)
+    if not facts:
+        facts = _ask_clean_facts_from_results(results, limit=4)
     if not facts:
         return f"关键结论：PSKA 找到了与“{query}”相关的来源，但当前片段不足以整理成可引用结论。请查看证据列表或扩大检索范围。"
     lines = [f"关键结论：关于“{query}”，当前资料支持以下结论："]
@@ -6526,6 +6591,71 @@ def _ask_quick_answer(query: str, retrieval: dict[str, Any]) -> str:
     if diagnostics.get("gaps") or diagnostics.get("conflicts"):
         lines.append("不确定性：存在检索缺口或证据冲突，报告中应保留限定表述。")
     return "\n".join(lines)
+
+
+def _ask_structured_facts_from_results(query: str, results: list[dict[str, Any]], *, limit: int) -> list[str]:
+    requested = set(_ask_structural_evidence_hits(query, "https://example.com info@example.com +1-202-555-0100"))
+    if not requested:
+        return []
+    texts: list[str] = []
+    for result in results:
+        parts = [str(result.get("snippet") or "")]
+        source_window = result.get("source_window") if isinstance(result.get("source_window"), dict) else {}
+        if source_window.get("text"):
+            parts.append(str(source_window.get("text") or ""))
+        texts.append("\n".join(part for part in parts if part))
+    combined = "\n".join(texts)
+    facts: list[str] = []
+    if "url" in requested:
+        urls = _extract_structured_values(combined, r"(?:https?://|www\.)[^\s|,，。；;]+|[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}", max_values=4)
+        if urls:
+            facts.append("网址：" + "；".join(urls))
+    if "phone" in requested:
+        phones = _extract_phone_values(combined, max_values=4)
+        if phones:
+            facts.append("联系电话：" + "；".join(phones))
+    if "email" in requested:
+        emails = _extract_structured_values(combined.casefold(), r"[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}", max_values=4)
+        if emails:
+            facts.append("邮箱：" + "；".join(emails))
+    return facts[:limit]
+
+
+def _extract_structured_values(text: str, pattern: str, *, max_values: int) -> list[str]:
+    values: list[str] = []
+    seen: set[str] = set()
+    for match in re.finditer(pattern, str(text or ""), flags=re.IGNORECASE):
+        value = match.group(0).strip(" \t\r\n,，。；;:：()[]{}<>《》\"'")
+        if value.casefold().startswith("jwww."):
+            value = value[1:]
+        key = value.casefold()
+        if len(value) < 4 or key in seen:
+            continue
+        seen.add(key)
+        values.append(value)
+        if len(values) >= max_values:
+            break
+    return values
+
+
+def _extract_phone_values(text: str, *, max_values: int) -> list[str]:
+    values: list[str] = []
+    seen: set[str] = set()
+    for match in re.finditer(r"\+?\d[\d\s().-]{5,}\d", str(text or "")):
+        value = re.sub(r"\s+", " ", match.group(0)).strip(" \t\r\n,，。；;:：()[]{}<>《》\"'")
+        digits = re.sub(r"\D", "", value)
+        if len(digits) < 7 or len(digits) > 18:
+            continue
+        if not any(ch in value for ch in "+-()"):
+            continue
+        key = re.sub(r"\D", "", value)
+        if key in seen:
+            continue
+        seen.add(key)
+        values.append(value)
+        if len(values) >= max_values:
+            break
+    return values
 
 
 def _ask_hydrate_retrieval_source_windows(
@@ -6676,14 +6806,27 @@ def _ask_source_window_for_result(
         chunk = _ask_best_chunk_for_window(source_chunks, query=query, fallback_snippet=str(ref.get("snippet") or ""))
     body = str(getattr(document, "body", "") or "") if document is not None else str(getattr(item, "content_text", "") or "")
     anchor_text = str(getattr(chunk, "text", "") or ref.get("snippet") or "")
-    if body:
-        text, start, end = _ask_document_window_text(body, anchor_text=anchor_text, query=query, max_chars=max_chars)
-        policy = "document_body_around_retrieved_chunk"
-    else:
+    if chunk is not None and anchor_text.strip():
+        text = query_focused_evidence_snippet(anchor_text, query, max_chars=max_chars)
+        if not text:
+            text = _ask_neighbor_chunk_window(source_chunks, anchor_chunk=chunk, max_chars=max_chars)
+        start = 0
+        end = len(text)
+        policy = "retrieved_chunk_focused"
+    elif source_chunks:
         text = _ask_neighbor_chunk_window(source_chunks, anchor_chunk=chunk, max_chars=max_chars)
         start = 0
         end = len(text)
         policy = "neighbor_chunks"
+    elif body:
+        text, start, end = _ask_document_window_text(body, anchor_text=anchor_text, query=query, max_chars=max_chars)
+        text = query_focused_evidence_snippet(text, query, max_chars=max_chars) or text
+        policy = "document_body_around_retrieved_chunk"
+    else:
+        text = ""
+        start = 0
+        end = 0
+        policy = "empty"
     if not text.strip():
         return None
     document_id = str(getattr(document, "document_id", "") or getattr(chunk, "document_id", "") or "")
@@ -6812,8 +6955,6 @@ def _ask_clean_evidence_text(text: str) -> str:
             if not line:
                 continue
         if lowered.startswith(("title:", "type:", "slug:", "aliases:", "date:", "attendees:", "tags:")):
-            continue
-        if line.startswith("|") and line.endswith("|"):
             continue
         if re.fullmatch(r"[-:| ]{5,}", line):
             continue

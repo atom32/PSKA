@@ -682,6 +682,48 @@ def test_digest_logs_surface_events_claims_and_notes() -> None:
     assert payload["summary"]["has_useful_output"] is True
 
 
+def test_digest_logs_count_persisted_candidates_without_job_event_summary() -> None:
+    api = _api()
+    source_id = _ingest_source(api.store)
+    job = JobService(api.store).submit(DIGEST_VIA_FASTREACT, {"owner_user_id": "user_primary", "source_refs": [{"source_item_id": source_id}]})
+    CandidateWriteService(api.store).write_candidates(
+        {
+            "schema_version": "pska.candidates.v1",
+            "owner_user_id": "user_primary",
+            "job_id": job.job_id,
+            "source_refs": [{"source_item_id": source_id}],
+            "knowledge_claims": [
+                {
+                    "claim_type": "fact",
+                    "statement": "Persisted candidates should backfill digest logs.",
+                    "evidence_text": "persisted candidates without a job event summary",
+                    "confidence": 0.8,
+                }
+            ],
+            "digest_notes": [
+                {
+                    "title": "Persisted digest note",
+                    "synopsis": "Digest note persisted before the log event summary.",
+                    "source_refs": [{"source_item_id": source_id}],
+                }
+            ],
+        }
+    )
+
+    payload = api.digest_logs(owner_user_id="user_primary")
+
+    assert payload["logs"][0]["job_id"] == job.job_id
+    assert payload["logs"][0]["candidate_summary"]["knowledge_claims"] == 1
+    assert payload["logs"][0]["candidate_summary"]["digest_notes"] == 1
+    assert payload["logs"][0]["candidate_summary"]["persisted_candidate_counts"] == {
+        "knowledge_claims": 1,
+        "digest_notes": 1,
+    }
+    assert payload["summary"]["candidate_totals"]["knowledge_claims"] == 1
+    assert payload["summary"]["candidate_totals"]["digest_notes"] == 1
+    assert payload["summary"]["has_useful_output"] is True
+
+
 class FakeFastreact:
     def __init__(self, response: dict) -> None:
         self.response = response

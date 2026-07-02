@@ -105,29 +105,24 @@ class PostgresKnowledgeStore:
                 """,
                 (tenant_id, tenant_id, tenant_id),
             )
-            existing_user = conn.execute("select tenant_id from users where user_id = %s", (user_id,)).fetchone()
-            if existing_user and str(existing_user.get("tenant_id") or DEFAULT_TENANT_ID) != tenant_id:
+            user_row = conn.execute(
+                """
+                insert into users(user_id, handle, role, status, tenant_id)
+                values (%s, %s, %s, 'active', %s)
+                on conflict (user_id) do update
+                set status = 'active',
+                    updated_at = now()
+                where users.tenant_id = excluded.tenant_id
+                returning tenant_id
+                """,
+                (user_id, handle, role.value, tenant_id),
+            ).fetchone()
+            if not user_row:
+                existing_user = conn.execute("select tenant_id from users where user_id = %s", (user_id,)).fetchone()
+                existing_tenant = existing_user.get("tenant_id") if existing_user else None
                 raise ValueError(
-                    f"user_id {user_id!r} already belongs to tenant {existing_user.get('tenant_id')!r}; "
+                    f"user_id {user_id!r} already belongs to tenant {existing_tenant!r}; "
                     "use a tenant-scoped user key"
-                )
-            if existing_user:
-                conn.execute(
-                    """
-                    update users
-                    set status = 'active',
-                        updated_at = now()
-                    where user_id = %s and tenant_id = %s
-                    """,
-                    (user_id, tenant_id),
-                )
-            else:
-                conn.execute(
-                    """
-                    insert into users(user_id, handle, role, status, tenant_id)
-                    values (%s, %s, %s, 'active', %s)
-                    """,
-                    (user_id, handle, role.value, tenant_id),
                 )
             existing_space = conn.execute("select tenant_id from spaces where space_id = %s", (space_id,)).fetchone()
             if existing_space and str(existing_space.get("tenant_id") or DEFAULT_TENANT_ID) != tenant_id:
@@ -186,8 +181,8 @@ class PostgresKnowledgeStore:
     def upsert_source_item(self, item: SourceItem) -> SourceItem:
         with self.connect() as conn:
             existing = conn.execute(
-                "select * from source_items where tenant_id = %s and content_hash = %s",
-                (item.tenant_id, item.content_hash),
+                "select * from source_items where tenant_id = %s and owner_user_id = %s and content_hash = %s",
+                (item.tenant_id, item.owner_user_id, item.content_hash),
             ).fetchone()
             if existing:
                 return self._source_item_from_row(existing)
@@ -1653,6 +1648,22 @@ class PostgresKnowledgeStore:
                 select *
                 from ask_conversations
                 where conversation_id = %s and tenant_id = %s and owner_user_id = %s
+                """,
+                (conversation_id, tenant_id, owner_user_id),
+            ).fetchone()
+        if not row:
+            raise KeyError(conversation_id)
+        return self._ask_conversation_from_row(row)
+
+    def archive_ask_conversation(self, conversation_id: str, *, tenant_id: str, owner_user_id: str) -> AskConversation:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                update ask_conversations
+                set status = 'archived',
+                    updated_at = now()
+                where conversation_id = %s and tenant_id = %s and owner_user_id = %s
+                returning *
                 """,
                 (conversation_id, tenant_id, owner_user_id),
             ).fetchone()

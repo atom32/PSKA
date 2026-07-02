@@ -14,7 +14,7 @@ from pska_core.embeddings import EmbeddingProvider, build_embedding_provider
 from pska_core.extraction import ExtractionService
 from pska_core.ingest import IngestService
 from pska_core.models import DEFAULT_TENANT_ID, ChannelIngestPayload, SourceRef
-from pska_core.retrieval import RetrievalService
+from pska_core.retrieval import RetrievalService, query_focused_evidence_snippet
 from pska_core.serde import to_jsonable
 from pska_core.store_postgres import PostgresKnowledgeStore
 
@@ -477,11 +477,11 @@ class MCPServer:
             documents = [document for document in documents if document.source_item_id in source_ids]
             chunks = [chunk for chunk in chunks if chunk.source_item_id in source_ids]
         selected_items = [visible_by_id[source_id] for source_id in sorted(source_ids) if source_id in visible_by_id][:max_items]
-        selected_documents = documents[: max_items * 2]
-        selected_chunks = chunks[: max_items * 4]
+        selected_documents = _rank_objects_by_query(documents, query, fields=("title", "body"))[: max_items * 2] if query else documents[: max_items * 2]
+        selected_chunks = _rank_objects_by_query(chunks, query, fields=("chunk_id", "text"))[: max_items * 4] if query else chunks[: max_items * 4]
         passage_windows = _passage_windows_for_documents(selected_documents, selected_chunks, target_chars=max_passage_chars)
-        results = _evidence_results_from_context(selected_items, selected_documents, selected_chunks, max_snippet_chars=max_chunk_chars)
-        citations = _citations_for_source_items(selected_items, chunks=selected_chunks, max_snippet_chars=max_chunk_chars)
+        results = _evidence_results_from_context(selected_items, selected_documents, selected_chunks, max_snippet_chars=max_chunk_chars, query=query)
+        citations = _citations_for_source_items(selected_items, chunks=selected_chunks, max_snippet_chars=max_chunk_chars, query=query)
         return {
             "ok": True,
             "tenant_id": tenant_id,
@@ -490,9 +490,9 @@ class MCPServer:
             "results": results[: max_items * 2],
             "citations": citations[: max_items * 2],
             "source_items": [_compact_source_item(item, max_chars=max_source_chars) for item in selected_items],
-            "documents": [_compact_document(document, max_chars=max_document_chars) for document in selected_documents],
-            "passage_windows": [_compact_passage_window(window, max_chars=max_passage_chars) for window in passage_windows[: max_items * 2]],
-            "chunks": [_compact_chunk(chunk, max_chars=max_chunk_chars) for chunk in selected_chunks],
+            "documents": [_compact_document(document, max_chars=max_document_chars, query=query) for document in selected_documents],
+            "passage_windows": [_compact_passage_window(window, max_chars=max_passage_chars, query=query) for window in passage_windows[: max_items * 2]],
+            "chunks": [_compact_chunk(chunk, max_chars=max_chunk_chars, query=query) for chunk in selected_chunks],
             "graph_paths": [],
             "diagnostics": {"gaps": [], "conflicts": [], "sensitivity": []},
             "omitted": {
@@ -1027,7 +1027,7 @@ def _rank_objects_by_query(objects: list[Any], query: str, *, fields: tuple[str,
     return [obj for obj in ranked if _text_score(object_text(obj), terms) > 0] or ranked
 
 
-def _evidence_results_from_context(source_items: list[Any], documents: list[Any], chunks: list[Any], *, max_snippet_chars: int) -> list[dict[str, Any]]:
+def _evidence_results_from_context(source_items: list[Any], documents: list[Any], chunks: list[Any], *, max_snippet_chars: int, query: str | None = None) -> list[dict[str, Any]]:
     item_by_id = {item.source_item_id: item for item in source_items}
     document_by_id = {document.document_id: document for document in documents}
     results: list[dict[str, Any]] = []
@@ -1035,13 +1035,14 @@ def _evidence_results_from_context(source_items: list[Any], documents: list[Any]
         document = document_by_id.get(chunk.document_id)
         item = item_by_id.get(chunk.source_item_id)
         title = getattr(document, "title", "") or getattr(item, "title", "") or chunk.source_item_id
+        snippet = _focused_context_text(str(getattr(chunk, "text", "") or ""), query=query, max_chars=max_snippet_chars)
         results.append(
             {
                 "result_id": chunk.chunk_id,
                 "source_item_id": chunk.source_item_id,
                 "source": getattr(item, "source_channel", None),
                 "title": title,
-                "snippet": _truncate(str(getattr(chunk, "text", "") or ""), max_snippet_chars),
+                "snippet": snippet,
                 "score": 1.0,
                 "citation": {
                     "source_item_id": chunk.source_item_id,
@@ -1049,7 +1050,7 @@ def _evidence_results_from_context(source_items: list[Any], documents: list[Any]
                     "chunk_id": chunk.chunk_id,
                     "url": getattr(item, "url", None),
                     "title": title,
-                    "snippet": _truncate(str(getattr(chunk, "text", "") or ""), max_snippet_chars),
+                    "snippet": snippet,
                 },
             }
         )
@@ -1057,64 +1058,67 @@ def _evidence_results_from_context(source_items: list[Any], documents: list[Any]
         return results
     for document in documents:
         item = item_by_id.get(document.source_item_id)
+        snippet = _focused_context_text(str(getattr(document, "body", "") or ""), query=query, max_chars=max_snippet_chars)
         results.append(
             {
                 "result_id": document.document_id,
                 "source_item_id": document.source_item_id,
                 "source": getattr(item, "source_channel", None),
                 "title": getattr(document, "title", "") or getattr(item, "title", "") or document.source_item_id,
-                "snippet": _truncate(str(getattr(document, "body", "") or ""), max_snippet_chars),
+                "snippet": snippet,
                 "score": 1.0,
                 "citation": {
                     "source_item_id": document.source_item_id,
                     "document_id": document.document_id,
                     "url": getattr(item, "url", None),
                     "title": getattr(document, "title", "") or getattr(item, "title", "") or document.source_item_id,
-                    "snippet": _truncate(str(getattr(document, "body", "") or ""), max_snippet_chars),
+                    "snippet": snippet,
                 },
             }
         )
     if results:
         return results
     for item in source_items:
+        snippet = _focused_context_text(str(item.content_text or ""), query=query, max_chars=max_snippet_chars)
         results.append(
             {
                 "result_id": item.source_item_id,
                 "source_item_id": item.source_item_id,
                 "source": item.source_channel,
                 "title": item.title,
-                "snippet": _truncate(str(item.content_text or ""), max_snippet_chars),
+                "snippet": snippet,
                 "score": 1.0,
                 "citation": {
                     "source_item_id": item.source_item_id,
                     "url": item.url,
                     "title": item.title,
-                    "snippet": _truncate(str(item.content_text or ""), max_snippet_chars),
+                    "snippet": snippet,
                 },
             }
         )
     return results
 
 
-def _citations_for_source_items(source_items: list[Any], *, chunks: list[Any], max_snippet_chars: int) -> list[dict[str, Any]]:
+def _citations_for_source_items(source_items: list[Any], *, chunks: list[Any], max_snippet_chars: int, query: str | None = None) -> list[dict[str, Any]]:
     item_by_id = {item.source_item_id: item for item in source_items}
     chunks_by_source: dict[str, list[Any]] = {}
     for chunk in chunks:
         chunks_by_source.setdefault(chunk.source_item_id, []).append(chunk)
     citations: list[dict[str, Any]] = []
     for item in source_items:
-        item_chunks = sorted(chunks_by_source.get(item.source_item_id, []), key=lambda chunk: getattr(chunk, "ordinal", 0))
+        item_chunks = chunks_by_source.get(item.source_item_id, [])
         if not item_chunks:
             citations.append(
                 {
                     "source_item_id": item.source_item_id,
                     "url": item.url,
                     "title": item.title,
-                    "snippet": _truncate(str(item.content_text or ""), max_snippet_chars),
+                    "snippet": _focused_context_text(str(item.content_text or ""), query=query, max_chars=max_snippet_chars),
                 }
             )
             continue
         for chunk in item_chunks[:2]:
+            snippet = _focused_context_text(str(chunk.text or ""), query=query, max_chars=max_snippet_chars)
             citations.append(
                 {
                     "source_item_id": item.source_item_id,
@@ -1122,7 +1126,7 @@ def _citations_for_source_items(source_items: list[Any], *, chunks: list[Any], m
                     "chunk_id": chunk.chunk_id,
                     "url": item_by_id[chunk.source_item_id].url,
                     "title": item_by_id[chunk.source_item_id].title,
-                    "snippet": _truncate(str(chunk.text or ""), max_snippet_chars),
+                    "snippet": snippet,
                 }
             )
     return citations
@@ -1308,7 +1312,28 @@ def _compact_source_item(item: Any, *, max_chars: int) -> dict[str, Any]:
     }
 
 
-def _compact_chunk(chunk: Any, *, max_chars: int) -> dict[str, Any]:
+def _focused_context_text(text: str, *, query: str | None, max_chars: int) -> str:
+    if query:
+        focused = query_focused_evidence_snippet(text, query, max_chars=max_chars)
+    else:
+        focused = _truncate(text, max_chars)
+    return _wrap_long_lines(_truncate(focused, max_chars), max_line_chars=min(500, max(120, max_chars // 2)))
+
+
+def _wrap_long_lines(text: str, *, max_line_chars: int) -> str:
+    lines: list[str] = []
+    for line in str(text or "").splitlines() or [""]:
+        if len(line) <= max_line_chars:
+            lines.append(line)
+            continue
+        cursor = 0
+        while cursor < len(line):
+            lines.append(line[cursor : cursor + max_line_chars])
+            cursor += max_line_chars
+    return "\n".join(lines).strip()
+
+
+def _compact_chunk(chunk: Any, *, max_chars: int, query: str | None = None) -> dict[str, Any]:
     payload = to_jsonable(chunk)
     text = str(payload.get("text") or "")
     return {
@@ -1319,12 +1344,12 @@ def _compact_chunk(chunk: Any, *, max_chars: int) -> dict[str, Any]:
         "space_id": payload.get("space_id"),
         "visibility": payload.get("visibility"),
         "ordinal": payload.get("ordinal"),
-        "text": _truncate(text, max_chars),
+        "text": _focused_context_text(text, query=query, max_chars=max_chars),
         "text_chars": len(text),
     }
 
 
-def _compact_document(document: Any, *, max_chars: int) -> dict[str, Any]:
+def _compact_document(document: Any, *, max_chars: int, query: str | None = None) -> dict[str, Any]:
     payload = to_jsonable(document)
     body = str(payload.get("body") or "")
     return {
@@ -1334,7 +1359,7 @@ def _compact_document(document: Any, *, max_chars: int) -> dict[str, Any]:
         "space_id": payload.get("space_id"),
         "visibility": payload.get("visibility"),
         "title": payload.get("title"),
-        "body": _truncate(body, max_chars),
+        "body": _focused_context_text(body, query=query, max_chars=max_chars),
         "body_chars": len(body),
         "token_estimate": _estimate_tokens(body),
         "metadata": payload.get("metadata") or {},
@@ -1375,9 +1400,9 @@ def _passage_windows_for_documents(documents: list[Any], chunks: list[Any], *, t
     return windows
 
 
-def _compact_passage_window(window: dict[str, Any], *, max_chars: int) -> dict[str, Any]:
+def _compact_passage_window(window: dict[str, Any], *, max_chars: int, query: str | None = None) -> dict[str, Any]:
     text = str(window.get("text") or "")
-    return {**window, "text": _truncate(text, max_chars), "text_chars": len(text)}
+    return {**window, "text": _focused_context_text(text, query=query, max_chars=max_chars), "text_chars": len(text)}
 
 
 def _passage_spans(text: str, *, max_chars: int) -> list[tuple[int, int]]:

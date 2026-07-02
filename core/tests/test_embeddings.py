@@ -8,7 +8,7 @@ from pska_core.acl import ACLService
 from pska_core.embeddings import APIEmbeddingProvider, EmbeddingConfig, EmbeddingService, build_embedding_provider
 from pska_core.enums import UserRole, Visibility
 from pska_core.ingest import IngestService
-from pska_core.models import TeamMembership, User
+from pska_core.models import Chunk, Document, SourceItem, TeamMembership, User
 from pska_core.offline_index import OfflineIndexService
 from pska_core.retrieval import RetrievalService
 from pska_core.store import InMemoryKnowledgeStore
@@ -67,6 +67,55 @@ def _payload(
         "created_at": created_at,
         "extra": extra or {},
     }
+
+
+def _add_chunked_source(store: InMemoryKnowledgeStore, source_id: str, title: str, chunks: list[str]) -> str:
+    source_item_id = f"src_{source_id}"
+    document_id = f"doc_{source_id}"
+    store.upsert_source_item(
+        SourceItem(
+            source_item_id=source_item_id,
+            source_channel="upload",
+            record_type="file",
+            source_id=source_id,
+            owner_user_id="user_primary",
+            space_id="private_primary",
+            visibility=Visibility.PRIVATE,
+            visible_team_ids=[],
+            title=title,
+            url=None,
+            content_text="\n\n".join(chunks),
+            content_hash=f"hash_{source_id}",
+            metadata={"extra": {"extraction": {"extractor": "test"}}},
+        )
+    )
+    store.add_document(
+        Document(
+            document_id=document_id,
+            source_item_id=source_item_id,
+            owner_user_id="user_primary",
+            space_id="private_primary",
+            visibility=Visibility.PRIVATE,
+            visible_team_ids=[],
+            title=title,
+            body="\n\n".join(chunks),
+        )
+    )
+    for ordinal, text in enumerate(chunks):
+        store.add_chunk(
+            Chunk(
+                chunk_id=f"chk_{source_id}_{ordinal}",
+                document_id=document_id,
+                source_item_id=source_item_id,
+                owner_user_id="user_primary",
+                space_id="private_primary",
+                visibility=Visibility.PRIVATE,
+                visible_team_ids=[],
+                text=text,
+                ordinal=ordinal,
+            )
+        )
+    return source_item_id
 
 
 def test_ingest_writes_embeddings_when_provider_is_enabled() -> None:
@@ -306,6 +355,91 @@ def test_retrieval_boosts_spreadsheet_sources_for_spreadsheet_queries() -> None:
 
     assert response.results[0].title == "portfolio-pipeline.xlsx"
     assert response.results[0].score_debug["spreadsheet_intent_match"] == 1.0
+
+
+def test_retrieval_focuses_spreadsheet_snippet_on_matching_row_and_columns() -> None:
+    store = _store()
+    wide_row_padding = " | ".join(f"Filler{i}" for i in range(40))
+    _add_chunked_source(
+        store,
+        "loan_book",
+        "loan-book.xlsx",
+        [
+            "| RowNo | BorrowerId | DrawnCNYmm | LTV | InternalRating | ECLStage | Checksum | Notes |\n"
+            "| 1 | BOR-OTHER | 10.00 | 0.1000 | BBB | Stage 1 | CHK-OTHER | old row |",
+            "| RowNo | BorrowerId | DrawnCNYmm | LTV | InternalRating | ECLStage | Checksum | Notes |\n"
+            f"| 1375 | BOR-NOISE | 11.00 | 0.1100 | BBB | Stage 1 | CHK-NOISE | {wide_row_padding} |\n"
+            "| 1376 | BOR-TXC-HLD-1376 | 654.32 | 0.7261 | AA- | Stage 2 | CHK-TXC-1376-4812 | target row |",
+        ],
+    )
+    user = store.get_user("user_primary")
+
+    response = RetrievalService(store, ACLService(store)).search(
+        "RowNo 1376 Borrower BOR-TXC-HLD-1376 DrawnCNYmm LTV InternalRating ECLStage Checksum",
+        user,
+        top_k=1,
+    )
+
+    snippet = response.results[0].snippet
+    assert "1376" in snippet
+    assert "BOR-TXC-HLD-1376" in snippet
+    assert "654.32" in snippet
+    assert "0.7261" in snippet
+    assert "AA-" in snippet
+    assert "Stage 2" in snippet
+    assert "CHK-TXC-1376-4812" in snippet
+    assert "1375" not in snippet
+
+
+def test_retrieval_carries_neighbor_table_header_for_mid_table_row_chunks() -> None:
+    store = _store()
+    _add_chunked_source(
+        store,
+        "txn_attachment",
+        "transactions.xlsx",
+        [
+            "| TxnRow | TxnId | AmountCNYmm | RelatedFacilityId | LoanBookBorrowerId | RiskTag | RunningExposureCNYmm |\n"
+            "| --- | --- | --- | --- | --- | --- | --- |",
+            "| 288 | TXN-SENTINEL-0288 | 47.89 | FAC-TXC-1376 | BOR-TXC-HLD-1376 | 疑似循环转账+同控资金归集 | 812.77 |",
+            "| Check | Expected | Actual | Status |\n"
+            "| Sentinel TxnId | TXN-SENTINEL-0288 | TXN-SENTINEL-0288 | OK |\n"
+            "| Amount | 47.89 | 47.89 | OK |\n"
+            "| RiskTag | 疑似循环转账+同控资金归集 | 疑似循环转账+同控资金归集 | OK |\n"
+            "| RunningExposure | 812.77 | 812.77 | OK |",
+        ],
+    )
+    user = store.get_user("user_primary")
+
+    response = RetrievalService(store, ACLService(store)).search(
+        "TXN-SENTINEL-0288 Amount FacilityId BorrowerId RiskTag RunningExposure",
+        user,
+        top_k=1,
+    )
+
+    assert response.results[0].result_id == "chk_txn_attachment_1"
+    assert "LoanBookBorrowerId" in response.results[0].snippet
+    assert "BOR-TXC-HLD-1376" in response.results[0].snippet
+
+
+def test_retrieval_adds_tail_chunk_for_last_page_queries() -> None:
+    store = _store()
+    _add_chunked_source(
+        store,
+        "annual_report",
+        "Annual Report.pdf",
+        [
+            "Annual Report overview Annual Report overview Annual Report overview.",
+            "Annual Report financial discussion and operating review.",
+            "Investor contacts: www.example.com, +852 2179 5122. Registered office final-page sentinel.",
+        ],
+    )
+    user = store.get_user("user_primary")
+
+    response = RetrievalService(store, ACLService(store)).search("Annual Report.pdf 最后一页", user, top_k=1)
+
+    assert response.results[0].result_id == "chk_annual_report_2"
+    assert "final-page sentinel" in response.results[0].snippet
+    assert response.results[0].score_debug["document_position_intent"] == 1.0
 
 
 def test_retrieval_falls_back_to_term_frequency_when_bm25_is_unavailable(monkeypatch) -> None:
