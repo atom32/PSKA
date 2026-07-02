@@ -797,7 +797,7 @@ def _is_event_stream_headers(headers: Mapping[str, str]) -> bool:
 
 
 def _is_streaming_api_path(path: str) -> bool:
-    return path in {"/workspace/ask/stream"}
+    return path in {"/workspace/ask/stream"} or _is_ask_conversation_stream_path(path)
 
 
 def _is_long_running_api_path(path: str) -> bool:
@@ -806,7 +806,11 @@ def _is_long_running_api_path(path: str) -> bool:
         "/workspace/ask/stream",
         "/workspace/digest/run",
         "/workspace/sources/upload",
-    }
+    } or _is_ask_conversation_stream_path(path)
+
+
+def _is_ask_conversation_stream_path(path: str) -> bool:
+    return path.startswith("/workspace/ask/conversations/") and path.endswith("/messages/stream")
 
 
 def _iter_streaming_response_chunks(response: Any, *, event_stream: bool):

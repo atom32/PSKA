@@ -243,10 +243,13 @@ def test_gateway_detects_sse_response_headers_case_insensitively() -> None:
 
 def test_gateway_forces_ask_stream_to_streaming_timeout() -> None:
     config = GatewayConfig(request_timeout_seconds=15)
+    conversation_stream_path = "/workspace/ask/conversations/ask_123/messages/stream"
 
     assert _is_streaming_api_path("/workspace/ask/stream") is True
+    assert _is_streaming_api_path(conversation_stream_path) is True
     assert _is_streaming_api_path("/workspace/ask") is False
     assert _proxy_timeout_for_path("/workspace/ask/stream", config) == 300.0
+    assert _proxy_timeout_for_path(conversation_stream_path, config) == 300.0
     assert _proxy_timeout_for_path("/workspace/ask", config) == 300.0
     assert _proxy_timeout_for_path("/workspace/sources/upload", config) == 300.0
     assert _proxy_timeout_for_path("/workspace/digest/run", config) == 300.0
