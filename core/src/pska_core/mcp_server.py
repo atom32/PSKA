@@ -763,8 +763,38 @@ def _compact_search_response(payload: dict[str, Any], *, max_results: int, max_s
     results = payload.get("results") if isinstance(payload.get("results"), list) else []
     citations = payload.get("citations") if isinstance(payload.get("citations"), list) else []
     graph_paths = payload.get("graph_paths") if isinstance(payload.get("graph_paths"), list) else []
-    compact_results = [_compact_search_result(item, max_snippet_chars=max_snippet_chars) for item in results[:max_results] if isinstance(item, dict)]
-    compact_citations = [_compact_citation(item, max_snippet_chars=max_snippet_chars) for item in citations[:max_results] if isinstance(item, dict)]
+    budgets = [
+        (max_results, max_snippet_chars),
+        (min(max_results, 2), min(max_snippet_chars, 140)),
+        (1, 120),
+    ]
+    response: dict[str, Any] = {}
+    for result_limit, snippet_limit in budgets:
+        candidate = _build_compact_search_response(
+            payload,
+            results=results,
+            citations=citations,
+            graph_paths=graph_paths,
+            result_limit=result_limit,
+            snippet_limit=snippet_limit,
+        )
+        response = candidate
+        if len(json.dumps(candidate, ensure_ascii=False)) < 3800:
+            break
+    return response
+
+
+def _build_compact_search_response(
+    payload: dict[str, Any],
+    *,
+    results: list[Any],
+    citations: list[Any],
+    graph_paths: list[Any],
+    result_limit: int,
+    snippet_limit: int,
+) -> dict[str, Any]:
+    compact_results = [_compact_search_result(item, max_snippet_chars=snippet_limit) for item in results[:result_limit] if isinstance(item, dict)]
+    compact_citations = [_compact_citation(item, max_snippet_chars=snippet_limit) for item in citations[:result_limit] if isinstance(item, dict)]
     follow_up_keys = _dedupe_follow_up_keys(
         key
         for item in [*compact_results, *compact_citations]
@@ -782,11 +812,11 @@ def _compact_search_response(payload: dict[str, Any], *, max_results: int, max_s
         "results": compact_results,
         "citations": compact_citations,
         "follow_up_keys": follow_up_keys[:12],
-        "graph_paths": [_compact_graph_path(item, max_snippet_chars=max_snippet_chars) for item in graph_paths[:5] if isinstance(item, dict)],
+        "graph_paths": [_compact_graph_path(item, max_snippet_chars=snippet_limit) for item in graph_paths[:5] if isinstance(item, dict)],
         "diagnostics": _compact_diagnostics(payload.get("diagnostics")),
         "omitted": {
-            "results": max(0, len(results) - max_results),
-            "citations": max(0, len(citations) - max_results),
+            "results": max(0, len(results) - len(compact_results)),
+            "citations": max(0, len(citations) - len(compact_citations)),
             "graph_paths": max(0, len(graph_paths) - 5),
             "reason": "MCP compact output keeps FastReAct tool results parser-safe.",
         },
