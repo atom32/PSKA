@@ -12,8 +12,14 @@ npm install
 npm run dev
 ```
 
-The Vite dev server proxies `/workspace/*` to the local PSKA HTTP service at
-`http://127.0.0.1:8765`.
+The Vite dev server proxies PSKA API/login paths to
+`PSKA_VITE_PROXY_TARGET`, falling back to `PSKA_VITE_API_TARGET`, then
+`http://127.0.0.1:8765`. For hot-reload testing through PSKA Gateway, run the
+gateway on another port and start Vite with:
+
+```bash
+PSKA_VITE_PROXY_TARGET=http://127.0.0.1:8080 npm run dev
+```
 
 From the repository root, the normal path is:
 

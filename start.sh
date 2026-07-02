@@ -235,6 +235,7 @@ if [[ "$(config_value startup_frontend)" == "true" ]]; then
       if [[ -z "${AUTHNODE_ADMIN_TOKEN:-}" && -z "${PSKA_GATEWAY_AUTHNODE_ADMIN_TOKEN:-}" ]]; then
         echo "PSKA gateway will use AuthNode browser login when no local token-broker admin token is configured."
         echo "Set PSKA_GATEWAY_AUTHNODE_URL or AUTHNODE_URL if AuthNode is not at http://127.0.0.1:8788."
+        echo "Set PSKA_GATEWAY_AUTHNODE_BROWSER_URL when browsers need a different public AuthNode URL."
       fi
       if [[ ! -d "$ROOT/frontend/node_modules" ]]; then
         echo "Installing frontend dependencies..."

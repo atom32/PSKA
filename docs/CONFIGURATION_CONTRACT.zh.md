@@ -25,11 +25,15 @@ PSKA 的开发验证必须使用 PSKA 仓库的 `./start.sh`，因为它会按 `
 | PSKA gateway/frontend | `http://127.0.0.1:5173` | 生产式前端入口；`/login` 由 gateway 跳 AuthNode |
 | FastReAct daemon | `http://127.0.0.1:18741` | Agentic Ask / digest 执行 |
 
-如果 PSKA 登录只停在 `http://127.0.0.1:5173/login`，通常说明当前跑的是 Vite/dev frontend，或者 `startup.frontend.mode` 不是 `gateway`。只有 PSKA gateway 会把 `/login` 跳到 AuthNode：
+如果 PSKA 登录只停在 `http://127.0.0.1:5173/login`，通常说明当前跑的是 Vite/dev frontend，或者 gateway 被配置为本地 token-broker 模式。只有 PSKA gateway 且 `PSKA_GATEWAY_AUTHNODE_BROWSER_LOGIN=true` 时，`/login` 才会跳到 AuthNode：
 
 ```text
 http://127.0.0.1:8788/login?target=pska&return_to=...
 ```
+
+Docker 部署中不要把浏览器跳转地址写成容器内服务名。保持
+`PSKA_GATEWAY_AUTHNODE_URL=http://authnode:8788` 给服务端调用，同时设置
+`PSKA_GATEWAY_AUTHNODE_BROWSER_URL=http://<public-host>:8788` 给用户浏览器。
 
 ## 配置文件位置
 
@@ -130,4 +134,5 @@ AuthNode `./start.sh` 默认读取 `.authnode/config.json`；旧环境如果已�
 2. PSKA `.pska/config.json` 的 `startup.frontend.mode` 是 `gateway`，`fastreact.url` 和 `agentic_service.url` 都是 `http://127.0.0.1:18741`。
 3. FastReAct 实际启动使用的 config 中 `service.port` 是 `18741`，MCP `servers[].url` 指向 `http://127.0.0.1:8765/mcp`。
 4. PSKA gateway 需要稳定 session 时设置 `PSKA_GATEWAY_SESSION_SECRET`；本地不设也能启动，但重启会使旧 session 失效。
-5. 不要把 `.authnode/config.json`、兼容旧文件 `authnode.local.json`、`.pska/config.json`、`.fastreact/config.json`、`~/.fastreact/config.json` 或 `~/.fastreact/credentials.json` 提交进仓库。
+5. Docker/LAN 部署中，`PSKA_GATEWAY_AUTHNODE_BROWSER_URL` 指向浏览器可访问的 AuthNode URL；不要让浏览器重定向到 `http://authnode:8788` 这类容器内地址。
+6. 不要把 `.authnode/config.json`、兼容旧文件 `authnode.local.json`、`.pska/config.json`、`.fastreact/config.json`、`~/.fastreact/config.json` 或 `~/.fastreact/credentials.json` 提交进仓库。

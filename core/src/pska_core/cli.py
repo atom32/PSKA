@@ -201,6 +201,7 @@ def build_parser() -> argparse.ArgumentParser:
     gateway_parser.add_argument("--frontend-dist", type=Path, default=None)
     gateway_parser.add_argument("--pska-url", default=None)
     gateway_parser.add_argument("--authnode-url", default=None)
+    gateway_parser.add_argument("--authnode-browser-url", default=None)
     gateway_parser.add_argument("--authnode-admin-token", default=None)
     gateway_parser.add_argument("--pska-service-token", default=None)
     gateway_parser.add_argument("--session-secret", default=None)
@@ -586,6 +587,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             frontend_dist=(args.frontend_dist or env_gateway.frontend_dist).expanduser(),
             pska_url=(args.pska_url or env_gateway.pska_url).rstrip("/"),
             authnode_url=(args.authnode_url or env_gateway.authnode_url).rstrip("/"),
+            authnode_browser_url=(args.authnode_browser_url or env_gateway.authnode_browser_url or "").rstrip("/")
+            or None,
             authnode_admin_token=args.authnode_admin_token or env_gateway.authnode_admin_token,
             pska_service_token=args.pska_service_token or env_gateway.pska_service_token or config.service.service_token,
             session_secret=args.session_secret or env_gateway.session_secret,

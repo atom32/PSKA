@@ -141,7 +141,8 @@ FastReAct 凭据和 AuthNode/tenant 上下文，浏览器不接触 FastReAct ser
 | `PSKA_GATEWAY_HOST` / `PSKA_GATEWAY_PORT` | Gateway 监听地址 |
 | `PSKA_GATEWAY_FRONTEND_DIST` | 已构建前端目录，默认 `frontend/dist` |
 | `PSKA_GATEWAY_PSKA_URL` | PSKA 后端 URL，默认 `http://127.0.0.1:8765` |
-| `PSKA_GATEWAY_AUTHNODE_URL` / `AUTHNODE_URL` | AuthNode URL |
+| `PSKA_GATEWAY_AUTHNODE_URL` / `AUTHNODE_URL` | Gateway 服务端访问 AuthNode 的 URL；Docker 内通常是 `http://authnode:8788` |
+| `PSKA_GATEWAY_AUTHNODE_BROWSER_URL` / `AUTHNODE_BROWSER_URL` | 浏览器跳转到 AuthNode 登录/登出的外部 URL；未设置时回退到 `PSKA_GATEWAY_AUTHNODE_URL` |
 | `PSKA_GATEWAY_AUTHNODE_ADMIN_TOKEN` / `AUTHNODE_ADMIN_TOKEN` | 仅本地 token-broker 使用；生产不应要求 PSKA 持有 |
 | `PSKA_GATEWAY_AUTHNODE_BROWSER_LOGIN` | 是否把 `/login` 重定向到 AuthNode browser login，默认 `true` |
 | `PSKA_GATEWAY_AUTHNODE_LOGOUT` | `/logout` 清 session 后是否联动 AuthNode/Keycloak logout，默认 `true` |
@@ -149,6 +150,19 @@ FastReAct 凭据和 AuthNode/tenant 上下文，浏览器不接触 FastReAct ser
 | `PSKA_GATEWAY_COOKIE_SECURE` | HTTPS 下设置为 `true` |
 | `PSKA_GATEWAY_TOKEN_TTL_SECONDS` | AuthNode 签发的 PSKA JWT TTL |
 | `PSKA_GATEWAY_PSKA_SERVICE_TOKEN` | 仅用于兼容旧 PSKA service-token 模式 |
+
+Docker 或远端部署时，内部服务名和浏览器可访问地址通常不同。推荐保留内部
+AuthNode URL 给 code exchange/token 请求，同时显式设置浏览器 URL：
+
+```yaml
+PSKA_GATEWAY_AUTHNODE_URL: http://authnode:8788
+PSKA_GATEWAY_AUTHNODE_BROWSER_URL: http://${PUBLIC_HOST:-127.0.0.1}:${AUTHNODE_PORT:-8788}
+PSKA_GATEWAY_AUTHNODE_BROWSER_LOGIN: "true"
+PSKA_GATEWAY_LOCAL_AUTHNODE_CATALOG_LOGIN: "false"
+```
+
+如果暂时只做本地 smoke test，可以把 `PSKA_GATEWAY_AUTHNODE_BROWSER_LOGIN`
+设为 `"false"`，并通过 `/login?local=1` 使用 gateway 的本地 token-broker 表单。
 
 ## 安全边界
 

@@ -129,14 +129,18 @@ def test_gateway_exchanges_authnode_browser_code(monkeypatch) -> None:
     monkeypatch.setattr(gateway, "urlopen", fake_urlopen)
 
     response = request_authnode_code_exchange(
-        GatewayConfig(authnode_url="http://authnode.test", request_timeout_seconds=4),
+        GatewayConfig(
+            authnode_url="http://authnode.internal",
+            authnode_browser_url="http://authnode.public",
+            request_timeout_seconds=4,
+        ),
         code="one-time-code",
         target="pska",
     )
 
     assert response["access_token"] == "jwt-from-code"
     assert len(calls) == 1
-    assert calls[0]["url"] == "http://authnode.test/v1/auth/exchange"
+    assert calls[0]["url"] == "http://authnode.internal/v1/auth/exchange"
     assert calls[0]["method"] == "POST"
     assert calls[0]["headers"]["content-type"] == "application/json"
     assert calls[0]["headers"]["accept"] == "application/json"
@@ -159,6 +163,20 @@ def test_gateway_logout_can_redirect_through_authnode() -> None:
         GatewayConfig(authnode_url="http://authnode.test", authnode_logout=False),
         return_to="http://pska.test/login",
     ) == "/login"
+
+
+def test_gateway_redirects_use_public_authnode_browser_url(monkeypatch) -> None:
+    monkeypatch.setenv("PSKA_GATEWAY_AUTHNODE_URL", "http://authnode.internal/")
+    monkeypatch.setenv("PSKA_GATEWAY_AUTHNODE_BROWSER_URL", "http://authnode.public/")
+
+    config = GatewayConfig.from_env()
+
+    assert config.authnode_url == "http://authnode.internal"
+    assert config.authnode_browser_url == "http://authnode.public"
+    assert (
+        authnode_logout_redirect(config, return_to="http://pska.test/login")
+        == "http://authnode.public/logout?return_to=http%3A%2F%2Fpska.test%2Flogin"
+    )
 
 
 def test_gateway_callback_accepts_trusted_headers_without_browser_token() -> None:

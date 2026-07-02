@@ -53,6 +53,7 @@ class GatewayConfig:
     frontend_dist: Path = DEFAULT_FRONTEND_DIST
     pska_url: str = "http://127.0.0.1:8765"
     authnode_url: str = "http://127.0.0.1:8788"
+    authnode_browser_url: str | None = None
     authnode_admin_token: str | None = None
     pska_service_token: str | None = None
     session_secret: str | None = None
@@ -78,6 +79,7 @@ class GatewayConfig:
             frontend_dist=Path(os.getenv("PSKA_GATEWAY_FRONTEND_DIST", str(DEFAULT_FRONTEND_DIST))).expanduser(),
             pska_url=os.getenv("PSKA_GATEWAY_PSKA_URL", "http://127.0.0.1:8765").rstrip("/"),
             authnode_url=(os.getenv("PSKA_GATEWAY_AUTHNODE_URL") or os.getenv("AUTHNODE_URL") or "http://127.0.0.1:8788").rstrip("/"),
+            authnode_browser_url=_optional_url_env("PSKA_GATEWAY_AUTHNODE_BROWSER_URL") or _optional_url_env("AUTHNODE_BROWSER_URL"),
             authnode_admin_token=os.getenv("PSKA_GATEWAY_AUTHNODE_ADMIN_TOKEN") or os.getenv("AUTHNODE_ADMIN_TOKEN") or None,
             pska_service_token=os.getenv("PSKA_GATEWAY_PSKA_SERVICE_TOKEN") or None,
             session_secret=secret,
@@ -107,6 +109,7 @@ class GatewayConfig:
             frontend_dist=self.frontend_dist,
             pska_url=self.pska_url,
             authnode_url=self.authnode_url,
+            authnode_browser_url=self.authnode_browser_url,
             authnode_admin_token=self.authnode_admin_token,
             pska_service_token=self.pska_service_token,
             session_secret=secrets.token_urlsafe(48),
@@ -396,7 +399,11 @@ def authnode_logout_redirect(config: GatewayConfig, *, return_to: str) -> str:
     if not config.authnode_browser_login or not config.authnode_logout:
         return "/login"
     params = {"return_to": return_to}
-    return f"{config.authnode_url.rstrip('/')}/logout?{urlencode(params)}"
+    return f"{_authnode_browser_base_url(config)}/logout?{urlencode(params)}"
+
+
+def _authnode_browser_base_url(config: GatewayConfig) -> str:
+    return (config.authnode_browser_url or config.authnode_url).rstrip("/")
 
 
 def proxy_request_headers(incoming: Mapping[str, str], session: Mapping[str, Any], config: GatewayConfig) -> dict[str, str]:
@@ -600,7 +607,7 @@ class PSKAGatewayHandler(BaseHTTPRequestHandler):
             "user_key": _first(query.get("user_key")) or self.config.default_user_key,
             "tenant_id": _first(query.get("tenant_id")) or self.config.default_tenant_id,
         }
-        return f"{self.config.authnode_url.rstrip('/')}/login?{urlencode(params)}"
+        return f"{_authnode_browser_base_url(self.config)}/login?{urlencode(params)}"
 
     def _external_url(self, path: str) -> str:
         proto = self.headers.get("X-Forwarded-Proto") or ("https" if self.config.cookie_secure else "http")
@@ -903,6 +910,11 @@ def _bool_env(name: str, default: bool) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _optional_url_env(name: str) -> str | None:
+    value = (os.getenv(name) or "").strip()
+    return value.rstrip("/") or None
 
 
 def _truthy(value: str | None) -> bool:
