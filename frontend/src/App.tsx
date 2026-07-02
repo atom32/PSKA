@@ -796,6 +796,14 @@ function TodayWorkspace({
       return run.run_id === liveSearchResult.run_id;
     }
     return Boolean(liveSearchResult.query) && run.query === liveSearchResult.query;
+  }) || conversationMessages.some((message) => {
+    if (message.role !== "assistant") {
+      return false;
+    }
+    if (liveSearchResult.run_id && message.run_id === liveSearchResult.run_id) {
+      return true;
+    }
+    return Boolean(liveSearchResult.query) && displayText(message.content, "").trim() === displayText(liveSearchResult.answer, "").trim();
   }) : false;
 
   useEffect(() => {
@@ -3900,7 +3908,6 @@ function AskConversationPanel({
   livePending?: boolean;
   composer: ReactNode;
 }) {
-  const showLiveResult = Boolean(liveResult);
   const runById = useMemo(() => {
     const mapped = new Map<string, WorkspaceAskResponse>();
     runs.forEach((run) => {
@@ -3916,6 +3923,24 @@ function AskConversationPanel({
     .filter((message) => message.role === "assistant")
     .map((message) => displayText(message.run_id, ""))
     .filter(Boolean)), [messages]);
+  const liveResultAlreadyRendered = useMemo(() => {
+    if (!liveResult) {
+      return false;
+    }
+    const liveRunId = displayText(liveResult.run_id, "");
+    if (liveRunId && (assistantRunIds.has(liveRunId) || runById.has(liveRunId))) {
+      return true;
+    }
+    const liveQueryText = displayText(liveResult.query || liveQuery, "").trim();
+    if (!liveQueryText) {
+      return false;
+    }
+    return runs.some((run) => {
+      const storedResult = askResultFromRun(run);
+      return Boolean(storedResult && storedResult.status !== "running" && displayText(storedResult.query, "").trim() === liveQueryText);
+    });
+  }, [assistantRunIds, liveQuery, liveResult, runById, runs]);
+  const showLiveResult = Boolean(liveResult) && !liveResultAlreadyRendered;
   return (
     <div className="ask-conversation-panel">
       <div className="ask-chat-main">

@@ -705,6 +705,75 @@ def test_ask_quick_answer_extracts_requested_fields_from_matching_table_row() ->
     assert "REC-003" not in answer
 
 
+def test_workspace_ask_quick_uses_agentic_final_synthesis_without_tools() -> None:
+    class QuickSynthesisAgenticService:
+        def __init__(self):
+            self.calls = []
+
+        def ready(self):
+            return {"ok": True, "provider": "test", "adapter": "synthesis"}
+
+        def search(self, query, user, *, represented_user_id=None, max_iterations=3, skills=None, tool_policy=None, session_id=None):
+            self.calls.append(
+                {
+                    "query": query,
+                    "max_iterations": max_iterations,
+                    "skills": skills,
+                    "tool_policy": tool_policy,
+                    "session_id": session_id,
+                }
+            )
+            return {
+                "answer": json.dumps(
+                    {
+                        "answer": "海康威视 2024 年营业收入为 92,495,525,118.30 元，约 924.96 亿元；该数值来自已校验证据中的营业收入（元）字段。"
+                    },
+                    ensure_ascii=False,
+                ),
+                "trace": {},
+                "agentic_service": {"provider": "test", "adapter": "synthesis"},
+            }
+
+    api = _api()
+    service = QuickSynthesisAgenticService()
+    api.agentic_service = service
+    IngestService(api.store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "quick-synthesis-report",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "海康威视2024年报",
+            "content": {
+                "text": (
+                    "海康威视2024年营业收入多少元。营业收入构成 4 单位：亿元 PBG 134.67。"
+                    "主要会计数据和财务指标：营业收入（元） 92,495,525,118.30。"
+                )
+            },
+        }
+    )
+
+    response = api.workspace_ask(
+        {
+            "query": "海康威视2024年营业收入多少元？",
+            "intent": "quick",
+            "session_id": "quick-synthesis-session",
+        }
+    )
+
+    assert response["answer"].startswith("海康威视 2024 年营业收入为")
+    assert "营业收入构成 4" not in response["answer"]
+    assert response["route"]["final_synthesis_owner"] == "fastreact_agentic_service"
+    assert response["trace"]["final_synthesis"]["status"] == "succeeded"
+    assert service.calls[0]["max_iterations"] == 1
+    assert service.calls[0]["skills"] == []
+    assert service.calls[0]["tool_policy"] == {"mode": "none"}
+    assert service.calls[0]["session_id"] == "quick-synthesis-session"
+
+
 def test_workspace_ask_conversation_stream_marks_run_failed_when_closed() -> None:
     api = object.__new__(PSKAApi)
     api.store = InMemoryKnowledgeStore()

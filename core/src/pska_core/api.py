@@ -1693,6 +1693,7 @@ class PSKAApi:
                     top_k=top_k,
                     started_at=started_at,
                     understand=understand,
+                    session_id=session_id,
                 )
                 quick["ok"] = False
                 quick["route"]["selected_intent"] = "quick"
@@ -1713,6 +1714,7 @@ class PSKAApi:
                 top_k=top_k,
                 started_at=started_at,
                 understand=understand,
+                session_id=session_id,
             )
         )
 
@@ -1845,6 +1847,7 @@ class PSKAApi:
                         agent_steps=emitted_steps,
                         query_terms=query_terms,
                         understand=understand,
+                        session_id=session_id,
                     )
                 )
                 final_payload["timing"]["time_to_first_agent_event_ms"] = time_to_first_agent_event_ms
@@ -1945,6 +1948,7 @@ class PSKAApi:
                 top_k=top_k,
                 started_at=started_at,
                 understand=understand,
+                session_id=session_id,
             )
             quick["ok"] = False
             quick["route"]["selected_intent"] = "quick"
@@ -2185,6 +2189,7 @@ class PSKAApi:
         agent_steps: list[dict[str, Any]] | None = None,
         query_terms: list[str] | None = None,
         understand: dict[str, Any] | None = None,
+        session_id: str | None = None,
     ) -> dict[str, Any]:
         scope = scope or {}
         understand = understand or _ask_understand_payload(
@@ -2321,19 +2326,34 @@ class PSKAApi:
         evidence = _ask_apply_evidence_check(evidence, evidence_check)
         retrieval = _ask_apply_evidence_check_to_retrieval(retrieval, evidence_check)
         steps.append(_ask_quick_read_step(sequence=len(steps) + 1, evidence=evidence, started_at=started_at))
+        final_synthesis: dict[str, Any] | None = None
         if evidence_check.get("status") == "supported":
-            answer = _ask_quick_answer(query, retrieval)
+            final_synthesis = self._workspace_ask_quick_agentic_synthesis(
+                query=query,
+                rewrite_query=rewrite_query,
+                evidence=evidence,
+                evidence_check=evidence_check,
+                user=user,
+                represented_user_id=represented_user_id,
+                session_id=session_id,
+            )
+            answer = str((final_synthesis or {}).get("answer") or "").strip() or _ask_quick_answer(query, retrieval)
             answer_type = "kb_answer"
         else:
             answer = _ask_no_answer_from_evidence_check(query, evidence_check)
             answer_type = "no_answer"
+        answer_detail = "已完成证据归纳和引用校验。"
+        if final_synthesis and final_synthesis.get("status") == "succeeded":
+            answer_detail = "已由 agentic service 基于通过校验的证据归纳成回答。"
+        elif final_synthesis and final_synthesis.get("status") == "fallback":
+            answer_detail = "Agentic 归纳不可用，已使用确定性证据摘要兜底。"
         steps.append(
             _ask_agent_step(
                 sequence=len(steps) + 1,
                 phase="answer",
                 status="complete",
                 title="形成回答",
-                detail="已完成证据归纳和引用校验。",
+                detail=answer_detail,
                 started_at=started_at,
             )
         )
@@ -2353,6 +2373,7 @@ class PSKAApi:
                 "surface": surface,
                 "requires_agentic_service_online": False,
                 "tool_policy": {"mode": "none"},
+                "final_synthesis_owner": (final_synthesis or {}).get("owner") or "deterministic_fallback",
                 "routing_owner": "pska_planner",
                 "query_terms": query_terms,
                 "rewrite_query": rewrite_query,
@@ -2378,6 +2399,7 @@ class PSKAApi:
                 "scope": _ask_scope_trace(scope or {}),
                 "retrieval_owner": "pska",
                 "retrieval": retrieval,
+                "final_synthesis": final_synthesis or {"status": "not_attempted"},
                 "diagnostics": retrieval.get("diagnostics") if isinstance(retrieval.get("diagnostics"), dict) else {},
                 "evidence_check": evidence_check,
             },
@@ -2388,6 +2410,51 @@ class PSKAApi:
             },
             "tenant_id": tenant_id,
             "owner_user_id": owner_user_id,
+        }
+
+    def _workspace_ask_quick_agentic_synthesis(
+        self,
+        *,
+        query: str,
+        rewrite_query: str,
+        evidence: dict[str, Any],
+        evidence_check: dict[str, Any],
+        user: Any,
+        represented_user_id: str,
+        session_id: str | None,
+    ) -> dict[str, Any] | None:
+        if not hasattr(self.agentic_service, "search"):
+            return {"status": "fallback", "owner": "deterministic_fallback", "reason": "agentic_service_unavailable"}
+        prompt = _ask_quick_synthesis_prompt(query=query, rewrite_query=rewrite_query, evidence=evidence, evidence_check=evidence_check)
+        try:
+            agentic = self._agentic_service_search(
+                prompt,
+                user,
+                represented_user_id=represented_user_id,
+                max_iterations=1,
+                skills=[],
+                tool_policy={"mode": "none"},
+                session_id=session_id,
+            )
+        except Exception as exc:
+            return {"status": "fallback", "owner": "deterministic_fallback", "reason": f"{type(exc).__name__}: {exc}"}
+        answer = _ask_answer_from_agentic_synthesis(agentic.get("answer"))
+        if not answer:
+            return {
+                "status": "fallback",
+                "owner": "deterministic_fallback",
+                "reason": "invalid_agentic_synthesis_json",
+                "provider": (agentic.get("agentic_service") or {}).get("provider") if isinstance(agentic.get("agentic_service"), dict) else None,
+            }
+        return {
+            "status": "succeeded",
+            "owner": "fastreact_agentic_service",
+            "answer": answer,
+            "provider": (agentic.get("agentic_service") or {}).get("provider") if isinstance(agentic.get("agentic_service"), dict) else None,
+            "adapter": (agentic.get("agentic_service") or {}).get("adapter") if isinstance(agentic.get("agentic_service"), dict) else None,
+            "evidence_count": len(_list_of_dicts(evidence.get("results"))),
+            "citation_count": len(_list_of_dicts(evidence.get("citations"))),
+            "evidence_status": evidence_check.get("status"),
         }
 
     def workspace_today(
@@ -6807,12 +6874,89 @@ def _ask_quick_answer(query: str, retrieval: dict[str, Any]) -> str:
         facts = _ask_clean_facts_from_results(results, limit=4)
     if not facts:
         return f"关键结论：PSKA 找到了与“{query}”相关的来源，但当前片段不足以整理成可引用结论。请查看证据列表或扩大检索范围。"
-    lines = [f"关键结论：关于“{query}”，当前资料支持以下结论："]
-    lines.extend(f"- {fact}" for fact in facts)
+    if len(facts) == 1 and "=" in facts[0]:
+        lines = [f"关键结论：根据当前资料，{facts[0]}。"]
+    else:
+        lines = [f"关键结论：关于“{query}”，当前资料支持以下结论："]
+        lines.extend(f"- {fact}" for fact in facts)
     diagnostics = retrieval.get("diagnostics") if isinstance(retrieval.get("diagnostics"), dict) else {}
     if diagnostics.get("gaps") or diagnostics.get("conflicts"):
         lines.append("不确定性：存在检索缺口或证据冲突，报告中应保留限定表述。")
     return "\n".join(lines)
+
+
+def _ask_quick_synthesis_prompt(
+    *,
+    query: str,
+    rewrite_query: str,
+    evidence: dict[str, Any],
+    evidence_check: dict[str, Any],
+) -> str:
+    evidence_items = _ask_quick_synthesis_evidence_items(evidence)
+    payload = {
+        "question": query,
+        "rewrite_query": rewrite_query,
+        "evidence_check": {
+            "status": evidence_check.get("status"),
+            "scope_mode": evidence_check.get("scope_mode"),
+            "supporting_citation_count": evidence_check.get("supporting_citation_count"),
+        },
+        "evidence": evidence_items,
+    }
+    return (
+        "You are PSKA's quick-answer final synthesizer. You are called through the agentic service, "
+        "but this is not a research loop. Do not call tools, do not retrieve, and do not use outside knowledge.\n"
+        "Use only the evidence JSON below, which PSKA already filtered by ACL, scope, and citation support. "
+        "Answer the user's question in natural human language, not as raw evidence snippets. Preserve exact "
+        "numbers, units, entity names, dates, row identifiers, and table field values from the evidence. "
+        "If the evidence has multiple candidate values, explain the distinction briefly instead of guessing. "
+        "If the evidence is insufficient, say so clearly.\n"
+        "Return ONLY JSON: {\"answer\": \"...\"}. The answer should be Chinese by default, concise, "
+        "conclusion-first, and suitable for a financial institution user to paste into a note.\n\n"
+        f"Evidence JSON: {json.dumps(payload, ensure_ascii=False)}"
+    )
+
+
+def _ask_quick_synthesis_evidence_items(evidence: dict[str, Any]) -> list[dict[str, Any]]:
+    windows = _list_of_dicts(evidence.get("source_windows"))
+    if not windows:
+        windows = _list_of_dicts(evidence.get("results"))
+    items: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for index, item in enumerate(windows):
+        source_id = str(item.get("source_item_id") or "")
+        chunk_id = str(item.get("chunk_id") or item.get("passage_window_id") or "")
+        title = str(item.get("title") or "")
+        key = (source_id, chunk_id, title)
+        if key in seen:
+            continue
+        seen.add(key)
+        source_window = item.get("source_window") if isinstance(item.get("source_window"), dict) else {}
+        text = str(item.get("text") or item.get("snippet") or source_window.get("text") or "")
+        if not text.strip():
+            continue
+        items.append(
+            {
+                "ref": f"E{len(items) + 1}",
+                "title": title,
+                "source_item_id": source_id,
+                "chunk_id": chunk_id,
+                "text": _ask_clean_evidence_text(text)[:1200],
+            }
+        )
+        if len(items) >= 8:
+            break
+    return items
+
+
+def _ask_answer_from_agentic_synthesis(value: Any) -> str:
+    parsed = _ask_json_object_from_text(str(value or ""))
+    if not isinstance(parsed, dict):
+        return ""
+    answer = str(parsed.get("answer") or "").strip()
+    if len(answer) < 2:
+        return ""
+    return answer
 
 
 def _ask_table_field_facts_from_results(query: str, results: list[dict[str, Any]], *, limit: int) -> list[str]:
