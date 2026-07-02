@@ -624,6 +624,53 @@ def test_workspace_ask_conversation_stream_persists_progress_before_close() -> N
     assert runs[0].result["error"] == "stream_closed_before_done"
 
 
+def test_workspace_ask_conversation_deep_omits_history_for_independent_question() -> None:
+    api = _api()
+    conversation_id = api.create_workspace_ask_conversation({"title": "Evidence thread"})["conversation"]["conversation_id"]
+    list(
+        api.workspace_ask_conversation_event_stream(
+            conversation_id,
+            {"query": "What does reusablehistorykeyword say?", "intent": "quick"},
+        )
+    )
+
+    api.agentic_service.calls.clear()
+    list(
+        api.workspace_ask_conversation_event_stream(
+            conversation_id,
+            {"query": "只根据已上传的 report.pdf，请输出最后一页的官网和电话。", "intent": "deep"},
+        )
+    )
+
+    deep_query = api.agentic_service.calls[-1]["query"]
+    assert "recent_messages" not in deep_query
+    assert "conversation_summary" not in deep_query
+    assert "reusablehistorykeyword" not in deep_query
+
+
+def test_workspace_ask_conversation_deep_keeps_history_for_follow_up_question() -> None:
+    api = _api()
+    conversation_id = api.create_workspace_ask_conversation({"title": "Evidence thread"})["conversation"]["conversation_id"]
+    list(
+        api.workspace_ask_conversation_event_stream(
+            conversation_id,
+            {"query": "What does reusablehistorykeyword say?", "intent": "quick"},
+        )
+    )
+
+    api.agentic_service.calls.clear()
+    list(
+        api.workspace_ask_conversation_event_stream(
+            conversation_id,
+            {"query": "继续展开上一个回答", "intent": "deep"},
+        )
+    )
+
+    deep_query = api.agentic_service.calls[-1]["query"]
+    assert "recent_messages" in deep_query
+    assert "reusablehistorykeyword" in deep_query
+
+
 def test_ask_query_terms_splits_mixed_english_chinese() -> None:
     terms = _ask_query_terms("acme example是一个什么样公司？")
 

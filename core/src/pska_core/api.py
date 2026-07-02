@@ -1541,10 +1541,12 @@ class PSKAApi:
             scope=scope,
             surface=surface,
         )
+        ask_intent = str(understand.get("intent") or "kb_search")
+        scope = _ask_scope_for_intent(scope, ask_intent=ask_intent)
         selected_intent = _ask_route_intent(
             understand.get("rewrite_query") or query,
             intent=execution_intent,
-            ask_intent=str(understand.get("intent") or "kb_search"),
+            ask_intent=ask_intent,
             scope=scope,
         )
         user = self.store.get_user(user_id, tenant_id=tenant_id)
@@ -1679,10 +1681,12 @@ class PSKAApi:
             scope=scope,
             surface=surface,
         )
+        ask_intent = str(understand.get("intent") or "kb_search")
+        scope = _ask_scope_for_intent(scope, ask_intent=ask_intent)
         selected_intent = _ask_route_intent(
             understand.get("rewrite_query") or query,
             intent=execution_intent,
-            ask_intent=str(understand.get("intent") or "kb_search"),
+            ask_intent=ask_intent,
             scope=scope,
         )
         user = self.store.get_user(user_id, tenant_id=tenant_id)
@@ -1967,6 +1971,7 @@ class PSKAApi:
                 tenant_id=tenant_id,
             )
         )
+        history = self.store.list_ask_messages(conversation.conversation_id, tenant_id=tenant_id, owner_user_id=owner_user_id, limit=12)
         self.store.add_ask_message(
             AskMessage(
                 message_id=str(payload.get("message_id") or f"askmsg_{uuid4().hex}"),
@@ -1979,7 +1984,6 @@ class PSKAApi:
                 tenant_id=tenant_id,
             )
         )
-        history = self.store.list_ask_messages(conversation.conversation_id, tenant_id=tenant_id, owner_user_id=owner_user_id, limit=12)
         ask_payload = {
             **payload,
             "query": query,
@@ -2089,6 +2093,7 @@ class PSKAApi:
             surface=surface,
         )
         ask_intent = str(understand.get("intent") or "kb_search")
+        scope = _ask_scope_for_intent(scope, ask_intent=ask_intent)
         rewrite_query = str(understand.get("rewrite_query") or query)
         query_terms = query_terms or _ask_query_terms(rewrite_query)
         requires_retrieval = bool(understand.get("requires_retrieval", _ask_requires_retrieval(ask_intent)))
@@ -5763,6 +5768,14 @@ def _ask_rewrite_query(query: str, *, scope: dict[str, Any], ask_intent: str) ->
         if previous.strip():
             return f"{query}\n\nConversation context:\n{_trim_words(previous, 160)}"
     return query
+
+
+def _ask_scope_for_intent(scope: dict[str, Any], *, ask_intent: str) -> dict[str, Any]:
+    scoped = dict(scope or {})
+    if ask_intent != "follow_up":
+        scoped.pop("recent_messages", None)
+        scoped.pop("conversation_summary", None)
+    return scoped
 
 
 def _ask_requires_retrieval(ask_intent: str) -> bool:
