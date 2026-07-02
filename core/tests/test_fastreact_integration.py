@@ -27,6 +27,7 @@ from pska_core.api import (
     _ask_quick_answer,
     _ask_route_intent,
     _ask_retrieval_from_agentic_trace,
+    _ask_structural_evidence_hits,
     _ask_verify_evidence,
 )
 from pska_core.auth import context_from_headers
@@ -570,6 +571,52 @@ def test_ask_quick_answer_prioritizes_structured_contact_values() -> None:
 
     assert "网址：www.example.com" in answer
     assert "联系电话：852-217 95122；86-755-86013388" in answer
+
+
+def test_ask_structured_markers_do_not_match_inside_identifiers() -> None:
+    hits = _ask_structural_evidence_hits(
+        "Only use GraphIntell_table.xlsx and output RecordId, Balance, Status, Checksum.",
+        "https://example.com info@example.com +1-202-555-0100",
+    )
+
+    assert "phone" not in hits
+    assert "email" not in hits
+
+
+def test_ask_quick_answer_extracts_requested_fields_from_matching_table_row() -> None:
+    answer = _ask_quick_answer(
+        (
+            "In uploaded operations.xlsx, locate the unique row where RecordId REC-002 and RowNo 2. "
+            "Only output Balance, Limit, Status, Checksum. Do not cite RowNo 1 or 3."
+        ),
+        {
+            "results": [
+                {
+                    "snippet": "RecordId REC-002 RowNo 2",
+                    "source_window": {
+                        "text": (
+                            "| RowNo | RecordId | Balance | Limit | Status | Checksum |\n"
+                            "| --- | --- | --- | --- | --- | --- |\n"
+                            "| 1 | REC-001 | 10.00 | 20.00 | Current | CHK-REC-001-1000 |\n"
+                            "| 2 | REC-002 | 25.50 | 40.00 | Review | CHK-REC-002-9911 |\n"
+                            "| 3 | REC-003 | 30.00 | 50.00 | Current | CHK-REC-003-3000 |"
+                        )
+                    },
+                }
+            ],
+            "diagnostics": {},
+        },
+    )
+
+    assert answer.splitlines() == [
+        "Balance = 25.50",
+        "Limit = 40.00",
+        "Status = Review",
+        "Checksum = CHK-REC-002-9911",
+    ]
+    assert "联系电话" not in answer
+    assert "REC-001" not in answer
+    assert "REC-003" not in answer
 
 
 def test_workspace_ask_conversation_stream_marks_run_failed_when_closed() -> None:

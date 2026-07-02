@@ -5985,7 +5985,7 @@ def _ask_structural_evidence_hits(query: str, text: str) -> list[str]:
         ("email", ("email", "e-mail", "mail", "邮箱", "电子邮件", "邮件地址"), r"[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}"),
     )
     for label, markers, pattern in intent_patterns:
-        if not any(marker in normalized_query for marker in markers):
+        if not any(_ask_query_mentions_structural_marker(normalized_query, marker) for marker in markers):
             continue
         if label == "phone":
             if _extract_phone_values(haystack, max_values=1):
@@ -5994,6 +5994,17 @@ def _ask_structural_evidence_hits(query: str, text: str) -> list[str]:
         if re.search(pattern, folded):
             hits.append(label)
     return hits
+
+
+def _ask_query_mentions_structural_marker(normalized_query: str, marker: str) -> bool:
+    marker = str(marker or "").strip().casefold()
+    if not marker:
+        return False
+    if re.search(r"[a-z0-9]", marker):
+        parts = [part for part in re.split(r"\s+", marker) if part]
+        pattern = r"\s+".join(re.escape(part) for part in parts) if parts else re.escape(marker)
+        return re.search(rf"(?<![a-z0-9]){pattern}(?![a-z0-9])", normalized_query) is not None
+    return marker in normalized_query
 
 
 def _text_has_negated_label(text: str, label: str) -> bool:
@@ -6634,7 +6645,11 @@ def _ask_quick_answer(query: str, retrieval: dict[str, Any]) -> str:
     results = _list_of_dicts(retrieval.get("results"))
     if not results:
         return f"关键结论：当前 PSKA 没有找到足够证据回答“{query}”。建议补充相关资料或扩大检索范围后再问。"
-    facts = _ask_structured_facts_from_results(query, results, limit=4)
+    facts = _ask_table_field_facts_from_results(query, results, limit=12)
+    if facts and _ask_query_requests_only_values(query):
+        return "\n".join(facts)
+    if not facts:
+        facts = _ask_structured_facts_from_results(query, results, limit=4)
     if not facts:
         facts = _ask_clean_facts_from_results(results, limit=4)
     if not facts:
@@ -6647,17 +6662,159 @@ def _ask_quick_answer(query: str, retrieval: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _ask_structured_facts_from_results(query: str, results: list[dict[str, Any]], *, limit: int) -> list[str]:
-    requested = set(_ask_structural_evidence_hits(query, "https://example.com info@example.com +1-202-555-0100"))
-    if not requested:
-        return []
+def _ask_table_field_facts_from_results(query: str, results: list[dict[str, Any]], *, limit: int) -> list[str]:
+    for text in _ask_result_text_candidates(results):
+        for headers, rows in _ask_markdown_tables(text):
+            requested_fields = _ask_requested_table_fields(query, headers)
+            if not requested_fields:
+                continue
+            row = _ask_best_matching_table_row(query, headers, rows)
+            if row is None:
+                continue
+            facts: list[str] = []
+            for field in requested_fields:
+                value = str(row.get(field) or "").strip()
+                if value:
+                    facts.append(f"{field} = {value}")
+                if len(facts) >= limit:
+                    return facts
+            if facts:
+                return facts
+    return []
+
+
+def _ask_result_text_candidates(results: list[dict[str, Any]]) -> list[str]:
     texts: list[str] = []
     for result in results:
         parts = [str(result.get("snippet") or "")]
         source_window = result.get("source_window") if isinstance(result.get("source_window"), dict) else {}
         if source_window.get("text"):
             parts.append(str(source_window.get("text") or ""))
-        texts.append("\n".join(part for part in parts if part))
+        text = "\n".join(part for part in parts if part)
+        if text.strip():
+            texts.append(text)
+    return texts
+
+
+def _ask_markdown_tables(text: str) -> list[tuple[list[str], list[dict[str, str]]]]:
+    tables: list[tuple[list[str], list[dict[str, str]]]] = []
+    block: list[str] = []
+    for raw_line in str(text or "").splitlines():
+        line = raw_line.strip()
+        if "|" in line and len(_ask_markdown_cells(line)) >= 2:
+            block.append(line)
+            continue
+        if block:
+            _ask_append_markdown_table(tables, block)
+            block = []
+    if block:
+        _ask_append_markdown_table(tables, block)
+    return tables
+
+
+def _ask_append_markdown_table(tables: list[tuple[list[str], list[dict[str, str]]]], block: list[str]) -> None:
+    header: list[str] | None = None
+    rows: list[dict[str, str]] = []
+    for line in block:
+        cells = _ask_markdown_cells(line)
+        if not cells or _ask_is_markdown_separator(cells):
+            continue
+        if header is None:
+            header = cells
+            continue
+        padded = [*cells, *([""] * max(0, len(header) - len(cells)))]
+        rows.append({field: padded[index].strip() for index, field in enumerate(header)})
+    if header and rows:
+        tables.append((header, rows))
+
+
+def _ask_markdown_cells(line: str) -> list[str]:
+    stripped = str(line or "").strip()
+    if stripped.startswith("|"):
+        stripped = stripped[1:]
+    if stripped.endswith("|"):
+        stripped = stripped[:-1]
+    return [cell.strip().strip("`") for cell in stripped.split("|")]
+
+
+def _ask_is_markdown_separator(cells: list[str]) -> bool:
+    return all(re.fullmatch(r":?-{2,}:?", cell.strip()) for cell in cells if cell.strip())
+
+
+def _ask_requested_table_fields(query: str, headers: list[str]) -> list[str]:
+    segment = _ask_output_field_segment(query) or query
+    fields = [header for header in headers if _ask_text_mentions_identifier(segment, header)]
+    if fields:
+        return fields
+    return [header for header in headers if _ask_text_mentions_identifier(query, header)]
+
+
+def _ask_output_field_segment(query: str) -> str:
+    text = str(query or "")
+    lowered = text.casefold()
+    markers = ["只输出", "仅输出", "输出", "only output", "return only", "provide only", "just output"]
+    starts = [lowered.find(marker) + len(marker) for marker in markers if lowered.find(marker) >= 0]
+    if not starts:
+        return ""
+    segment = text[min(starts) :]
+    return _ask_positive_query_segment(segment)
+
+
+def _ask_positive_query_segment(query: str) -> str:
+    return re.split(r"不要|不需要|不得|请勿|do not|don't|without", str(query or ""), maxsplit=1, flags=re.IGNORECASE)[0]
+
+
+def _ask_query_requests_only_values(query: str) -> bool:
+    folded = str(query or "").casefold()
+    return any(marker in folded for marker in ("只输出", "仅输出", "only output", "return only", "just output"))
+
+
+def _ask_text_mentions_identifier(text: str, identifier: str) -> bool:
+    needle = str(identifier or "").strip().casefold()
+    haystack = str(text or "").casefold()
+    if not needle:
+        return False
+    if re.search(r"[a-z0-9_]", needle):
+        return re.search(rf"(?<![a-z0-9_]){re.escape(needle)}(?![a-z0-9_])", haystack) is not None
+    return needle in haystack
+
+
+def _ask_best_matching_table_row(query: str, headers: list[str], rows: list[dict[str, str]]) -> dict[str, str] | None:
+    positive_query = _ask_positive_query_segment(query).casefold()
+    tokens = _ask_table_query_tokens(positive_query)
+    best: dict[str, str] | None = None
+    best_score = 0
+    for row in rows:
+        row_values = [str(row.get(header) or "") for header in headers]
+        row_text = " ".join(row_values).casefold()
+        score = 0
+        for header, value in row.items():
+            if value and _ask_text_mentions_identifier(positive_query, header) and str(value).casefold() in positive_query:
+                score += 5
+        score += sum(1 for token in tokens if token in row_text)
+        if score > best_score:
+            best = row
+            best_score = score
+    return best if best_score > 0 else None
+
+
+def _ask_table_query_tokens(text: str) -> list[str]:
+    tokens: list[str] = []
+    seen: set[str] = set()
+    for token in re.findall(r"[a-z0-9][a-z0-9_.-]*", str(text or "").casefold()):
+        normalized = token.strip("._-")
+        if len(normalized) < 2 or normalized in seen:
+            continue
+        seen.add(normalized)
+        tokens.append(normalized)
+    return tokens
+
+
+def _ask_structured_facts_from_results(query: str, results: list[dict[str, Any]], *, limit: int) -> list[str]:
+    requested = set(_ask_structural_evidence_hits(query, "https://example.com info@example.com +1-202-555-0100"))
+    if not requested:
+        return []
+    texts = _ask_result_text_candidates(results)
     combined = "\n".join(texts)
     facts: list[str] = []
     if "url" in requested:
