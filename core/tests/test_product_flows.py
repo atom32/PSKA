@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 import json
 from pathlib import Path
-import time
 import zipfile
 
 import pytest
@@ -443,6 +442,24 @@ def test_workspace_digest_run_defaults_to_background_queue() -> None:
 
 def test_chinese_query_and_scoped_source_retrieval() -> None:
     api = _api()
+    class DocOnlyClassifier:
+        def search(self, query, user, *, represented_user_id=None, max_iterations=3, skills=None, tool_policy=None, session_id=None):
+            return {
+                "answer": json.dumps(
+                    {
+                        "ask_intent": "doc_only",
+                        "selected_intent": "quick",
+                        "requires_retrieval": True,
+                        "confidence": 0.9,
+                        "reasons": ["selected attachment scope"],
+                    },
+                    ensure_ascii=False,
+                ),
+                "trace": {},
+                "agentic_service": {"provider": "test", "adapter": "classifier"},
+            }
+
+    api.agentic_service = DocOnlyClassifier()
     response = api.create_text_source(
         {
             "title": "中文人物说明",
@@ -455,17 +472,13 @@ def test_chinese_query_and_scoped_source_retrieval() -> None:
 
     cjk = api.retrieval.search("看看徐大为是谁", user, top_k=1)
     scoped = api.retrieval.search("这份附件讲了什么", user, top_k=1, source_item_ids={source_item_id})
-    quick = api._workspace_ask_quick(
-        query="这份附件讲了什么",
-        scope={"source_item_ids": [source_item_id]},
-        intent="quick",
-        surface="today",
-        tenant_id=DEFAULT_TENANT_ID,
-        owner_user_id="user_primary",
-        represented_user_id="user_primary",
-        user=user,
-        top_k=1,
-        started_at=time.perf_counter(),
+    quick = api.workspace_ask(
+        {
+            "query": "这份附件讲了什么",
+            "intent": "auto",
+            "scope": {"source_item_ids": [source_item_id]},
+            "top_k": 1,
+        }
     )
 
     assert [result.source_item_id for result in cjk.results] == [source_item_id]
@@ -501,6 +514,24 @@ def test_ask_intent_greeting_and_product_help_do_not_retrieve_user_sources() -> 
 
 def test_ask_hard_scope_drops_out_of_scope_evidence() -> None:
     api = _api()
+    class DocOnlyClassifier:
+        def search(self, query, user, *, represented_user_id=None, max_iterations=3, skills=None, tool_policy=None, session_id=None):
+            return {
+                "answer": json.dumps(
+                    {
+                        "ask_intent": "doc_only",
+                        "selected_intent": "quick",
+                        "requires_retrieval": True,
+                        "confidence": 0.9,
+                        "reasons": ["selected attachment scope"],
+                    },
+                    ensure_ascii=False,
+                ),
+                "trace": {},
+                "agentic_service": {"provider": "test", "adapter": "classifier"},
+            }
+
+    api.agentic_service = DocOnlyClassifier()
     first = api.create_text_source(
         {
             "title": "Scoped first document",

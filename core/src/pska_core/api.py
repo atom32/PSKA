@@ -1500,23 +1500,127 @@ class PSKAApi:
             raise ValueError("query is required")
         raw_intent = str(payload.get("intent") or "auto").strip().lower()
         execution_intent, forced_ask_intent = _ask_requested_intents(raw_intent, payload.get("routing_mode"))
+        tenant_id = str(payload.get("tenant_id") or DEFAULT_TENANT_ID)
+        owner_user_id = _workspace_owner_user_id(context, payload.get("owner_user_id") or payload.get("represented_user_id"))
+        user_id = str(payload.get("user_id") or owner_user_id)
+        represented_user_id = str(payload.get("represented_user_id") or owner_user_id)
         scope = payload.get("scope") if isinstance(payload.get("scope"), dict) else {}
         surface = str(payload.get("surface") or "ask").strip() or "ask"
+        session_id = str(payload.get("session_id") or "").strip() or None
+        user = self.store.get_user(user_id, tenant_id=tenant_id)
+        understand = self._workspace_ask_understand_payload(
+            query=query,
+            raw_intent=raw_intent,
+            execution_intent=execution_intent,
+            forced_ask_intent=forced_ask_intent,
+            scope=scope,
+            surface=surface,
+            user=user,
+            represented_user_id=represented_user_id,
+            session_id=session_id,
+        )
+        return {"ok": True, "understand": understand}
+
+    def _workspace_ask_understand_payload(
+        self,
+        *,
+        query: str,
+        raw_intent: str,
+        execution_intent: str,
+        forced_ask_intent: str | None,
+        scope: dict[str, Any],
+        surface: str,
+        user: Any,
+        represented_user_id: str | None,
+        session_id: str | None,
+    ) -> dict[str, Any]:
+        decision = _ask_direct_intent_decision(
+            query=query,
+            execution_intent=execution_intent,
+            forced_ask_intent=forced_ask_intent,
+            scope=scope,
+        )
+        if decision is None:
+            decision = self._workspace_ask_agentic_intent_decision(
+                query=query,
+                raw_intent=raw_intent,
+                forced_ask_intent=forced_ask_intent,
+                scope=scope,
+                surface=surface,
+                user=user,
+                represented_user_id=represented_user_id,
+                session_id=session_id,
+            )
         understand = _ask_understand_payload(
             query=query,
             intent=raw_intent,
             forced_ask_intent=forced_ask_intent,
             scope=scope,
             surface=surface,
+            decision=decision,
         )
+        ask_intent = str(understand.get("intent") or "kb_search")
         understand["execution_intent"] = execution_intent
         understand["selected_intent"] = _ask_route_intent(
             understand.get("rewrite_query") or query,
             intent=execution_intent,
-            ask_intent=str(understand.get("intent") or "kb_search"),
+            ask_intent=ask_intent,
             scope=scope,
+            agentic_selected_intent=str(decision.get("selected_intent") or ""),
         )
-        return {"ok": True, "understand": understand}
+        return understand
+
+    def _workspace_ask_agentic_intent_decision(
+        self,
+        *,
+        query: str,
+        raw_intent: str,
+        forced_ask_intent: str | None,
+        scope: dict[str, Any],
+        surface: str,
+        user: Any,
+        represented_user_id: str | None,
+        session_id: str | None,
+    ) -> dict[str, Any]:
+        if not hasattr(self.agentic_service, "search"):
+            return _ask_agentic_intent_fallback_decision(
+                reason="agentic_intent_classifier_unavailable",
+                forced_ask_intent=forced_ask_intent,
+            )
+        prompt = _ask_agentic_intent_prompt(
+            query=query,
+            raw_intent=raw_intent,
+            forced_ask_intent=forced_ask_intent,
+            scope=scope,
+            surface=surface,
+        )
+        try:
+            agentic = self._agentic_service_search(
+                prompt,
+                user,
+                represented_user_id=represented_user_id,
+                max_iterations=1,
+                skills=[],
+                tool_policy={"mode": "none"},
+                session_id=session_id,
+            )
+        except Exception as exc:
+            return _ask_agentic_intent_fallback_decision(
+                reason=f"{type(exc).__name__}: {exc}",
+                forced_ask_intent=forced_ask_intent,
+            )
+        parsed = _ask_json_object_from_text(str(agentic.get("answer") or ""))
+        if not isinstance(parsed, dict):
+            return _ask_agentic_intent_fallback_decision(
+                reason="invalid_classifier_json",
+                forced_ask_intent=forced_ask_intent,
+                raw_answer=str(agentic.get("answer") or ""),
+            )
+        return _ask_normalize_agentic_intent_decision(
+            parsed,
+            forced_ask_intent=forced_ask_intent,
+            agentic_service=agentic.get("agentic_service") if isinstance(agentic.get("agentic_service"), dict) else {},
+        )
 
     def workspace_ask(self, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
         started_at = time.perf_counter()
@@ -1534,22 +1638,21 @@ class PSKAApi:
         scope = payload.get("scope") if isinstance(payload.get("scope"), dict) else {}
         top_k = max(1, min(int(payload.get("top_k") or 8), 20))
         session_id = str(payload.get("session_id") or "").strip() or None
-        understand = _ask_understand_payload(
+        user = self.store.get_user(user_id, tenant_id=tenant_id)
+        understand = self._workspace_ask_understand_payload(
             query=query,
-            intent=intent,
+            raw_intent=intent,
+            execution_intent=execution_intent,
             forced_ask_intent=forced_ask_intent,
             scope=scope,
             surface=surface,
+            user=user,
+            represented_user_id=represented_user_id,
+            session_id=session_id,
         )
         ask_intent = str(understand.get("intent") or "kb_search")
         scope = _ask_scope_for_intent(scope, ask_intent=ask_intent)
-        selected_intent = _ask_route_intent(
-            understand.get("rewrite_query") or query,
-            intent=execution_intent,
-            ask_intent=ask_intent,
-            scope=scope,
-        )
-        user = self.store.get_user(user_id, tenant_id=tenant_id)
+        selected_intent = str(understand.get("selected_intent") or "quick")
         if selected_intent == "deep":
             try:
                 deep_query = _ask_deep_query(query=query, surface=surface, scope={**scope, "understand": understand})
@@ -1674,22 +1777,21 @@ class PSKAApi:
         scope = payload.get("scope") if isinstance(payload.get("scope"), dict) else {}
         top_k = max(1, min(int(payload.get("top_k") or 8), 20))
         session_id = str(payload.get("session_id") or "").strip() or None
-        understand = _ask_understand_payload(
+        user = self.store.get_user(user_id, tenant_id=tenant_id)
+        understand = self._workspace_ask_understand_payload(
             query=query,
-            intent=intent,
+            raw_intent=intent,
+            execution_intent=execution_intent,
             forced_ask_intent=forced_ask_intent,
             scope=scope,
             surface=surface,
+            user=user,
+            represented_user_id=represented_user_id,
+            session_id=session_id,
         )
         ask_intent = str(understand.get("intent") or "kb_search")
         scope = _ask_scope_for_intent(scope, ask_intent=ask_intent)
-        selected_intent = _ask_route_intent(
-            understand.get("rewrite_query") or query,
-            intent=execution_intent,
-            ask_intent=ask_intent,
-            scope=scope,
-        )
-        user = self.store.get_user(user_id, tenant_id=tenant_id)
+        selected_intent = str(understand.get("selected_intent") or "quick")
         if selected_intent != "deep" or not hasattr(self.agentic_service, "search_event_stream"):
             if selected_intent != "deep":
                 route = _ask_route_payload(
@@ -5616,24 +5718,196 @@ def _ask_understand_payload(
     forced_ask_intent: str | None,
     scope: dict[str, Any],
     surface: str,
+    decision: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    local = _ask_local_intent_guess(query=query, forced_ask_intent=forced_ask_intent, scope=scope, surface=surface)
+    local = decision or _ask_local_intent_guess(query=query, forced_ask_intent=forced_ask_intent, scope=scope, surface=surface)
     ask_intent = str(local.get("intent") or "kb_search")
     scope_applied = _ask_scope_applied(scope, ask_intent=ask_intent)
     rewrite_query = _ask_rewrite_query(query, scope=scope, ask_intent=ask_intent)
-    return {
+    requires_retrieval = local.get("requires_retrieval")
+    payload = {
         "schema": "pska.ask_understand.v1",
         "query": query,
         "intent": ask_intent,
         "requested_intent": intent,
         "rewrite_query": rewrite_query,
         "scope_applied": scope_applied,
-        "requires_retrieval": _ask_requires_retrieval(ask_intent),
+        "requires_retrieval": requires_retrieval if isinstance(requires_retrieval, bool) else _ask_requires_retrieval(ask_intent),
         "routing_owner": local.get("routing_owner") or "pska_local_intent_guard",
         "routing_mode": "forced" if forced_ask_intent else "auto",
         "confidence": local.get("confidence"),
         "reasons": local.get("reasons") or [],
         "surface": surface,
+    }
+    selected_intent = str(local.get("selected_intent") or "").strip().lower()
+    if selected_intent in {"quick", "deep"}:
+        payload["agentic_selected_intent"] = selected_intent
+    if isinstance(local.get("intent_classifier"), dict):
+        payload["intent_classifier"] = local["intent_classifier"]
+    if local.get("classifier_error"):
+        payload["classifier_error"] = str(local.get("classifier_error"))
+    return payload
+
+
+def _ask_direct_intent_decision(
+    *,
+    query: str,
+    execution_intent: str,
+    forced_ask_intent: str | None,
+    scope: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    has_conversation_history = bool(_list_of_dicts((scope or {}).get("recent_messages")))
+    if execution_intent in {"quick", "deep"} and not has_conversation_history:
+        ask_intent = forced_ask_intent if forced_ask_intent in ASK_INTENTS else "kb_search"
+        return {
+            "intent": ask_intent,
+            "selected_intent": execution_intent,
+            "confidence": 1.0,
+            "routing_owner": "user_or_caller_override",
+            "reasons": ["explicit_execution_intent"],
+            "requires_retrieval": _ask_requires_retrieval(ask_intent),
+        }
+    if forced_ask_intent in ASK_NON_RETRIEVAL_INTENTS:
+        return {
+            "intent": forced_ask_intent,
+            "selected_intent": "quick",
+            "confidence": 1.0,
+            "routing_owner": "user_or_caller_override",
+            "reasons": ["explicit_non_retrieval_intent"],
+            "requires_retrieval": False,
+        }
+    text = re.sub(r"\s+", " ", str(query or "").strip().lower())
+    if _ask_is_greeting_query(text):
+        return {
+            "intent": "greeting",
+            "selected_intent": "quick",
+            "confidence": 0.95,
+            "routing_owner": "pska_direct_intent_guard",
+            "reasons": ["short_greeting"],
+            "requires_retrieval": False,
+        }
+    if _ask_is_product_help_query(text):
+        return {
+            "intent": "product_help",
+            "selected_intent": "quick",
+            "confidence": 0.9,
+            "routing_owner": "pska_direct_intent_guard",
+            "reasons": ["product_capability_question"],
+            "requires_retrieval": False,
+        }
+    return None
+
+
+def _ask_agentic_intent_prompt(
+    *,
+    query: str,
+    raw_intent: str,
+    forced_ask_intent: str | None,
+    scope: dict[str, Any],
+    surface: str,
+) -> str:
+    recent_messages = []
+    for message in _list_of_dicts(scope.get("recent_messages"))[-4:]:
+        recent_messages.append(
+            {
+                "role": str(message.get("role") or "")[:24],
+                "content": _trim_words(str(message.get("content") or ""), 80),
+            }
+        )
+    scope_summary = {
+        "surface": surface,
+        "requested_intent": raw_intent,
+        "forced_ask_intent": forced_ask_intent,
+        "scope_mode": scope.get("mode") or scope.get("scope_mode"),
+        "source_item_count": len(_ask_scope_source_item_ids(scope)),
+        "attachment_count": len(_string_list(scope.get("attachment_ids"))),
+        "context_node_count": len(_list_of_dicts(scope.get("context_nodes"))),
+        "recent_messages": recent_messages,
+    }
+    intents = ", ".join(sorted(ASK_INTENTS))
+    return (
+        "You are PSKA's agentic Ask intent classifier. Classify the user request only; do not answer it, "
+        "do not retrieve evidence, and do not call tools.\n"
+        "Return only one JSON object with these keys: "
+        'ask_intent, selected_intent, requires_retrieval, confidence, reasons.\n'
+        f"ask_intent must be one of: {intents}.\n"
+        'selected_intent must be "quick" or "deep".\n'
+        "Use quick for exact lookup, direct extraction, single-file or selected-attachment questions, "
+        "table row/field questions, and ordinary evidence lookup. Use deep for open-ended multi-step "
+        "research, synthesis, comparison, conflict analysis, strategy, or explicit relationship/path/graph "
+        "analysis across evidence. Do not classify from substrings embedded inside filenames, identifiers, "
+        "tenant names, product names, or sample data labels; use the requested operation. If uncertain, "
+        "prefer quick so the evidence path stays bounded.\n\n"
+        f"Scope summary JSON: {json.dumps(scope_summary, ensure_ascii=False)}\n"
+        f"User question: {query}"
+    )
+
+
+def _ask_agentic_intent_fallback_decision(
+    *,
+    reason: str,
+    forced_ask_intent: str | None,
+    raw_answer: str | None = None,
+) -> dict[str, Any]:
+    ask_intent = forced_ask_intent if forced_ask_intent in ASK_INTENTS else "kb_search"
+    classifier: dict[str, Any] = {
+        "schema": "pska.ask_intent_classifier.v1",
+        "status": "fallback",
+        "reason": reason,
+    }
+    if raw_answer:
+        classifier["raw_answer_excerpt"] = _trim_words(raw_answer, 80)
+    return {
+        "intent": ask_intent,
+        "selected_intent": "quick",
+        "requires_retrieval": _ask_requires_retrieval(ask_intent),
+        "confidence": 0.0,
+        "routing_owner": "agentic_intent_unavailable_fallback",
+        "reasons": [reason, "safe_quick_default"],
+        "classifier_error": reason,
+        "intent_classifier": classifier,
+    }
+
+
+def _ask_normalize_agentic_intent_decision(
+    parsed: dict[str, Any],
+    *,
+    forced_ask_intent: str | None,
+    agentic_service: dict[str, Any],
+) -> dict[str, Any]:
+    ask_intent = str(parsed.get("ask_intent") or parsed.get("intent") or "").strip().lower()
+    if forced_ask_intent in ASK_INTENTS:
+        ask_intent = forced_ask_intent
+    if ask_intent not in ASK_INTENTS:
+        ask_intent = "kb_search"
+    selected_intent = str(parsed.get("selected_intent") or parsed.get("execution_intent") or parsed.get("route") or "").strip().lower()
+    if selected_intent not in {"quick", "deep"}:
+        selected_intent = "quick"
+    confidence_raw = parsed.get("confidence")
+    try:
+        confidence = max(0.0, min(float(confidence_raw), 1.0))
+    except (TypeError, ValueError):
+        confidence = 0.5
+    reasons = [str(reason)[:80] for reason in (parsed.get("reasons") if isinstance(parsed.get("reasons"), list) else []) if str(reason).strip()]
+    requires_retrieval = parsed.get("requires_retrieval")
+    if not isinstance(requires_retrieval, bool):
+        requires_retrieval = _ask_requires_retrieval(ask_intent)
+    return {
+        "intent": ask_intent,
+        "selected_intent": selected_intent,
+        "requires_retrieval": requires_retrieval,
+        "confidence": confidence,
+        "routing_owner": "agentic_intent_classifier",
+        "reasons": reasons[:6] or ["agentic_intent_classifier"],
+        "intent_classifier": {
+            "schema": "pska.ask_intent_classifier.v1",
+            "status": "classified",
+            "provider": agentic_service.get("provider"),
+            "adapter": agentic_service.get("adapter"),
+            "selected_intent": selected_intent,
+            "ask_intent": ask_intent,
+            "confidence": confidence,
+        },
     }
 
 
@@ -5652,24 +5926,10 @@ def _ask_local_intent_guess(
             "reasons": ["explicit_routing_mode"],
         }
     text = re.sub(r"\s+", " ", str(query or "").strip().lower())
-    has_scope = bool(_ask_scope_source_item_ids(scope) or _string_list(scope.get("attachment_ids")) or _list_of_dicts(scope.get("context_nodes")))
     if _ask_is_greeting_query(text):
         return {"intent": "greeting", "confidence": 0.95, "reasons": ["short_greeting"]}
     if _ask_is_product_help_query(text):
         return {"intent": "product_help", "confidence": 0.9, "reasons": ["product_capability_question"]}
-    if has_scope and _ask_is_document_scoped_query(text):
-        return {"intent": "doc_only", "confidence": 0.82, "reasons": ["attached_or_selected_document_scope"]}
-    if _ask_is_clarification_query(text):
-        return {"intent": "clarification", "confidence": 0.72, "reasons": ["underspecified_query"]}
-    if surface == "writing" or _ask_is_writing_query(text):
-        return {"intent": "writing", "confidence": 0.72, "reasons": ["writing_surface_or_task"]}
-    if _ask_is_graph_research_query(text):
-        return {"intent": "graph_research", "confidence": 0.76, "reasons": ["relationship_or_path_question"]}
-    recent_messages = _list_of_dicts(scope.get("recent_messages"))
-    if recent_messages and _ask_is_follow_up_query(text):
-        return {"intent": "follow_up", "confidence": 0.7, "reasons": ["conversation_follow_up"]}
-    if text and len(text) <= 24 and not _ask_evidence_terms(text):
-        return {"intent": "chitchat", "confidence": 0.55, "reasons": ["short_non_retrieval_text"]}
     return {"intent": "kb_search", "confidence": 0.55, "reasons": ["conservative_kb_search_fallback"]}
 
 
@@ -5705,60 +5965,6 @@ def _ask_is_product_help_query(text: str) -> bool:
     ]
     product_markers = ["pska", "你", "系统", "助手", "这个产品", "this app", "this product"]
     return any(marker in text for marker in capability_markers) and any(marker in text for marker in product_markers)
-
-
-def _ask_is_document_scoped_query(text: str) -> bool:
-    document_markers = [
-        "这篇",
-        "这个文档",
-        "附件",
-        "上传的",
-        "这份",
-        "此文",
-        "summarize this",
-        "this document",
-        "attached",
-        "attachment",
-        "the file",
-    ]
-    task_markers = [
-        "总结",
-        "概括",
-        "提炼",
-        "翻译",
-        "抽取",
-        "看看",
-        "说明",
-        "讲讲",
-        "分析",
-        "summarize",
-        "extract",
-        "translate",
-        "analyze",
-    ]
-    return any(marker in text for marker in document_markers) or any(marker in text for marker in task_markers)
-
-
-def _ask_is_clarification_query(text: str) -> bool:
-    normalized = re.sub(r"[\s,，。.!！?？~～]+", "", text)
-    return normalized in {"这个呢", "那呢", "为什么", "怎么说", "继续", "然后呢", "tellmemore", "more"}
-
-
-def _ask_is_writing_query(text: str) -> bool:
-    return any(marker in text for marker in ["写成", "起草", "改写", "润色", "大纲", "章节", "draft", "rewrite", "outline", "polish"])
-
-
-def _ask_is_graph_research_query(text: str) -> bool:
-    return any(marker in text for marker in ["关系", "关联", "路径", "图谱", "影响", "因果", "互相", "network", "relationship", "path", "graph"])
-
-
-def _ask_is_follow_up_query(text: str) -> bool:
-    normalized = re.sub(r"[\s,，。.!！?？~～]+", "", text)
-    if any(marker in normalized for marker in ["资料库", "知识库", "文档", "附件", "能证明", "证明", "是否", "有没有"]):
-        return False
-    if len(normalized) <= 18 and any(marker in normalized for marker in ["继续", "展开", "详细", "为什么", "还有", "那", "这个", "上面"]):
-        return True
-    return any(marker in text for marker in ["上一个", "刚才", "前面", "继续说", "follow up", "previous answer"])
 
 
 def _ask_rewrite_query(query: str, *, scope: dict[str, Any], ask_intent: str) -> str:
@@ -6251,75 +6457,22 @@ def _ask_no_answer_from_evidence_check(query: str, evidence_check: dict[str, Any
     return f"关键结论：当前 PSKA 没有找到足够证据回答“{query}”。原因：{reason_text}。建议补充相关资料、选择正确附件，或允许扩大检索范围后再问。"
 
 
-def _ask_route_intent(query: str, *, intent: str, ask_intent: str = "kb_search", scope: dict[str, Any] | None = None) -> str:
-    if ask_intent in ASK_NON_RETRIEVAL_INTENTS or ask_intent == "doc_only":
+def _ask_route_intent(
+    query: str,
+    *,
+    intent: str,
+    ask_intent: str = "kb_search",
+    scope: dict[str, Any] | None = None,
+    agentic_selected_intent: str | None = None,
+) -> str:
+    if ask_intent in ASK_NON_RETRIEVAL_INTENTS:
         return "quick"
     if intent in {"quick", "deep"}:
         return intent
-    if _ask_scope_mode(scope or {}, ask_intent=ask_intent) == "hard":
-        return "quick"
-    if ask_intent == "graph_research":
-        return "deep"
-    lowered = query.lower()
-    deep_markers = [
-        "深入",
-        "调研",
-        "研究",
-        "分析",
-        "总结",
-        "对比",
-        "比较",
-        "报告",
-        "规划",
-        "策略",
-        "为什么",
-        "风险",
-        "建议",
-        "判断",
-        "证据",
-        "可引用",
-        "结论",
-        "是否应该",
-        "复盘",
-        "梳理",
-        "多步",
-        "shortlist",
-        "analyze",
-        "compare",
-        "evaluate",
-        "investigate",
-        "research",
-        "recommend",
-        "summarize",
-        "report",
-        "strategy",
-        "why",
-        "risk",
-    ]
-    quick_markers = [
-        "谁",
-        "什么",
-        "多少",
-        "哪个",
-        "何时",
-        "状态",
-        "负责人",
-        "下一步",
-        "arr",
-        "owner",
-        "lead",
-        "status",
-        "next action",
-        "how much",
-        "when",
-        "where",
-        "who",
-    ]
-    if any(marker in lowered for marker in deep_markers):
-        return "deep"
-    if any(marker in lowered for marker in quick_markers) or len(query) <= 90:
-        return "quick"
-    return "deep"
+    selected = str(agentic_selected_intent or "").strip().lower()
+    if selected in {"quick", "deep"}:
+        return selected
+    return "quick"
 
 
 def _ask_query_terms(query: str) -> list[str]:
@@ -6451,7 +6604,7 @@ def _ask_understand_step_detail(query_terms: list[str]) -> str:
 
 def _ask_route_step_detail(*, intent: str, selected_intent: str, query_terms: list[str]) -> str:
     route_label = "深入分析" if selected_intent == "deep" else "快速回答"
-    intent_label = "自动路由" if intent == "auto" else f"用户指定 {intent}"
+    intent_label = "自动路由" if intent == "auto" else f"任务类型 {intent}"
     term_text = f"关键词：{'、'.join(query_terms[:6])}；" if query_terms else ""
     if selected_intent == "deep":
         return f"{term_text}{intent_label} 判定需要 {route_label}，由 FastReAct 通过 PSKA 只读工具检索。"

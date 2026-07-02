@@ -583,6 +583,92 @@ def test_ask_structured_markers_do_not_match_inside_identifiers() -> None:
     assert "email" not in hits
 
 
+def test_ask_auto_understanding_uses_agentic_classifier_for_table_lookup_route() -> None:
+    class IntentClassifierService:
+        def __init__(self):
+            self.calls = []
+
+        def ready(self):
+            return {"ok": True, "provider": "test", "adapter": "classifier"}
+
+        def search(self, query, user, *, represented_user_id=None, max_iterations=3, skills=None, tool_policy=None, session_id=None):
+            self.calls.append(
+                {
+                    "query": query,
+                    "max_iterations": max_iterations,
+                    "skills": skills,
+                    "tool_policy": tool_policy,
+                    "session_id": session_id,
+                }
+            )
+            return {
+                "answer": json.dumps(
+                    {
+                        "ask_intent": "kb_search",
+                        "selected_intent": "quick",
+                        "requires_retrieval": True,
+                        "confidence": 0.91,
+                        "reasons": ["exact table row lookup"],
+                    },
+                    ensure_ascii=False,
+                ),
+                "trace": {},
+                "agentic_service": {"provider": "test", "adapter": "classifier"},
+            }
+
+    api = _api()
+    service = IntentClassifierService()
+    api.agentic_service = service
+    query = (
+        "只根据已上传的 GraphIntell_records.xlsx，在 Records 表中定位 RecordId 为 REC-002 且 RowNo 为 2 的唯一一行。"
+        "请只输出 Balance、Limit、Status、Checksum 的精确值。"
+    )
+
+    payload = api.workspace_ask_understand({"query": query, "intent": "auto", "session_id": "ask-test"})
+    understand = payload["understand"]
+
+    assert understand["intent"] == "kb_search"
+    assert understand["selected_intent"] == "quick"
+    assert understand["routing_owner"] == "agentic_intent_classifier"
+    assert understand["intent_classifier"]["status"] == "classified"
+    assert service.calls[0]["max_iterations"] == 1
+    assert service.calls[0]["skills"] == []
+    assert service.calls[0]["tool_policy"] == {"mode": "none"}
+
+
+def test_ask_auto_understanding_honors_agentic_classifier_deep_route() -> None:
+    class IntentClassifierService:
+        def search(self, query, user, *, represented_user_id=None, max_iterations=3, skills=None, tool_policy=None, session_id=None):
+            return {
+                "answer": json.dumps(
+                    {
+                        "ask_intent": "graph_research",
+                        "selected_intent": "deep",
+                        "requires_retrieval": True,
+                        "confidence": 0.88,
+                        "reasons": ["multi-hop relationship analysis"],
+                    },
+                    ensure_ascii=False,
+                ),
+                "trace": {},
+                "agentic_service": {"provider": "test", "adapter": "classifier"},
+            }
+
+        def ready(self):
+            return {"ok": True}
+
+    api = _api()
+    api.agentic_service = IntentClassifierService()
+    query = "Find the graph path and relationship between REC-002 and Supplier Alpha."
+
+    payload = api.workspace_ask_understand({"query": query, "intent": "auto"})
+    understand = payload["understand"]
+
+    assert understand["intent"] == "graph_research"
+    assert understand["selected_intent"] == "deep"
+    assert understand["routing_owner"] == "agentic_intent_classifier"
+
+
 def test_ask_quick_answer_extracts_requested_fields_from_matching_table_row() -> None:
     answer = _ask_quick_answer(
         (
@@ -672,7 +758,35 @@ def test_workspace_ask_conversation_stream_persists_progress_before_close() -> N
 
 
 def test_workspace_ask_conversation_deep_omits_history_for_independent_question() -> None:
+    class ConversationIntentService(FakeAgenticService):
+        def search(self, query, user, *, represented_user_id=None, max_iterations=3, skills=None, tool_policy=None, session_id=None):
+            if str(query).startswith("You are PSKA's agentic Ask intent classifier"):
+                return {
+                    "answer": json.dumps(
+                        {
+                            "ask_intent": "kb_search",
+                            "selected_intent": "quick",
+                            "requires_retrieval": True,
+                            "confidence": 0.86,
+                            "reasons": ["independent scoped question"],
+                        },
+                        ensure_ascii=False,
+                    ),
+                    "trace": {},
+                    "agentic_service": {"provider": "test", "adapter": "classifier"},
+                }
+            return super().search(
+                query,
+                user,
+                represented_user_id=represented_user_id,
+                max_iterations=max_iterations,
+                skills=skills,
+                tool_policy=tool_policy,
+                session_id=session_id,
+            )
+
     api = _api()
+    api.agentic_service = ConversationIntentService(api.retrieval)
     conversation_id = api.create_workspace_ask_conversation({"title": "Evidence thread"})["conversation"]["conversation_id"]
     list(
         api.workspace_ask_conversation_event_stream(
@@ -696,7 +810,35 @@ def test_workspace_ask_conversation_deep_omits_history_for_independent_question(
 
 
 def test_workspace_ask_conversation_deep_keeps_history_for_follow_up_question() -> None:
+    class ConversationIntentService(FakeAgenticService):
+        def search(self, query, user, *, represented_user_id=None, max_iterations=3, skills=None, tool_policy=None, session_id=None):
+            if str(query).startswith("You are PSKA's agentic Ask intent classifier"):
+                return {
+                    "answer": json.dumps(
+                        {
+                            "ask_intent": "follow_up",
+                            "selected_intent": "deep",
+                            "requires_retrieval": True,
+                            "confidence": 0.9,
+                            "reasons": ["continues prior answer"],
+                        },
+                        ensure_ascii=False,
+                    ),
+                    "trace": {},
+                    "agentic_service": {"provider": "test", "adapter": "classifier"},
+                }
+            return super().search(
+                query,
+                user,
+                represented_user_id=represented_user_id,
+                max_iterations=max_iterations,
+                skills=skills,
+                tool_policy=tool_policy,
+                session_id=session_id,
+            )
+
     api = _api()
+    api.agentic_service = ConversationIntentService(api.retrieval)
     conversation_id = api.create_workspace_ask_conversation({"title": "Evidence thread"})["conversation"]["conversation_id"]
     list(
         api.workspace_ask_conversation_event_stream(
@@ -728,10 +870,11 @@ def test_ask_query_terms_splits_mixed_english_chinese() -> None:
     assert "请深入分析" not in deep_terms
 
 
-def test_ask_auto_routes_deep_research_queries_to_deep() -> None:
+def test_ask_auto_route_uses_agentic_selected_intent_instead_of_keyword_rules() -> None:
     query = "请深入调研 Northstar Robotics 是否应该进入 Q3 reserve-allocation shortlist。先判断需要查哪些证据，再给出可引用结论。"
 
-    assert _ask_route_intent(query, intent="auto") == "deep"
+    assert _ask_route_intent(query, intent="auto") == "quick"
+    assert _ask_route_intent(query, intent="auto", agentic_selected_intent="deep") == "deep"
 
 
 def test_agentic_event_response_prefers_final_source_ref_ids() -> None:
