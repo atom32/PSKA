@@ -656,6 +656,18 @@ export async function loadAskConversation(serviceToken: PSKAAuth, conversationId
   return (await response.json()) as AskConversationResponse;
 }
 
+export async function deleteAskConversation(serviceToken: PSKAAuth, conversationId: string): Promise<AskConversationResponse> {
+  const response = await fetch(`/workspace/ask/conversations/${encodeURIComponent(conversationId)}`, {
+    method: "DELETE",
+    headers: headers(serviceToken),
+    body: JSON.stringify(requestUserPayload(serviceToken))
+  });
+  if (!response.ok) {
+    throw new Error(await responseError(response, "删除对话失败"));
+  }
+  return (await response.json()) as AskConversationResponse;
+}
+
 export async function askConversationStream(
   conversationId: string,
   query: string,
@@ -954,6 +966,17 @@ function parseAskSseFrame(frame: string): { event: string; data: Record<string, 
 }
 
 function applyAskSseEvent(result: WorkspaceAskResponse, event: string, data: Record<string, unknown>) {
+  if (event === "conversation") {
+    const conversation = isRecord(data.conversation) ? data.conversation : null;
+    const run = isRecord(data.run) ? data.run : null;
+    if (conversation && typeof conversation.conversation_id === "string") {
+      result.conversation_id = conversation.conversation_id;
+    }
+    if (run && typeof run.run_id === "string") {
+      result.run_id = run.run_id;
+    }
+    return;
+  }
   if (event === "route") {
     result.route = isRecord(data.route) ? data.route as WorkspaceAskResponse["route"] : result.route;
     result.timing = { ...(result.timing || {}), ...(isRecord(data.timing) ? data.timing as WorkspaceAskResponse["timing"] : {}) };
@@ -1001,7 +1024,13 @@ function applyAskSseEvent(result: WorkspaceAskResponse, event: string, data: Rec
   }
   if (event === "done") {
     result.ok = data.ok !== false;
-    if (typeof data.answer === "string") {
+    if (typeof data.conversation_id === "string") {
+      result.conversation_id = data.conversation_id;
+    }
+    if (typeof data.run_id === "string") {
+      result.run_id = data.run_id;
+    }
+    if (typeof data.answer === "string" && data.answer.trim()) {
       result.answer = data.answer;
     }
     if (Array.isArray(data.citations)) {
@@ -1033,8 +1062,8 @@ function applyAskSseEvent(result: WorkspaceAskResponse, event: string, data: Rec
     result.answer_type = typeof data.answer_type === "string" ? data.answer_type : result.answer_type;
     result.evidence_check = isRecord(data.evidence_check) ? data.evidence_check : result.evidence_check;
     result.no_answer_reasons = Array.isArray(data.no_answer_reasons) ? data.no_answer_reasons : result.no_answer_reasons;
-    result.agent_steps = Array.isArray(data.agent_steps) ? data.agent_steps as WorkspaceAskResponse["agent_steps"] : result.agent_steps;
-    result.progress = Array.isArray(data.progress) ? data.progress as WorkspaceAskResponse["progress"] : result.progress;
+    result.agent_steps = Array.isArray(data.agent_steps) && data.agent_steps.length ? data.agent_steps as WorkspaceAskResponse["agent_steps"] : result.agent_steps;
+    result.progress = Array.isArray(data.progress) && data.progress.length ? data.progress as WorkspaceAskResponse["progress"] : result.progress;
     result.trace = isRecord(data.trace) ? data.trace : result.trace;
     result.timing = { ...(result.timing || {}), ...(isRecord(data.timing) ? data.timing as WorkspaceAskResponse["timing"] : {}) };
     result.quality_signals = isRecord(data.quality_signals) ? data.quality_signals : result.quality_signals;

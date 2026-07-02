@@ -53,7 +53,7 @@ AuthNode 和 FastReAct 需要由各自项目独立启动；本 E2E 不会启动�
 AuthNode:  http://127.0.0.1:8788
 PSKA API:  http://127.0.0.1:8765
 PSKA UI:   http://127.0.0.1:5173
-FastReAct: http://127.0.0.1:8000
+FastReAct: http://127.0.0.1:18741
 ```
 
 运行：

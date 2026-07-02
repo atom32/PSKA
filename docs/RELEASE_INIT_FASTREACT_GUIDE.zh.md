@@ -30,7 +30,7 @@ PSKA 本地运行数据：
 ```text
 PSKA HTTP service: http://127.0.0.1:8765
 PSKA frontend:     http://127.0.0.1:5173
-FastReAct API:     http://127.0.0.1:8000
+FastReAct API:     http://127.0.0.1:18741
 ```
 
 不要把 `.pska/`、`~/PSKA_workspaces/default`、`~/.fastreact/credentials.json`
@@ -61,7 +61,7 @@ cp core/config.pska.example.json .pska/config.json
   "database": {"url": "postgresql:///pska"},
   "workspace": {"root": "~/PSKA_workspaces/default"},
   "service": {"host": "127.0.0.1", "port": 8765, "service_token": null},
-  "fastreact": {"url": "http://127.0.0.1:8000", "service_token": null}
+  "fastreact": {"url": "http://127.0.0.1:18741", "service_token": null}
 }
 ```
 
@@ -218,14 +218,14 @@ NO_PROXY=127.0.0.1,localhost PYTHONPATH=src \
 FastReAct 默认 API 地址：
 
 ```text
-http://127.0.0.1:8000
+http://127.0.0.1:18741
 ```
 
 PSKA 调用 FastReAct 时需要知道 FastReAct API 和 service token：
 
 ```json
 "fastreact": {
-  "url": "http://127.0.0.1:8000",
+  "url": "http://127.0.0.1:18741",
   "service_token": "<fastreact-service-token>",
   "timeout_seconds": 30
 }
@@ -270,7 +270,7 @@ FastReAct readiness：
 TOKEN="<fastreact-service-token>"
 curl -sS \
   -H "Authorization: Bearer $TOKEN" \
-  http://127.0.0.1:8000/ready | python3 -m json.tool
+  http://127.0.0.1:18741/ready | python3 -m json.tool
 ```
 
 关键字段：
@@ -310,7 +310,7 @@ tail -f ~/PSKA_workspaces/default/logs/pska-service.log
 ```bash
 lsof -nP -iTCP:8765 -sTCP:LISTEN
 lsof -nP -iTCP:5173 -sTCP:LISTEN
-lsof -nP -iTCP:8000 -sTCP:LISTEN
+lsof -nP -iTCP:18741 -sTCP:LISTEN
 ```
 
 FastReAct 返回 401：

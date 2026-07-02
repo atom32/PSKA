@@ -63,9 +63,9 @@ ingress, or a BFF that verifies AuthNode login artifacts. The browser must not
 receive AuthNode admin tokens, PSKA service tokens, FastReAct tokens, or PSKA
 JWTs.
 
-For local login-protected testing on the usual frontend port, set
-`startup.frontend.mode` to `gateway` in `.pska/config.json`; then `./start.sh`
-serves the built frontend through PSKA Gateway on `:5173` and redirects
+For local login-protected testing on the usual frontend port, the default
+`startup.frontend.mode` is `gateway`; `./start.sh` serves the built frontend
+through PSKA Gateway on `:5173` and redirects
 unauthenticated browsers to AuthNode `/login`. AuthNode redirects back with a
 one-time code, PSKA Gateway exchanges it server-side, and the browser only keeps
 a PSKA HttpOnly session cookie. Use `mode: "vite"` for hot reload.

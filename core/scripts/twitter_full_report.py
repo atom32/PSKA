@@ -62,7 +62,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--api-port", type=int, default=8767)
     parser.add_argument("--fastreact-timeout", type=int, default=180)
     parser.add_argument("--fastreact-mode", choices=["auto", "api", "local"], default="auto")
-    parser.add_argument("--fastreact-api-url", default=os.environ.get("FASTREACT_API_URL", "http://127.0.0.1:8000"))
+    parser.add_argument("--fastreact-api-url", default=os.environ.get("FASTREACT_API_URL", "http://127.0.0.1:18741"))
     parser.add_argument("--fastreact-service-token", default=os.environ.get("FASTREACT_SERVICE_TOKEN"))
     parser.add_argument("--fastreact-model", default=os.environ.get("FASTRACT_MODEL", ""))
     parser.add_argument("--embedding-provider", default=os.environ.get("PSKA_EMBEDDING_PROVIDER", "disabled"))

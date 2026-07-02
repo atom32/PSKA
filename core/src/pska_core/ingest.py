@@ -69,7 +69,7 @@ class IngestService:
         text = str(payload.content.get("text") or payload.content.get("raw_text") or "")
         title = payload.title or self._default_title(payload.record_type, text)
         content_hash = self._hash_payload(payload, text)
-        source_item_id = f"src_{uuid5(NAMESPACE_URL, f'{payload.tenant_id}:{content_hash}').hex}"
+        source_item_id = f"src_{uuid5(NAMESPACE_URL, f'{payload.tenant_id}:{payload.owner_user_id}:{content_hash}').hex}"
         item = SourceItem(
             source_item_id=source_item_id,
             source_channel=payload.source_channel,

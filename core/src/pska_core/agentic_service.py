@@ -48,7 +48,7 @@ class AgenticServiceClient(Protocol):
 @dataclass(frozen=True, slots=True)
 class AgenticServiceConfig:
     provider: str = "fastreact"
-    url: str = "http://127.0.0.1:8000"
+    url: str = "http://127.0.0.1:18741"
     service_token: str | None = None
     timeout_seconds: float = 30.0
     model: str | None = None
@@ -65,7 +65,7 @@ class AgenticServiceConfig:
         provider = os.getenv("PSKA_AGENTIC_SERVICE_PROVIDER") or os.getenv("PSKA_AGENTIC_PROVIDER") or "fastreact"
         return cls(
             provider=provider,
-            url=(os.getenv("PSKA_AGENTIC_SERVICE_URL") or os.getenv("PSKA_FASTREACT_URL") or "http://127.0.0.1:8000").rstrip("/"),
+            url=(os.getenv("PSKA_AGENTIC_SERVICE_URL") or os.getenv("PSKA_FASTREACT_URL") or "http://127.0.0.1:18741").rstrip("/"),
             service_token=os.getenv("PSKA_AGENTIC_SERVICE_TOKEN") or os.getenv("PSKA_FASTREACT_SERVICE_TOKEN") or None,
             timeout_seconds=float(os.getenv("PSKA_AGENTIC_SERVICE_TIMEOUT_SECONDS") or os.getenv("PSKA_FASTREACT_TIMEOUT_SECONDS") or "30"),
             model=os.getenv("PSKA_AGENTIC_SERVICE_MODEL") or os.getenv("PSKA_FASTREACT_MODEL") or None,

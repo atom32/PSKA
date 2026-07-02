@@ -131,7 +131,7 @@ cat > "$CONFIG" <<EOF
     "service_token": null
   },
   "fastreact": {
-    "url": "http://127.0.0.1:8000",
+    "url": "http://127.0.0.1:18741",
     "timeout_seconds": 30
   },
   "embedding": {

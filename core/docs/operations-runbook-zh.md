@@ -21,7 +21,7 @@ export FASTREACT_NANO_REPO="/path/to/FastReAct/fastreact-nano"
   "database": {"url": "postgresql:///pska"},
   "service": {"host": "127.0.0.1", "port": 8765},
   "llm": {"api_key_file": "~/api_key.txt", "timeout_seconds": 60},
-  "fastreact": {"url": "http://127.0.0.1:8000", "timeout_seconds": 30},
+  "fastreact": {"url": "http://127.0.0.1:18741", "timeout_seconds": 30},
   "embedding": {"provider": "disabled"}
 }
 ```
@@ -303,7 +303,7 @@ Fastreact 侧脚本型 digest worker：
 cd "$FASTREACT_NANO_REPO"
 python3 scripts/pska_digest_worker.py \
   --pska-url http://127.0.0.1:8765 \
-  --fastreact-url http://127.0.0.1:8000 \
+  --fastreact-url http://127.0.0.1:18741 \
   --batch-limit 20
 ```
 

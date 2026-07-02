@@ -32,7 +32,7 @@ memories、graph relationships、citations 和 writing evidence。PSKA 不只是
 | AuthNode | `http://127.0.0.1:8788` | AuthNode 仓库 `./start.sh` | 登录、tenant/user claims、本地 IAM 或 OIDC |
 | PSKA API | `http://127.0.0.1:8765` | 本仓库 `./start.sh` | 知识库、source sync、review、Ask、MCP |
 | PSKA Gateway/UI | `http://127.0.0.1:5173` | 本仓库 `./start.sh` | 浏览器入口和前端 |
-| FastReAct | `http://127.0.0.1:8000` | FastReAct 仓库启动命令 | Agentic Ask/digest 执行 |
+| FastReAct | `http://127.0.0.1:18741` | FastReAct 仓库启动命令 | Agentic Ask/digest 执行 |
 
 PSKA 不会替你启动 AuthNode 或 FastReAct。先在各自项目里启动它们，再回到本仓库执行 `./start.sh`。验证 PSKA 时应使用集成启动路径 `./start.sh`，除非你明确在做单独进程调试。
 
@@ -114,7 +114,7 @@ cd "$PSKA_REPO"
 ```bash
 curl -s http://127.0.0.1:8788/health
 curl -s http://127.0.0.1:8765/health
-curl -s http://127.0.0.1:8000/health
+curl -s http://127.0.0.1:18741/health
 ./scripts/pska --config .pska/config.json service-check
 ```
 

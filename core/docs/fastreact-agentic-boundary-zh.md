@@ -98,7 +98,7 @@ PSKA 可通过 config file 或环境变量连接 Fastreact。推荐 config file�
 {
   "llm": {"api_key_file": "~/api_key.txt"},
   "fastreact": {
-    "url": "http://127.0.0.1:8000",
+    "url": "http://127.0.0.1:18741",
     "service_token": "replace-with-local-service-token"
   }
 }
@@ -107,12 +107,12 @@ PSKA 可通过 config file 或环境变量连接 Fastreact。推荐 config file�
 环境变量仍可覆盖 config file：
 
 ```bash
-export PSKA_FASTREACT_URL="http://127.0.0.1:8000"
+export PSKA_FASTREACT_URL="http://127.0.0.1:18741"
 export PSKA_FASTREACT_SERVICE_TOKEN="replace-with-local-service-token"
 ```
 
 `http://127.0.0.1:3000/service` 是 Fastreact UI。PSKA agentic search 调用的是
-`http://127.0.0.1:8000` API；如果没有显式配置 `PSKA_FASTREACT_SERVICE_TOKEN`
+`http://127.0.0.1:18741` API；如果没有显式配置 `PSKA_FASTREACT_SERVICE_TOKEN`
 或 config `fastreact.service_token`，PSKA `/ready` 与 `/v1/runs` 调用可能返回
 401，即使 Fastreact UI 本身可以正常聊天。
 

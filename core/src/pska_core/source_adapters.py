@@ -373,7 +373,12 @@ def _sync_resources(
 ) -> SourceAdapterSyncReport:
     report = SourceAdapterSyncReport(root=source.uri, scanned=len(resources), processing_config=resolve_processing_config(source.config, processing_config))
     report.resources = _resources_payload(resources)
-    existing = _existing_connector_records(store, tenant_id=source.tenant_id, connector_id=connector_id)
+    existing = _existing_connector_records(
+        store,
+        tenant_id=source.tenant_id,
+        owner_user_id=source.owner_user_id,
+        connector_id=connector_id,
+    )
     ingest = IngestService(store, embedding_provider=embedding_provider, processing_config=report.processing_config)
     for resource in resources:
         body = resource.summary.strip()
@@ -422,10 +427,10 @@ def _sync_resources(
     return report
 
 
-def _existing_connector_records(store: KnowledgeStore, *, tenant_id: str, connector_id: str) -> dict[str, SourceItem]:
+def _existing_connector_records(store: KnowledgeStore, *, tenant_id: str, owner_user_id: str, connector_id: str) -> dict[str, SourceItem]:
     existing: dict[str, SourceItem] = {}
     for item in store.list_source_items(tenant_id=tenant_id):
-        if item.source_channel != connector_id:
+        if item.source_channel != connector_id or item.owner_user_id != owner_user_id:
             continue
         extra = dict(item.metadata.get("extra") or {})
         connector = dict(extra.get("connector") or {})

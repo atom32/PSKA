@@ -40,7 +40,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--worker-id", default="digest-e2e-gate-worker")
     parser.add_argument("--lease-seconds", type=int, default=120)
     parser.add_argument("--batch-size", type=int, default=1)
-    parser.add_argument("--fastreact-url", default="http://127.0.0.1:8000")
+    parser.add_argument("--fastreact-url", default="http://127.0.0.1:18741")
     parser.add_argument("--fastreact-timeout-seconds", type=float, default=2.0)
     parser.add_argument(
         "--require-fastreact-online",

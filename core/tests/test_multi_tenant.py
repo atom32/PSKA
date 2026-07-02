@@ -20,6 +20,7 @@ TENANT_B = "tenant_b"
 def _store() -> InMemoryKnowledgeStore:
     store = InMemoryKnowledgeStore()
     store.add_user(User("user_a", "primary", UserRole.USER, tenant_id=TENANT_A))
+    store.add_user(User("user_c", "secondary", UserRole.USER, tenant_id=TENANT_A))
     store.add_user(User("user_b", "primary", UserRole.USER, tenant_id=TENANT_B))
     store.add_user(User("admin_a", "admin", UserRole.ADMIN, tenant_id=TENANT_A))
     store.add_user(User("admin_b", "admin", UserRole.ADMIN, tenant_id=TENANT_B))
@@ -42,18 +43,21 @@ def _payload(*, tenant_id: str, owner_user_id: str, source_id: str = "same-sourc
     }
 
 
-def test_same_content_hash_is_deduped_only_within_tenant() -> None:
+def test_same_content_hash_is_deduped_only_within_tenant_and_owner() -> None:
     store = _store()
     ingest = IngestService(store)
 
     item_a = ingest.ingest_channel_payload(_payload(tenant_id=TENANT_A, owner_user_id="user_a"))
+    item_c = ingest.ingest_channel_payload(_payload(tenant_id=TENANT_A, owner_user_id="user_c"))
     item_b = ingest.ingest_channel_payload(_payload(tenant_id=TENANT_B, owner_user_id="user_b"))
     duplicate_a = ingest.ingest_channel_payload(_payload(tenant_id=TENANT_A, owner_user_id="user_a"))
 
     assert item_a.content_hash == item_b.content_hash
+    assert item_a.content_hash == item_c.content_hash
+    assert item_a.source_item_id != item_c.source_item_id
     assert item_a.source_item_id != item_b.source_item_id
     assert duplicate_a.source_item_id == item_a.source_item_id
-    assert [item.source_item_id for item in store.list_source_items(tenant_id=TENANT_A)] == [item_a.source_item_id]
+    assert {item.source_item_id for item in store.list_source_items(tenant_id=TENANT_A)} == {item_a.source_item_id, item_c.source_item_id}
     assert [item.source_item_id for item in store.list_source_items(tenant_id=TENANT_B)] == [item_b.source_item_id]
 
 

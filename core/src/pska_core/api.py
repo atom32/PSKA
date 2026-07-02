@@ -1930,6 +1930,13 @@ class PSKAApi:
             "runs": [_ask_run_payload(run) for run in runs],
         }
 
+    def delete_workspace_ask_conversation(self, conversation_id: str, payload: dict[str, Any] | None = None, context: RequestContext | None = None) -> dict[str, Any]:
+        payload = context.apply_to_payload(payload or {}) if context else dict(payload or {})
+        tenant_id = _tenant_id_for_request(context, str(payload.get("tenant_id")) if payload.get("tenant_id") else None)
+        owner_user_id = _workspace_owner_user_id(context, payload.get("owner_user_id") or payload.get("represented_user_id"))
+        archived = self.store.archive_ask_conversation(conversation_id, tenant_id=tenant_id, owner_user_id=owner_user_id)
+        return {"ok": True, "deleted": {"conversation_id": conversation_id}, "conversation": _ask_conversation_payload(archived)}
+
     def workspace_ask_conversation_event_stream(self, conversation_id: str, payload: dict[str, Any], context: RequestContext | None = None):
         payload = context.apply_to_payload(payload) if context else payload
         tenant_id = _tenant_id_for_request(context, str(payload.get("tenant_id")) if payload.get("tenant_id") else None)
@@ -4539,6 +4546,10 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
             context = self._context(payload)
             if context is None:
                 return
+            if path.startswith("/workspace/ask/conversations/"):
+                parts = _ask_conversation_path_parts(path)
+                if len(parts) == 1:
+                    return self._json(200, self.api.delete_workspace_ask_conversation(unquote(parts[0]), payload, context=context))
             if path.startswith("/workspace/writing/boards/"):
                 parts = _writing_path_parts(path)
                 if len(parts) == 1:
@@ -8163,11 +8174,12 @@ def _accumulate_ask_stream_result(result: dict[str, Any], event_name: str, event
             "evidence_claims",
             "no_answer_reasons",
             "source_windows",
-            "agent_steps",
-            "progress",
             "trace",
         ):
             if event_payload.get(key) is not None:
+                result[key] = event_payload[key]
+        for key in ("agent_steps", "progress"):
+            if event_payload.get(key):
                 result[key] = event_payload[key]
         if event_payload.get("citations") is not None:
             result["citations"] = _list_of_dicts(event_payload.get("citations"))

@@ -100,7 +100,7 @@ def test_config_check_reports_missing_db_port_conflict_and_fastreact_warning() -
         server.bind(("127.0.0.1", 0))
         server.listen(1)
         port = server.getsockname()[1]
-        config = PSKAConfig.from_dict({"service": {"host": "127.0.0.1", "port": port}, "fastreact": {"url": "http://127.0.0.1:8000"}})
+        config = PSKAConfig.from_dict({"service": {"host": "127.0.0.1", "port": port}, "fastreact": {"url": "http://127.0.0.1:18741"}})
 
         report = config_check(config, database_url="")
 

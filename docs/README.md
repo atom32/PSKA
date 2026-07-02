@@ -10,6 +10,7 @@ historical planning notes.
   identity headers, source/digest/Ask workflow, and verification commands.
 - [Developer Quickstart](DEVELOPER_QUICKSTART.md): one-command dev stack, first-time setup, cold-start checks, and FastReAct integration.
 - [Release, Init, and FastReAct Guide](RELEASE_INIT_FASTREACT_GUIDE.zh.md): Chinese operational guide for local release/init and real FastReAct linkage.
+- [Configuration Contract](CONFIGURATION_CONTRACT.zh.md): Chinese reference for PSKA, FastReAct, and AuthNode config locations, startup entry points, and compatibility fields.
 
 ## Daily Use
 
@@ -40,6 +41,7 @@ Directory-level material packs can opt into source collection ingest with
 
 - [Operations Runbook](../core/docs/operations-runbook-zh.md): local daemon, database, status, jobs, and recovery commands.
 - [Online Service Contract](../core/docs/service-contract-zh.md): HTTP service, auth/request context, jobs, candidates, connectors, and digest APIs.
+- [Configuration Contract](CONFIGURATION_CONTRACT.zh.md): PSKA/FastReAct/AuthNode local config path and redundancy notes.
 - [Enterprise Auth Gateway](ENTERPRISE_AUTH_GATEWAY.zh.md): AuthNode + PSKA Gateway browser login, session, and reverse-proxy flow.
 - [FastReAct Boundary](../core/docs/fastreact-agentic-boundary-zh.md): PSKA/FastReAct responsibility split.
 - [FastReAct Protocol](../core/docs/fastreact-protocol-zh.md): detailed protocol notes.

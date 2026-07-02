@@ -109,6 +109,36 @@ def test_upload_source_uses_configured_spreadsheet_limits(tmp_path: Path) -> Non
     assert extraction["sheets"][0]["truncated_columns"] is True
 
 
+def test_upload_spreadsheet_items_are_isolated_by_owner(tmp_path: Path) -> None:
+    api = _api()
+    api.store.add_user(User("user_secondary", "secondary", UserRole.USER))
+    workbook = tmp_path / "shared.xlsx"
+    _write_minimal_xlsx(
+        workbook,
+        rows=[
+            ["Metric", "Value"],
+            ["Revenue", "1200000"],
+        ],
+    )
+    payload = {
+        "source_id": "shared-spreadsheet",
+        "uri": "pska-upload://unit-test/shared-spreadsheet",
+        "filename": workbook.name,
+        "bytes_base64": base64.b64encode(workbook.read_bytes()).decode("ascii"),
+        "digest_mode": "manual",
+    }
+
+    primary = api.create_upload_source(payload, context=RequestContext(tenant_id=DEFAULT_TENANT_ID, user_id="user_primary"))
+    secondary = api.create_upload_source(payload, context=RequestContext(tenant_id=DEFAULT_TENANT_ID, user_id="user_secondary"))
+    primary_item = api.store.source_items[primary["source_item_ids"][0]]
+    secondary_item = api.store.source_items[secondary["source_item_ids"][0]]
+
+    assert primary_item.content_hash == secondary_item.content_hash
+    assert primary_item.source_item_id != secondary_item.source_item_id
+    assert primary_item.owner_user_id == "user_primary"
+    assert secondary_item.owner_user_id == "user_secondary"
+
+
 def test_upload_source_honors_configured_max_bytes() -> None:
     api = _api()
     api.config = PSKAConfig(service=ServiceConfig(), auth=AuthConfig(), files=FilesConfig(max_bytes=4))
@@ -256,6 +286,23 @@ def test_prompt_profile_precedence_and_ask_conversation_lineage() -> None:
     assert saved["runs"][0]["status"] == "succeeded"
     assert saved["runs"][0]["prompt_profile_id"] == profile_response["effective"]["ask"]["prompt_profile_id"]
     assert saved["messages"][1]["citations"]
+
+
+def test_ask_conversation_delete_archives_thread_without_cross_owner_access() -> None:
+    api = _api()
+    conversation = api.create_workspace_ask_conversation({"title": "Temporary thread"})["conversation"]
+    conversation_id = conversation["conversation_id"]
+    list(api.workspace_ask_conversation_event_stream(conversation_id, {"query": "你好", "intent": "quick"}))
+
+    deleted = api.delete_workspace_ask_conversation(conversation_id)
+    listed = api.workspace_ask_conversations()
+    archived = api.workspace_ask_conversation(conversation_id)
+
+    assert deleted["conversation"]["status"] == "archived"
+    assert conversation_id not in {item["conversation_id"] for item in listed["conversations"]}
+    assert archived["conversation"]["status"] == "archived"
+    with pytest.raises(KeyError):
+        api.delete_workspace_ask_conversation(conversation_id, {"owner_user_id": "other_user"})
 
 
 def test_digest_now_api_includes_tenant_context() -> None:

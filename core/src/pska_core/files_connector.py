@@ -947,7 +947,7 @@ def _ingest_collection(
     marker_path, marker = _collection_marker(collection_root)
     title = str(marker.get("title") or collection_root.name)
     source_id = str(marker.get("source_id") or collection_root.relative_to(root).as_posix())
-    source_item_id = f"src_{uuid5(NAMESPACE_URL, f'{tenant_id}:files-collection:{content_hash}:{source_id}').hex}"
+    source_item_id = f"src_{uuid5(NAMESPACE_URL, f'{tenant_id}:{owner_user_id}:files-collection:{content_hash}:{source_id}').hex}"
     document_texts: list[tuple[Path, str]] = []
     for path in files:
         raw = path.read_bytes()

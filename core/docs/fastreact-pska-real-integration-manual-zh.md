@@ -48,7 +48,7 @@ cd "$PSKA_REPO"
 
 - `llm.api_key_file = ~/api_key.txt`
 - `service.host = 0.0.0.0`
-- `service.port = 8000`
+- `service.port = 18741`
 - `service.service_token` 从 `~/api_key.txt` 的 `service_token` 读取
 - `mcp.servers[0]` 指向 PSKA 的 `scripts/pska mcp-server`
 - PSKA MCP 子进程 env，包括 `PSKA_LLM_API_KEY_FILE`、`PSKA_DATABASE_URL` 和可探测到的 `SSL_CERT_FILE`
@@ -120,7 +120,7 @@ python3 -m fastreact.adapters.http --config ~/.fastreact/config.json
 默认监听：
 
 ```text
-http://127.0.0.1:8000
+http://127.0.0.1:18741
 ```
 
 stdio 模式下 PSKA 不需要另起 HTTP daemon。FastReAct 会按 config 启动 PSKA
@@ -142,7 +142,7 @@ PY
 
 curl -sS \
   -H "Authorization: Bearer $TOKEN" \
-  http://127.0.0.1:8000/ready | python3 -m json.tool
+  http://127.0.0.1:18741/ready | python3 -m json.tool
 ```
 
 关键字段应满足：
@@ -160,7 +160,7 @@ mcp.tools 包含 pska_pska_search
 curl -sS \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  http://127.0.0.1:8000/v1/chat/completions \
+  http://127.0.0.1:18741/v1/chat/completions \
   -d '{
     "messages": [
       {"role": "system", "content": "Use PSKA MCP tools and cite evidence."},
@@ -206,7 +206,7 @@ print(data.get("service_token") or data.get("fastreact_service_token") or "")
 PY
 )
 
-FASTREACT_API_URL="http://127.0.0.1:8000" \
+FASTREACT_API_URL="http://127.0.0.1:18741" \
 FASTREACT_SERVICE_TOKEN="$TOKEN" \
 PSKA_LLM_API_KEY_FILE="$HOME/api_key.txt" \
 ../.pska/venvs/pska-py312/bin/python scripts/twitter_full_report.py \

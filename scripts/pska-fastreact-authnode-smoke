@@ -34,7 +34,7 @@ from pska_core.store_postgres import PostgresKnowledgeStore  # noqa: E402
 
 DEFAULT_AUTHNODE_URL = "http://127.0.0.1:8788"
 DEFAULT_PSKA_URL = "http://127.0.0.1:8765"
-DEFAULT_FASTREACT_URL = "http://127.0.0.1:8000"
+DEFAULT_FASTREACT_URL = "http://127.0.0.1:18741"
 DEFAULT_AUTHNODE_CONFIG = ROOT.parent / "AuthNode" / "authnode.local.json"
 REQUIRED_FASTREACT_PSKA_TOOLS = {
     "pska_search",

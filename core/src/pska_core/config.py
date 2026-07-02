@@ -174,7 +174,7 @@ class LLMConfig:
 
 @dataclass(frozen=True, slots=True)
 class FastreactConfig:
-    url: str = "http://127.0.0.1:8000"
+    url: str = "http://127.0.0.1:18741"
     service_token: str | None = None
     timeout_seconds: float | None = None
     model: str | None = None
@@ -192,7 +192,7 @@ class FastreactConfig:
         authnode = data.get("authnode") if isinstance(data.get("authnode"), dict) else {}
         token = data.get("service_token") or data.get("token") or _fastreact_token_from_key_file(api_key_file)
         return cls(
-            url=str(data.get("url") or "http://127.0.0.1:8000").rstrip("/"),
+            url=str(data.get("url") or "http://127.0.0.1:18741").rstrip("/"),
             service_token=str(token).strip() if token else None,
             timeout_seconds=float(data["timeout_seconds"]) if data.get("timeout_seconds") else None,
             model=str(data["model"]).strip() if data.get("model") else None,
@@ -209,7 +209,7 @@ class FastreactConfig:
 @dataclass(frozen=True, slots=True)
 class AgenticServiceConfigFile:
     provider: str = "fastreact"
-    url: str = "http://127.0.0.1:8000"
+    url: str = "http://127.0.0.1:18741"
     service_token: str | None = None
     timeout_seconds: float | None = None
     model: str | None = None
@@ -234,7 +234,7 @@ class AgenticServiceConfigFile:
         token = data.get("service_token") or data.get("token") or fallback.service_token or _fastreact_token_from_key_file(api_key_file)
         return cls(
             provider=str(data.get("provider") or "fastreact"),
-            url=str(data.get("url") or fallback.url or "http://127.0.0.1:8000").rstrip("/"),
+            url=str(data.get("url") or fallback.url or "http://127.0.0.1:18741").rstrip("/"),
             service_token=str(token).strip() if token else None,
             timeout_seconds=float(data["timeout_seconds"]) if data.get("timeout_seconds") else fallback.timeout_seconds,
             model=str(data["model"]).strip() if data.get("model") else fallback.model,
@@ -418,7 +418,7 @@ class FrontendConfig:
     enabled: bool = True
     host: str = "127.0.0.1"
     port: int = 5173
-    mode: str = "vite"
+    mode: str = "gateway"
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> "FrontendConfig":
@@ -427,7 +427,7 @@ class FrontendConfig:
             enabled=bool(data.get("enabled", True)),
             host=str(data.get("host") or "127.0.0.1"),
             port=int(data.get("port") or 5173),
-            mode=str(data.get("mode") or "vite").strip().lower(),
+            mode=str(data.get("mode") or "gateway").strip().lower(),
         )
 
 

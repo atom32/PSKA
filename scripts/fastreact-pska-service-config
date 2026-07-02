@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = Path.home() / ".fastreact" / "config.json"
 DEFAULT_KEY_FILE = Path.home() / "api_key.txt"
 DEFAULT_PSKA_PYTHON = ROOT / ".pska" / "venvs" / "pska-py312" / "bin" / "python"
+DEFAULT_FASTREACT_PORT = 18741
 
 
 def certifi_path(python: Path) -> str | None:
@@ -135,7 +136,7 @@ def main() -> None:
     parser.add_argument("--pska-config", type=Path, default=ROOT / ".pska" / "config.json")
     parser.add_argument("--database-url", default="postgresql:///pska", help=argparse.SUPPRESS)
     parser.add_argument("--host", default="0.0.0.0")
-    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--port", type=int, default=DEFAULT_FASTREACT_PORT)
     parser.add_argument("--log-level", default="info")
     parser.add_argument("--mcp-transport", choices=["stdio", "http"], default="stdio")
     parser.add_argument("--pska-http-url", default="http://127.0.0.1:8765/mcp")

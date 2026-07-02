@@ -42,7 +42,7 @@ For the Chinese version, see [README.zh.md](README.zh.md).
 | AuthNode | `http://127.0.0.1:8788` | AuthNode repo `./start.sh` | Login, tenant/user claims, local IAM or OIDC |
 | PSKA API | `http://127.0.0.1:8765` | this repo `./start.sh` | Knowledge, source sync, review, Ask, MCP |
 | PSKA Gateway/UI | `http://127.0.0.1:5173` | this repo `./start.sh` | Browser entrypoint and frontend |
-| FastReAct | `http://127.0.0.1:8000` | FastReAct repo startup | Agentic Ask/digest execution |
+| FastReAct | `http://127.0.0.1:18741` | FastReAct repo startup | Agentic Ask/digest execution |
 
 PSKA does not start AuthNode or FastReAct for you. Start those projects from
 their own repositories, then start PSKA from this repository with `./start.sh`.
@@ -131,7 +131,7 @@ Check the stack:
 ```bash
 curl -s http://127.0.0.1:8788/health
 curl -s http://127.0.0.1:8765/health
-curl -s http://127.0.0.1:8000/health
+curl -s http://127.0.0.1:18741/health
 ./scripts/pska --config .pska/config.json service-check
 ```
 

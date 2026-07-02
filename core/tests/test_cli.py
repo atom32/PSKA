@@ -105,7 +105,7 @@ def test_cli_applies_env_overrides_to_served_config(tmp_path: Path, monkeypatch)
                 "database": {"url": "postgresql:///from_file"},
                 "agentic_service": {
                     "provider": "fastreact",
-                    "url": "http://127.0.0.1:8000",
+                    "url": "http://127.0.0.1:18741",
                     "service_token": "file-token",
                 },
                 "workspace": {"root": str(tmp_path / "workspace")},
@@ -2105,7 +2105,7 @@ def test_fastreact_digest_worker_command_payload_uses_config_urls() -> None:
         {
             "database": {"url": "postgresql:///pska"},
             "service": {"host": "127.0.0.1", "port": 8765},
-            "fastreact": {"url": "http://127.0.0.1:8000"},
+            "fastreact": {"url": "http://127.0.0.1:18741"},
         }
     )
 
@@ -2113,7 +2113,7 @@ def test_fastreact_digest_worker_command_payload_uses_config_urls() -> None:
 
     assert payload["pska_database_url"] == "postgresql:///pska"
     assert payload["pska_url"] == "http://127.0.0.1:8765"
-    assert payload["fastreact_url"] == "http://127.0.0.1:8000"
+    assert payload["fastreact_url"] == "http://127.0.0.1:18741"
     assert "--batch-limit" in payload["command"]
     assert "--tenant-id" in payload["command"]
     assert "tenant_a" in payload["command"]
@@ -2130,7 +2130,7 @@ def test_fastreact_digest_worker_command_payload_uses_loopback_for_wildcard_host
         {
             "database": {"url": "postgresql:///pska"},
             "service": {"host": "0.0.0.0", "port": 8765},
-            "fastreact": {"url": "http://127.0.0.1:8000"},
+            "fastreact": {"url": "http://127.0.0.1:18741"},
         }
     )
 
@@ -2151,7 +2151,7 @@ def test_fastreact_digest_worker_command_payload_can_target_job_id() -> None:
         {
             "database": {"url": "postgresql:///pska"},
             "service": {"host": "127.0.0.1", "port": 8765},
-            "fastreact": {"url": "http://127.0.0.1:8000"},
+            "fastreact": {"url": "http://127.0.0.1:18741"},
         }
     )
 

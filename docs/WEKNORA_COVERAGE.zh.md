@@ -141,7 +141,7 @@ PSKA 的讲法应该更具体：
 ## 失败排查
 
 - PSKA 未启动：先在本仓库运行 `./start.sh`，再跑 E2E。
-- `readiness.summary.fastreact_ok=false`：检查 FastReAct 是否运行在 `http://127.0.0.1:8000`，以及 `.pska/config.json` 的 FastReAct token。
+- `readiness.summary.fastreact_ok=false`：检查 FastReAct 是否运行在 `http://127.0.0.1:18741`，以及 `.pska/config.json` 的 FastReAct token。
 - `source_adapters=false`：检查 source preview/create/sync 返回值和 `GET /console/sources/data`。
 - `ask_rag=false`：确认 source sync 后确实有 chunks；查看 `quality_signals.no_answer_diagnostics`。
 - `digest_review_governance=false`：看 `digest.command.diagnostics`；默认模式会 fallback seed candidates，strict 模式会直接失败。

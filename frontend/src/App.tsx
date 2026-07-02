@@ -72,6 +72,7 @@ import {
   createWritingBoard,
   createWritingEdge,
   createWritingNode,
+  deleteAskConversation,
   deleteWritingBoard,
   deleteWritingNode,
   ignoreDiscovery,
@@ -456,6 +457,19 @@ function LeftSidebar({
     }
   }
 
+  async function removeSidebarConversation(conversationId: string) {
+    setContextMessage("");
+    try {
+      await deleteAskConversation(serviceToken, conversationId);
+      if (conversationId === activeAskConversationId) {
+        onAskConversationChange("");
+      }
+      await askConversationsQuery.refetch();
+    } catch (error) {
+      setContextMessage(error instanceof Error ? error.message : "删除对话失败。");
+    }
+  }
+
   return (
     <aside className="left-sidebar">
       <button className="collapse-button" type="button" onClick={onToggle} title={collapsed ? "展开侧栏" : "收起侧栏"}>
@@ -489,6 +503,7 @@ function LeftSidebar({
             onAskConversationChange(conversationId);
             onModeChange("today");
           }}
+          onDeleteConversation={(conversationId) => void removeSidebarConversation(conversationId)}
           onModeChange={onModeChange}
         />
       )}
@@ -504,6 +519,7 @@ function SidebarContextTree({
   message,
   onNewConversation,
   onSelectConversation,
+  onDeleteConversation,
   onModeChange
 }: {
   mode: WorkspaceMode;
@@ -513,6 +529,7 @@ function SidebarContextTree({
   message: string;
   onNewConversation: () => void;
   onSelectConversation: (conversationId: string) => void;
+  onDeleteConversation: (conversationId: string) => void;
   onModeChange: (mode: WorkspaceMode) => void;
 }) {
   if (mode === "today") {
@@ -528,15 +545,29 @@ function SidebarContextTree({
         {!loading && conversations.length === 0 ? <span>还没有 Ask PSKA 对话。</span> : null}
         <div className="context-thread-list">
           {conversations.slice(0, 10).map((conversation) => (
-            <button
+            <div
               className={`context-item ${conversation.conversation_id === activeAskConversationId ? "active" : ""}`}
-              type="button"
               key={conversation.conversation_id}
-              onClick={() => conversation.conversation_id && onSelectConversation(conversation.conversation_id)}
             >
-              <MessageCircle size={14} />
-              <span>{trimText(conversation.title || conversation.conversation_id || "Ask PSKA", 30)}</span>
-            </button>
+              <button
+                className="context-item-main"
+                type="button"
+                onClick={() => conversation.conversation_id && onSelectConversation(conversation.conversation_id)}
+                title={conversation.title || conversation.conversation_id || "Ask PSKA"}
+              >
+                <MessageCircle size={14} />
+                <span>{trimText(conversation.title || conversation.conversation_id || "Ask PSKA", 30)}</span>
+              </button>
+              <button
+                className="context-item-delete"
+                type="button"
+                onClick={() => conversation.conversation_id && onDeleteConversation(conversation.conversation_id)}
+                title="删除对话"
+                aria-label="删除对话"
+              >
+                <Trash2 size={13} />
+              </button>
+            </div>
           ))}
         </div>
         {message ? <small>{message}</small> : null}
@@ -711,6 +742,7 @@ function TodayWorkspace({
   const [actions, setActions] = useState<Record<string, TodayAction>>({});
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResult, setSearchResult] = useState<WorkspaceAskResponse | null>(null);
+  const [liveConversationId, setLiveConversationId] = useState("");
   const [searchError, setSearchError] = useState<string | null>(null);
   const [searching, setSearching] = useState(false);
   const [attachmentFile, setAttachmentFile] = useState<File | null>(null);
@@ -743,12 +775,41 @@ function TodayWorkspace({
   const conversationMessages = askConversationQuery.data?.messages || [];
   const conversationRuns = askConversationQuery.data?.runs || [];
   const actionCount = continueWorking.length + discoveries.length + needsReview.length;
+  const previousActiveConversationId = useRef(activeConversationId);
+  const liveSearchResult = searchResult;
+  const liveResultMatchesActive = Boolean(liveSearchResult) && liveConversationId === activeConversationId;
+  const liveResultPersisted = liveSearchResult ? conversationRuns.some((run) => {
+    const storedResult = askResultFromRun(run);
+    if (!storedResult) {
+      return false;
+    }
+    if (liveSearchResult.run_id) {
+      return run.run_id === liveSearchResult.run_id;
+    }
+    return Boolean(liveSearchResult.query) && run.query === liveSearchResult.query;
+  }) : false;
 
   useEffect(() => {
     if (!activeConversationId && conversations[0]?.conversation_id) {
       onActiveConversationChange(conversations[0].conversation_id);
     }
   }, [activeConversationId, conversations, onActiveConversationChange]);
+
+  useEffect(() => {
+    if (previousActiveConversationId.current === activeConversationId) {
+      return;
+    }
+    previousActiveConversationId.current = activeConversationId;
+    if (searching) {
+      return;
+    }
+    setSearchQuery("");
+    setSearchResult(null);
+    setLiveConversationId("");
+    setSearchError(null);
+    setAttachmentFile(null);
+    setAttachmentStatus("");
+  }, [activeConversationId, searching]);
 
   function mark(id: string, value: TodayAction) {
     setActions((current) => ({ ...current, [id]: value }));
@@ -765,6 +826,7 @@ function TodayWorkspace({
     setSearching(true);
     setSearchError(null);
     setAttachmentStatus("");
+    setLiveConversationId(activeConversationId);
     setSearchResult(pendingAskResult(query));
     try {
       let conversationId = activeConversationId;
@@ -775,6 +837,7 @@ function TodayWorkspace({
           onActiveConversationChange(conversationId);
         }
       }
+      setLiveConversationId(conversationId);
       if (attachmentFile) {
         setAttachmentStatus(`正在把 ${attachmentFile.name} 加入资料库`);
         const upload = await uploadWorkspaceSource(serviceToken, attachmentFile, { digest_mode: "after_upload" });
@@ -900,7 +963,7 @@ function TodayWorkspace({
             runs={conversationRuns}
             isLoading={askConversationsQuery.isLoading || askConversationQuery.isLoading}
             liveQuery={searchQuery}
-            liveResult={searching || conversationMessages.length === 0 ? searchResult : null}
+            liveResult={liveResultMatchesActive && (searching || !liveResultPersisted) ? searchResult : null}
             livePending={searching}
             composer={(
               <form className="today-search-form today-chat-composer" onSubmit={runTodaySearch} data-testid="today-ask-form">

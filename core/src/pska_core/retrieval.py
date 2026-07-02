@@ -1613,10 +1613,15 @@ def _render_focused_table_row(header: str, row: str, anchors: list[str], *, max_
     row_cells = _table_cells(row)
     if not header_cells or len(header_cells) != len(row_cells):
         return "\n".join([header, row])
+    if len(header_cells) <= 6:
+        focused = "\n".join([header, row])
+        if len(focused) <= max_chars:
+            return focused
     selected: list[int] = []
+    anchor_text = " ".join(anchors).casefold()
     for index, (header_cell, row_cell) in enumerate(zip(header_cells, row_cells)):
         cell_text = f"{header_cell} {row_cell}".casefold()
-        if any(anchor in cell_text for anchor in anchors):
+        if any(anchor in cell_text for anchor in anchors) or _table_header_matches_query_intent(header_cell, anchor_text):
             selected.append(index)
     for index in range(min(3, len(header_cells))):
         if index not in selected:
@@ -1628,6 +1633,16 @@ def _render_focused_table_row(header: str, row: str, anchors: list[str], *, max_
     if len(focused) <= max_chars:
         return focused
     return focused[:max_chars].rstrip()
+
+
+def _table_header_matches_query_intent(header: str, anchor_text: str) -> bool:
+    folded = header.casefold()
+    return (
+        (folded in {"next step", "action", "next action"} and any(term in anchor_text for term in ("next", "step", "action", "下一步", "行动")))
+        or (folded in {"lead", "owner", "responsible"} and any(term in anchor_text for term in ("lead", "owner", "负责人")))
+        or (folded == "status" and any(term in anchor_text for term in ("status", "状态")))
+        or (folded == "arr" and "arr" in anchor_text)
+    )
 
 
 def _table_cells(line: str) -> list[str]:

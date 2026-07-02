@@ -145,7 +145,7 @@ FastReAct agentic search requires the FastReAct API endpoint and token in
 
 ```json
 "fastreact": {
-  "url": "http://127.0.0.1:8000",
+  "url": "http://127.0.0.1:18741",
   "service_token": "<fastreact-service-token>",
   "timeout_seconds": 30
 }

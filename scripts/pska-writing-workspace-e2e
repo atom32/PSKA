@@ -37,7 +37,7 @@ DEFAULT_CONFIG = ROOT / ".pska" / "config.json"
 DEFAULT_AUTHNODE_URL = "http://127.0.0.1:8788"
 DEFAULT_PSKA_URL = "http://127.0.0.1:8765"
 DEFAULT_FRONTEND_URL = "http://127.0.0.1:5173"
-DEFAULT_FASTREACT_URL = "http://127.0.0.1:8000"
+DEFAULT_FASTREACT_URL = "http://127.0.0.1:18741"
 DEFAULT_FASTREACT_ROOT = next(
     (path for path in [Path.home() / "FastReAct" / "fastreact-nano", Path.home() / "Fastreact" / "fastreact-nano"] if path.exists()),
     Path.home() / "FastReAct" / "fastreact-nano",

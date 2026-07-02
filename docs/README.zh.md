@@ -7,6 +7,7 @@
 - [根 README](../README.zh.md)：多租户开发入口、服务地图、身份 headers、source/digest/Ask 工作流和验证命令。
 - [Developer Quickstart](DEVELOPER_QUICKSTART.md)：开发栈启动、首次配置、cold-start 检查和 FastReAct 联动。
 - [发布、初始化与 FastReAct 指南](RELEASE_INIT_FASTREACT_GUIDE.zh.md)：本地初始化、日常启动和真实 FastReAct 联调流程。
+- [配置约定](CONFIGURATION_CONTRACT.zh.md)：PSKA、FastReAct、AuthNode 的配置文件位置、启动入口和兼容字段。
 
 ## 日常使用
 
@@ -34,6 +35,7 @@
 
 - [Operations Runbook](../core/docs/operations-runbook-zh.md)：local daemon、数据库、状态、jobs 和恢复命令。
 - [Online Service Contract](../core/docs/service-contract-zh.md)：HTTP service、auth/request context、jobs、candidates、connectors 和 digest API。
+- [配置约定](CONFIGURATION_CONTRACT.zh.md)：三系统本地配置路径、旧字段和冗余项说明。
 - [企业认证网关](ENTERPRISE_AUTH_GATEWAY.zh.md)：AuthNode + PSKA Gateway 的正规浏览器登录、session 和反向代理流程。
 - [FastReAct Boundary](../core/docs/fastreact-agentic-boundary-zh.md)：PSKA/FastReAct 职责边界。
 - [FastReAct Protocol](../core/docs/fastreact-protocol-zh.md)：层间协议细节。

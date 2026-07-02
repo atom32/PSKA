@@ -223,8 +223,9 @@ button {
   min-height: 34px;
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 4px;
   color: #4e493f;
+  border-radius: 6px;
 }
 
 .context-item.active {
@@ -234,7 +235,30 @@ button {
   font-weight: 720;
 }
 
-.context-item span {
+.context-item-main {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.context-item-delete {
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  display: grid;
+  place-items: center;
+  padding: 0 !important;
+  color: var(--muted);
+}
+
+.context-item-delete:hover {
+  color: #a14438;
+}
+
+.context-item span,
+.context-item-main span {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;

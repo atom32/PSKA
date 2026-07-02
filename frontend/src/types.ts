@@ -451,6 +451,8 @@ export type WorkspaceGraphPathResponse = {
 export type WorkspaceAskResponse = {
   ok?: boolean;
   query?: string;
+  conversation_id?: string;
+  run_id?: string;
   answer?: string;
   route?: {
     intent?: "auto" | "quick" | "deep" | string;

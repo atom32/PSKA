@@ -286,6 +286,7 @@ class KnowledgeStore(Protocol):
     def create_ask_conversation(self, conversation: AskConversation) -> AskConversation: ...
     def list_ask_conversations(self, *, tenant_id: str, owner_user_id: str, limit: int = 50) -> list[AskConversation]: ...
     def get_ask_conversation(self, conversation_id: str, *, tenant_id: str, owner_user_id: str) -> AskConversation: ...
+    def archive_ask_conversation(self, conversation_id: str, *, tenant_id: str, owner_user_id: str) -> AskConversation: ...
     def add_ask_message(self, message: AskMessage) -> AskMessage: ...
     def list_ask_messages(self, conversation_id: str, *, tenant_id: str, owner_user_id: str, limit: int = 100) -> list[AskMessage]: ...
     def add_ask_run(self, run: AskRun) -> AskRun: ...
@@ -320,7 +321,7 @@ class InMemoryKnowledgeStore:
         self.users: dict[str, User] = {}
         self.team_memberships: list[TeamMembership] = []
         self.source_items: dict[str, SourceItem] = {}
-        self.source_items_by_hash: dict[tuple[str, str], str] = {}
+        self.source_items_by_hash: dict[tuple[str, str, str], str] = {}
         self.knowledge_sources: dict[str, KnowledgeSource] = {}
         self.sync_runs: dict[str, SyncRun] = {}
         self.processing_spans: dict[str, ProcessingSpan] = {}
@@ -374,15 +375,15 @@ class InMemoryKnowledgeStore:
         ]
 
     def upsert_source_item(self, item: SourceItem) -> SourceItem:
-        existing_id = self.source_items_by_hash.get((item.tenant_id, item.content_hash))
+        existing_id = self.source_items_by_hash.get((item.tenant_id, item.owner_user_id, item.content_hash))
         if existing_id:
             return self.source_items[existing_id]
         existing = self.source_items.get(item.source_item_id)
         if existing:
-            self.source_items_by_hash.pop((existing.tenant_id, existing.content_hash), None)
+            self.source_items_by_hash.pop((existing.tenant_id, existing.owner_user_id, existing.content_hash), None)
             item.created_at = existing.created_at
         self.source_items[item.source_item_id] = item
-        self.source_items_by_hash[(item.tenant_id, item.content_hash)] = item.source_item_id
+        self.source_items_by_hash[(item.tenant_id, item.owner_user_id, item.content_hash)] = item.source_item_id
         return item
 
     def update_source_lifecycle(
@@ -1298,6 +1299,12 @@ class InMemoryKnowledgeStore:
         conversation = self.ask_conversations[conversation_id]
         if conversation.tenant_id != tenant_id or conversation.owner_user_id != owner_user_id:
             raise KeyError(conversation_id)
+        return conversation
+
+    def archive_ask_conversation(self, conversation_id: str, *, tenant_id: str, owner_user_id: str) -> AskConversation:
+        conversation = self.get_ask_conversation(conversation_id, tenant_id=tenant_id, owner_user_id=owner_user_id)
+        conversation.status = "archived"
+        conversation.updated_at = utc_now()
         return conversation
 
     def add_ask_message(self, message: AskMessage) -> AskMessage:

@@ -186,6 +186,12 @@ def test_pska_config_loads_startup_config(tmp_path: Path) -> None:
     assert config.startup.frontend.port == 5174
 
 
+def test_pska_config_defaults_frontend_to_gateway() -> None:
+    config = PSKAConfig.from_dict({})
+
+    assert config.startup.frontend.mode == "gateway"
+
+
 def test_pska_config_loads_auth_config(monkeypatch) -> None:
     monkeypatch.delenv("PSKA_AUTH_MODE", raising=False)
     config = PSKAConfig.from_dict(
