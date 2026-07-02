@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import CytoscapeComponent from "react-cytoscapejs";
 import {
   AlertTriangle,
@@ -833,6 +833,9 @@ function TodayWorkspace({
 
   async function runTodaySearch(event?: FormEvent<HTMLFormElement>) {
     event?.preventDefault();
+    if (searching) {
+      return;
+    }
     const query = searchQuery.trim();
     if (!query) {
       setSearchResult(null);
@@ -892,6 +895,18 @@ function TodayWorkspace({
     } finally {
       setSearching(false);
     }
+  }
+
+  function handleTodayAskKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key !== "Enter" || event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) {
+      return;
+    }
+    const composing = event.nativeEvent.isComposing || Boolean((event as unknown as { isComposing?: boolean }).isComposing);
+    if (composing || searching) {
+      return;
+    }
+    event.preventDefault();
+    event.currentTarget.form?.requestSubmit();
   }
 
   async function approveFromToday(item: { review_item_id?: string | null; id?: string; recommended_action?: string }, success: TodayAction) {
@@ -988,6 +1003,7 @@ function TodayWorkspace({
                 <textarea
                   value={searchQuery}
                   onChange={(event) => setSearchQuery(event.target.value)}
+                  onKeyDown={handleTodayAskKeyDown}
                   placeholder="询问资料库，或拖入附件后继续追问"
                   data-testid="today-ask-input"
                 />
