@@ -57,6 +57,13 @@ export type PSKAGatewaySession = {
   expires_at?: string;
 };
 
+export type WorkspaceUploadProgress = {
+  phase: "uploading" | "processing";
+  loaded: number;
+  total?: number;
+  percent?: number;
+};
+
 const DEFAULT_TENANT_ID = "tenant_default";
 const DEFAULT_USER_ID = "user_primary";
 
@@ -405,7 +412,8 @@ export async function createTextSource(
 export async function uploadWorkspaceSource(
   serviceToken: PSKAAuth,
   file: File,
-  payload: { title?: string; digest_mode?: "after_upload" | "manual" | "disabled" } = {}
+  payload: { title?: string; digest_mode?: "after_upload" | "manual" | "disabled" } = {},
+  onProgress?: (progress: WorkspaceUploadProgress) => void
 ): Promise<WorkspaceSourceIngestResponse> {
   const form = new FormData();
   form.set("file", file);
@@ -416,15 +424,45 @@ export async function uploadWorkspaceSource(
   form.set("tenant_id", identity.tenantId);
   form.set("user_id", identity.userId);
   form.set("represented_user_id", identity.representedUserId);
-  const response = await fetch("/workspace/sources/upload", {
-    method: "POST",
-    headers: formHeaders(serviceToken),
-    body: form
-  });
-  if (!response.ok) {
-    throw new Error(await responseError(response, "上传资料失败"));
+  if (!onProgress) {
+    const response = await fetch("/workspace/sources/upload", {
+      method: "POST",
+      headers: formHeaders(serviceToken),
+      body: form
+    });
+    if (!response.ok) {
+      throw new Error(await responseError(response, "上传资料失败"));
+    }
+    return (await response.json()) as WorkspaceSourceIngestResponse;
   }
-  return (await response.json()) as WorkspaceSourceIngestResponse;
+  return await new Promise<WorkspaceSourceIngestResponse>((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open("POST", "/workspace/sources/upload");
+    Object.entries(formHeaders(serviceToken)).forEach(([key, value]) => {
+      request.setRequestHeader(key, value);
+    });
+    request.upload.onprogress = (event) => {
+      const total = event.lengthComputable ? event.total : file.size || undefined;
+      const percent = total ? Math.max(1, Math.min(99, Math.round((event.loaded / total) * 100))) : undefined;
+      onProgress({ phase: "uploading", loaded: event.loaded, total, percent });
+    };
+    request.onload = () => {
+      const text = request.responseText || "";
+      if (request.status < 200 || request.status >= 300) {
+        reject(new Error(xhrErrorMessage(text, request.status, "上传资料失败")));
+        return;
+      }
+      onProgress({ phase: "processing", loaded: file.size, total: file.size, percent: 100 });
+      try {
+        resolve(JSON.parse(text) as WorkspaceSourceIngestResponse);
+      } catch {
+        reject(new Error("上传资料失败：服务端返回了不可解析的响应。"));
+      }
+    };
+    request.onerror = () => reject(new Error("上传资料失败：网络连接中断。"));
+    request.onabort = () => reject(new Error("上传资料已取消。"));
+    request.send(form);
+  });
 }
 
 export async function loadWorkspaceDocuments(serviceToken: PSKAAuth, includeDeleted = true): Promise<WorkspaceDocumentsResponse> {
@@ -599,6 +637,7 @@ export async function askWorkspaceStream(
   const result: WorkspaceAskResponse = {
     ok: true,
     query,
+    status: "running",
     answer: "",
     citations: [],
     source_refs: [],
@@ -610,17 +649,24 @@ export async function askWorkspaceStream(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
-  while (true) {
-    const { value, done } = await reader.read();
-    if (value) {
-      buffer += decoder.decode(value, { stream: !done });
-      buffer = consumeAskSseBuffer(buffer, result, onUpdate);
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (value) {
+        buffer += decoder.decode(value, { stream: !done });
+        buffer = consumeAskSseBuffer(buffer, result, onUpdate);
+      }
+      if (done) {
+        buffer += decoder.decode();
+        consumeAskSseBuffer(`${buffer}\n\n`, result, onUpdate);
+        break;
+      }
     }
-    if (done) {
-      buffer += decoder.decode();
-      consumeAskSseBuffer(`${buffer}\n\n`, result, onUpdate);
-      break;
-    }
+  } catch (error) {
+    result.ok = false;
+    result.status = "failed";
+    result.error = streamErrorMessage(error);
+    onUpdate?.({ event: "error", data: { error: result.error }, result });
   }
   return result;
 }
@@ -705,6 +751,7 @@ export async function askConversationStream(
   const result: WorkspaceAskResponse = {
     ok: true,
     query,
+    status: "running",
     answer: "",
     citations: [],
     source_refs: [],
@@ -716,17 +763,24 @@ export async function askConversationStream(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
-  while (true) {
-    const { value, done } = await reader.read();
-    if (value) {
-      buffer += decoder.decode(value, { stream: !done });
-      buffer = consumeAskSseBuffer(buffer, result, onUpdate);
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (value) {
+        buffer += decoder.decode(value, { stream: !done });
+        buffer = consumeAskSseBuffer(buffer, result, onUpdate);
+      }
+      if (done) {
+        buffer += decoder.decode();
+        consumeAskSseBuffer(`${buffer}\n\n`, result, onUpdate);
+        break;
+      }
     }
-    if (done) {
-      buffer += decoder.decode();
-      consumeAskSseBuffer(`${buffer}\n\n`, result, onUpdate);
-      break;
-    }
+  } catch (error) {
+    result.ok = false;
+    result.status = "failed";
+    result.error = streamErrorMessage(error);
+    onUpdate?.({ event: "error", data: { error: result.error }, result });
   }
   return result;
 }
@@ -1024,6 +1078,10 @@ function applyAskSseEvent(result: WorkspaceAskResponse, event: string, data: Rec
   }
   if (event === "done") {
     result.ok = data.ok !== false;
+    result.status = typeof data.status === "string" ? data.status : result.ok === false ? "failed" : "succeeded";
+    if (typeof data.error === "string") {
+      result.error = data.error;
+    }
     if (typeof data.conversation_id === "string") {
       result.conversation_id = data.conversation_id;
     }
@@ -1071,8 +1129,13 @@ function applyAskSseEvent(result: WorkspaceAskResponse, event: string, data: Rec
   }
   if (event === "error") {
     result.ok = false;
+    result.status = "failed";
     result.error = typeof data.error === "string" ? data.error : "Ask PSKA stream failed";
   }
+}
+
+function streamErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : "Ask PSKA stream interrupted";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1133,6 +1196,15 @@ async function responseError(response: Response, fallback: string) {
     return payload.error || payload.message || `${fallback} (${response.status})`;
   } catch {
     return `${fallback} (${response.status})`;
+  }
+}
+
+function xhrErrorMessage(text: string, status: number, fallback: string) {
+  try {
+    const payload = JSON.parse(text) as { error?: string; message?: string };
+    return payload.error || payload.message || `${fallback} (${status})`;
+  } catch {
+    return text.trim() || `${fallback} (${status})`;
   }
 }
 

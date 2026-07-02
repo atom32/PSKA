@@ -1995,11 +1995,13 @@ class PSKAApi:
         }
         result = _empty_ask_stream_result(query=query, conversation_id=conversation.conversation_id, run_id=run.run_id, prompt_lineage=prompt_lineage)
         finished = False
+        persisted_answer_chars = 0
         try:
             yield ("conversation", {"conversation": _ask_conversation_payload(conversation), "run": _ask_run_payload(run)})
             for event_name, event_payload in self.workspace_ask_event_stream(ask_payload, context=context):
                 _accumulate_ask_stream_result(result, event_name, event_payload)
                 if event_name == "done":
+                    result["status"] = "succeeded" if result.get("ok") is not False else "failed"
                     self.store.finish_ask_run(run.run_id, status="succeeded" if result.get("ok") is not False else "failed", result=result)
                     finished = True
                     self.store.add_ask_message(
@@ -2017,19 +2019,47 @@ class PSKAApi:
                         )
                     )
                     event_payload = {**dict(event_payload), "conversation_id": conversation.conversation_id, "run_id": run.run_id}
+                elif event_name == "answer_delta":
+                    answer_length = len(str(result.get("answer") or ""))
+                    if answer_length - persisted_answer_chars >= 1000:
+                        _safe_update_ask_run_progress(self.store, run.run_id, result=result)
+                        persisted_answer_chars = answer_length
+                else:
+                    _safe_update_ask_run_progress(self.store, run.run_id, result=result)
                 yield (event_name, event_payload)
         except Exception as exc:
             result["ok"] = False
             result["error"] = f"{type(exc).__name__}: {exc}"
+            result["status"] = "failed"
             self.store.finish_ask_run(run.run_id, status="failed", result=result)
+            _add_ask_failure_message(
+                self.store,
+                conversation=conversation,
+                run=run,
+                owner_user_id=owner_user_id,
+                tenant_id=tenant_id,
+                result=result,
+                prompt_lineage=prompt_lineage,
+            )
             finished = True
-            raise
+            yield ("error", {"error": result["error"], "conversation_id": conversation.conversation_id, "run_id": run.run_id})
+            return
         finally:
             if not finished:
                 result["ok"] = False
                 result["error"] = "stream_closed_before_done"
+                result["status"] = "failed"
                 try:
                     self.store.finish_ask_run(run.run_id, status="failed", result=result)
+                    _add_ask_failure_message(
+                        self.store,
+                        conversation=conversation,
+                        run=run,
+                        owner_user_id=owner_user_id,
+                        tenant_id=tenant_id,
+                        result=result,
+                        prompt_lineage=prompt_lineage,
+                    )
                 except Exception:
                     pass
 
@@ -8106,6 +8136,46 @@ def _ask_run_payload(run: Any) -> dict[str, Any]:
     }
 
 
+def _safe_update_ask_run_progress(store: Any, run_id: str, *, result: dict[str, Any]) -> None:
+    try:
+        store.update_ask_run_progress(run_id, result=result)
+    except Exception:
+        pass
+
+
+def _add_ask_failure_message(
+    store: Any,
+    *,
+    conversation: Any,
+    run: Any,
+    owner_user_id: str,
+    tenant_id: str,
+    result: dict[str, Any],
+    prompt_lineage: dict[str, Any],
+) -> None:
+    answer = str(result.get("answer") or "").strip()
+    error = str(result.get("error") or "Ask PSKA stream failed")
+    store.add_ask_message(
+        AskMessage(
+            message_id=f"askmsg_{uuid4().hex}",
+            conversation_id=getattr(conversation, "conversation_id", ""),
+            owner_user_id=owner_user_id,
+            role="assistant",
+            content=answer or f"Ask PSKA 运行未完成：{error}",
+            run_id=getattr(run, "run_id", None),
+            citations=_list_of_dicts(result.get("citations")),
+            source_refs=_list_of_dicts(result.get("source_refs")),
+            metadata={
+                "quality_signals": result.get("quality_signals") or {},
+                "prompt_profile": prompt_lineage,
+                "status": "failed",
+                "error": error,
+            },
+            tenant_id=tenant_id,
+        )
+    )
+
+
 def _ask_message_scope(message: Any) -> dict[str, Any]:
     content = str(getattr(message, "content", "") or "")
     return {
@@ -8120,6 +8190,7 @@ def _empty_ask_stream_result(*, query: str, conversation_id: str, run_id: str, p
     return {
         "ok": True,
         "query": query,
+        "status": "running",
         "answer": "",
         "citations": [],
         "source_refs": [],
@@ -8163,6 +8234,10 @@ def _accumulate_ask_stream_result(result: dict[str, Any], event_name: str, event
     elif event_name == "trace":
         result["trace"] = event_payload.get("trace") or {}
         result["agentic_service"] = event_payload.get("agentic_service") or {}
+    elif event_name == "error":
+        result["ok"] = False
+        result["error"] = str(event_payload.get("error") or "Ask PSKA stream failed")
+        result["status"] = "failed"
     elif event_name == "done":
         result["ok"] = event_payload.get("ok") is not False
         for key in (
@@ -8175,6 +8250,8 @@ def _accumulate_ask_stream_result(result: dict[str, Any], event_name: str, event
             "no_answer_reasons",
             "source_windows",
             "trace",
+            "error",
+            "status",
         ):
             if event_payload.get(key) is not None:
                 result[key] = event_payload[key]

@@ -591,8 +591,36 @@ def test_workspace_ask_conversation_stream_marks_run_failed_when_closed() -> Non
     stream.close()
 
     runs = api.store.list_ask_runs("ask_close_test", tenant_id="tenant_default", owner_user_id="user_primary", limit=1)
+    saved = api.workspace_ask_conversation("ask_close_test", {"owner_user_id": "user_primary", "tenant_id": "tenant_default"})
     assert runs[0].run_id == run_id
     assert runs[0].status == "failed"
+    assert runs[0].result["error"] == "stream_closed_before_done"
+    assert [message["role"] for message in saved["messages"]] == ["user", "assistant"]
+    assert saved["messages"][1]["content"].startswith("Ask PSKA 运行未完成")
+
+
+def test_workspace_ask_conversation_stream_persists_progress_before_close() -> None:
+    api = object.__new__(PSKAApi)
+    api.store = InMemoryKnowledgeStore()
+    api.store.add_user(User("user_primary", "primary", UserRole.ADMIN))
+
+    def fake_event_stream(_payload, context=None):
+        yield ("progress", {"progress": {"step_id": "search", "status": "running"}})
+        yield ("agent_step", {"step": {"step": "expand", "status": "running"}})
+
+    api.workspace_ask_event_stream = fake_event_stream
+    stream = api.workspace_ask_conversation_event_stream(
+        "ask_progress_close_test",
+        {"query": "hello", "owner_user_id": "user_primary", "tenant_id": "tenant_default"},
+    )
+    next(stream)
+    assert next(stream)[0] == "progress"
+
+    stream.close()
+
+    runs = api.store.list_ask_runs("ask_progress_close_test", tenant_id="tenant_default", owner_user_id="user_primary", limit=1)
+    assert runs[0].status == "failed"
+    assert runs[0].result["progress"][0]["step_id"] == "search"
     assert runs[0].result["error"] == "stream_closed_before_done"
 
 

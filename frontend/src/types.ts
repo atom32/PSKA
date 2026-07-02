@@ -453,6 +453,7 @@ export type WorkspaceAskResponse = {
   query?: string;
   conversation_id?: string;
   run_id?: string;
+  status?: string;
   answer?: string;
   route?: {
     intent?: "auto" | "quick" | "deep" | string;

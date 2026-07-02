@@ -290,6 +290,7 @@ class KnowledgeStore(Protocol):
     def add_ask_message(self, message: AskMessage) -> AskMessage: ...
     def list_ask_messages(self, conversation_id: str, *, tenant_id: str, owner_user_id: str, limit: int = 100) -> list[AskMessage]: ...
     def add_ask_run(self, run: AskRun) -> AskRun: ...
+    def update_ask_run_progress(self, run_id: str, *, result: dict[str, Any]) -> AskRun: ...
     def finish_ask_run(self, run_id: str, *, status: str, result: dict[str, Any]) -> AskRun: ...
     def list_ask_runs(self, conversation_id: str, *, tenant_id: str, owner_user_id: str, limit: int = 50) -> list[AskRun]: ...
     def upsert_prompt_profile(self, profile: PromptProfile) -> PromptProfile: ...
@@ -1324,6 +1325,16 @@ class InMemoryKnowledgeStore:
 
     def add_ask_run(self, run: AskRun) -> AskRun:
         self.ask_runs[run.run_id] = run
+        return run
+
+    def update_ask_run_progress(self, run_id: str, *, result: dict[str, Any]) -> AskRun:
+        run = self.ask_runs[run_id]
+        run.result = dict(result)
+        run.route = dict(result.get("route") or {})
+        run.evidence_check = dict(result.get("evidence_check") or result.get("quality_signals", {}).get("evidence_check") or {})
+        conversation = self.ask_conversations.get(run.conversation_id)
+        if conversation:
+            conversation.updated_at = utc_now()
         return run
 
     def finish_ask_run(self, run_id: str, *, status: str, result: dict[str, Any]) -> AskRun:

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import CytoscapeComponent from "react-cytoscapejs";
 import {
+  AlertTriangle,
   BookOpen,
   Brain,
   CalendarDays,
@@ -107,7 +108,7 @@ import {
   updatePromptProfiles,
   uploadWorkspaceSource
 } from "./api";
-import type { PSKAAuth, PSKAIdentity } from "./api";
+import type { PSKAAuth, PSKAIdentity, WorkspaceUploadProgress } from "./api";
 import { useWorkspaceStore } from "./store";
 import type {
   BrainState,
@@ -149,6 +150,14 @@ import type {
 const nodeTypes = {
   writingNode: WritingCanvasNode,
   pskaCard: CanvasCardNode
+};
+
+type CorpusUploadProgress = {
+  phase: "idle" | "selected" | "uploading" | "processing" | "success" | "error";
+  fileName?: string;
+  fileSize?: number;
+  percent?: number;
+  message?: string;
 };
 
 export default function App() {
@@ -827,9 +836,14 @@ function TodayWorkspace({
     setSearchError(null);
     setAttachmentStatus("");
     setLiveConversationId(activeConversationId);
-    setSearchResult(pendingAskResult(query));
+    let latestAskResult: WorkspaceAskResponse = pendingAskResult(query);
+    const updateLiveResult = ({ result: partial }: { result: WorkspaceAskResponse }) => {
+      latestAskResult = { ...partial };
+      setSearchResult(latestAskResult);
+    };
+    let conversationId = activeConversationId;
+    setSearchResult(latestAskResult);
     try {
-      let conversationId = activeConversationId;
       if (!conversationId) {
         const created = await createAskConversation(serviceToken, query.slice(0, 60));
         conversationId = created.conversation?.conversation_id || "";
@@ -844,11 +858,8 @@ function TodayWorkspace({
         const sourceItemIds = upload.source_item_ids || [];
         setAttachmentStatus(`${attachmentFile.name} 已加入资料库，并用于本次提问`);
         setAttachmentFile(null);
-        const result = conversationId ? await askConversationStream(conversationId, query, serviceToken, ({ result: partial }) => {
-          setSearchResult({ ...partial });
-        }, { surface: "today", topK: askTopK, temperature: askTemperature, maxTokens: askMaxTokens, sourceItemIds }) : await askWorkspaceStream(query, serviceToken, "auto", "today", ({ result: partial }) => {
-          setSearchResult({ ...partial });
-        }, { topK: askTopK, scope: sourceItemIds.length ? { source_item_ids: sourceItemIds } : undefined });
+        const result = conversationId ? await askConversationStream(conversationId, query, serviceToken, updateLiveResult, { surface: "today", topK: askTopK, temperature: askTemperature, maxTokens: askMaxTokens, sourceItemIds }) : await askWorkspaceStream(query, serviceToken, "auto", "today", updateLiveResult, { topK: askTopK, scope: sourceItemIds.length ? { source_item_ids: sourceItemIds } : undefined });
+        latestAskResult = result;
         setSearchResult(result);
         setBrain(searchToBrain(result, query));
         if (result.error) {
@@ -857,11 +868,8 @@ function TodayWorkspace({
         await Promise.all([askConversationsQuery.refetch(), conversationId ? askConversationQuery.refetch() : Promise.resolve()]);
         return;
       }
-      const result = conversationId ? await askConversationStream(conversationId, query, serviceToken, ({ result: partial }) => {
-        setSearchResult({ ...partial });
-      }, { surface: "today", topK: askTopK, temperature: askTemperature, maxTokens: askMaxTokens }) : await askWorkspaceStream(query, serviceToken, "auto", "today", ({ result: partial }) => {
-        setSearchResult({ ...partial });
-      });
+      const result = conversationId ? await askConversationStream(conversationId, query, serviceToken, updateLiveResult, { surface: "today", topK: askTopK, temperature: askTemperature, maxTokens: askMaxTokens }) : await askWorkspaceStream(query, serviceToken, "auto", "today", updateLiveResult);
+      latestAskResult = result;
       setSearchResult(result);
       setBrain(searchToBrain(result, query));
       if (result.error) {
@@ -869,8 +877,11 @@ function TodayWorkspace({
       }
       await Promise.all([askConversationsQuery.refetch(), conversationId ? askConversationQuery.refetch() : Promise.resolve()]);
     } catch (error) {
-      setSearchResult(null);
-      setSearchError(error instanceof Error ? error.message : "PSKA 查询失败。");
+      const message = error instanceof Error ? error.message : "PSKA 查询失败。";
+      const failedResult: WorkspaceAskResponse = { ...latestAskResult, ok: false, query, error: message };
+      setSearchResult(failedResult);
+      setSearchError(message);
+      await Promise.all([askConversationsQuery.refetch(), conversationId ? askConversationQuery.refetch() : Promise.resolve()]);
     } finally {
       setSearching(false);
     }
@@ -1341,6 +1352,7 @@ function AskResult({ result, pending = false }: { result: WorkspaceAskResponse |
   const progressEvents = normalizeAskProgress((result as WorkspaceAskResponse).progress);
   const displaySteps = agentSteps.length ? agentSteps : progressEvents.length ? progressToAgentSteps(progressEvents) : pending ? pendingAskSteps() : [];
   const rawEvents = agenticTraceEvents(result);
+  const askError = displaySearchError((result as WorkspaceAskResponse).error || (result as WorkspaceSearchResponse).error);
   const markdown = buildAskMarkdown((result as WorkspaceAskResponse).query || "", answer, refs, gaps, conflicts);
   const canCopy = Boolean(answer || refs.length || gaps.length || conflicts.length);
 
@@ -1375,6 +1387,12 @@ function AskResult({ result, pending = false }: { result: WorkspaceAskResponse |
       {progressEvents.length ? <AskProgressStrip progress={progressEvents} /> : null}
       {displaySteps.length || rawEvents.length ? <AskProcessTimeline steps={displaySteps} rawEvents={rawEvents} defaultOpen={pending} /> : null}
       {!answer && pending ? <div className="ask-pending-state">正在等待 Ask PSKA 的第一个可见回答字符，检索过程会实时更新。</div> : null}
+      {result.error ? (
+        <div className="ask-error-state" role="status">
+          <AlertTriangle size={15} />
+          <span>{askError}</span>
+        </div>
+      ) : null}
       {answer ? <MarkdownAnswer content={answer} /> : null}
       {fallbackReason ? <small className="search-note">{askFallbackLabel(fallbackReason)}</small> : null}
       {refs.length > 0 ? (
@@ -1767,6 +1785,7 @@ function pendingAskResult(query: string): WorkspaceAskResponse {
   return {
     ok: true,
     query,
+    status: "running",
     answer: "",
     citations: [],
     source_refs: [],
@@ -2964,6 +2983,7 @@ function CorpusWorkspace({
   const [textSourceTitle, setTextSourceTitle] = useState("");
   const [textSourceBody, setTextSourceBody] = useState("");
   const [uploadDigestAfter, setUploadDigestAfter] = useState(true);
+  const [uploadProgress, setUploadProgress] = useState<CorpusUploadProgress>({ phase: "idle" });
   const [documentDeletePreview, setDocumentDeletePreview] = useState<WorkspaceDocumentDeleteResponse | null>(null);
   const [documentDeleteTarget, setDocumentDeleteTarget] = useState("");
   const [promptAsk, setPromptAsk] = useState("");
@@ -3120,6 +3140,42 @@ function CorpusWorkspace({
     }
   }
 
+  function handleUploadFileChange(file: File | null) {
+    if (!file) {
+      setUploadProgress({ phase: "idle" });
+      return;
+    }
+    setUploadProgress({
+      phase: "selected",
+      fileName: file.name,
+      fileSize: file.size,
+      percent: 0,
+      message: uploadDigestAfter ? "已选择文件，上传后会自动 Digest。" : "已选择文件，上传后需要手动整理。"
+    });
+  }
+
+  function handleWorkspaceUploadProgress(file: File, progress: WorkspaceUploadProgress) {
+    if (progress.phase === "processing") {
+      setUploadProgress({
+        phase: "processing",
+        fileName: file.name,
+        fileSize: file.size,
+        percent: 100,
+        message: "文件已上传，正在解析、切片并写入资料库。"
+      });
+      return;
+    }
+    setUploadProgress({
+      phase: "uploading",
+      fileName: file.name,
+      fileSize: file.size,
+      percent: progress.percent,
+      message: progress.total
+        ? `正在上传 ${formatFileSize(progress.loaded)} / ${formatFileSize(progress.total)}`
+        : `正在上传 ${formatFileSize(progress.loaded)}`
+    });
+  }
+
   async function handleUploadSource(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const input = event.currentTarget.elements.namedItem("source-file") as HTMLInputElement | null;
@@ -3128,21 +3184,43 @@ function CorpusWorkspace({
       return;
     }
     setOperationStatus("syncing");
-    setOperationMessage("正在上传并处理资料...");
+    setOperationMessage(`正在上传并处理 ${file.name}...`);
     setOperationSummary(undefined);
+    setUploadProgress({
+      phase: "uploading",
+      fileName: file.name,
+      fileSize: file.size,
+      percent: 1,
+      message: "正在准备上传。"
+    });
     try {
       const payload = await uploadWorkspaceSource(serviceToken, file, {
         digest_mode: uploadDigestAfter ? "after_upload" : "manual"
-      });
+      }, (progress) => handleWorkspaceUploadProgress(file, progress));
       const summary = sourceIngestSummary(payload);
       setOperationStatus(payload.ok === false ? "error" : "success");
       setOperationSummary(summary);
       setOperationMessage(payload.ok === false ? payload.error || "上传资料失败。" : summaryMessage(summary));
+      setUploadProgress({
+        phase: payload.ok === false ? "error" : "success",
+        fileName: file.name,
+        fileSize: file.size,
+        percent: 100,
+        message: payload.ok === false ? payload.error || "上传资料失败。" : `已入库 ${summary.ingested ?? 0} 个资料，失败 ${summary.failed ?? 0} 个。`
+      });
       input.value = "";
       await refetchAll();
     } catch (error) {
+      const message = error instanceof Error ? error.message : "上传资料失败。";
       setOperationStatus("error");
-      setOperationMessage(error instanceof Error ? error.message : "上传资料失败。");
+      setOperationMessage(message);
+      setUploadProgress({
+        phase: "error",
+        fileName: file.name,
+        fileSize: file.size,
+        percent: 100,
+        message
+      });
     }
   }
 
@@ -3457,9 +3535,11 @@ function CorpusWorkspace({
           textBody={textSourceBody}
           digestAfter={uploadDigestAfter}
           actionRunning={actionRunning}
+          uploadProgress={uploadProgress}
           onTextTitleChange={setTextSourceTitle}
           onTextBodyChange={setTextSourceBody}
           onDigestAfterChange={setUploadDigestAfter}
+          onUploadFileChange={handleUploadFileChange}
           onTextSubmit={handleCreateTextSource}
           onUploadSubmit={handleUploadSource}
         />
@@ -3629,9 +3709,11 @@ function SourceIngestPanel({
   textBody,
   digestAfter,
   actionRunning,
+  uploadProgress,
   onTextTitleChange,
   onTextBodyChange,
   onDigestAfterChange,
+  onUploadFileChange,
   onTextSubmit,
   onUploadSubmit
 }: {
@@ -3639,9 +3721,11 @@ function SourceIngestPanel({
   textBody: string;
   digestAfter: boolean;
   actionRunning: boolean;
+  uploadProgress: CorpusUploadProgress;
   onTextTitleChange: (value: string) => void;
   onTextBodyChange: (value: string) => void;
   onDigestAfterChange: (value: boolean) => void;
+  onUploadFileChange: (file: File | null) => void;
   onTextSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onUploadSubmit: (event: FormEvent<HTMLFormElement>) => void;
 }) {
@@ -3652,8 +3736,9 @@ function SourceIngestPanel({
         <form className="ingest-form" onSubmit={onUploadSubmit} data-testid="corpus-upload-form">
           <label>
             <span>上传文件</span>
-            <input name="source-file" type="file" data-testid="corpus-upload-input" />
+            <input name="source-file" type="file" data-testid="corpus-upload-input" onChange={(event) => onUploadFileChange(event.target.files?.[0] || null)} />
           </label>
+          <UploadProgressBar progress={uploadProgress} />
           <label className="inline-toggle">
             <input type="checkbox" checked={digestAfter} onChange={(event) => onDigestAfterChange(event.target.checked)} data-testid="corpus-upload-digest-toggle" />
             <span>入库后自动 Digest</span>
@@ -3676,6 +3761,40 @@ function SourceIngestPanel({
         </form>
       </div>
     </section>
+  );
+}
+
+function UploadProgressBar({ progress }: { progress: CorpusUploadProgress }) {
+  if (progress.phase === "idle") {
+    return null;
+  }
+  const boundedPercent = progress.percent === undefined ? undefined : Math.max(0, Math.min(100, progress.percent));
+  const isActive = progress.phase === "uploading" || progress.phase === "processing";
+  return (
+    <div className={`upload-progress ${progress.phase}`} data-testid="corpus-upload-progress" aria-live="polite">
+      <div className="upload-progress-header">
+        <span>{uploadProgressTitle(progress.phase)}</span>
+        {boundedPercent !== undefined ? <strong>{Math.round(boundedPercent)}%</strong> : null}
+      </div>
+      <div
+        className="upload-progress-track"
+        role="progressbar"
+        aria-label="上传进度"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={boundedPercent !== undefined ? Math.round(boundedPercent) : undefined}
+      >
+        <span
+          className={boundedPercent === undefined && isActive ? "indeterminate" : ""}
+          style={boundedPercent !== undefined ? { width: `${boundedPercent}%` } : undefined}
+        />
+      </div>
+      <p>
+        {progress.fileName ? <strong>{trimText(progress.fileName, 46)}</strong> : null}
+        {progress.fileSize !== undefined ? <span>{formatFileSize(progress.fileSize)}</span> : null}
+      </p>
+      {progress.message ? <small>{progress.message}</small> : null}
+    </div>
   );
 }
 
@@ -3770,6 +3889,10 @@ function AskConversationPanel({
     });
     return mapped;
   }, [runs]);
+  const assistantRunIds = useMemo(() => new Set(messages
+    .filter((message) => message.role === "assistant")
+    .map((message) => displayText(message.run_id, ""))
+    .filter(Boolean)), [messages]);
   return (
     <div className="ask-conversation-panel">
       <div className="ask-chat-main">
@@ -3782,20 +3905,34 @@ function AskConversationPanel({
               <span>问 PSKA 一个问题，或带着资料继续追问。</span>
             </div>
           ) : null}
-          {messages.slice(-12).map((message) => (
-            <article className={`ask-message ${message.role || "message"}`} key={message.message_id || `${message.role}-${message.created_at}`}>
-              <span>{message.role === "assistant" ? "PSKA" : "你"}</span>
-              {message.role === "assistant" ? (
-                runById.get(displayText(message.run_id, "")) ? (
-                  <AskResult result={runById.get(displayText(message.run_id, "")) as WorkspaceAskResponse} />
-                ) : (
-                  <p>{trimText(message.content || "", 800)}</p>
-                )
-              ) : (
-                <p>{trimText(message.content || "", 800)}</p>
-              )}
-            </article>
-          ))}
+          {messages.slice(-12).map((message) => {
+            const messageRunId = displayText(message.run_id, "");
+            const orphanRunResult = message.role !== "assistant" && messageRunId && !assistantRunIds.has(messageRunId)
+              ? runById.get(messageRunId)
+              : null;
+            return (
+              <div className="ask-message-pair" key={message.message_id || `${message.role}-${message.created_at}`}>
+                <article className={`ask-message ${message.role || "message"}`}>
+                  <span>{message.role === "assistant" ? "PSKA" : "你"}</span>
+                  {message.role === "assistant" ? (
+                    runById.get(messageRunId) ? (
+                      <AskResult result={runById.get(messageRunId) as WorkspaceAskResponse} />
+                    ) : (
+                      <p>{trimText(message.content || "", 800)}</p>
+                    )
+                  ) : (
+                    <p>{trimText(message.content || "", 800)}</p>
+                  )}
+                </article>
+                {orphanRunResult ? (
+                  <article className="ask-message assistant orphan-run">
+                    <span>PSKA</span>
+                    <AskResult result={orphanRunResult} pending={orphanRunResult.status === "running"} />
+                  </article>
+                ) : null}
+              </div>
+            );
+          })}
           {showLiveResult ? (
             <>
               {liveQuery?.trim() ? (
@@ -3818,17 +3955,24 @@ function AskConversationPanel({
 }
 
 function askResultFromRun(run: AskRun): WorkspaceAskResponse | null {
-  const result = isRecord(run.result) ? { ...(run.result as WorkspaceAskResponse) } : null;
-  if (!result) {
-    return null;
-  }
+  const result = isRecord(run.result) ? { ...(run.result as WorkspaceAskResponse) } : {} as WorkspaceAskResponse;
   const answer = displayText(result.answer, "");
   const hasProcess = Array.isArray(result.agent_steps) && result.agent_steps.length > 0;
   const hasProgress = Array.isArray(result.progress) && result.progress.length > 0;
   const hasTrace = isRecord(result.trace) && Array.isArray(result.trace.events) && result.trace.events.length > 0;
   const hasEvidence = Array.isArray(result.citations) && result.citations.length > 0;
-  if (!answer && !hasProcess && !hasProgress && !hasTrace && !hasEvidence) {
+  const runStatus = displayText(run.status, "");
+  const hasError = Boolean(result.error) || runStatus === "failed";
+  const isRunning = runStatus === "running";
+  if (!answer && !hasProcess && !hasProgress && !hasTrace && !hasEvidence && !hasError && !isRunning) {
     return null;
+  }
+  result.run_id = result.run_id || run.run_id;
+  result.conversation_id = result.conversation_id || run.conversation_id;
+  result.status = result.status || runStatus;
+  result.ok = hasError ? false : result.ok;
+  if (hasError && !result.error) {
+    result.error = "Ask PSKA 运行失败，未返回可见回答。";
   }
   if (!result.query && run.query) {
     result.query = run.query;
@@ -4643,6 +4787,40 @@ function operationTitle(status: "idle" | "syncing" | "digesting" | "queued" | "c
     return "需要处理";
   }
   return "同步状态";
+}
+
+function uploadProgressTitle(phase: CorpusUploadProgress["phase"]) {
+  if (phase === "selected") {
+    return "已选择文件";
+  }
+  if (phase === "uploading") {
+    return "正在上传";
+  }
+  if (phase === "processing") {
+    return "正在入库";
+  }
+  if (phase === "success") {
+    return "上传完成";
+  }
+  if (phase === "error") {
+    return "上传失败";
+  }
+  return "上传状态";
+}
+
+function formatFileSize(bytes: number) {
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return "0 B";
+  }
+  const units = ["B", "KB", "MB", "GB"];
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  const digits = value >= 10 || unitIndex === 0 ? 0 : 1;
+  return `${value.toFixed(digits)} ${units[unitIndex]}`;
 }
 
 function latestSyncMessage(payload?: ConsoleSourcesResponse) {

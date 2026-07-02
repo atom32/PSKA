@@ -1755,6 +1755,32 @@ class PostgresKnowledgeStore:
             ).fetchone()
         return self._ask_run_from_row(row)
 
+    def update_ask_run_progress(self, run_id: str, *, result: dict[str, Any]) -> AskRun:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                update ask_runs
+                set result = %s,
+                    route = %s,
+                    evidence_check = %s
+                where run_id = %s
+                returning *
+                """,
+                (
+                    Jsonb(to_jsonable(result)),
+                    Jsonb(to_jsonable(result.get("route") or {})),
+                    Jsonb(to_jsonable(result.get("evidence_check") or result.get("quality_signals", {}).get("evidence_check") or {})),
+                    run_id,
+                ),
+            ).fetchone()
+            if not row:
+                raise KeyError(run_id)
+            conn.execute(
+                "update ask_conversations set updated_at = now() where conversation_id = %s",
+                (row["conversation_id"],),
+            )
+        return self._ask_run_from_row(row)
+
     def finish_ask_run(self, run_id: str, *, status: str, result: dict[str, Any]) -> AskRun:
         with self.connect() as conn:
             row = conn.execute(
