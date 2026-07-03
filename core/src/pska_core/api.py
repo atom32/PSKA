@@ -1507,12 +1507,14 @@ class PSKAApi:
         scope = payload.get("scope") if isinstance(payload.get("scope"), dict) else {}
         surface = str(payload.get("surface") or "ask").strip() or "ask"
         session_id = str(payload.get("session_id") or "").strip() or None
+        skip_intent_classifier = _truthy(payload.get("skip_intent_classifier"))
         user = self.store.get_user(user_id, tenant_id=tenant_id)
         understand = self._workspace_ask_understand_payload(
             query=query,
             raw_intent=raw_intent,
             execution_intent=execution_intent,
             forced_ask_intent=forced_ask_intent,
+            skip_intent_classifier=skip_intent_classifier,
             scope=scope,
             surface=surface,
             user=user,
@@ -1528,6 +1530,7 @@ class PSKAApi:
         raw_intent: str,
         execution_intent: str,
         forced_ask_intent: str | None,
+        skip_intent_classifier: bool,
         scope: dict[str, Any],
         surface: str,
         user: Any,
@@ -1538,6 +1541,7 @@ class PSKAApi:
             query=query,
             execution_intent=execution_intent,
             forced_ask_intent=forced_ask_intent,
+            skip_intent_classifier=skip_intent_classifier,
             scope=scope,
         )
         if decision is None:
@@ -1638,12 +1642,14 @@ class PSKAApi:
         scope = payload.get("scope") if isinstance(payload.get("scope"), dict) else {}
         top_k = max(1, min(int(payload.get("top_k") or 8), 20))
         session_id = str(payload.get("session_id") or "").strip() or None
+        skip_intent_classifier = _truthy(payload.get("skip_intent_classifier"))
         user = self.store.get_user(user_id, tenant_id=tenant_id)
         understand = self._workspace_ask_understand_payload(
             query=query,
             raw_intent=intent,
             execution_intent=execution_intent,
             forced_ask_intent=forced_ask_intent,
+            skip_intent_classifier=skip_intent_classifier,
             scope=scope,
             surface=surface,
             user=user,
@@ -1779,12 +1785,14 @@ class PSKAApi:
         scope = payload.get("scope") if isinstance(payload.get("scope"), dict) else {}
         top_k = max(1, min(int(payload.get("top_k") or 8), 20))
         session_id = str(payload.get("session_id") or "").strip() or None
+        skip_intent_classifier = _truthy(payload.get("skip_intent_classifier"))
         user = self.store.get_user(user_id, tenant_id=tenant_id)
         understand = self._workspace_ask_understand_payload(
             query=query,
             raw_intent=intent,
             execution_intent=execution_intent,
             forced_ask_intent=forced_ask_intent,
+            skip_intent_classifier=skip_intent_classifier,
             scope=scope,
             surface=surface,
             user=user,
@@ -5801,7 +5809,7 @@ def _ask_understand_payload(
         "scope_applied": scope_applied,
         "requires_retrieval": requires_retrieval if isinstance(requires_retrieval, bool) else _ask_requires_retrieval(ask_intent),
         "routing_owner": local.get("routing_owner") or "pska_local_intent_guard",
-        "routing_mode": "forced" if forced_ask_intent else "auto",
+        "routing_mode": local.get("routing_mode") or ("forced" if forced_ask_intent else "auto"),
         "confidence": local.get("confidence"),
         "reasons": local.get("reasons") or [],
         "surface": surface,
@@ -5821,17 +5829,19 @@ def _ask_direct_intent_decision(
     query: str,
     execution_intent: str,
     forced_ask_intent: str | None,
+    skip_intent_classifier: bool = False,
     scope: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     has_conversation_history = bool(_list_of_dicts((scope or {}).get("recent_messages")))
-    if execution_intent in {"quick", "deep"} and not has_conversation_history:
+    if execution_intent in {"quick", "deep"} and (skip_intent_classifier or not has_conversation_history):
         ask_intent = forced_ask_intent if forced_ask_intent in ASK_INTENTS else "kb_search"
         return {
             "intent": ask_intent,
             "selected_intent": execution_intent,
             "confidence": 1.0,
             "routing_owner": "user_or_caller_override",
-            "reasons": ["explicit_execution_intent"],
+            "routing_mode": "forced",
+            "reasons": ["explicit_execution_intent", *([] if not skip_intent_classifier else ["intent_classifier_skipped"])],
             "requires_retrieval": _ask_requires_retrieval(ask_intent),
         }
     if forced_ask_intent in ASK_NON_RETRIEVAL_INTENTS:

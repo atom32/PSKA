@@ -750,6 +750,7 @@ function TodayWorkspace({
 }) {
   const [actions, setActions] = useState<Record<string, TodayAction>>({});
   const [searchQuery, setSearchQuery] = useState("");
+  const [submittedSearchQuery, setSubmittedSearchQuery] = useState("");
   const [searchResult, setSearchResult] = useState<WorkspaceAskResponse | null>(null);
   const [liveConversationId, setLiveConversationId] = useState("");
   const [searchError, setSearchError] = useState<string | null>(null);
@@ -759,6 +760,7 @@ function TodayWorkspace({
   const [askTemperature, setAskTemperature] = useState(0.3);
   const [askMaxTokens, setAskMaxTokens] = useState(4096);
   const [askTopK, setAskTopK] = useState(8);
+  const [forceDeepThinking, setForceDeepThinking] = useState(false);
   const [rightRailCollapsed, setRightRailCollapsed] = useState(false);
   const todayQuery = useQuery({
     queryKey: ["today", serviceToken],
@@ -821,6 +823,7 @@ function TodayWorkspace({
       return;
     }
     setSearchQuery("");
+    setSubmittedSearchQuery("");
     setSearchResult(null);
     setLiveConversationId("");
     setSearchError(null);
@@ -853,6 +856,7 @@ function TodayWorkspace({
     setSearching(true);
     setSearchError(null);
     setAttachmentStatus("");
+    setSubmittedSearchQuery(query);
     setLiveConversationId(activeConversationId);
     let latestAskResult: WorkspaceAskResponse = pendingAskResult(query);
     const updateLiveResult = ({ result: partial }: { result: WorkspaceAskResponse }) => {
@@ -870,13 +874,15 @@ function TodayWorkspace({
         }
       }
       setLiveConversationId(conversationId);
+      setSearchQuery("");
+      const askIntent = forceDeepThinking ? "deep" : "auto";
       if (attachmentFile) {
         setAttachmentStatus(`正在把 ${attachmentFile.name} 加入资料库`);
         const upload = await uploadWorkspaceSource(serviceToken, attachmentFile, { digest_mode: "after_upload" });
         const sourceItemIds = upload.source_item_ids || [];
         setAttachmentStatus(`${attachmentFile.name} 已加入资料库，并用于本次提问`);
         setAttachmentFile(null);
-        const result = conversationId ? await askConversationStream(conversationId, query, serviceToken, updateLiveResult, { surface: "today", topK: askTopK, temperature: askTemperature, maxTokens: askMaxTokens, sourceItemIds }) : await askWorkspaceStream(query, serviceToken, "auto", "today", updateLiveResult, { topK: askTopK, scope: sourceItemIds.length ? { source_item_ids: sourceItemIds } : undefined });
+        const result = conversationId ? await askConversationStream(conversationId, query, serviceToken, updateLiveResult, { surface: "today", intent: askIntent, skipIntentClassifier: forceDeepThinking, topK: askTopK, temperature: askTemperature, maxTokens: askMaxTokens, sourceItemIds }) : await askWorkspaceStream(query, serviceToken, askIntent, "today", updateLiveResult, { topK: askTopK, scope: sourceItemIds.length ? { source_item_ids: sourceItemIds } : undefined, skipIntentClassifier: forceDeepThinking });
         latestAskResult = result;
         setSearchResult(result);
         setBrain(searchToBrain(result, query));
@@ -886,7 +892,7 @@ function TodayWorkspace({
         refreshAskConversationData(conversationId);
         return;
       }
-      const result = conversationId ? await askConversationStream(conversationId, query, serviceToken, updateLiveResult, { surface: "today", topK: askTopK, temperature: askTemperature, maxTokens: askMaxTokens }) : await askWorkspaceStream(query, serviceToken, "auto", "today", updateLiveResult);
+      const result = conversationId ? await askConversationStream(conversationId, query, serviceToken, updateLiveResult, { surface: "today", intent: askIntent, skipIntentClassifier: forceDeepThinking, topK: askTopK, temperature: askTemperature, maxTokens: askMaxTokens }) : await askWorkspaceStream(query, serviceToken, askIntent, "today", updateLiveResult, { skipIntentClassifier: forceDeepThinking });
       latestAskResult = result;
       setSearchResult(result);
       setBrain(searchToBrain(result, query));
@@ -1003,7 +1009,7 @@ function TodayWorkspace({
             messages={conversationMessages}
             runs={conversationRuns}
             isLoading={askConversationsQuery.isLoading || askConversationQuery.isLoading}
-            liveQuery={searchQuery}
+            liveQuery={submittedSearchQuery}
             liveResult={liveResultMatchesActive && (searching || !liveResultPersisted) ? searchResult : null}
             livePending={searching}
             composer={(
@@ -1041,6 +1047,15 @@ function TodayWorkspace({
                       </label>
                     </details>
                   </div>
+                  <label className="force-deep-toggle" title="跳过 Quick/Deep 分类，直接进入 Deep 路线">
+                    <input
+                      type="checkbox"
+                      checked={forceDeepThinking}
+                      onChange={(event) => setForceDeepThinking(event.target.checked)}
+                      data-testid="today-force-deep"
+                    />
+                    <span>强制深度思索</span>
+                  </label>
                   <button className="today-send-button" type="submit" disabled={searching} title={searching ? "查询中" : "发送"} data-testid="today-ask-submit">
                     <Send size={18} />
                     <span>{searching ? "查询中" : "发送"}</span>

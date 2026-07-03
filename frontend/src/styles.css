@@ -728,6 +728,28 @@ button {
   flex-wrap: wrap;
 }
 
+.force-deep-toggle {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #fffefa;
+  color: var(--ink);
+  padding: 0 10px;
+  font-size: 13px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.force-deep-toggle input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: #2e7564;
+}
+
 .attachment-picker {
   min-height: 38px;
   border: 1px solid var(--line);
@@ -2329,7 +2351,8 @@ button {
 }
 
 .ask-chat-main .attachment-picker,
-.ask-chat-main .ask-settings summary {
+.ask-chat-main .ask-settings summary,
+.ask-chat-main .force-deep-toggle {
   min-height: 34px;
   border: 0;
   background: #f4f1e8;

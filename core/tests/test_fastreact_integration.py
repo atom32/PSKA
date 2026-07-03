@@ -669,6 +669,41 @@ def test_ask_auto_understanding_honors_agentic_classifier_deep_route() -> None:
     assert understand["routing_owner"] == "agentic_intent_classifier"
 
 
+def test_ask_explicit_deep_can_skip_intent_classifier_with_history() -> None:
+    class UnexpectedClassifierService:
+        def __init__(self):
+            self.calls = []
+
+        def ready(self):
+            return {"ok": True}
+
+        def search(self, query, user, *, represented_user_id=None, max_iterations=3, skills=None, tool_policy=None, session_id=None):
+            self.calls.append(query)
+            raise AssertionError("intent classifier should not run for a forced deep route")
+
+    api = _api()
+    service = UnexpectedClassifierService()
+    api.agentic_service = service
+
+    payload = api.workspace_ask_understand(
+        {
+            "query": "继续展开上一个回答",
+            "intent": "deep",
+            "skip_intent_classifier": True,
+            "scope": {"recent_messages": [{"role": "user", "content": "previous question"}]},
+        }
+    )
+    understand = payload["understand"]
+
+    assert service.calls == []
+    assert understand["intent"] == "kb_search"
+    assert understand["selected_intent"] == "deep"
+    assert understand["routing_owner"] == "user_or_caller_override"
+    assert understand["routing_mode"] == "forced"
+    assert "intent_classifier" not in understand
+    assert "intent_classifier_skipped" in understand["reasons"]
+
+
 def test_ask_quick_answer_extracts_requested_fields_from_matching_table_row() -> None:
     answer = _ask_quick_answer(
         (

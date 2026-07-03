@@ -598,13 +598,15 @@ export type WorkspaceAskStreamUpdate = {
   result: WorkspaceAskResponse;
 };
 
+type WorkspaceAskIntent = "auto" | "quick" | "deep";
+
 export async function askWorkspaceStream(
   query: string,
   serviceToken: PSKAAuth,
-  intent: "auto" | "quick" | "deep" = "auto",
+  intent: WorkspaceAskIntent = "auto",
   surface = "ask",
   onUpdate?: (update: WorkspaceAskStreamUpdate) => void,
-  options: { scope?: Record<string, unknown>; topK?: number; sessionId?: string } = {}
+  options: { scope?: Record<string, unknown>; topK?: number; sessionId?: string; skipIntentClassifier?: boolean } = {}
 ): Promise<WorkspaceAskResponse> {
   const response = await fetch("/workspace/ask/stream", {
     method: "POST",
@@ -615,6 +617,7 @@ export async function askWorkspaceStream(
       surface,
       ...(options.scope ? { scope: options.scope } : {}),
       ...(options.sessionId ? { session_id: options.sessionId } : {}),
+      ...(options.skipIntentClassifier ? { skip_intent_classifier: true } : {}),
       ...requestUserPayload(serviceToken),
       top_k: options.topK || 8
     })
@@ -719,7 +722,7 @@ export async function askConversationStream(
   query: string,
   serviceToken: PSKAAuth,
   onUpdate?: (update: WorkspaceAskStreamUpdate) => void,
-  options: { surface?: string; topK?: number; temperature?: number; maxTokens?: number; sourceItemIds?: string[]; scope?: Record<string, unknown> } = {}
+  options: { surface?: string; intent?: WorkspaceAskIntent; skipIntentClassifier?: boolean; topK?: number; temperature?: number; maxTokens?: number; sourceItemIds?: string[]; scope?: Record<string, unknown> } = {}
 ): Promise<WorkspaceAskResponse> {
   const scope = {
     ...(options.scope || {}),
@@ -730,9 +733,10 @@ export async function askConversationStream(
     headers: headers(serviceToken),
     body: JSON.stringify({
       query,
-      intent: "auto",
+      intent: options.intent || "auto",
       surface: options.surface || "ask",
       ...(Object.keys(scope).length ? { scope } : {}),
+      ...(options.skipIntentClassifier ? { skip_intent_classifier: true } : {}),
       ...requestUserPayload(serviceToken),
       top_k: options.topK || 8,
       temperature: options.temperature,
@@ -743,9 +747,10 @@ export async function askConversationStream(
     throw new Error(await responseError(response, "Ask PSKA 对话失败"));
   }
   if (!response.body) {
-    return askWorkspaceStream(query, serviceToken, "auto", "ask", onUpdate, {
+    return askWorkspaceStream(query, serviceToken, options.intent || "auto", options.surface || "ask", onUpdate, {
       sessionId: conversationId,
-      scope: Object.keys(scope).length ? scope : undefined
+      scope: Object.keys(scope).length ? scope : undefined,
+      skipIntentClassifier: options.skipIntentClassifier
     });
   }
   const result: WorkspaceAskResponse = {
