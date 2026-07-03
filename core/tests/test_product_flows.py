@@ -500,16 +500,24 @@ def test_ask_intent_greeting_and_product_help_do_not_retrieve_user_sources() -> 
         }
     )
 
-    greeting = api.workspace_ask({"query": "你好", "intent": "auto"})
+    greeting = api.workspace_ask({"query": "你好啊", "intent": "auto"})
+    chitchat = api.workspace_ask({"query": "谢谢你", "intent": "auto"})
     product_help = api.workspace_ask({"query": "hello，你能做什么？", "intent": "auto"})
 
     assert greeting["intent"] == "greeting"
     assert greeting["answer_type"] == "direct_greeting"
     assert greeting["citations"] == []
     assert greeting["route"]["retrieval_owner"] == "none"
+    assert greeting["route"]["intent_contract"]["requires_evidence"] is False
+    assert greeting["route"]["intent_contract"]["execution_depth"] == "none"
+    assert greeting["route"]["intent_contract"]["answer_contract"] == "direct_response"
+    assert chitchat["intent"] == "chitchat"
+    assert chitchat["answer_type"] == "chitchat"
+    assert chitchat["route"]["retrieval_owner"] == "none"
     assert product_help["intent"] == "product_help"
     assert product_help["answer_type"] == "product_help"
     assert product_help["citations"] == []
+    assert product_help["route"]["intent_contract"]["answer_contract"] == "product_help"
 
 
 def test_ask_hard_scope_drops_out_of_scope_evidence() -> None:

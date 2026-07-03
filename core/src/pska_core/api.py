@@ -1572,6 +1572,16 @@ class PSKAApi:
             scope=scope,
             agentic_selected_intent=str(decision.get("selected_intent") or ""),
         )
+        understand["intent_contract"] = _ask_intent_contract(
+            ask_intent=ask_intent,
+            selected_intent=str(understand.get("selected_intent") or "quick"),
+            requested_intent=raw_intent,
+            execution_intent=execution_intent,
+            scope=scope,
+            surface=surface,
+            routing_owner=str(understand.get("routing_owner") or ""),
+            reasons=_string_list(understand.get("reasons")),
+        )
         return understand
 
     def _workspace_ask_agentic_intent_decision(
@@ -1802,12 +1812,13 @@ class PSKAApi:
         ask_intent = str(understand.get("intent") or "kb_search")
         scope = _ask_scope_for_intent(scope, ask_intent=ask_intent)
         selected_intent = str(understand.get("selected_intent") or "quick")
+        requires_retrieval = bool(understand.get("requires_retrieval", _ask_requires_retrieval(ask_intent)))
         if selected_intent != "deep" or not hasattr(self.agentic_service, "search_event_stream"):
             if selected_intent != "deep":
                 route = _ask_route_payload(
                     intent=str(understand.get("intent") or "kb_search"),
                     selected_intent="quick",
-                    retrieval_owner="pska",
+                    retrieval_owner="pska" if requires_retrieval else "none",
                     surface=surface,
                     requires_agentic_service_online=False,
                     tool_policy={"mode": "none"},
@@ -1826,7 +1837,7 @@ class PSKAApi:
                     start_sequence=1,
                     include_understand=True,
                 )
-                if understand.get("requires_retrieval", True):
+                if requires_retrieval:
                     emitted_steps.append(
                         _ask_quick_search_step(
                             sequence=len(emitted_steps) + 1,
@@ -1888,6 +1899,7 @@ class PSKAApi:
             "rewrite_query": understand.get("rewrite_query") or query,
             "scope_applied": understand.get("scope_applied") or {},
             "understand": understand,
+            "intent_contract": understand.get("intent_contract") if isinstance(understand.get("intent_contract"), dict) else {},
         }
         yield ("route", {"route": route, "timing": {}})
         raw_events: list[dict[str, Any]] = []
@@ -2336,16 +2348,28 @@ class PSKAApi:
         steps.append(_ask_quick_read_step(sequence=len(steps) + 1, evidence=evidence, started_at=started_at))
         final_synthesis: dict[str, Any] | None = None
         if evidence_check.get("status") == "supported":
+            deterministic_answer = _ask_quick_answer(query, retrieval, ask_intent=ask_intent)
             final_synthesis = self._workspace_ask_quick_agentic_synthesis(
                 query=query,
                 rewrite_query=rewrite_query,
+                ask_intent=ask_intent,
                 evidence=evidence,
                 evidence_check=evidence_check,
                 user=user,
                 represented_user_id=represented_user_id,
                 session_id=session_id,
             )
-            answer = str((final_synthesis or {}).get("answer") or "").strip() or _ask_quick_answer(query, retrieval)
+            answer = str((final_synthesis or {}).get("answer") or "").strip() or deterministic_answer
+            if _ask_should_use_deterministic_coverage_guard(query, answer, deterministic_answer, ask_intent=ask_intent):
+                final_synthesis = {
+                    **(final_synthesis or {}),
+                    "status": "fallback",
+                    "owner": "deterministic_fallback",
+                    "reason": "agentic_synthesis_missing_evidence_values",
+                    "agentic_answer": answer,
+                }
+                answer = deterministic_answer
+            answer = _ask_polish_quick_supported_answer(answer, ask_intent=ask_intent)
             answer_type = "kb_answer"
         else:
             answer = _ask_no_answer_from_evidence_check(query, evidence_check)
@@ -2387,6 +2411,7 @@ class PSKAApi:
                 "rewrite_query": rewrite_query,
                 "scope_applied": understand.get("scope_applied") or _ask_scope_applied(scope, ask_intent=ask_intent),
                 "understand": understand,
+                "intent_contract": understand.get("intent_contract") if isinstance(understand.get("intent_contract"), dict) else {},
                 "scope_context_nodes": len(_list_of_dicts((scope or {}).get("context_nodes"))),
             },
             "evidence": evidence,
@@ -2425,6 +2450,7 @@ class PSKAApi:
         *,
         query: str,
         rewrite_query: str,
+        ask_intent: str,
         evidence: dict[str, Any],
         evidence_check: dict[str, Any],
         user: Any,
@@ -2433,7 +2459,7 @@ class PSKAApi:
     ) -> dict[str, Any] | None:
         if not hasattr(self.agentic_service, "search"):
             return {"status": "fallback", "owner": "deterministic_fallback", "reason": "agentic_service_unavailable"}
-        prompt = _ask_quick_synthesis_prompt(query=query, rewrite_query=rewrite_query, evidence=evidence, evidence_check=evidence_check)
+        prompt = _ask_quick_synthesis_prompt(query=query, rewrite_query=rewrite_query, ask_intent=ask_intent, evidence=evidence, evidence_check=evidence_check)
         try:
             agentic = self._agentic_service_search(
                 prompt,
@@ -5833,17 +5859,6 @@ def _ask_direct_intent_decision(
     scope: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     has_conversation_history = bool(_list_of_dicts((scope or {}).get("recent_messages")))
-    if execution_intent in {"quick", "deep"} and (skip_intent_classifier or not has_conversation_history):
-        ask_intent = forced_ask_intent if forced_ask_intent in ASK_INTENTS else "kb_search"
-        return {
-            "intent": ask_intent,
-            "selected_intent": execution_intent,
-            "confidence": 1.0,
-            "routing_owner": "user_or_caller_override",
-            "routing_mode": "forced",
-            "reasons": ["explicit_execution_intent", *([] if not skip_intent_classifier else ["intent_classifier_skipped"])],
-            "requires_retrieval": _ask_requires_retrieval(ask_intent),
-        }
     if forced_ask_intent in ASK_NON_RETRIEVAL_INTENTS:
         return {
             "intent": forced_ask_intent,
@@ -5854,7 +5869,7 @@ def _ask_direct_intent_decision(
             "requires_retrieval": False,
         }
     text = re.sub(r"\s+", " ", str(query or "").strip().lower())
-    if _ask_is_greeting_query(text):
+    if forced_ask_intent is None and _ask_is_greeting_query(text):
         return {
             "intent": "greeting",
             "selected_intent": "quick",
@@ -5863,7 +5878,16 @@ def _ask_direct_intent_decision(
             "reasons": ["short_greeting"],
             "requires_retrieval": False,
         }
-    if _ask_is_product_help_query(text):
+    if forced_ask_intent is None and _ask_is_chitchat_query(text):
+        return {
+            "intent": "chitchat",
+            "selected_intent": "quick",
+            "confidence": 0.9,
+            "routing_owner": "pska_direct_intent_guard",
+            "reasons": ["short_chitchat"],
+            "requires_retrieval": False,
+        }
+    if forced_ask_intent is None and _ask_is_product_help_query(text):
         return {
             "intent": "product_help",
             "selected_intent": "quick",
@@ -5871,6 +5895,26 @@ def _ask_direct_intent_decision(
             "routing_owner": "pska_direct_intent_guard",
             "reasons": ["product_capability_question"],
             "requires_retrieval": False,
+        }
+    if forced_ask_intent is None and _ask_is_writing_query(text):
+        return {
+            "intent": "writing",
+            "selected_intent": execution_intent if execution_intent in {"quick", "deep"} else "quick",
+            "confidence": 0.82,
+            "routing_owner": "pska_direct_intent_guard",
+            "reasons": ["writing_operation"],
+            "requires_retrieval": True,
+        }
+    if execution_intent in {"quick", "deep"} and (skip_intent_classifier or not has_conversation_history):
+        ask_intent = forced_ask_intent if forced_ask_intent in ASK_INTENTS else "kb_search"
+        return {
+            "intent": ask_intent,
+            "selected_intent": execution_intent,
+            "confidence": 1.0,
+            "routing_owner": "user_or_caller_override",
+            "routing_mode": "forced",
+            "reasons": ["explicit_execution_intent", *([] if not skip_intent_classifier else ["intent_classifier_skipped"])],
+            "requires_retrieval": _ask_requires_retrieval(ask_intent),
         }
     return None
 
@@ -5909,6 +5953,13 @@ def _ask_agentic_intent_prompt(
         'ask_intent, selected_intent, requires_retrieval, confidence, reasons.\n'
         f"ask_intent must be one of: {intents}.\n"
         'selected_intent must be "quick" or "deep".\n'
+        "First classify the complete user interaction: greeting, chitchat, product_help, and clarification "
+        "are non-retrieval intents and must set requires_retrieval=false with selected_intent=\"quick\". "
+        "Treat requested quick/deep as an execution-depth preference only, never as proof that the task "
+        "needs evidence retrieval.\n"
+        "Use writing when the requested operation is to draft, compose, rewrite, turn evidence into prose, "
+        "or produce a report/brief/summary. Use clarification when the request lacks the object or scope "
+        "needed to act.\n"
         "Use quick for exact lookup, direct extraction, single-file or selected-attachment questions, "
         "table row/field questions, and ordinary evidence lookup. Use deep for open-ended multi-step "
         "research, synthesis, comparison, conflict analysis, strategy, or explicit relationship/path/graph "
@@ -5960,6 +6011,8 @@ def _ask_normalize_agentic_intent_decision(
     selected_intent = str(parsed.get("selected_intent") or parsed.get("execution_intent") or parsed.get("route") or "").strip().lower()
     if selected_intent not in {"quick", "deep"}:
         selected_intent = "quick"
+    if ask_intent in ASK_NON_RETRIEVAL_INTENTS:
+        selected_intent = "quick"
     confidence_raw = parsed.get("confidence")
     try:
         confidence = max(0.0, min(float(confidence_raw), 1.0))
@@ -5969,6 +6022,8 @@ def _ask_normalize_agentic_intent_decision(
     requires_retrieval = parsed.get("requires_retrieval")
     if not isinstance(requires_retrieval, bool):
         requires_retrieval = _ask_requires_retrieval(ask_intent)
+    if ask_intent in ASK_NON_RETRIEVAL_INTENTS:
+        requires_retrieval = False
     return {
         "intent": ask_intent,
         "selected_intent": selected_intent,
@@ -6005,17 +6060,23 @@ def _ask_local_intent_guess(
     text = re.sub(r"\s+", " ", str(query or "").strip().lower())
     if _ask_is_greeting_query(text):
         return {"intent": "greeting", "confidence": 0.95, "reasons": ["short_greeting"]}
+    if _ask_is_chitchat_query(text):
+        return {"intent": "chitchat", "confidence": 0.9, "reasons": ["short_chitchat"]}
     if _ask_is_product_help_query(text):
         return {"intent": "product_help", "confidence": 0.9, "reasons": ["product_capability_question"]}
+    if _ask_is_writing_query(text):
+        return {"intent": "writing", "confidence": 0.82, "reasons": ["writing_operation"]}
     return {"intent": "kb_search", "confidence": 0.55, "reasons": ["conservative_kb_search_fallback"]}
 
 
 def _ask_is_greeting_query(text: str) -> bool:
     normalized = re.sub(r"[\s,，。.!！?？~～]+", "", text)
-    return normalized in {
+    direct_greetings = {
         "hi",
         "hello",
         "hey",
+        "哈喽",
+        "哈罗",
         "你好",
         "您好",
         "嗨",
@@ -6023,6 +6084,16 @@ def _ask_is_greeting_query(text: str) -> bool:
         "晚上好",
         "下午好",
     }
+    if normalized in direct_greetings:
+        return True
+    return bool(re.fullmatch(r"(hi|hello|hey|哈喽|哈罗|你好|您好|嗨|早上好|晚上好|下午好)[啊呀哇哈呢]*", normalized))
+
+
+def _ask_is_chitchat_query(text: str) -> bool:
+    normalized = re.sub(r"[\s,，。.!！?？~～]+", "", text)
+    if normalized in {"谢谢", "谢谢你", "感谢", "多谢", "好的", "好呀", "好啊", "ok", "okay", "明白", "知道了", "哈哈", "哈哈哈"}:
+        return True
+    return bool(re.fullmatch(r"(谢谢|感谢|多谢)[你您啊呀哈]*", normalized))
 
 
 def _ask_is_product_help_query(text: str) -> bool:
@@ -6042,6 +6113,26 @@ def _ask_is_product_help_query(text: str) -> bool:
     ]
     product_markers = ["pska", "你", "系统", "助手", "这个产品", "this app", "this product"]
     return any(marker in text for marker in capability_markers) and any(marker in text for marker in product_markers)
+
+
+def _ask_is_writing_query(text: str) -> bool:
+    if not text:
+        return False
+    writing_markers = [
+        "写一段",
+        "写成",
+        "写作",
+        "文稿",
+        "草稿",
+        "报告摘要",
+        "摘要",
+        "brief",
+        "draft",
+        "compose",
+        "summary",
+        "rewrite",
+    ]
+    return any(marker in text for marker in writing_markers)
 
 
 def _ask_rewrite_query(query: str, *, scope: dict[str, Any], ask_intent: str) -> str:
@@ -6530,8 +6621,15 @@ def _ask_no_answer_from_evidence_check(query: str, evidence_check: dict[str, Any
     reasons = list(evidence_check.get("no_answer_reasons") or [])
     if not reasons:
         reasons = ["evidence_insufficient"]
-    reason_text = "、".join(str(reason) for reason in reasons[:4])
-    return f"关键结论：当前 PSKA 没有找到足够证据回答“{query}”。原因：{reason_text}。建议补充相关资料、选择正确附件，或允许扩大检索范围后再问。"
+    if "no_retrieval_results" in reasons:
+        detail = "没有检索到能直接支撑该问题的相关片段"
+    elif "all_citations_dropped" in reasons or "no_supporting_citations_after_evidence_check" in reasons:
+        detail = "检索到的片段没有通过引用支撑校验"
+    elif "hard_scope_has_no_source_items" in reasons:
+        detail = "当前选择范围没有可检索资料"
+    else:
+        detail = "现有证据信号不足"
+    return f"关键结论：当前资料不足以回答“{query}”。{detail}。请补充相关资料、选择正确附件，或允许扩大检索范围后再问。"
 
 
 def _ask_route_intent(
@@ -6550,6 +6648,77 @@ def _ask_route_intent(
     if selected in {"quick", "deep"}:
         return selected
     return "quick"
+
+
+def _ask_intent_contract(
+    *,
+    ask_intent: str,
+    selected_intent: str,
+    requested_intent: str,
+    execution_intent: str,
+    scope: dict[str, Any] | None,
+    surface: str,
+    routing_owner: str = "",
+    reasons: list[str] | None = None,
+) -> dict[str, Any]:
+    requires_evidence = _ask_requires_retrieval(ask_intent)
+    requested_depth = execution_intent if execution_intent in {"quick", "deep"} else "auto"
+    execution_depth = selected_intent if requires_evidence else "none"
+    override_requested = requested_depth in {"quick", "deep"}
+    override_applied = bool(override_requested and requires_evidence and selected_intent == requested_depth)
+    if not override_requested:
+        override_reason = "not_requested"
+    elif not requires_evidence:
+        override_reason = "non_evidence_intent"
+    elif override_applied:
+        override_reason = "applied"
+    else:
+        override_reason = "classifier_or_policy_selected_different_depth"
+    return {
+        "schema": "pska.ask_intent_contract.v1",
+        "interaction_intent": _ask_interaction_intent(ask_intent),
+        "task_intent": ask_intent if requires_evidence else "none",
+        "ask_intent": ask_intent,
+        "requires_evidence": requires_evidence,
+        "execution_depth": execution_depth,
+        "requested_depth": requested_depth,
+        "scope_policy": _ask_scope_mode(scope or {}, ask_intent=ask_intent) if requires_evidence else "none",
+        "answer_contract": _ask_answer_contract(ask_intent),
+        "quick_deep_applicable": requires_evidence,
+        "depth_override": {
+            "requested": requested_depth if override_requested else None,
+            "applied": override_applied,
+            "reason": override_reason,
+        },
+        "surface": surface,
+        "requested_intent": requested_intent,
+        "routing_owner": routing_owner or "pska_planner",
+        "reasons": list(reasons or [])[:6],
+    }
+
+
+def _ask_interaction_intent(ask_intent: str) -> str:
+    if ask_intent in {"greeting", "chitchat", "product_help", "clarification"}:
+        return ask_intent
+    if ask_intent == "writing":
+        return "writing"
+    if ask_intent == "graph_research":
+        return "graph_research"
+    if ask_intent == "follow_up":
+        return "follow_up"
+    return "evidence_qa"
+
+
+def _ask_answer_contract(ask_intent: str) -> str:
+    if ask_intent in {"greeting", "chitchat"}:
+        return "direct_response"
+    if ask_intent == "product_help":
+        return "product_help"
+    if ask_intent == "clarification":
+        return "clarification"
+    if ask_intent == "writing":
+        return "writing_context_answer"
+    return "evidence_bound_answer"
 
 
 def _ask_query_terms(query: str) -> list[str]:
@@ -6615,6 +6784,18 @@ def _ask_route_payload(
     requested_intent: str | None = None,
     understand: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    intent_contract = (understand or {}).get("intent_contract") if isinstance((understand or {}).get("intent_contract"), dict) else None
+    if intent_contract is None:
+        intent_contract = _ask_intent_contract(
+            ask_intent=intent,
+            selected_intent=selected_intent,
+            requested_intent=requested_intent or intent,
+            execution_intent=selected_intent if selected_intent in {"quick", "deep"} else "auto",
+            scope={},
+            surface=surface,
+            routing_owner="pska_planner",
+            reasons=[],
+        )
     payload = {
         "intent": intent,
         "requested_intent": requested_intent or intent,
@@ -6628,6 +6809,7 @@ def _ask_route_payload(
         "query_terms": _ask_query_terms(str((understand or {}).get("rewrite_query") or query)),
         "rewrite_query": (understand or {}).get("rewrite_query") or query,
         "scope_applied": (understand or {}).get("scope_applied") or {},
+        "intent_contract": intent_contract,
     }
     if understand:
         payload["understand"] = understand
@@ -6655,7 +6837,7 @@ def _ask_route_planner_steps(
                 phase="understand",
                 status="complete",
                 title="理解问题",
-                detail=_ask_understand_step_detail(query_terms),
+                detail=_ask_understand_step_detail(query_terms, intent=intent),
                 started_at=started_at,
             )
         )
@@ -6673,19 +6855,37 @@ def _ask_route_planner_steps(
     return steps
 
 
-def _ask_understand_step_detail(query_terms: list[str]) -> str:
+def _ask_understand_step_detail(query_terms: list[str], *, intent: str = "kb_search") -> str:
+    if intent in ASK_NON_RETRIEVAL_INTENTS:
+        return f"已识别为{_ask_intent_display_name(intent)}，无需资料库检索。"
     if query_terms:
         return f"已抽取检索关键词：{'、'.join(query_terms[:6])}。"
     return "已确认问题和当前租户范围。"
 
 
 def _ask_route_step_detail(*, intent: str, selected_intent: str, query_terms: list[str]) -> str:
+    if intent in ASK_NON_RETRIEVAL_INTENTS:
+        return f"任务类型 {_ask_intent_display_name(intent)} 不需要资料库证据，直接回应。"
     route_label = "深入分析" if selected_intent == "deep" else "快速回答"
     intent_label = "自动路由" if intent == "auto" else f"任务类型 {intent}"
     term_text = f"关键词：{'、'.join(query_terms[:6])}；" if query_terms else ""
     if selected_intent == "deep":
         return f"{term_text}{intent_label} 判定需要 {route_label}，由 FastReAct 通过 PSKA 只读工具检索。"
     return f"{term_text}{intent_label} 判定可先走 {route_label}，由 PSKA 检索知识库与图谱。"
+
+
+def _ask_intent_display_name(intent: str) -> str:
+    return {
+        "greeting": "问候",
+        "chitchat": "闲聊",
+        "product_help": "产品帮助",
+        "clarification": "澄清请求",
+        "kb_search": "资料库检索",
+        "doc_only": "附件检索",
+        "follow_up": "追问",
+        "graph_research": "图谱研究",
+        "writing": "写作",
+    }.get(intent, intent)
 
 
 def _ask_quick_search_step(*, sequence: int, query_terms: list[str], top_k: int, started_at: float) -> dict[str, Any]:
@@ -6871,34 +7071,130 @@ def _ask_retrieval_from_agentic_trace(trace: dict[str, Any]) -> dict[str, Any]:
     return merged
 
 
-def _ask_quick_answer(query: str, retrieval: dict[str, Any]) -> str:
+def _ask_quick_answer(query: str, retrieval: dict[str, Any], *, ask_intent: str = "kb_search") -> str:
     results = _list_of_dicts(retrieval.get("results"))
     if not results:
         return f"关键结论：当前 PSKA 没有找到足够证据回答“{query}”。建议补充相关资料或扩大检索范围后再问。"
+    if ask_intent == "writing":
+        facts = _ask_requested_label_value_facts_from_results(query, results, limit=6)
+        if not facts:
+            facts = _ask_clean_facts_from_results(results[:1], limit=6)
+        if facts:
+            return _ask_quick_writing_answer(query, facts)
     facts = _ask_table_field_facts_from_results(query, results, limit=12)
     if facts and _ask_query_requests_only_values(query):
         return "\n".join(facts)
     if not facts:
-        facts = _ask_structured_facts_from_results(query, results, limit=4)
+        facts = _ask_structured_facts_from_results(query, results, limit=6)
     if not facts:
-        facts = _ask_clean_facts_from_results(results, limit=4)
+        facts = _ask_requested_label_value_facts_from_results(query, results, limit=6)
+    if not facts:
+        facts = _ask_clean_facts_from_results(results, limit=6)
     if not facts:
         return f"关键结论：PSKA 找到了与“{query}”相关的来源，但当前片段不足以整理成可引用结论。请查看证据列表或扩大检索范围。"
-    if len(facts) == 1 and "=" in facts[0]:
-        lines = [f"关键结论：根据当前资料，{facts[0]}。"]
+    clean_facts = [_ask_trim_sentence_punctuation(fact) for fact in facts if _ask_trim_sentence_punctuation(fact)]
+    if len(clean_facts) == 1 and "=" in clean_facts[0]:
+        lines = [f"关键结论：根据当前资料，{clean_facts[0]}。"]
+    elif len(facts) <= 2:
+        lines = [f"关键结论：{'；'.join(clean_facts)}。"]
     else:
-        lines = [f"关键结论：关于“{query}”，当前资料支持以下结论："]
-        lines.extend(f"- {fact}" for fact in facts)
+        lines = [f"关键结论：{'；'.join(clean_facts)}。"]
     diagnostics = retrieval.get("diagnostics") if isinstance(retrieval.get("diagnostics"), dict) else {}
     if diagnostics.get("gaps") or diagnostics.get("conflicts"):
         lines.append("不确定性：存在检索缺口或证据冲突，报告中应保留限定表述。")
     return "\n".join(lines)
 
 
+def _ask_polish_quick_supported_answer(answer: str, *, ask_intent: str) -> str:
+    text = str(answer or "").strip()
+    if not text:
+        return text
+    if ask_intent != "writing":
+        text = re.sub(r"^(?:关键结论[:：]\s*)?当前资料支持以下结论[:：]\s*", "关键结论：", text)
+    text = re.sub(r"(?<=[A-Za-z0-9])\.(?=[A-Z])", ". ", text)
+    return text
+
+
+def _ask_should_use_deterministic_coverage_guard(query: str, answer: str, deterministic_answer: str, *, ask_intent: str = "kb_search") -> bool:
+    if not answer.strip() or not deterministic_answer.strip():
+        return False
+    if ask_intent == "writing" and _ask_answer_looks_like_raw_evidence_listing(answer):
+        return True
+    if ask_intent == "writing" and _ask_query_requests_preserved_numbers(query):
+        answer_text = answer.casefold()
+        return any(value.casefold() not in answer_text for value in _ask_numeric_values(deterministic_answer))
+    if not _ask_query_requests_multiple_values(query):
+        return False
+    answer_text = answer.casefold()
+    for value in _ask_numeric_values(deterministic_answer):
+        if value.casefold() not in answer_text:
+            return True
+    return False
+
+
+def _ask_query_requests_preserved_numbers(query: str) -> bool:
+    text = str(query or "").casefold()
+    return any(marker in text for marker in ("保留数字", "保留数值", "保留具体数字", "preserve numbers", "keep numbers", "include numbers"))
+
+
+def _ask_answer_looks_like_raw_evidence_listing(answer: str) -> bool:
+    text = str(answer or "").strip()
+    if not text:
+        return False
+    if "当前资料支持以下结论" in text:
+        return True
+    if text.count(" / ") >= 3:
+        return True
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if len(lines) >= 4 and lines[0].startswith(("关键结论", "结论")):
+        short_fact_lines = sum(1 for line in lines[1:] if len(line) <= 180 and re.search(r"\d|=| is |为|：|:", line, flags=re.IGNORECASE))
+        return short_fact_lines >= 3
+    return False
+
+
+def _ask_quick_writing_answer(query: str, facts: list[str]) -> str:
+    clean_facts = [_ask_trim_sentence_punctuation(fact) for fact in facts if _ask_trim_sentence_punctuation(fact)]
+    if not clean_facts:
+        return ""
+    prefix = "文稿"
+    folded = str(query or "").casefold()
+    if any(marker in folded for marker in ("摘要", "summary")):
+        prefix = "报告摘要"
+    elif any(marker in folded for marker in ("brief", "简报")):
+        prefix = "简报"
+    body = "；".join(clean_facts[:6])
+    return f"{prefix}：{body}。"
+
+
+def _ask_trim_sentence_punctuation(value: str) -> str:
+    return str(value or "").strip().strip(" \t\r\n。.!！？；;")
+
+
+def _ask_query_requests_multiple_values(query: str) -> bool:
+    text = str(query or "")
+    if any(marker in text for marker in ["、", ",", "，", "/", "以及", "分别"]):
+        return True
+    return bool(re.search(r"\b(and|plus)\b", text, flags=re.IGNORECASE)) or "和" in text
+
+
+def _ask_numeric_values(text: str) -> list[str]:
+    values: list[str] = []
+    seen: set[str] = set()
+    for match in re.finditer(r"(?<![A-Za-z0-9_-])\d+(?:[.,]\d+)*(?:\s*(?:ms|s|usd|rmb|元|万元|亿元|%))?", str(text or ""), flags=re.IGNORECASE):
+        value = re.sub(r"\s+", " ", match.group(0)).strip()
+        key = value.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        values.append(value)
+    return values
+
+
 def _ask_quick_synthesis_prompt(
     *,
     query: str,
     rewrite_query: str,
+    ask_intent: str,
     evidence: dict[str, Any],
     evidence_check: dict[str, Any],
 ) -> str:
@@ -6911,18 +7207,32 @@ def _ask_quick_synthesis_prompt(
             "scope_mode": evidence_check.get("scope_mode"),
             "supporting_citation_count": evidence_check.get("supporting_citation_count"),
         },
+        "ask_intent": ask_intent,
+        "evidence_claims": list(evidence_check.get("evidence_claims") or [])[:8],
         "evidence": evidence_items,
     }
+    writing_instruction = ""
+    if ask_intent == "writing":
+        writing_instruction = (
+            "The user is asking for a writing output. Compose the requested prose, brief, draft, or summary; "
+            "respect requested length and format; preserve exact numbers and named entities from evidence. "
+            "Do not merely list raw evidence snippets unless the user asked for a list.\n"
+        )
     return (
         "You are PSKA's quick-answer final synthesizer. You are called through the agentic service, "
         "but this is not a research loop. Do not call tools, do not retrieve, and do not use outside knowledge.\n"
+        f"{writing_instruction}"
         "Use only the evidence JSON below, which PSKA already filtered by ACL, scope, and citation support. "
         "Answer the user's question in natural human language, not as raw evidence snippets. Preserve exact "
         "numbers, units, entity names, dates, row identifiers, and table field values from the evidence. "
+        "Every explicitly requested field/value that appears in evidence_claims must be represented in the answer. "
         "If the evidence has multiple candidate values, explain the distinction briefly instead of guessing. "
         "If the evidence is insufficient, say so clearly.\n"
         "Return ONLY JSON: {\"answer\": \"...\"}. The answer should be Chinese by default, concise, "
-        "conclusion-first, and suitable for a financial institution user to paste into a note.\n\n"
+        "conclusion-first, and suitable for a financial institution user to paste into a note. Use one "
+        "sentence when the question asks for a single value or fact; otherwise use at most three short "
+        "sentences or three bullets. Do not repeat the user's question, explain PSKA internals, or add "
+        "generic caveats when the evidence check is supported.\n\n"
         f"Evidence JSON: {json.dumps(payload, ensure_ascii=False)}"
     )
 
@@ -7074,6 +7384,123 @@ def _ask_positive_query_segment(query: str) -> str:
 def _ask_query_requests_only_values(query: str) -> bool:
     folded = str(query or "").casefold()
     return any(marker in folded for marker in ("只输出", "仅输出", "only output", "return only", "just output"))
+
+
+def _ask_requested_label_value_facts_from_results(query: str, results: list[dict[str, Any]], *, limit: int) -> list[str]:
+    labels = _ask_requested_fact_labels(query)
+    if not labels:
+        return []
+    facts_by_label: dict[str, str] = {}
+    for text in _ask_result_text_candidates(results):
+        clean_text = _ask_clean_evidence_text(text)
+        for sentence in _ask_fact_sentences(clean_text):
+            for label in labels:
+                key = label.casefold()
+                if key in facts_by_label:
+                    continue
+                if _ask_text_mentions_identifier(sentence, label):
+                    facts_by_label[key] = sentence
+                    break
+        if len(facts_by_label) >= min(len(labels), limit):
+            break
+    facts: list[str] = []
+    seen: set[str] = set()
+    for label in labels:
+        fact = facts_by_label.get(label.casefold())
+        if not fact:
+            continue
+        normalized = re.sub(r"\s+", " ", fact).strip().casefold()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        facts.append(fact)
+        if len(facts) >= limit:
+            break
+    return facts
+
+
+def _ask_requested_fact_labels(query: str) -> list[str]:
+    segment = _ask_output_field_segment(query) or _ask_positive_query_segment(query)
+    segment = _ask_question_core_segment(segment)
+    if not segment.strip():
+        return []
+    if _ask_is_writing_query(segment) and not _ask_query_requests_multiple_values(segment):
+        return []
+    normalized = re.sub(r"\b(?:and|plus)\b", "、", segment, flags=re.IGNORECASE)
+    normalized = re.sub(r"\b(?:or)\b", "、", normalized, flags=re.IGNORECASE)
+    normalized = normalized.replace("以及", "、").replace("及", "、").replace("和", "、")
+    normalized = re.sub(r"[,，/;；\n]+", "、", normalized)
+    labels: list[str] = []
+    seen: set[str] = set()
+    for raw_part in normalized.split("、"):
+        label = _ask_clean_requested_fact_label(raw_part)
+        if not label:
+            continue
+        key = label.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        labels.append(label)
+        if len(labels) >= 8:
+            break
+    return labels
+
+
+def _ask_question_core_segment(text: str) -> str:
+    segment = str(text or "")
+    for marker in ("分别是什么", "分别是多少", "是什么", "是多少", "有哪些", "多少", "吗", "?","？"):
+        index = segment.find(marker)
+        if index >= 0:
+            segment = segment[:index]
+            break
+    for marker in ("里的", "中的", "的"):
+        index = segment.rfind(marker)
+        if index >= 0 and len(segment) - index <= 120:
+            candidate = segment[index + len(marker) :]
+            if candidate.strip():
+                segment = candidate
+                break
+    return segment
+
+
+def _ask_clean_requested_fact_label(value: str) -> str:
+    label = str(value or "").strip(" \t\r\n'\"“”‘’()（）[]【】{}<>《》:：")
+    label = re.sub(r"^(?:请问|请|帮我|告诉我|基于|根据|按照|在|从)\s*", "", label)
+    label = re.sub(r"(?:是什么|是多少|有哪些|多少|为何|为什么|吗|呢)$", "", label).strip()
+    label = re.sub(r"\b(?:what is|what are|which is|which are|please|show me|tell me)\b", "", label, flags=re.IGNORECASE).strip()
+    label = re.sub(r"\s+", " ", label).strip(" \t\r\n'\"“”‘’()（）[]【】{}<>《》:：")
+    if not label or len(label) > 64:
+        return ""
+    if _ask_generic_requested_fact_label(label):
+        return ""
+    if not re.search(r"[A-Za-z0-9\u4e00-\u9fff]", label):
+        return ""
+    return label
+
+
+def _ask_generic_requested_fact_label(label: str) -> bool:
+    folded = label.casefold()
+    generic_exact = {
+        "资料",
+        "这份资料",
+        "当前资料",
+        "信息",
+        "内容",
+        "答案",
+        "结论",
+        "结果",
+        "字段",
+        "数字",
+        "数值",
+        "报告摘要",
+        "摘要",
+        "summary",
+        "brief",
+        "draft",
+    }
+    if folded in generic_exact:
+        return True
+    return any(marker in folded for marker in ("写一段", "写成", "改写", "rewrite", "compose", "draft a", "summary of"))
 
 
 def _ask_text_mentions_identifier(text: str, identifier: str) -> bool:
@@ -7615,6 +8042,7 @@ def _ask_deep_response(
             "rewrite_query": rewrite_query,
             "scope_applied": scope_applied,
             "understand": understand,
+            "intent_contract": understand.get("intent_contract") if isinstance(understand.get("intent_contract"), dict) else {},
         },
         "evidence": evidence,
         "citations": evidence["citations"],
@@ -7785,7 +8213,9 @@ def _ask_progress_from_step(step: dict[str, Any]) -> dict[str, Any]:
 def _ask_progress_stage(phase: str, tool_name: str) -> str:
     phase = phase.strip().lower()
     tool_name = tool_name.strip().lower()
-    if phase in {"understand", "route", "think", "inspect"}:
+    if phase == "route":
+        return "route"
+    if phase in {"understand", "think", "inspect"}:
         return "query_understand"
     if phase in {"search", "tool"} or tool_name == "pska_pska_search":
         return "search"

@@ -1421,7 +1421,6 @@ function AskResult({ result, pending = false }: { result: WorkspaceAskResponse |
         <small className="search-note">
           {route ? askRouteLabel(route) : pending ? "Ask PSKA · 查询中" : "Ask PSKA"}
           {(result as WorkspaceAskResponse).answer_type ? ` · ${askAnswerTypeLabel((result as WorkspaceAskResponse).answer_type || "")}` : ""}
-          {route?.intent ? ` · ${askIntentLabel(route.intent)}` : ""}
           {timing?.time_to_first_agent_event_ms !== undefined ? ` · 首过程 ${Math.round(timing.time_to_first_agent_event_ms)} ms` : ""}
           {timing?.time_to_first_answer_ms !== undefined ? ` · 首字 ${Math.round(timing.time_to_first_answer_ms)} ms` : ""}
           {timing?.total_ms !== undefined ? ` · 总耗时 ${Math.round(timing.total_ms)} ms` : ""}
@@ -2354,6 +2353,8 @@ function askProgressStageLabel(stage: string) {
     case "query_understand":
     case "understand":
       return "理解";
+    case "route":
+      return "路由";
     case "search":
       return "检索";
     case "rerank":
@@ -2377,6 +2378,8 @@ function askProgressStageDetail(stage: string, status: string) {
     case "query_understand":
     case "understand":
       return `识别意图、范围和是否需要检索，${suffix}。`;
+    case "route":
+      return `选择直接回答、快速回答或深入分析路线，${suffix}。`;
     case "search":
       return `按当前范围检索资料库或附件，${suffix}。`;
     case "rerank":
@@ -2423,6 +2426,8 @@ function askAnswerTypeLabel(answerType?: string) {
   switch (answerType) {
     case "direct_greeting":
       return "直接回应";
+    case "chitchat":
+      return "直接回应";
     case "product_help":
       return "产品说明";
     case "kb_answer":
@@ -2439,8 +2444,20 @@ function askAnswerTypeLabel(answerType?: string) {
 }
 
 function askRouteLabel(route?: WorkspaceAskResponse["route"]) {
+  const contract = route?.intent_contract;
+  if (contract) {
+    const taskIntent = contract.task_intent && contract.task_intent !== "none" ? contract.task_intent : contract.interaction_intent || route?.intent;
+    const taskLabel = askIntentLabel(taskIntent || route?.intent);
+    if (contract.requires_evidence === false || contract.execution_depth === "none") {
+      return route?.fallback_from ? `${taskLabel} · 已降级` : taskLabel;
+    }
+    const depthLabel = contract.execution_depth === "deep" ? "深入分析" : contract.execution_depth === "quick" ? "快速回答" : "自动路由";
+    return route?.fallback_from ? `${taskLabel} · ${depthLabel} · 已降级` : `${taskLabel} · ${depthLabel}`;
+  }
   const selected = route?.selected_intent || route?.intent;
-  const label = selected === "deep" ? "深入分析" : selected === "quick" ? "快速回答" : "自动路由";
+  const depthLabel = selected === "deep" ? "深入分析" : selected === "quick" ? "快速回答" : "自动路由";
+  const taskLabel = route?.intent && !["auto", "quick", "deep"].includes(route.intent) ? `${askIntentLabel(route.intent)} · ` : "";
+  const label = `${taskLabel}${depthLabel}`;
   return route?.fallback_from ? `${label} · 已降级` : label;
 }
 

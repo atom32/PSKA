@@ -466,6 +466,19 @@ export type WorkspaceAskResponse = {
     rewrite_query?: string;
     scope_applied?: Record<string, unknown>;
     understand?: Record<string, unknown>;
+    intent_contract?: {
+      schema?: string;
+      interaction_intent?: string;
+      task_intent?: string;
+      ask_intent?: string;
+      requires_evidence?: boolean;
+      execution_depth?: "none" | "quick" | "deep" | string;
+      requested_depth?: "auto" | "quick" | "deep" | string;
+      scope_policy?: string;
+      answer_contract?: string;
+      quick_deep_applicable?: boolean;
+      depth_override?: Record<string, unknown>;
+    };
     tool_policy?: Record<string, unknown>;
   };
   evidence?: {

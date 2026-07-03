@@ -629,6 +629,10 @@ def test_ask_auto_understanding_uses_agentic_classifier_for_table_lookup_route()
 
     assert understand["intent"] == "kb_search"
     assert understand["selected_intent"] == "quick"
+    assert understand["intent_contract"]["interaction_intent"] == "evidence_qa"
+    assert understand["intent_contract"]["task_intent"] == "kb_search"
+    assert understand["intent_contract"]["requires_evidence"] is True
+    assert understand["intent_contract"]["execution_depth"] == "quick"
     assert understand["routing_owner"] == "agentic_intent_classifier"
     assert understand["intent_classifier"]["status"] == "classified"
     assert service.calls[0]["max_iterations"] == 1
@@ -666,6 +670,9 @@ def test_ask_auto_understanding_honors_agentic_classifier_deep_route() -> None:
 
     assert understand["intent"] == "graph_research"
     assert understand["selected_intent"] == "deep"
+    assert understand["intent_contract"]["interaction_intent"] == "graph_research"
+    assert understand["intent_contract"]["requires_evidence"] is True
+    assert understand["intent_contract"]["execution_depth"] == "deep"
     assert understand["routing_owner"] == "agentic_intent_classifier"
 
 
@@ -702,6 +709,54 @@ def test_ask_explicit_deep_can_skip_intent_classifier_with_history() -> None:
     assert understand["routing_mode"] == "forced"
     assert "intent_classifier" not in understand
     assert "intent_classifier_skipped" in understand["reasons"]
+    assert understand["intent_contract"]["requires_evidence"] is True
+    assert understand["intent_contract"]["depth_override"] == {"requested": "deep", "applied": True, "reason": "applied"}
+
+
+def test_ask_force_deep_preserves_non_retrieval_greeting_intent() -> None:
+    class UnexpectedClassifierService:
+        def __init__(self):
+            self.calls = []
+
+        def ready(self):
+            return {"ok": True}
+
+        def search(self, query, user, *, represented_user_id=None, max_iterations=3, skills=None, tool_policy=None, session_id=None):
+            self.calls.append(query)
+            raise AssertionError("intent classifier or deep route should not run for a greeting")
+
+    api = _api()
+    service = UnexpectedClassifierService()
+    api.agentic_service = service
+
+    response = api.workspace_ask({"query": "你好啊", "intent": "deep", "skip_intent_classifier": True})
+
+    assert service.calls == []
+    assert response["intent"] == "greeting"
+    assert response["answer_type"] == "direct_greeting"
+    assert response["route"]["retrieval_owner"] == "none"
+    assert response["route"]["selected_intent"] == "quick"
+    assert response["route"]["intent_contract"]["interaction_intent"] == "greeting"
+    assert response["route"]["intent_contract"]["task_intent"] == "none"
+    assert response["route"]["intent_contract"]["requires_evidence"] is False
+    assert response["route"]["intent_contract"]["execution_depth"] == "none"
+    assert response["route"]["intent_contract"]["depth_override"] == {
+        "requested": "deep",
+        "applied": False,
+        "reason": "non_evidence_intent",
+    }
+
+
+def test_ask_auto_understanding_recognizes_writing_operation() -> None:
+    api = _api()
+
+    payload = api.workspace_ask_understand({"query": "请基于这份资料写一段不超过两句话的报告摘要。", "intent": "auto"})
+    understand = payload["understand"]
+
+    assert understand["intent"] == "writing"
+    assert understand["intent_contract"]["interaction_intent"] == "writing"
+    assert understand["intent_contract"]["answer_contract"] == "writing_context_answer"
+    assert understand["intent_contract"]["requires_evidence"] is True
 
 
 def test_ask_quick_answer_extracts_requested_fields_from_matching_table_row() -> None:
@@ -738,6 +793,65 @@ def test_ask_quick_answer_extracts_requested_fields_from_matching_table_row() ->
     assert "联系电话" not in answer
     assert "REC-001" not in answer
     assert "REC-003" not in answer
+
+
+def test_ask_quick_answer_keeps_more_requested_fact_values() -> None:
+    answer = _ask_quick_answer(
+        "Northstar latency、Owner、Status 和 budget ceiling 是什么？",
+        {
+            "results": [
+                {
+                    "snippet": (
+                        "Intent Browser Fixture. Northstar latency is 42 ms. Owner is Ada Example. "
+                        "Status is production-ready. The budget ceiling is 8800 USD."
+                    )
+                },
+                {
+                    "snippet": (
+                        "Workbook: portfolio-pipeline.xlsx Sheet: Pipeline / Company / Lead / Status / ARR / "
+                        "Next Step / Acme Example / Alice Example / active / 1200000 / Prepare partner meeting brief."
+                    )
+                },
+            ]
+        },
+    )
+
+    assert "42 ms" in answer
+    assert "Ada Example" in answer
+    assert "production-ready" in answer
+    assert "8800 USD" in answer
+    assert "portfolio-pipeline" not in answer
+    assert "1200000" not in answer
+    assert "当前资料支持以下结论" not in answer
+
+
+def test_ask_quick_writing_fallback_composes_from_top_evidence_only() -> None:
+    answer = _ask_quick_answer(
+        "请基于这份资料写一段不超过两句话的报告摘要，保留数字。",
+        {
+            "results": [
+                {
+                    "snippet": (
+                        "Intent Browser Fixture. Northstar latency is 42 ms. Owner is Ada Example. "
+                        "Status is production-ready. The budget ceiling is 8800 USD."
+                    )
+                },
+                {
+                    "snippet": (
+                        "Unrelated browser regression marker. Annual recurring revenue is 987654321. "
+                        "This should not be pulled into the requested writing output."
+                    )
+                },
+            ]
+        },
+        ask_intent="writing",
+    )
+
+    assert answer.startswith("报告摘要：")
+    assert "42 ms" in answer
+    assert "8800 USD" in answer
+    assert "987654321" not in answer
+    assert "当前资料支持以下结论" not in answer
 
 
 def test_workspace_ask_quick_uses_agentic_final_synthesis_without_tools() -> None:
