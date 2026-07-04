@@ -1546,6 +1546,18 @@ button.context-item-main {
   overflow-wrap: anywhere;
 }
 
+.reader-highlight {
+  border-radius: 4px;
+  background: #fff1a8;
+  color: #2e2a18;
+  padding: 1px 2px;
+}
+
+.reader-context-ellipsis {
+  color: #8a7a54;
+  font-weight: 800;
+}
+
 .reader-chunk-list {
   display: grid;
   gap: 7px;

@@ -2424,6 +2424,7 @@ function ReaderPane({ reader, focusRef }: { reader: WorkspaceReaderSourceRespons
   const focusDocument = documents.find((document) => document.document_id === focusDocumentId) || documents[0];
   const documentChunks = chunks.filter((chunk) => !focusDocument?.document_id || chunk.document_id === focusDocument.document_id);
   const sourceTitle = reader.source_item?.title || focusRef.title || reader.source_item?.source_item_id || "原文";
+  const documentHighlight = focusDocument?.body ? readerTextHighlight(focusDocument.body, focusRef, { maxChars: 1800, contextChars: 760 }) : null;
   return (
     <section className="reader-pane" aria-label="原文阅读" data-testid="reader-pane">
       <div className="reader-pane-header">
@@ -2438,23 +2439,148 @@ function ReaderPane({ reader, focusRef }: { reader: WorkspaceReaderSourceRespons
             <span>{displayText(focusDocument.title || focusDocument.document_id, "文档")}</span>
             {focusDocument.body_truncated ? <small>已截断</small> : null}
           </div>
-          {focusDocument.body ? <p>{trimText(focusDocument.body, 1800)}</p> : null}
+          {documentHighlight ? (
+            <p>
+              <ReaderHighlightedText highlight={documentHighlight} />
+            </p>
+          ) : null}
         </article>
       ) : null}
       {documentChunks.length ? (
         <ol className="reader-chunk-list">
-          {documentChunks.slice(0, 8).map((chunk) => (
-            <li key={chunk.chunk_id || `${chunk.document_id}-${chunk.ordinal}`} className={chunk.chunk_id === focusChunkId ? "active" : ""}>
-              <span>#{typeof chunk.ordinal === "number" ? chunk.ordinal + 1 : "?"}</span>
-              <p>{displayText(chunk.text, "这个 chunk 没有可展示文本。")}</p>
-            </li>
-          ))}
+          {documentChunks.slice(0, 8).map((chunk) => {
+            const chunkHighlight = chunk.text ? readerTextHighlight(chunk.text, focusRef, { maxChars: 900, contextChars: 320, preferRange: false }) : null;
+            return (
+              <li key={chunk.chunk_id || `${chunk.document_id}-${chunk.ordinal}`} className={chunk.chunk_id === focusChunkId || Boolean(chunkHighlight?.matched) ? "active" : ""}>
+                <span>#{typeof chunk.ordinal === "number" ? chunk.ordinal + 1 : "?"}</span>
+                <p>{chunkHighlight ? <ReaderHighlightedText highlight={chunkHighlight} /> : displayText(chunk.text, "这个 chunk 没有可展示文本。")}</p>
+              </li>
+            );
+          })}
         </ol>
       ) : (
         <div className="reader-pane-empty">没有可展示的 chunk。</div>
       )}
     </section>
   );
+}
+
+type ReaderTextHighlight = {
+  text: string;
+  start: number;
+  end: number;
+  prefixEllipsis: boolean;
+  suffixEllipsis: boolean;
+  matched: boolean;
+};
+
+function ReaderHighlightedText({ highlight }: { highlight: ReaderTextHighlight }) {
+  const before = highlight.text.slice(0, highlight.start);
+  const match = highlight.text.slice(highlight.start, highlight.end);
+  const after = highlight.text.slice(highlight.end);
+  return (
+    <>
+      {highlight.prefixEllipsis ? <span className="reader-context-ellipsis">...</span> : null}
+      {before}
+      {highlight.matched && match ? <mark className="reader-highlight" data-testid="reader-highlight">{match}</mark> : match}
+      {after}
+      {highlight.suffixEllipsis ? <span className="reader-context-ellipsis">...</span> : null}
+    </>
+  );
+}
+
+function readerTextHighlight(
+  rawText: string,
+  focusRef: SearchEvidenceRef,
+  options: { maxChars: number; contextChars: number; preferRange?: boolean }
+): ReaderTextHighlight {
+  const text = String(rawText || "");
+  const maxChars = Math.max(80, options.maxChars);
+  const contextChars = Math.max(20, options.contextChars);
+  const preferRange = options.preferRange !== false;
+  const range = preferRange ? readerFocusRange(text, focusRef) : null;
+  const excerpt = evidencePreviewText(focusRef).trim();
+  const matchRange = range || readerExcerptRange(text, excerpt);
+
+  if (!matchRange) {
+    const visible = text.slice(0, maxChars);
+    return {
+      text: visible,
+      start: 0,
+      end: 0,
+      prefixEllipsis: false,
+      suffixEllipsis: text.length > visible.length,
+      matched: false
+    };
+  }
+
+  const windowStart = Math.max(0, matchRange.start - contextChars);
+  const windowEnd = Math.min(text.length, Math.max(matchRange.end + contextChars, windowStart + Math.min(maxChars, text.length - windowStart)));
+  const visible = text.slice(windowStart, windowEnd);
+  return {
+    text: visible,
+    start: Math.max(0, matchRange.start - windowStart),
+    end: Math.max(0, matchRange.end - windowStart),
+    prefixEllipsis: windowStart > 0,
+    suffixEllipsis: windowEnd < text.length,
+    matched: true
+  };
+}
+
+function readerFocusRange(text: string, focusRef: SearchEvidenceRef) {
+  const start = focusRef.source_window?.start_char;
+  const end = focusRef.source_window?.end_char;
+  if (typeof start !== "number" || typeof end !== "number" || end <= start || start >= text.length) {
+    return null;
+  }
+  return {
+    start: Math.max(0, start),
+    end: Math.min(text.length, end)
+  };
+}
+
+function readerExcerptRange(text: string, excerpt: string) {
+  const needle = excerpt.replace(/\s+/g, " ").trim();
+  if (!needle) {
+    return null;
+  }
+  const directIndex = text.indexOf(excerpt);
+  if (directIndex >= 0) {
+    return { start: directIndex, end: directIndex + excerpt.length };
+  }
+  const normalized = normalizeTextWithMap(text);
+  const compactNeedle = needle.slice(0, 240).toLowerCase();
+  const compactIndex = normalized.text.toLowerCase().indexOf(compactNeedle);
+  if (compactIndex < 0) {
+    return null;
+  }
+  const start = normalized.map[compactIndex] ?? 0;
+  const end = normalized.map[Math.min(normalized.map.length - 1, compactIndex + compactNeedle.length - 1)] ?? start;
+  return {
+    start,
+    end: Math.min(text.length, end + 1)
+  };
+}
+
+function normalizeTextWithMap(text: string) {
+  let normalized = "";
+  const map: number[] = [];
+  let previousWasSpace = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index] || "";
+    if (/\s/.test(char)) {
+      if (!previousWasSpace) {
+        normalized += " ";
+        map.push(index);
+        previousWasSpace = true;
+      }
+      continue;
+    }
+    normalized += char;
+    map.push(index);
+    previousWasSpace = false;
+  }
+  return { text: normalized, map };
 }
 
 function refItemKnowledgeBaseIds(refItem: SearchEvidenceRef, result: WorkspaceAskResponse | WorkspaceSearchResponse) {

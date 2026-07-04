@@ -27,6 +27,7 @@
 - Ask 结果中的 `EvidenceWindow` 已升级为 citation inspector，展示 citation 坐标、KB 归属、source window policy、score、原文字符范围、URL 和原文窗口。
 - 新增 `GET /workspace/reader/source`，按 `source_item_id` 返回当前用户可见且 KB scope 覆盖的 source、documents、chunks、passage windows 和 `scope_applied`。
 - Citation inspector 增加“查看原文”动作，拉取 reader source 后在同一侧栏展开 ReaderPane，展示原文正文和按 ordinal 排列的 chunks。
+- ReaderPane 已把 citation 的 `source_window.start_char/end_char` 或 source window 文本映射回原文正文与 chunk，打开原文时会围绕引用位置截取上下文并高亮命中段落。
 - Citation inspector 增加“追问这段”动作。
 - Today/Ask composer 会把选中的 citation 转成下一问草稿，并显示可清除的原文焦点 chip。
 - 下一问会把该 citation 的 `source_item_id` 注入 Ask `scope.source_item_ids`，避免从原文继续问时范围回退到整个 KB。
@@ -36,7 +37,7 @@
 
 - `npm run build` 通过。
 - `PYTHONPATH=..:.:src pytest -q tests/test_knowledge_bases.py -k reader` 通过。
-- `npm run e2e:multi-kb-ask -- --list` 通过，确认真实浏览器 e2e spec 可发现且不会在 discovery 阶段要求本地密码。
+- `npm run e2e:multi-kb-ask -- --list` 通过，确认真实浏览器 e2e spec 可发现且不会在 discovery 阶段要求本地密码；该 spec 已覆盖 ReaderPane 高亮包含 alpha secret 且不包含 beta secret。
 - `./scripts/pska-phase1-multikb-release-gate` 通过，覆盖 PSKA core `494 passed`、frontend build、FastReAct contracts `75 passed`、PSKA/FastReAct `git diff --check`。
 - `./scripts/pska-fastreact-kb-scope-smoke --timeout-seconds 240` 通过，使用真实 PSKA service、真实 FastReAct daemon、DeepSeek `deepseek-v4-flash` 和 PSKA HTTP MCP；FastReAct 实际调用 `pska_pska_search` / `pska_pska_read_evidence_context` 并保留 hard KB/source scope，临时 alpha/beta 数据清理后 residue 全 0。
 
@@ -55,6 +56,5 @@ PSKA_E2E_PASSWORD="<local AuthNode password>" \
 
 ## 下一步
 
-- 原文定位：把 `source_window.start_char/end_char` 与文档正文片段高亮关联起来。
 - CitationInspector 复用到 Graph/Writing 引用展示。
 - no-answer diagnostics 进一步压缩成用户能直接行动的修复建议。
