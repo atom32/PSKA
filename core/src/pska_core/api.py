@@ -4307,6 +4307,7 @@ class PSKAApi:
             source_items = [item for item in source_items if item.source_item_id in requested_source_ids]
         source_items = source_items[:limit]
         source_ids = {item.source_item_id for item in source_items}
+        source_label_by_id = {item.source_item_id: item.title or item.source_item_id for item in source_items}
         documents = self.store.list_documents_for_sources(source_ids)
         chunks = self.store.list_chunks_for_sources(source_ids)
         claims = self.store.list_knowledge_claims(owner_user_id=owner_user_id, tenant_id=tenant_id, source_item_ids=source_ids, limit=limit * 4)
@@ -4490,6 +4491,19 @@ class PSKAApi:
                     for kind in _string_list((getattr(mention, "metadata", {}) or {}).get("support_kinds"))
                 }
             )
+            summary = f"{len(source_refs)} 个资料条目通过强支撑共同指向“{topic.label}”（{', '.join(support_kinds[:4]) or 'support'}），建议 Review 后决定是否写入长期图谱。"
+            members = [
+                {"entity_type": "topic", "label": topic.label, "role": "topic"},
+                *[
+                    {
+                        "entity_type": "source_item",
+                        "label": source_label_by_id.get(str(ref.get("source_item_id") or ""), str(ref.get("source_item_id") or "source")),
+                        "role": "evidence_source",
+                    }
+                    for ref in source_refs[:8]
+                    if ref.get("source_item_id")
+                ],
+            ]
             review_id = _linking_review_stable_id(tenant_id=tenant_id, owner_user_id=owner_user_id, topic_id=topic_id, source_refs=source_refs)
             review_item = ReviewItem(
                 review_item_id=review_id,
@@ -4499,12 +4513,14 @@ class PSKAApi:
                 proposal={
                     "kind": "linking_digest_relationship",
                     "relationship": "shared_topic",
+                    "relation_type": "shared_topic",
                     "topic_id": topic.topic_id,
                     "topic_label": topic.label,
                     "source_refs": source_refs,
                     "support_ids": support_ids,
                     "support_kinds": support_kinds,
                     "support_artifacts": support_artifacts,
+                    "members": members,
                     "entity_ids": [],
                     "claim_ids": claim_ids,
                     "quality_tier": "strong",
@@ -4512,7 +4528,8 @@ class PSKAApi:
                     "review_eligible": True,
                     "producer": "pska.linking_digest",
                     "confidence": min(0.9, max(0.55, sum(mention.confidence for mention in eligible_mentions) / max(1, len(eligible_mentions)))),
-                    "plain_text_summary": f"{len(source_refs)} 个资料条目通过强支撑共同指向“{topic.label}”（{', '.join(support_kinds[:4]) or 'support'}），建议 Review 后决定是否写入长期图谱。",
+                    "evidence_text": summary,
+                    "plain_text_summary": summary,
                 },
                 tenant_id=tenant_id,
             )
@@ -6686,7 +6703,7 @@ def _console_review_item(item: dict[str, Any]) -> dict[str, Any]:
     source_refs = _console_review_source_refs(proposal)
     source_ref_status = "present" if source_refs else "missing"
     apply_supported = _console_review_apply_supported(review_type, proposal)
-    apply_ready = apply_supported and _console_review_apply_ready(review_type, source_refs)
+    apply_ready = apply_supported and _console_review_apply_ready(review_type, source_refs, proposal)
     status = str(item.get("status") or "")
     actions = ["approve", "reject"] if status == "pending" else []
     if status == "pending" and apply_ready:
@@ -6802,10 +6819,22 @@ def _console_review_apply_supported(review_type: str, proposal: dict[str, Any]) 
     return review_type == "low_confidence" and bool(proposal.get("memory_candidate") or proposal.get("text"))
 
 
-def _console_review_apply_ready(review_type: str, source_refs: list[dict[str, Any]]) -> bool:
+def _console_review_apply_ready(review_type: str, source_refs: list[dict[str, Any]], proposal: dict[str, Any] | None = None) -> bool:
+    proposal = proposal or {}
     if review_type == "share_proposal":
         return True
-    if review_type in {"profile_update", "relationship_candidate", "memory_candidate", "low_confidence"}:
+    if review_type == "relationship_candidate":
+        try:
+            confidence = float(proposal.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        return (
+            bool(source_refs)
+            and bool(str(proposal.get("relation_type") or "").strip())
+            and len(_list_of_dicts(proposal.get("members"))) >= 2
+            and 0 < confidence <= 1
+        )
+    if review_type in {"profile_update", "memory_candidate", "low_confidence"}:
         return bool(source_refs)
     return False
 

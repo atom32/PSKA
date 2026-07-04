@@ -687,6 +687,7 @@ def test_linking_digest_creates_topic_paths_and_delete_marks_supports() -> None:
     paths = api.workspace_graph_paths(query="commonprotocol")
     graph = api.workspace_graph_data()
     support_status_before = {support.status for support in api.store.artifact_supports.values()}
+    review_item = linking["review_items"][0]
     deleted = api.workspace_documents_delete({"source_item_ids": [first], "execute": True, "reason": "test topic support delete"})
     support_status_after = {support.status for support in api.store.artifact_supports.values() if support.source_item_id == first}
     topics_after_delete = api.workspace_graph_topics(query="commonprotocol")
@@ -702,11 +703,44 @@ def test_linking_digest_creates_topic_paths_and_delete_marks_supports() -> None:
     assert all(topic["review_eligible"] for topic in topics["topics"] if topic["normalized_label"] == "commonprotocol")
     assert paths["topic_paths"]
     assert any(node["type"] == "topic" for node in graph["nodes"])
+    assert review_item["proposal"]["relation_type"] == "shared_topic"
+    assert len(review_item["proposal"]["members"]) >= 2
     assert "active" in support_status_before
     assert deleted["deleted"]["stale_artifact_supports"] >= 1
     assert support_status_after == {"evidence_removed"}
     assert first not in refs_after_delete
     assert second in refs_after_delete
+
+
+def test_linking_digest_relationship_candidate_can_apply_to_hyperedge() -> None:
+    api = _api()
+    first = api.create_text_source(
+        {
+            "title": "Applyprotocol Alpha memo",
+            "text": "applyprotocol connects ingestion, review, and graph evidence for project alpha.",
+            "digest_mode": "manual",
+        }
+    )["source_item_ids"][0]
+    second = api.create_text_source(
+        {
+            "title": "Applyprotocol Beta memo",
+            "text": "project beta also uses applyprotocol to connect graph evidence and review.",
+            "digest_mode": "manual",
+        }
+    )["source_item_ids"][0]
+
+    linking = api.workspace_digest_linking_run({"source_item_ids": [first, second]})
+    review_item = linking["review_items"][0]
+    applied_review = ReviewService(api.store).approve_and_apply(review_item["review_item_id"], actor_user_id="user_primary")
+    applied_edges = list(api.store.hyperedges.values())
+    applied_edge = next(edge for edge in applied_edges if edge.relation_type == "shared_topic")
+    applied_members = [member for member in api.store.hyperedge_members if member.hyperedge_id == applied_edge.hyperedge_id]
+
+    assert review_item["proposal"]["relation_type"] == "shared_topic"
+    assert len(review_item["proposal"]["members"]) >= 2
+    assert applied_review.status == "applied"
+    assert {ref.source_item_id for ref in applied_edge.source_refs} == {first, second}
+    assert len(applied_members) >= 2
 
 
 def test_linking_digest_ignores_negated_topic_mentions() -> None:

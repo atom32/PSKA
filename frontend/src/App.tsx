@@ -1568,7 +1568,13 @@ function ReviewCenter({
 
       <div className="review-filter" role="tablist" aria-label="Review 状态">
         {["pending", "approved", "rejected", "applied"].map((value) => (
-          <button className={status === value ? "active" : ""} type="button" key={value} onClick={() => setStatus(value)}>
+          <button
+            className={status === value ? "active" : ""}
+            data-testid={`review-filter-${value}`}
+            type="button"
+            key={value}
+            onClick={() => setStatus(value)}
+          >
             {statusLabel(value)}
           </button>
         ))}
@@ -1664,20 +1670,25 @@ function ReviewCenter({
                 <small>{actions[item.review_item_id] || item.status || "pending"}</small>
                 {item.status === "pending" ? (
                   <>
-                    <button type="button" onClick={() => runReviewAction(item, "approve")}>
+                    <button data-testid="review-action-approve" type="button" onClick={() => runReviewAction(item, "approve")}>
                       批准
                     </button>
                     {item.recommended_actions?.includes("approve_apply") && (
-                      <button className="primary" type="button" onClick={() => runReviewAction(item, "approve_apply")}>
+                      <button
+                        className="primary"
+                        data-testid="review-action-approve-apply"
+                        type="button"
+                        onClick={() => runReviewAction(item, "approve_apply")}
+                      >
                         批准并应用
                       </button>
                     )}
-                    <button className="danger" type="button" onClick={() => runReviewAction(item, "reject")}>
+                    <button className="danger" data-testid="review-action-reject" type="button" onClick={() => runReviewAction(item, "reject")}>
                       拒绝
                     </button>
                   </>
                 ) : item.can_apply_now ? (
-                  <button className="primary" type="button" onClick={() => runReviewAction(item, "apply")}>
+                  <button className="primary" data-testid="review-action-apply" type="button" onClick={() => runReviewAction(item, "apply")}>
                     应用
                   </button>
                 ) : null}

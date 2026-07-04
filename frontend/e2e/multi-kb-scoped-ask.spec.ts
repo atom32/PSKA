@@ -223,10 +223,21 @@ async function expectTodayReviewHealth(page: Page, fixture: ReviewHealthFixture)
 
 async function expectReviewCenterHealth(page: Page, fixture: ReviewHealthFixture) {
   await openWorkspace(page, "Review");
-  const reviewCard = page.locator(".review-center-item").filter({ hasText: fixture.topic }).first();
+  await page.getByTestId("review-filter-pending").click();
+  const reviewCard = page.locator(".review-center-item").filter({ hasText: fixture.reviewItemId }).first();
   await expect(reviewCard).toBeVisible({ timeout: 45_000 });
+  await expect(reviewCard).toContainText(fixture.topic);
   await expect(reviewCard.getByTestId("review-evidence-health")).toBeVisible();
   await expect(reviewCard.getByTestId("review-evidence-health")).toContainText("可审核");
+  await expect(reviewCard.getByTestId("review-action-approve-apply")).toBeVisible();
+  await reviewCard.getByTestId("review-action-approve-apply").click();
+  await expect(page.locator(".review-center-item").filter({ hasText: fixture.reviewItemId })).toHaveCount(0, { timeout: 45_000 });
+
+  await page.getByTestId("review-filter-applied").click();
+  const appliedCard = page.locator(".review-center-item").filter({ hasText: fixture.reviewItemId }).first();
+  await expect(appliedCard).toBeVisible({ timeout: 45_000 });
+  await expect(appliedCard).toContainText(fixture.topic);
+  await expect(appliedCard).toContainText(/Created graph relationship|已应用|applied/);
 }
 
 async function openWorkspace(page: Page, label: string) {
@@ -265,24 +276,30 @@ async function askViaBrowserComposer(
 ) {
   await page.getByTestId("today-ask-input").fill(query);
   await page.getByTestId("today-ask-submit").click();
-  const result = page.getByTestId("ask-result").last();
+  const result = page.getByTestId("ask-result").filter({ hasText: expected.alphaSecret }).last();
   await expect(result).toContainText(expected.alphaSecret, { timeout: 120_000 });
   await expect(result).not.toContainText(expected.betaSecret);
   await expect(result.getByTestId("ask-processing-timeline")).toContainText("检索");
   await expect(result.getByTestId("ask-processing-timeline")).toContainText("证据校验");
-  await expect(page.getByTestId("ask-evidence-inspector").last()).toContainText(expected.alphaSecret);
-  await page.getByTestId("open-reader-pane").last().click();
-  await expect(page.getByTestId("reader-pane").last()).toContainText(expected.alphaSecret);
-  await expect(page.getByTestId("reader-highlight").last()).toContainText(expected.alphaSecret);
-  await expect(page.getByTestId("reader-pane").last()).not.toContainText(expected.betaSecret);
-  await page.getByTestId("ask-from-evidence").last().click();
+  await expect(page.getByTestId("today-ask-submit")).toBeEnabled({ timeout: 120_000 });
+  await expect(page.locator(".ask-message.assistant.live").filter({ hasText: expected.alphaSecret })).toHaveCount(0, { timeout: 120_000 });
+
+  const stableResult = page.getByTestId("ask-result").filter({ hasText: expected.alphaSecret }).last();
+  await expect(stableResult).toContainText(expected.alphaSecret);
+  const evidenceInspector = stableResult.getByTestId("ask-evidence-inspector").filter({ hasText: expected.alphaSecret }).first();
+  await expect(evidenceInspector).toContainText(expected.alphaSecret);
+  await evidenceInspector.getByTestId("open-reader-pane").click();
+  await expect(evidenceInspector.getByTestId("reader-pane")).toContainText(expected.alphaSecret);
+  await expect(evidenceInspector.getByTestId("reader-highlight").first()).toContainText(expected.alphaSecret);
+  await expect(evidenceInspector.getByTestId("reader-pane")).not.toContainText(expected.betaSecret);
+  await evidenceInspector.getByTestId("ask-from-evidence").click();
   await expect(page.getByTestId("reader-focus-chip")).toBeVisible();
   await expect(page.getByTestId("today-ask-input")).toHaveValue(new RegExp(escapeRegExp(expected.alphaSourceItemId)));
   await saveAskResultToWriting(page, expected);
 }
 
 async function saveAskResultToWriting(page: Page, expected: { marker: string; alphaSecret: string; betaSecret: string }) {
-  const result = page.getByTestId("ask-result").last();
+  const result = page.getByTestId("ask-result").filter({ hasText: expected.alphaSecret }).last();
   const createBrief = result.getByTestId("ask-create-brief");
   await expect(createBrief).toBeEnabled({ timeout: 45_000 });
   await createBrief.click();
@@ -404,6 +421,50 @@ where tenant_id = ${tenant}
     or mention_text like any(${markerArray})
     or metadata::text like any(${markerArray})
   );
+with target_items as (
+  select source_item_id from source_items
+  where tenant_id = ${tenant} and owner_user_id = ${owner} and ${sourceMarkerClause}
+), target_hyperedges as (
+  select hyperedge_id from hyperedges
+  where tenant_id = ${tenant}
+    and owner_user_id = ${owner}
+    and (
+      evidence_text like any(${markerArray})
+      or source_refs::text like any(${markerArray})
+      or exists (
+        select 1 from target_items
+        where hyperedges.source_refs::text like '%' || target_items.source_item_id || '%'
+      )
+    )
+)
+delete from hyperedge_members
+where hyperedge_id in (select hyperedge_id from target_hyperedges);
+with target_items as (
+  select source_item_id from source_items
+  where tenant_id = ${tenant} and owner_user_id = ${owner} and ${sourceMarkerClause}
+), target_hyperedges as (
+  select hyperedge_id from hyperedges
+  where tenant_id = ${tenant}
+    and owner_user_id = ${owner}
+    and (
+      evidence_text like any(${markerArray})
+      or source_refs::text like any(${markerArray})
+      or exists (
+        select 1 from target_items
+        where hyperedges.source_refs::text like '%' || target_items.source_item_id || '%'
+      )
+    )
+)
+delete from hyperedges
+where hyperedge_id in (select hyperedge_id from target_hyperedges);
+delete from entities
+where tenant_id = ${tenant}
+  and owner_user_id = ${owner}
+  and (label like any(${markerArray}) or metadata::text like any(${markerArray}))
+  and not exists (
+    select 1 from hyperedge_members
+    where hyperedge_members.entity_id = entities.entity_id
+  );
 delete from review_items
 where tenant_id = ${tenant}
   and owner_user_id = ${owner}
@@ -492,7 +553,10 @@ select
   (select count(*) from artifact_supports where tenant_id = ${tenant} and owner_user_id = ${owner} and (artifact_id like any(${markerArray}) or metadata::text like any(${markerArray}))) as artifact_supports,
   (select count(*) from writing_boards where tenant_id = ${tenant} and owner_user_id = ${owner} and (title like any(${markerArray}) or goal like any(${markerArray}) or metadata::text like any(${markerArray}))) as writing_boards,
   (select count(*) from writing_nodes where tenant_id = ${tenant} and owner_user_id = ${owner} and (title like any(${markerArray}) or body_markdown like any(${markerArray}) or source_refs::text like any(${markerArray}) or citations::text like any(${markerArray}) or metadata::text like any(${markerArray}))) as writing_nodes,
-  (select count(*) from writing_edges where tenant_id = ${tenant} and owner_user_id = ${owner} and metadata::text like any(${markerArray})) as writing_edges;
+  (select count(*) from writing_edges where tenant_id = ${tenant} and owner_user_id = ${owner} and metadata::text like any(${markerArray})) as writing_edges,
+  (select count(*) from entities where tenant_id = ${tenant} and owner_user_id = ${owner} and (label like any(${markerArray}) or metadata::text like any(${markerArray}))) as entities,
+  (select count(*) from hyperedges where tenant_id = ${tenant} and owner_user_id = ${owner} and (evidence_text like any(${markerArray}) or source_refs::text like any(${markerArray}))) as hyperedges,
+  (select count(*) from hyperedge_members join entities on entities.entity_id = hyperedge_members.entity_id where entities.tenant_id = ${tenant} and entities.owner_user_id = ${owner} and (entities.label like any(${markerArray}) or entities.metadata::text like any(${markerArray}))) as hyperedge_members;
 `;
   const output = execFileSync("psql", ["-X", "-d", databaseUrl, "-A", "-F", ",", "-q", "-c", sql], {
     encoding: "utf8",
@@ -501,7 +565,7 @@ select
   const residue = output
     .split(/\r?\n/)
     .map((line) => line.trim())
-    .find((line) => /^0,0,0,0,0,0,0,0,0,0,0,0,0$/.test(line));
+    .find((line) => /^0(?:,0){15}$/.test(line));
   if (!residue) {
     throw new Error(`multi-KB scoped Ask e2e cleanup left residue for marker ${marker}: ${output}`);
   }

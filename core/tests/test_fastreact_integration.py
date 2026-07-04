@@ -2298,6 +2298,31 @@ def test_local_console_review_inbox_summarizes_pending_reviews() -> None:
             proposal={"confidence": 0.3},
         )
     )
+    api.store.add_review_item(
+        ReviewItem(
+            review_item_id="rev_relationship_incomplete",
+            owner_user_id="user_primary",
+            review_type=ReviewType.RELATIONSHIP_CANDIDATE,
+            title="Incomplete relationship",
+            proposal={"confidence": 0.72, "source_refs": [{"source_item_id": "src_rel"}]},
+        )
+    )
+    api.store.add_review_item(
+        ReviewItem(
+            review_item_id="rev_relationship_missing_confidence",
+            owner_user_id="user_primary",
+            review_type=ReviewType.RELATIONSHIP_CANDIDATE,
+            title="Relationship without confidence",
+            proposal={
+                "relation_type": "related_to",
+                "source_refs": [{"source_item_id": "src_rel"}],
+                "members": [
+                    {"entity_type": "topic", "label": "Alpha"},
+                    {"entity_type": "topic", "label": "Beta"},
+                ],
+            },
+        )
+    )
 
     with _http_server(api) as base_url:
         page_status, _headers, body = _http_text(base_url, "GET", "/console/reviews")
@@ -2307,7 +2332,7 @@ def test_local_console_review_inbox_summarizes_pending_reviews() -> None:
     assert "/console/reviews.js" in body
     assert data_status == 200
     by_id = {item["review_item_id"]: item for item in payload["review_items"]}
-    assert payload["total_matching"] == 3
+    assert payload["total_matching"] == 5
     assert by_id["rev_profile_ready"]["review_type"] == "profile_update"
     assert by_id["rev_profile_ready"]["confidence"] == 0.82
     assert by_id["rev_profile_ready"]["source_ref_status"] == "present"
@@ -2320,6 +2345,12 @@ def test_local_console_review_inbox_summarizes_pending_reviews() -> None:
     assert "approve_apply" not in by_id["rev_profile_missing_source"]["recommended_actions"]
     assert by_id["rev_conflict"]["apply_supported"] is False
     assert by_id["rev_conflict"]["apply_ready"] is False
+    assert by_id["rev_relationship_incomplete"]["apply_supported"] is True
+    assert by_id["rev_relationship_incomplete"]["apply_ready"] is False
+    assert "approve_apply" not in by_id["rev_relationship_incomplete"]["recommended_actions"]
+    assert by_id["rev_relationship_missing_confidence"]["apply_supported"] is True
+    assert by_id["rev_relationship_missing_confidence"]["apply_ready"] is False
+    assert "approve_apply" not in by_id["rev_relationship_missing_confidence"]["recommended_actions"]
 
 
 def test_local_console_review_actions_use_review_api_and_audit() -> None:
