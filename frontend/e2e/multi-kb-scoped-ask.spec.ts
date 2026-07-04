@@ -80,6 +80,7 @@ test("browser session scoped Ask does not leak citations across knowledge bases"
     await openWorkspace(page, "Today");
     await selectCurrentKnowledgeBase(page, empty.knowledge_base_id);
     await expectKnowledgeBaseAskPreflight(page, empty, "empty");
+    await expectKnowledgeBaseLinkedEmptyStates(page, empty);
     await selectCurrentKnowledgeBase(page, alpha.knowledge_base_id);
     await expectKnowledgeBaseScopeMenuSearch(page, alpha, beta);
     await openWorkspace(page, "Today");
@@ -300,6 +301,32 @@ async function expectKnowledgeBaseAskPreflight(page: Page, knowledgeBase: Knowle
     await expect(preflight).toContainText("当前 KB 可直接 Ask");
     await expect(preflight.getByTestId("knowledge-base-ask-open-processing")).toBeVisible();
   }
+}
+
+async function expectKnowledgeBaseLinkedEmptyStates(page: Page, knowledgeBase: KnowledgeBase) {
+  await openWorkspace(page, "资料库");
+  await page.getByTestId("knowledge-base-tab-graph").click();
+  const graphPanel = page.getByTestId("knowledge-base-graph-panel");
+  await expect(graphPanel).toContainText(knowledgeBase.name, { timeout: 45_000 });
+  const graphEmpty = graphPanel.getByTestId("knowledge-base-graph-empty");
+  await expect(graphEmpty).toBeVisible({ timeout: 45_000 });
+  await expect(graphEmpty).toContainText("还没有 Graph 中心节点");
+  await expect(graphEmpty.getByTestId("knowledge-base-empty-open-processing")).toBeVisible();
+  await expect(graphEmpty.getByTestId("knowledge-base-empty-open-graph")).toBeVisible();
+  await graphEmpty.getByTestId("knowledge-base-empty-open-processing").click();
+  await expect(page.locator(".chunk-preview-surface")).toBeVisible({ timeout: 45_000 });
+
+  await page.getByTestId("knowledge-base-tab-writing").click();
+  const writingPanel = page.getByTestId("knowledge-base-writing-panel");
+  await expect(writingPanel).toContainText(knowledgeBase.name, { timeout: 45_000 });
+  const writingEmpty = writingPanel.getByTestId("knowledge-base-writing-empty");
+  await expect(writingEmpty).toBeVisible({ timeout: 45_000 });
+  await expect(writingEmpty).toContainText("还没有当前 KB 的 Writing board");
+  await expect(writingEmpty.getByTestId("knowledge-base-empty-open-ask")).toBeVisible();
+  await expect(writingEmpty.getByTestId("knowledge-base-empty-create-writing")).toBeVisible();
+  await expect(writingEmpty.getByTestId("knowledge-base-empty-open-writing")).toBeVisible();
+  await writingEmpty.getByTestId("knowledge-base-empty-open-ask").click();
+  await expect(page.getByTestId("knowledge-base-ask-input")).toBeVisible({ timeout: 45_000 });
 }
 
 async function expectKnowledgeBaseDetailTabs(page: Page) {

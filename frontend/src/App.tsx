@@ -7186,8 +7186,10 @@ function CorpusWorkspace({
           graph={graphPreview}
           isLoading={graphPreviewQuery.isLoading}
           isError={graphPreviewQuery.isError}
+          currentKnowledgeBase={currentKnowledgeBase}
           currentKnowledgeBaseName={currentKnowledgeBase?.name || "当前知识库"}
           onOpenGraph={() => onOpenWorkspace("graph")}
+          onOpenProcessing={() => setKnowledgeBaseTab("processing")}
         />
       ) : null}
 
@@ -7203,6 +7205,7 @@ function CorpusWorkspace({
           createStatus={kbWritingCreateStatus}
           createMessage={kbWritingCreateMessage}
           onCreateBoard={() => void handleCreateKnowledgeBaseWritingBoard()}
+          onOpenAsk={() => setKnowledgeBaseTab("ask")}
         />
       ) : null}
 
@@ -7742,22 +7745,31 @@ function KnowledgeBaseGraphPanel({
   graph,
   isLoading,
   isError,
+  currentKnowledgeBase,
   currentKnowledgeBaseName,
-  onOpenGraph
+  onOpenGraph,
+  onOpenProcessing
 }: {
   graph?: WorkspaceGraphResponse;
   isLoading: boolean;
   isError: boolean;
+  currentKnowledgeBase?: KnowledgeBase;
   currentKnowledgeBaseName: string;
   onOpenGraph: () => void;
+  onOpenProcessing: () => void;
 }) {
+  const readiness = currentKnowledgeBase?.readiness || {};
+  const knowledgeBaseCounts = currentKnowledgeBase?.counts || {};
+  const sourceItemCount = firstFiniteNumber(readiness.source_item_count, knowledgeBaseCounts.source_items) || 0;
+  const chunkCount = firstFiniteNumber(readiness.active_chunk_count, readiness.chunk_count, knowledgeBaseCounts.active_chunks, knowledgeBaseCounts.chunks) || 0;
+  const hasKnowledgeBaseInputs = sourceItemCount > 0 || chunkCount > 0 || readiness.has_source_items === true || readiness.has_chunks === true;
   const projection = graph?.projection || {};
-  const counts = graph?.counts || {};
+  const counts = hasKnowledgeBaseInputs ? graph?.counts || {} : {};
   const evidenceHealth = graph?.insights?.evidence_health || {};
-  const nodeCount = firstFiniteNumber(projection.nodes, graph?.nodes?.length) || 0;
-  const edgeCount = firstFiniteNumber(projection.edges, graph?.edges?.length) || 0;
-  const groundedRatio = firstFiniteNumber(evidenceHealth.grounded_ratio);
-  const centralNodes = graph?.insights?.central_nodes || [];
+  const nodeCount = hasKnowledgeBaseInputs ? firstFiniteNumber(projection.nodes, graph?.nodes?.length) || 0 : 0;
+  const edgeCount = hasKnowledgeBaseInputs ? firstFiniteNumber(projection.edges, graph?.edges?.length) || 0 : 0;
+  const groundedRatio = hasKnowledgeBaseInputs ? firstFiniteNumber(evidenceHealth.grounded_ratio) : undefined;
+  const centralNodes = hasKnowledgeBaseInputs ? graph?.insights?.central_nodes || [] : [];
   return (
     <section className="today-section kb-linked-panel" data-testid="knowledge-base-graph-panel">
       <SectionTitle icon={<Hash size={18} />} title="Graph / Memory" subtitle={currentKnowledgeBaseName} />
@@ -7788,7 +7800,15 @@ function KnowledgeBaseGraphPanel({
           ))}
         </div>
       ) : !isLoading ? (
-        <div className="review-empty compact">当前知识库还没有可展示的 Graph 中心节点。</div>
+        <KnowledgeBaseLinkedEmptyState
+          testId="knowledge-base-graph-empty"
+          title="还没有 Graph 中心节点"
+          detail="当前知识库暂时没有可展示的实体、关系或记忆。先处理资料生成结构化证据，或打开 Graph 工作区查看当前范围。"
+          actions={[
+            { label: "查看处理", icon: <TextCursorInput size={15} />, onClick: onOpenProcessing, testId: "knowledge-base-empty-open-processing" },
+            { label: "打开 Graph", icon: <Hash size={15} />, onClick: onOpenGraph, testId: "knowledge-base-empty-open-graph" }
+          ]}
+        />
       ) : null}
     </section>
   );
@@ -7804,7 +7824,8 @@ function KnowledgeBaseWritingPanel({
   onOpenWriting,
   createStatus,
   createMessage,
-  onCreateBoard
+  onCreateBoard,
+  onOpenAsk
 }: {
   boards: WritingBoard[];
   isLoading: boolean;
@@ -7816,6 +7837,7 @@ function KnowledgeBaseWritingPanel({
   createStatus: "idle" | "creating" | "success" | "error";
   createMessage: string;
   onCreateBoard: () => void;
+  onOpenAsk: () => void;
 }) {
   const briefCount = boards.filter((board) => writingBoardLooksLikeBrief(board)).length;
   const latest = boards[0];
@@ -7860,9 +7882,47 @@ function KnowledgeBaseWritingPanel({
           })}
         </div>
       ) : !isLoading ? (
-        <div className="review-empty compact">当前知识库还没有绑定的 Writing board。可从 Ask、Digest 或 Graph 保存证据后出现在这里。</div>
+        <KnowledgeBaseLinkedEmptyState
+          testId="knowledge-base-writing-empty"
+          title="还没有当前 KB 的 Writing board"
+          detail="可以从当前知识库 Ask 生成 Brief，也可以先创建一块绑定当前 KB scope 的空白写作画布。"
+          actions={[
+            { label: "去 Ask", icon: <MessageCircle size={15} />, onClick: onOpenAsk, testId: "knowledge-base-empty-open-ask" },
+            { label: createStatus === "creating" ? "创建中" : "新建画布", icon: <TextCursorInput size={15} />, onClick: onCreateBoard, disabled: createStatus === "creating", testId: "knowledge-base-empty-create-writing" },
+            { label: "打开 Writing", icon: <TextCursorInput size={15} />, onClick: () => onOpenWriting(), testId: "knowledge-base-empty-open-writing" }
+          ]}
+        />
       ) : null}
     </section>
+  );
+}
+
+function KnowledgeBaseLinkedEmptyState({
+  testId,
+  title,
+  detail,
+  actions
+}: {
+  testId: string;
+  title: string;
+  detail: string;
+  actions: Array<{ label: string; icon: ReactNode; onClick: () => void; disabled?: boolean; testId: string }>;
+}) {
+  return (
+    <div className="kb-linked-empty-state" data-testid={testId}>
+      <div>
+        <strong>{title}</strong>
+        <p>{detail}</p>
+      </div>
+      <div className="kb-linked-empty-actions">
+        {actions.map((action) => (
+          <button type="button" key={action.testId} onClick={action.onClick} disabled={action.disabled} data-testid={action.testId}>
+            {action.icon}
+            <span>{action.label}</span>
+          </button>
+        ))}
+      </div>
+    </div>
   );
 }
 
