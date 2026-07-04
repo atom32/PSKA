@@ -5858,6 +5858,10 @@ function CorpusWorkspace({
   const [knowledgeBaseSearchResult, setKnowledgeBaseSearchResult] = useState<KnowledgeBaseSearchResponse | null>(null);
   const [knowledgeBaseSearchStatus, setKnowledgeBaseSearchStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
   const [knowledgeBaseSearchError, setKnowledgeBaseSearchError] = useState("");
+  const [knowledgeBaseAskQuery, setKnowledgeBaseAskQuery] = useState("");
+  const [knowledgeBaseAskResult, setKnowledgeBaseAskResult] = useState<WorkspaceAskResponse | null>(null);
+  const [knowledgeBaseAskStatus, setKnowledgeBaseAskStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
+  const [knowledgeBaseAskError, setKnowledgeBaseAskError] = useState("");
   const [kbAskCreateStatus, setKbAskCreateStatus] = useState<"idle" | "creating" | "success" | "error">("idle");
   const [kbAskCreateMessage, setKbAskCreateMessage] = useState("");
   const [chunkPreviewText, setChunkPreviewText] = useState("");
@@ -6013,6 +6017,10 @@ function CorpusWorkspace({
     setKnowledgeBaseSearchResult(null);
     setKnowledgeBaseSearchStatus("idle");
     setKnowledgeBaseSearchError("");
+    setKnowledgeBaseAskQuery("");
+    setKnowledgeBaseAskResult(null);
+    setKnowledgeBaseAskStatus("idle");
+    setKnowledgeBaseAskError("");
     setKbAskCreateStatus("idle");
     setKbAskCreateMessage("");
     setKbWritingCreateStatus("idle");
@@ -6470,6 +6478,46 @@ function CorpusWorkspace({
     } catch (error) {
       setKnowledgeBaseSearchStatus("error");
       setKnowledgeBaseSearchError(error instanceof Error ? error.message : "知识库搜索失败。");
+    }
+  }
+
+  async function handleKnowledgeBaseAsk(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const text = knowledgeBaseAskQuery.trim();
+    const knowledgeBaseId = currentKnowledgeBase?.knowledge_base_id || currentKnowledgeBaseId;
+    const knowledgeBaseName = currentKnowledgeBase?.name || "当前知识库";
+    if (!text || !knowledgeBaseId || knowledgeBaseAskStatus === "loading") {
+      return;
+    }
+    const scope = {
+      mode: "hard",
+      knowledge_base_ids: [knowledgeBaseId],
+      knowledge_base_name: knowledgeBaseName
+    };
+    setKnowledgeBaseAskStatus("loading");
+    setKnowledgeBaseAskError("");
+    let latestAskResult = pendingAskResult(text);
+    setKnowledgeBaseAskResult(latestAskResult);
+    try {
+      const result = await askWorkspaceStream(
+        text,
+        serviceToken,
+        "quick",
+        "knowledge-base",
+        ({ result: partial }) => {
+          latestAskResult = { ...partial };
+          setKnowledgeBaseAskResult(latestAskResult);
+        },
+        { topK: 8, scope, skipIntentClassifier: true }
+      );
+      setKnowledgeBaseAskResult(result);
+      setKnowledgeBaseAskStatus(result.ok === false || result.error ? "error" : "success");
+      setKnowledgeBaseAskError(result.error ? displaySearchError(result.error) : "");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "当前知识库 Ask 失败。";
+      setKnowledgeBaseAskStatus("error");
+      setKnowledgeBaseAskError(message);
+      setKnowledgeBaseAskResult({ ...latestAskResult, ok: false, status: "failed", query: text, error: message });
     }
   }
 
@@ -6976,6 +7024,20 @@ function CorpusWorkspace({
 
       {knowledgeBaseTab === "ask" ? (
       <>
+        <KnowledgeBaseAskPanel
+          query={knowledgeBaseAskQuery}
+          status={knowledgeBaseAskStatus}
+          error={knowledgeBaseAskError}
+          result={knowledgeBaseAskResult}
+          currentKnowledgeBaseName={currentKnowledgeBase?.name || "当前知识库"}
+          currentKnowledgeBaseReadyLabel={readinessPill.label}
+          disabled={!currentKnowledgeBaseId}
+          serviceToken={serviceToken}
+          knowledgeBases={knowledgeBases}
+          onQueryChange={setKnowledgeBaseAskQuery}
+          onSubmit={handleKnowledgeBaseAsk}
+          onOpenWriting={onOpenWriting || (() => onOpenWorkspace("writing"))}
+        />
         <KnowledgeBaseSearchPanel
           query={knowledgeBaseSearchQuery}
           status={knowledgeBaseSearchStatus}
@@ -7227,6 +7289,69 @@ function CorpusWorkspace({
           ) : null}
         </div>
       )
+      ) : null}
+    </section>
+  );
+}
+
+function KnowledgeBaseAskPanel({
+  query,
+  status,
+  error,
+  result,
+  currentKnowledgeBaseName,
+  currentKnowledgeBaseReadyLabel,
+  disabled,
+  serviceToken,
+  knowledgeBases,
+  onQueryChange,
+  onSubmit,
+  onOpenWriting
+}: {
+  query: string;
+  status: "idle" | "loading" | "success" | "error";
+  error: string;
+  result: WorkspaceAskResponse | null;
+  currentKnowledgeBaseName: string;
+  currentKnowledgeBaseReadyLabel: string;
+  disabled: boolean;
+  serviceToken: PSKAAuth;
+  knowledgeBases: KnowledgeBase[];
+  onQueryChange: (value: string) => void;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  onOpenWriting: (boardId?: string) => void;
+}) {
+  const pending = status === "loading";
+  return (
+    <section className="today-section kb-ask-panel" data-testid="knowledge-base-inline-ask-panel">
+      <SectionTitle icon={<MessageCircle size={18} />} title="询问当前知识库" subtitle={currentKnowledgeBaseName} />
+      <form className="kb-ask-form" onSubmit={onSubmit}>
+        <textarea
+          value={query}
+          onChange={(event) => onQueryChange(event.target.value)}
+          placeholder="直接询问当前知识库"
+          disabled={disabled || pending}
+          data-testid="knowledge-base-ask-input"
+        />
+        <div className="kb-ask-footer">
+          <div className="kb-search-meta" aria-label="当前知识库 Ask 状态">
+            <span>范围 当前知识库</span>
+            <span>状态 {currentKnowledgeBaseReadyLabel}</span>
+            <span>模式 hard scope</span>
+          </div>
+          <button className="primary" type="submit" disabled={disabled || pending || !query.trim()} data-testid="knowledge-base-ask-submit">
+            <Send size={15} />
+            {pending ? "查询中" : "Ask"}
+          </button>
+        </div>
+      </form>
+      {error ? <div className="review-empty error-state compact">{error}</div> : null}
+      {result ? (
+        <div className="kb-ask-result" data-testid="knowledge-base-ask-result">
+          <AskResult result={result} pending={pending} knowledgeBases={knowledgeBases} serviceToken={serviceToken} onOpenWriting={onOpenWriting} />
+        </div>
+      ) : status === "idle" ? (
+        <div className="review-empty compact">本次回答会强限定到当前知识库，并保留 citations、ReaderPane 和 Brief 入口。</div>
       ) : null}
     </section>
   );

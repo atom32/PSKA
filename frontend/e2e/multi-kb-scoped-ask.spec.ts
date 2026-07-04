@@ -127,6 +127,11 @@ test("browser session scoped Ask does not leak citations across knowledge bases"
       alphaSourceItemId
     });
     await expectKnowledgeBaseAskHistory(page, alpha, query);
+    await askViaKnowledgeBaseTab(page, query, {
+      knowledgeBaseName: alpha.name,
+      alphaSecret,
+      betaSecret
+    });
     await askViaGraphWorkspace(page, query, {
       knowledgeBaseName: alpha.name,
       alphaSecret,
@@ -282,7 +287,9 @@ async function expectKnowledgeBaseDetailTabs(page: Page) {
   await expect(page.getByTestId("corpus-search-input")).toBeVisible();
 
   await page.getByTestId("knowledge-base-tab-ask").click();
+  await expect(page.getByTestId("knowledge-base-ask-input")).toBeVisible();
   await expect(page.getByTestId("knowledge-base-search-input")).toBeVisible();
+  await expect(page.getByTestId("knowledge-base-inline-ask-panel")).toContainText("询问当前知识库");
   await expect(page.locator(".kb-search-panel")).toContainText("证据搜索");
   await expect(page.getByTestId("knowledge-base-ask-history-panel")).toBeVisible();
   await expect(page.getByTestId("knowledge-base-create-ask-conversation")).toBeVisible();
@@ -331,6 +338,26 @@ async function expectKnowledgeBaseAskHistory(page: Page, knowledgeBase: Knowledg
   await refreshedHistory.getByTestId("knowledge-base-create-ask-conversation").click();
   await expect(page.getByTestId("today-ask-form")).toBeVisible({ timeout: 45_000 });
   await expect(page.getByTestId("today-scope-picker")).toContainText(knowledgeBase.name);
+}
+
+async function askViaKnowledgeBaseTab(
+  page: Page,
+  query: string,
+  expected: { knowledgeBaseName: string; alphaSecret: string; betaSecret: string }
+) {
+  await openWorkspace(page, "资料库");
+  await page.getByTestId("knowledge-base-tab-ask").click();
+  const panel = page.getByTestId("knowledge-base-inline-ask-panel");
+  await expect(panel).toBeVisible({ timeout: 45_000 });
+  await expect(panel).toContainText(expected.knowledgeBaseName);
+  await panel.getByTestId("knowledge-base-ask-input").fill(query);
+  await panel.getByTestId("knowledge-base-ask-submit").click();
+  const result = panel.getByTestId("ask-result").filter({ hasText: expected.alphaSecret }).last();
+  await expect(result).toContainText(expected.alphaSecret, { timeout: 120_000 });
+  await expect(result).not.toContainText(expected.betaSecret);
+  const scopeStatus = result.getByTestId("ask-scope-status");
+  await expect(scopeStatus).toContainText(expected.knowledgeBaseName);
+  await expect(scopeStatus).toContainText("强限定");
 }
 
 async function expectReviewCenterHealth(page: Page, fixture: ReviewHealthFixture, hiddenFixture: ReviewHealthFixture, knowledgeBaseName: string) {
