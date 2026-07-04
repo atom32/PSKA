@@ -2065,6 +2065,7 @@ button.context-item-main {
   color: var(--muted);
   flex: 0 0 auto;
   font-size: 12px;
+  text-align: right;
 }
 
 .work-item p,
@@ -2109,6 +2110,19 @@ button.context-item-main {
 
 .today-card.compact .card-actions {
   margin-top: 8px;
+}
+
+.today-review-tags {
+  display: inline-flex;
+  align-items: center;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.today-review-tags .review-evidence-health {
+  max-width: 140px;
 }
 
 .floating-ask-bubble {

@@ -1239,6 +1239,8 @@ export type TodayReviewItem = {
   source_ref_status?: string;
   evidence_count?: number;
   source_refs?: Array<{ source_item_id?: string; chunk_id?: string; url?: string; title?: string }>;
+  created_at?: string;
+  can_apply_now?: boolean;
 };
 
 export type TodayResponse = {

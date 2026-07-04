@@ -1440,20 +1440,34 @@ function TodayWorkspace({
             <div className="today-rail-stack">
               {needsReview.length === 0 ? (
                 <div className="review-empty compact">当前没有待审核候选。</div>
-              ) : needsReview.slice(0, 3).map((item) => (
-                <article className="today-card review-card compact" key={item.review_item_id}>
-                  <div className="card-row">
-                    <span className="pill muted">{item.review_type || "review"}</span>
-                    <small>{actions[item.review_item_id] || recommendedActionLabel(item.recommended_action)}</small>
-                  </div>
-                  <h2>{item.title}</h2>
-                  <p>{trimText(item.summary, 130)}</p>
-                  <div className="card-actions">
-                    <button type="button" onClick={() => approveFromToday(item, "已批准")}>批准</button>
-                    <button type="button" onClick={() => rejectFromToday(item, "已拒绝")}>拒绝</button>
-                  </div>
-                </article>
-              ))}
+              ) : needsReview.slice(0, 3).map((item) => {
+                const evidenceHealth = todayReviewEvidenceHealth(item);
+                return (
+                  <article className="today-card review-card compact" key={item.review_item_id}>
+                    <div className="card-row">
+                      <span className="today-review-tags">
+                        <span className="pill muted">{item.review_type || "review"}</span>
+                        {evidenceHealth ? (
+                          <span
+                            className={`review-evidence-health ${evidenceHealth.tone}`}
+                            data-testid="today-review-evidence-health"
+                            title={evidenceHealth.detail}
+                          >
+                            {trimText([evidenceHealth.label, evidenceHealth.meta].filter(Boolean).join(" · "), 24)}
+                          </span>
+                        ) : null}
+                      </span>
+                      <small>{actions[item.review_item_id] || recommendedActionLabel(item.recommended_action)}</small>
+                    </div>
+                    <h2>{item.title}</h2>
+                    <p>{trimText(item.summary, 130)}</p>
+                    <div className="card-actions">
+                      <button type="button" onClick={() => approveFromToday(item, "已批准")}>批准</button>
+                      <button type="button" onClick={() => rejectFromToday(item, "已拒绝")}>拒绝</button>
+                    </div>
+                  </article>
+                );
+              })}
             </div>
           </CollapsibleTodayPanel>
           </>
@@ -4361,6 +4375,46 @@ function recommendedActionLabel(action?: string) {
     return "需检查";
   }
   return "待处理";
+}
+
+function todayReviewEvidenceHealth(item: TodayReviewItem): AskHealthView | null {
+  const sourceRefCount = Array.isArray(item.source_refs) ? item.source_refs.length : 0;
+  const evidenceCount = typeof item.evidence_count === "number" && Number.isFinite(item.evidence_count) ? Math.max(0, item.evidence_count) : 0;
+  const citationCount = Math.max(sourceRefCount, evidenceCount);
+  const sourceRefsPresent = item.source_ref_status === "present" || sourceRefCount > 0;
+  const hasEvidenceSignal = sourceRefsPresent || evidenceCount > 0;
+  const base = askHealthFromSignals({
+    qualitySignals: {
+      quality_band: sourceRefsPresent ? "needs_review" : "needs_citation_review",
+      evidence_status: hasEvidenceSignal ? "grounded" : "no_evidence",
+      report_readiness: "needs_human_review",
+      citation_count: citationCount,
+      gap_count: sourceRefsPresent ? 0 : 1
+    },
+    citationCount
+  });
+  if (!base) {
+    return null;
+  }
+  if (!hasEvidenceSignal) {
+    return {
+      ...base,
+      label: "缺证据",
+      detail: "这个 Review 候选没有可检查 source_refs，批准前需要进入 Review Center 补证据或拒绝。"
+    };
+  }
+  if (!sourceRefsPresent) {
+    return {
+      ...base,
+      label: "补引用",
+      detail: "这个 Review 候选有证据信号，但 Today 摘要没有可检查 source_refs。进入 Review Center 后再处理。"
+    };
+  }
+  return {
+    ...base,
+    label: "需复核",
+    detail: "这个 Review 候选已有可检查 source_refs，需要人工复核后批准或拒绝。"
+  };
 }
 
 function reviewQualityTierLabel(value?: string) {
