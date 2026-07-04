@@ -2600,6 +2600,7 @@ function AskResult({
   const markdown = buildAskMarkdown((result as WorkspaceAskResponse).query || "", answer, refs, gaps, conflicts);
   const canCopy = Boolean(answer || refs.length || gaps.length || conflicts.length);
   const scopeLabel = askResultScopeLabel(result, knowledgeBases);
+  const scopeStatus = askScopeStatusView(result, knowledgeBases);
   const scopeReadinessHint = askScopeReadinessHint(result);
   const askRunId = displayText((result as WorkspaceAskResponse).run_id, "");
   const canCreateBrief = Boolean(serviceToken && askRunId && answer && refs.length > 0 && !pending && !result.error);
@@ -2681,6 +2682,21 @@ function AskResult({
         </div>
       </div>
       {briefMessage ? <small className={`search-note ask-brief-status ${briefStatus}`} data-testid="ask-create-brief-status">{briefMessage}</small> : null}
+      {scopeStatus ? (
+        <div className="ask-scope-status" data-testid="ask-scope-status" aria-label="Ask 知识库范围">
+          <div className="ask-scope-copy">
+            <span className="eyebrow">Ask scope</span>
+            <strong>{scopeStatus.label}</strong>
+            <small>{scopeStatus.modeLabel} / {scopeStatus.ownerLabel}</small>
+          </div>
+          <div className="ask-scope-metrics" aria-label="Ask 范围计数">
+            <span><strong>{scopeStatus.knowledgeBaseCount}</strong> KB</span>
+            <span><strong>{scopeStatus.sourceItemCount}</strong> Sources</span>
+            <span><strong>{scopeStatus.readyCount}</strong> 可检索</span>
+            <span><strong>{scopeStatus.warningCount}</strong> Warnings</span>
+          </div>
+        </div>
+      ) : null}
       {progressEvents.length ? <AskProgressStrip progress={progressEvents} /> : null}
       {displaySteps.length || rawEvents.length || evidenceCheck || qualitySignals ? (
         <AskProcessTimeline
@@ -4934,6 +4950,57 @@ function askResultScopeLabel(result: WorkspaceAskResponse | WorkspaceSearchRespo
     return `${sourceItemCount} 个资料`;
   }
   return String(scope.mode || "") === "hard" ? "未选择资料库" : "全部资料库";
+}
+
+function askScopeStatusView(result: WorkspaceAskResponse | WorkspaceSearchResponse, knowledgeBases: KnowledgeBase[]) {
+  const scope = askResultScopeApplied(result);
+  if (!Object.keys(scope).length) {
+    return null;
+  }
+  const knowledgeBaseIds = Array.isArray(scope.knowledge_base_ids)
+    ? scope.knowledge_base_ids.filter((item): item is string => typeof item === "string" && item.length > 0)
+    : [];
+  const sourceItemCount = Array.isArray(scope.source_item_ids) ? scope.source_item_ids.length : 0;
+  const readiness = Array.isArray(scope.knowledge_base_readiness)
+    ? scope.knowledge_base_readiness.filter(isRecord)
+    : [];
+  const warnings = Array.isArray(scope.knowledge_base_readiness_warnings)
+    ? scope.knowledge_base_readiness_warnings.filter(isRecord)
+    : [];
+  const readyCount = readiness.filter((item) => item.retrieval_ready === true || Number(item.chunk_count || 0) > 0).length;
+  return {
+    label: askResultScopeLabel(result, knowledgeBases),
+    modeLabel: askScopeModeLabel(scope),
+    ownerLabel: askRetrievalOwnerLabel((result as WorkspaceAskResponse).route?.retrieval_owner),
+    knowledgeBaseCount: knowledgeBaseIds.length,
+    sourceItemCount,
+    readyCount,
+    warningCount: warnings.length
+  };
+}
+
+function askScopeModeLabel(scope: Record<string, unknown>) {
+  const mode = String(scope.mode || "");
+  if (mode === "hard") {
+    return "强限定";
+  }
+  if (mode === "soft") {
+    return "软限定";
+  }
+  if (mode === "all") {
+    return "全部资料";
+  }
+  return mode ? displayText(mode) : "默认范围";
+}
+
+function askRetrievalOwnerLabel(owner?: string) {
+  if (owner === "fastreact_pska_mcp") {
+    return "FastReAct MCP";
+  }
+  if (owner === "pska") {
+    return "PSKA RAG";
+  }
+  return displayText(owner, "PSKA RAG");
 }
 
 function askScopeReadinessHint(result: WorkspaceAskResponse | WorkspaceSearchResponse) {

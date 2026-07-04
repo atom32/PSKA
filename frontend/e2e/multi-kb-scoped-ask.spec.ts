@@ -121,6 +121,7 @@ test("browser session scoped Ask does not leak citations across knowledge bases"
 
     await askViaBrowserComposer(page, query, {
       marker,
+      knowledgeBaseName: alpha.name,
       alphaSecret,
       betaSecret,
       alphaSourceItemId
@@ -484,7 +485,7 @@ async function askViaBrowserSession(page: Page, query: string, knowledgeBaseId: 
 async function askViaBrowserComposer(
   page: Page,
   query: string,
-  expected: { marker: string; alphaSecret: string; betaSecret: string; alphaSourceItemId: string }
+  expected: { marker: string; knowledgeBaseName: string; alphaSecret: string; betaSecret: string; alphaSourceItemId: string }
 ) {
   await page.getByTestId("today-ask-input").fill(query);
   await page.getByTestId("today-ask-submit").click();
@@ -497,11 +498,18 @@ async function askViaBrowserComposer(
 
   const stableResult = page.getByTestId("ask-result").filter({ hasText: expected.alphaSecret }).last();
   await expect(stableResult).toContainText(expected.alphaSecret);
+  const scopeStatus = stableResult.getByTestId("ask-scope-status");
+  await expect(scopeStatus).toBeVisible();
+  await expect(scopeStatus).toContainText(expected.knowledgeBaseName);
+  await expect(scopeStatus).toContainText("强限定");
+  await expect(scopeStatus).toContainText(/PSKA RAG|FastReAct MCP/);
+  await expect(scopeStatus).toContainText("可检索");
   await expect(stableResult.getByTestId("ask-scope-readiness")).toContainText(/范围可检索|可检索/);
   const alphaSourceRef = stableResult.getByTestId("ask-source-ref").filter({ hasText: expected.alphaSourceItemId }).first();
   await expect(alphaSourceRef).toBeVisible({ timeout: 45_000 });
   await alphaSourceRef.click();
-  const evidenceInspector = stableResult.getByTestId("ask-evidence-inspector").first();
+  const evidenceInspector = stableResult.getByTestId("ask-evidence-inspector").filter({ hasText: expected.alphaSourceItemId }).first();
+  await expect(evidenceInspector).toBeVisible({ timeout: 45_000 });
   await expect(evidenceInspector).toContainText(expected.alphaSecret);
   await evidenceInspector.getByTestId("open-reader-pane").click();
   const readerPane = evidenceInspector.getByTestId("reader-pane");

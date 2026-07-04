@@ -1219,6 +1219,64 @@ button.context-item-main {
   font-weight: 700;
 }
 
+.ask-scope-status {
+  border: 1px solid rgba(49, 95, 124, 0.22);
+  border-radius: 8px;
+  background: rgba(230, 241, 245, 0.58);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  margin: 0 0 10px;
+  padding: 8px 9px;
+}
+
+.ask-scope-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.ask-scope-copy strong {
+  color: var(--ink);
+  font-size: 15px;
+  line-height: 1.1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ask-scope-copy small {
+  color: #315f7c;
+  font-size: 11px;
+}
+
+.ask-scope-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(54px, auto));
+  gap: 5px;
+}
+
+.ask-scope-metrics span {
+  border: 1px solid rgba(49, 95, 124, 0.16);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.74);
+  color: #315f7c;
+  font-size: 11px;
+  min-width: 54px;
+  padding: 6px 7px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.ask-scope-metrics strong {
+  color: var(--ink);
+  display: block;
+  font-size: 15px;
+  line-height: 1;
+  margin-bottom: 2px;
+}
+
 .ask-pending-state {
   margin: 0 0 10px;
   border: 1px solid rgba(35, 90, 77, 0.16);
@@ -7913,6 +7971,14 @@ button.context-item-main {
 
   .ask-evidence-layout {
     grid-template-columns: 1fr;
+  }
+
+  .ask-scope-status {
+    grid-template-columns: 1fr;
+  }
+
+  .ask-scope-metrics {
+    grid-template-columns: repeat(2, minmax(88px, 1fr));
   }
 
   .ask-stage-rail {
