@@ -5465,6 +5465,22 @@ button.context-item-main {
   gap: 10px;
 }
 
+.graph-empty-state {
+  display: grid;
+  gap: 12px;
+}
+
+.graph-empty-state .graph-ask-result-panel {
+  max-width: 760px;
+  width: min(100%, 760px);
+  margin: 0 auto;
+}
+
+.graph-ask-result-panel {
+  display: grid;
+  gap: 8px;
+}
+
 .graph-path-panel h3 {
   font-size: 15px;
   margin: 0;

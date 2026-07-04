@@ -92,6 +92,10 @@ test("browser session scoped Ask does not leak citations across knowledge bases"
       betaSecret,
       alphaSourceItemId
     });
+    await askViaGraphWorkspace(page, query, {
+      alphaSecret,
+      betaSecret
+    });
   } finally {
     await cleanupFixtures(page, createdSourceItemIds, createdKnowledgeBaseIds);
     cleanupDatabaseResidue(marker);
@@ -212,6 +216,22 @@ async function askViaBrowserComposer(
   await page.getByTestId("ask-from-evidence").last().click();
   await expect(page.getByTestId("reader-focus-chip")).toBeVisible();
   await expect(page.getByTestId("today-ask-input")).toHaveValue(new RegExp(escapeRegExp(expected.alphaSourceItemId)));
+}
+
+async function askViaGraphWorkspace(
+  page: Page,
+  query: string,
+  expected: { alphaSecret: string; betaSecret: string }
+) {
+  await openWorkspace(page, "Graph");
+  await page.getByRole("button", { name: /Controls/ }).click();
+  await page.locator(".graph-path-search input").fill(query);
+  await page.locator(".graph-path-search button[type='submit']").click();
+  const result = page.getByTestId("graph-ask-result-panel").last();
+  await expect(result).toContainText(expected.alphaSecret, { timeout: 120_000 });
+  await expect(result).not.toContainText(expected.betaSecret);
+  await expect(result.getByTestId("graph-path-evidence-health")).toBeVisible();
+  await expect(result.getByTestId("ask-processing-timeline")).toContainText("证据校验");
 }
 
 async function cleanupFixtures(page: Page, sourceItemIds: string[], knowledgeBaseIds: string[]) {

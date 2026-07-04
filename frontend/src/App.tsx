@@ -8727,7 +8727,16 @@ function GraphWorkspace({
       ) : loading ? (
         <div className="review-empty">正在加载真实 Graph 数据...</div>
       ) : graphElements.length === 0 ? (
-        <div className="review-empty">当前没有可视化节点。</div>
+        <div className="graph-empty-state">
+          <div className="review-empty">当前没有可视化节点。</div>
+          <GraphAskResultPanel
+            graphAskResult={graphAskResult}
+            pathResult={pathResult}
+            pathStatus={pathStatus}
+            pathError={pathError}
+            serviceToken={serviceToken}
+          />
+        </div>
       ) : (
         <div className="graph-v2-layout">
           <CytoscapeComponent
@@ -8791,14 +8800,13 @@ function GraphWorkspace({
                 <p>点击 digest、claim、hyperedge 或 passage，查看它如何追溯到原文证据。</p>
               </>
             )}
-            {graphAskResult ? (
-              <>
-                <GraphAskEvidenceHealth result={graphAskResult} pending={pathStatus === "loading"} error={pathError} />
-                <AskResult result={graphAskResult} pending={pathStatus === "loading"} serviceToken={serviceToken} />
-              </>
-            ) : (
-              <GraphPathPanel result={pathResult} status={pathStatus} error={pathError} serviceToken={serviceToken} />
-            )}
+            <GraphAskResultPanel
+              graphAskResult={graphAskResult}
+              pathResult={pathResult}
+              pathStatus={pathStatus}
+              pathError={pathError}
+              serviceToken={serviceToken}
+            />
           </aside>
         </div>
       )}
@@ -8894,6 +8902,30 @@ function GraphInsightsPanel({
       ) : null}
     </section>
   );
+}
+
+function GraphAskResultPanel({
+  graphAskResult,
+  pathResult,
+  pathStatus,
+  pathError,
+  serviceToken
+}: {
+  graphAskResult: WorkspaceAskResponse | null;
+  pathResult: WorkspaceGraphPathResponse | null;
+  pathStatus: "idle" | "loading" | "success" | "error";
+  pathError: string;
+  serviceToken?: PSKAAuth;
+}) {
+  if (graphAskResult) {
+    return (
+      <div className="graph-ask-result-panel" data-testid="graph-ask-result-panel">
+        <GraphAskEvidenceHealth result={graphAskResult} pending={pathStatus === "loading"} error={pathError} />
+        <AskResult result={graphAskResult} pending={pathStatus === "loading"} serviceToken={serviceToken} />
+      </div>
+    );
+  }
+  return <GraphPathPanel result={pathResult} status={pathStatus} error={pathError} serviceToken={serviceToken} />;
 }
 
 function GraphAskEvidenceHealth({

@@ -38,14 +38,14 @@
 - Writing answer/evidence/draft 节点顶部已增加 Ask 健康指示，把 `quality_signals`、`evidence_check`、节点状态和引用数提炼成“有引用 / 证据不足 / 需复核 / 失败 / 无需证据”等短标签，展开后仍可查看完整阶段和原文引用。
 - Review Center 列表已复用同一类证据健康摘要，把 `source_ref_status`、`quality_tier`、`review_eligible` 和 apply readiness 提炼成“可审核 / 缺证据 / 仅诊断 / 需检查”等短标签。
 - Graph Ask 主路径和 legacy Graph Path 面板都已增加证据健康摘要，把 citations、agentic repair 和错误状态提炼成“有引用 / 缺引用 / 已重写 / 需复核 / 失败”等短标签。
-- `frontend/e2e/multi-kb-scoped-ask.spec.ts` 已扩展真实浏览器验收：UI Ask 展示 alpha citation inspector，点击“查看原文”后 ReaderPane 包含 alpha 原文且不包含 beta secret；点击“追问这段”后输入框包含 alpha `source_item_id`。
+- `frontend/e2e/multi-kb-scoped-ask.spec.ts` 已扩展真实浏览器验收：UI Ask 展示 alpha citation inspector，点击“查看原文”后 ReaderPane 包含 alpha 原文且不包含 beta secret；点击“追问这段”后输入框包含 alpha `source_item_id`；Graph Ask 在空图/有图主路径也会显示 `graph-path-evidence-health` 且不泄露 beta 证据。
 - `frontend/e2e/writing-workspace.spec.ts` 已扩展真实浏览器验收：Writing answer/question 运行后应出现 `writing-node-ask-health`，并且持久化节点/`last_ask` 保留可支撑健康摘要的 `quality_signals`。
 
 ## 验收证据
 
 - `npm run build` 通过。
 - `PYTHONPATH=..:.:src pytest -q tests/test_knowledge_bases.py -k reader` 通过。
-- `npm run e2e:multi-kb-ask -- --list` 通过，确认真实浏览器 e2e spec 可发现且不会在 discovery 阶段要求本地密码；该 spec 已覆盖 ReaderPane 高亮包含 alpha secret 且不包含 beta secret。
+- `npm run e2e:multi-kb-ask` 通过，使用 AuthNode/Gateway browser session 覆盖多 KB hard scope、ReaderPane 高亮、source-focused follow-up 和 Graph Ask 健康摘要；临时 alpha/beta 数据清理后无残留。
 - `npm run e2e:writing -- --list` 通过，确认 Writing browser e2e spec 可发现；该 spec 已覆盖 Writing 健康指示与持久化质量信号。
 - `./scripts/pska-phase1-multikb-release-gate` 通过，覆盖 PSKA core `494 passed`、frontend build、FastReAct contracts `75 passed`、PSKA/FastReAct `git diff --check`。
 - `./scripts/pska-fastreact-kb-scope-smoke --timeout-seconds 240` 通过，使用真实 PSKA service、真实 FastReAct daemon、DeepSeek `deepseek-v4-flash` 和 PSKA HTTP MCP；FastReAct 实际调用 `pska_pska_search` / `pska_pska_read_evidence_context` 并保留 hard KB/source scope，临时 alpha/beta 数据清理后 residue 全 0。
