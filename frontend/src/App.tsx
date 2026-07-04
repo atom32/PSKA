@@ -5858,6 +5858,8 @@ function CorpusWorkspace({
   const [knowledgeBaseSearchResult, setKnowledgeBaseSearchResult] = useState<KnowledgeBaseSearchResponse | null>(null);
   const [knowledgeBaseSearchStatus, setKnowledgeBaseSearchStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
   const [knowledgeBaseSearchError, setKnowledgeBaseSearchError] = useState("");
+  const [kbAskCreateStatus, setKbAskCreateStatus] = useState<"idle" | "creating" | "success" | "error">("idle");
+  const [kbAskCreateMessage, setKbAskCreateMessage] = useState("");
   const [chunkPreviewText, setChunkPreviewText] = useState("");
   const [chunkPreviewStrategy, setChunkPreviewStrategy] = useState("auto");
   const [chunkPreviewSize, setChunkPreviewSize] = useState(1200);
@@ -6011,6 +6013,8 @@ function CorpusWorkspace({
     setKnowledgeBaseSearchResult(null);
     setKnowledgeBaseSearchStatus("idle");
     setKnowledgeBaseSearchError("");
+    setKbAskCreateStatus("idle");
+    setKbAskCreateMessage("");
     setKbWritingCreateStatus("idle");
     setKbWritingCreateMessage("");
     setDocumentDeletePreview(null);
@@ -6466,6 +6470,42 @@ function CorpusWorkspace({
     } catch (error) {
       setKnowledgeBaseSearchStatus("error");
       setKnowledgeBaseSearchError(error instanceof Error ? error.message : "知识库搜索失败。");
+    }
+  }
+
+  async function handleCreateKnowledgeBaseAskConversation() {
+    const knowledgeBaseId = currentKnowledgeBase?.knowledge_base_id || currentKnowledgeBaseId;
+    const knowledgeBaseName = currentKnowledgeBase?.name || "当前知识库";
+    if (!knowledgeBaseId) {
+      return;
+    }
+    const scope = {
+      mode: "hard",
+      knowledge_base_ids: [knowledgeBaseId],
+      knowledge_base_name: knowledgeBaseName
+    };
+    setKbAskCreateStatus("creating");
+    setKbAskCreateMessage("正在创建绑定当前知识库的 Ask 对话...");
+    try {
+      const payload = await createAskConversation(serviceToken, `Ask: ${knowledgeBaseName}`, {
+        scope,
+        metadata: {
+          kind: "knowledge_base_ask_conversation",
+          knowledge_base_ids: [knowledgeBaseId],
+          knowledge_base_scope: scope
+        }
+      });
+      const conversationId = payload.conversation?.conversation_id || "";
+      if (!conversationId) {
+        throw new Error("Ask 对话没有成功创建。");
+      }
+      setKbAskCreateStatus("success");
+      setKbAskCreateMessage(payload.conversation?.title || "Ask 对话已创建。");
+      await askConversationsQuery.refetch();
+      openAskConversationFromCorpus(conversationId);
+    } catch (error) {
+      setKbAskCreateStatus("error");
+      setKbAskCreateMessage(error instanceof Error ? error.message : "Ask 对话创建失败。");
     }
   }
 
@@ -6954,6 +6994,9 @@ function CorpusWorkspace({
           currentKnowledgeBaseId={currentKnowledgeBaseId}
           currentKnowledgeBaseName={currentKnowledgeBase?.name || "当前知识库"}
           knowledgeBases={knowledgeBases}
+          createStatus={kbAskCreateStatus}
+          createMessage={kbAskCreateMessage}
+          onCreateConversation={() => void handleCreateKnowledgeBaseAskConversation()}
           onOpenConversation={openAskConversationFromCorpus}
           onOpenToday={() => openAskConversationFromCorpus()}
         />
@@ -7314,6 +7357,9 @@ function KnowledgeBaseAskHistoryPanel({
   currentKnowledgeBaseId,
   currentKnowledgeBaseName,
   knowledgeBases,
+  createStatus,
+  createMessage,
+  onCreateConversation,
   onOpenConversation,
   onOpenToday
 }: {
@@ -7323,6 +7369,9 @@ function KnowledgeBaseAskHistoryPanel({
   currentKnowledgeBaseId: string;
   currentKnowledgeBaseName: string;
   knowledgeBases: KnowledgeBase[];
+  createStatus: "idle" | "creating" | "success" | "error";
+  createMessage: string;
+  onCreateConversation: () => void;
   onOpenConversation: (conversationId: string) => void;
   onOpenToday: () => void;
 }) {
@@ -7332,11 +7381,20 @@ function KnowledgeBaseAskHistoryPanel({
     <section className="today-section kb-linked-panel kb-ask-history-panel" data-testid="knowledge-base-ask-history-panel">
       <SectionTitle icon={<MessageCircle size={18} />} title="Ask 历史" subtitle={currentKnowledgeBaseName} />
       <div className="kb-linked-actions">
+        <button type="button" onClick={onCreateConversation} disabled={!currentKnowledgeBaseId || createStatus === "creating"} data-testid="knowledge-base-create-ask-conversation">
+          <MessageCircle size={15} />
+          {createStatus === "creating" ? "创建中" : "新建当前 KB Ask"}
+        </button>
         <button type="button" onClick={onOpenToday} data-testid="knowledge-base-open-today-ask">
           <MessageCircle size={15} />
-          在 Today 提问
+          打开 Today
         </button>
       </div>
+      {createMessage ? (
+        <div className={`review-empty compact ${createStatus === "error" ? "error-state" : ""}`} data-testid="knowledge-base-ask-create-status">
+          {createMessage}
+        </div>
+      ) : null}
       {isError ? <div className="review-empty error-state compact">Ask 对话无法加载。</div> : null}
       {isLoading ? <div className="review-empty compact">正在读取当前知识库的 Ask 对话...</div> : null}
       <div className="kb-linked-metrics" aria-label="当前知识库 Ask 摘要">

@@ -285,6 +285,7 @@ async function expectKnowledgeBaseDetailTabs(page: Page) {
   await expect(page.getByTestId("knowledge-base-search-input")).toBeVisible();
   await expect(page.locator(".kb-search-panel")).toContainText("证据搜索");
   await expect(page.getByTestId("knowledge-base-ask-history-panel")).toBeVisible();
+  await expect(page.getByTestId("knowledge-base-create-ask-conversation")).toBeVisible();
 
   await page.getByTestId("knowledge-base-tab-processing").click();
   await expect(page.locator(".chunk-preview-surface")).toBeVisible();
@@ -321,6 +322,13 @@ async function expectKnowledgeBaseAskHistory(page: Page, knowledgeBase: Knowledg
   await expect(card).toBeVisible({ timeout: 45_000 });
   await expect(card).toContainText(knowledgeBase.name);
   await card.getByTestId("knowledge-base-open-ask-conversation").click();
+  await expect(page.getByTestId("today-ask-form")).toBeVisible({ timeout: 45_000 });
+  await expect(page.getByTestId("today-scope-picker")).toContainText(knowledgeBase.name);
+
+  await openWorkspace(page, "资料库");
+  await page.getByTestId("knowledge-base-tab-ask").click();
+  const refreshedHistory = page.getByTestId("knowledge-base-ask-history-panel");
+  await refreshedHistory.getByTestId("knowledge-base-create-ask-conversation").click();
   await expect(page.getByTestId("today-ask-form")).toBeVisible({ timeout: 45_000 });
   await expect(page.getByTestId("today-scope-picker")).toContainText(knowledgeBase.name);
 }
