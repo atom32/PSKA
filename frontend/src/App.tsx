@@ -765,20 +765,26 @@ function SidebarContextTree({
         </div>
         {knowledgeBasesLoading ? <span>正在加载知识库...</span> : null}
         {!knowledgeBasesLoading && knowledgeBases.length === 0 ? <span>还没有知识库。</span> : null}
-        <div className="context-thread-list">
-          {knowledgeBases.slice(0, 12).map((knowledgeBase) => {
+        <div className="context-thread-list" data-testid="sidebar-kb-list">
+          {sidebarKnowledgeBases(knowledgeBases, currentKnowledgeBaseId).map((knowledgeBase) => {
             const badges = [knowledgeBase.pinned_at ? "置顶" : "", knowledgeBase.is_default ? "默认" : ""].filter(Boolean).join(" · ");
+            const readiness = knowledgeBaseReadinessPill(knowledgeBase.readiness);
+            const sourceItemCount = knowledgeBaseMetricNumber(knowledgeBase.readiness?.source_item_count ?? knowledgeBase.counts?.source_items);
+            const chunkCount = knowledgeBaseMetricNumber(knowledgeBase.readiness?.chunk_count ?? knowledgeBase.counts?.chunks);
             return (
               <button
-                className={`context-item context-item-main ${knowledgeBase.knowledge_base_id === currentKnowledgeBaseId ? "active" : ""}`}
+                className={`context-item context-item-main sidebar-kb-item ${knowledgeBase.knowledge_base_id === currentKnowledgeBaseId ? "active" : ""}`}
                 key={knowledgeBase.knowledge_base_id}
                 type="button"
                 onClick={() => onSelectKnowledgeBase(knowledgeBase.knowledge_base_id)}
                 title={knowledgeBase.name}
+                data-testid={knowledgeBase.knowledge_base_id === currentKnowledgeBaseId ? "sidebar-current-kb" : "sidebar-kb-item"}
               >
                 <BookOpen size={14} />
-                <span>{trimText(knowledgeBase.name || knowledgeBase.slug || "知识库", 28)}</span>
-                {badges ? <small>{badges}</small> : null}
+                <span className="context-item-text">
+                  <span>{trimText(knowledgeBase.name || knowledgeBase.slug || "知识库", 28)}</span>
+                  <small>{[badges, readiness.label, `${knowledgeBaseMetricLabel(sourceItemCount)} 资料`, `${knowledgeBaseMetricLabel(chunkCount)} chunks`].filter(Boolean).join(" · ")}</small>
+                </span>
               </button>
             );
           })}
@@ -800,6 +806,28 @@ function SidebarContextTree({
       <span>关系浏览、路径检索和图谱问答在主区展开。</span>
     </div>
   );
+}
+
+function sidebarKnowledgeBases(knowledgeBases: KnowledgeBase[], currentKnowledgeBaseId: string) {
+  return [...knowledgeBases]
+    .filter((knowledgeBase) => knowledgeBase.status !== "archived")
+    .sort((left, right) => {
+      const leftScore = sidebarKnowledgeBaseRank(left, currentKnowledgeBaseId);
+      const rightScore = sidebarKnowledgeBaseRank(right, currentKnowledgeBaseId);
+      if (leftScore !== rightScore) {
+        return rightScore - leftScore;
+      }
+      const leftUpdated = new Date(left.updated_at || left.pinned_at || left.created_at || 0).getTime();
+      const rightUpdated = new Date(right.updated_at || right.pinned_at || right.created_at || 0).getTime();
+      return rightUpdated - leftUpdated;
+    })
+    .slice(0, 12);
+}
+
+function sidebarKnowledgeBaseRank(knowledgeBase: KnowledgeBase, currentKnowledgeBaseId: string) {
+  return (knowledgeBase.knowledge_base_id === currentKnowledgeBaseId ? 8 : 0)
+    + (knowledgeBase.pinned_at ? 4 : 0)
+    + (knowledgeBase.is_default ? 2 : 0);
 }
 
 function NavItem({

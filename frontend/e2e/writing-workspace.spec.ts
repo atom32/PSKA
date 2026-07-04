@@ -35,6 +35,11 @@ test("workspace files to corpus to parallel writing draft", async ({ page, reque
 
     await openWorkspace(page, "资料库");
     await page.getByRole("combobox", { name: "当前知识库" }).selectOption(fixture.knowledgeBaseId);
+    if (fixture.knowledgeBaseName) {
+      const currentSidebarKnowledgeBase = page.getByTestId("sidebar-current-kb");
+      await expect(currentSidebarKnowledgeBase).toBeVisible({ timeout: 30_000 });
+      await expect(currentSidebarKnowledgeBase).toHaveAttribute("title", fixture.knowledgeBaseName);
+    }
     await page.getByTestId("knowledge-base-tab-sources").click();
     await page.getByTestId("corpus-search-input").fill(sourceTitle);
     await expect(page.getByTestId("document-lifecycle-list")).toContainText(sourceTitle, { timeout: 45_000 });
