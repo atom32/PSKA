@@ -34,6 +34,7 @@
 - Citation inspector 已复用到 Writing answer/evidence/draft 节点和 Graph 节点 / Graph Path citations；这些入口共享同一套 citation 坐标、KB lineage、ReaderPane 原文加载和高亮能力。
 - no-answer diagnostics 已从维度列表升级为“原因 + 建议下一步”的行动面板，按通用状态提示扩大范围、检查索引、补证据、重试 Deep Ask/MCP 或检查权限/策略。
 - `ProcessingTimeline` 已从原始事件日志升级为五阶段摘要，合并 `progress`、`agent_steps`、agentic trace 和 `quality_signals`，展示理解、检索、读取、生成、证据校验的状态、证据数、引用数和质量状态；原始过程仍保留为可展开明细。
+- Writing 节点和 Composer 的 Ask timeline 已复用同一套阶段摘要，运行中的 preview 与持久化的 `last_ask` 都会携带 `progress`、`evidence_check` 和 `quality_signals`。
 - `frontend/e2e/multi-kb-scoped-ask.spec.ts` 已扩展真实浏览器验收：UI Ask 展示 alpha citation inspector，点击“查看原文”后 ReaderPane 包含 alpha 原文且不包含 beta secret；点击“追问这段”后输入框包含 alpha `source_item_id`。
 
 ## 验收证据
@@ -59,4 +60,4 @@ PSKA_E2E_PASSWORD="<local AuthNode password>" \
 
 ## 下一步
 
-- 继续收紧 Ask/Reader/Writing 的细节验收：补充 ProcessingTimeline 的真实运行截图核对，并评估是否需要把阶段状态同步到 Graph/Writing 节点摘要。
+- 继续收紧 Ask/Reader/Writing 的细节验收：补充 ProcessingTimeline 的真实运行截图核对，并评估是否要把阶段状态提炼到节点顶部的小型健康指示。

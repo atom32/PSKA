@@ -2228,6 +2228,21 @@ type AskProcessingStageView = {
   meta: string;
 };
 
+type AskProcessTimelineProps = {
+  steps: AskAgentStepView[];
+  progress?: AskProgressView[];
+  rawEvents: Array<Record<string, unknown>>;
+  evidenceCheck?: Record<string, unknown>;
+  qualitySignals?: Record<string, unknown>;
+  pending?: boolean;
+  citationCount?: number;
+  evidenceResultCount?: number;
+  droppedCitationCount?: number;
+  answerChars?: number;
+  noAnswerReasons?: string[];
+  defaultOpen?: boolean;
+};
+
 const ASK_PROCESSING_STAGE_ORDER: Array<{ id: AskProcessingStageKey; label: string }> = [
   { id: "understand", label: "理解" },
   { id: "search", label: "检索" },
@@ -2306,20 +2321,7 @@ function AskProcessTimeline({
   answerChars,
   noAnswerReasons = [],
   defaultOpen = false
-}: {
-  steps: AskAgentStepView[];
-  progress?: AskProgressView[];
-  rawEvents: Array<Record<string, unknown>>;
-  evidenceCheck?: Record<string, unknown>;
-  qualitySignals?: Record<string, unknown>;
-  pending?: boolean;
-  citationCount?: number;
-  evidenceResultCount?: number;
-  droppedCitationCount?: number;
-  answerChars?: number;
-  noAnswerReasons?: string[];
-  defaultOpen?: boolean;
-}) {
+}: AskProcessTimelineProps) {
   const [open, setOpen] = useState(defaultOpen);
   useEffect(() => {
     setOpen(defaultOpen);
@@ -2778,6 +2780,37 @@ function askProcessingStageMeta(
 
 function askProcessingStageIndex(stage: AskProcessingStageKey) {
   return ASK_PROCESSING_STAGE_ORDER.findIndex((item) => item.id === stage);
+}
+
+function askProcessTimelineProps(result: WorkspaceAskResponse, pending = false): AskProcessTimelineProps {
+  const evidence = result.evidence || {};
+  const refs = normalizeSearchRefs([
+    ...(result.source_refs || []),
+    ...(result.citations || []),
+    ...(result.source_windows || []),
+    ...(evidence.citations || []),
+    ...(evidence.source_refs || []),
+    ...(evidence.results || []),
+    ...(evidence.source_windows || [])
+  ]);
+  const dropped = normalizeDroppedCitations(result.citation_audit?.dropped || result.evidence_check?.dropped_citations || evidence.dropped_citations);
+  const answer = cleanAgenticAnswer(result.answer || finalAnswerFromTraceEvents(result) || "");
+  return {
+    steps: normalizeAskAgentSteps(result.agent_steps),
+    progress: normalizeAskProgress(result.progress),
+    rawEvents: agenticTraceEvents(result),
+    evidenceCheck: result.evidence_check,
+    qualitySignals: result.quality_signals,
+    pending,
+    citationCount: refs.length || undefined,
+    droppedCitationCount: dropped.length || undefined,
+    answerChars: answer.length || undefined,
+    noAnswerReasons: normalizeAskNotes(result.no_answer_reasons || result.evidence_check?.no_answer_reasons || evidence.no_answer_reasons)
+  };
+}
+
+function askProcessTimelineHasContent(props?: AskProcessTimelineProps) {
+  return Boolean(props && (props.steps.length || props.progress?.length || props.rawEvents.length || props.evidenceCheck || props.qualitySignals || props.pending));
 }
 
 function EvidenceNoteList({ title, values }: { title: string; values: string[] }) {
@@ -7802,8 +7835,8 @@ function WritingWorkspace({
 function WritingCanvasNode({ data }: NodeProps<WritingFlowNode>) {
   const node = data.node;
   const timelineResult = data.askPreview;
-  const timelineRawEvents = timelineResult ? agenticTraceEvents(timelineResult) : [];
-  const hasTimeline = Boolean(timelineResult?.agent_steps?.length || timelineRawEvents.length);
+  const timelineProps = timelineResult ? askProcessTimelineProps(timelineResult, data.running) : undefined;
+  const hasTimeline = askProcessTimelineHasContent(timelineProps);
   const citationRefs = node.citations?.length ? node.citations : node.source_refs || [];
   const citationKnowledgeBaseLabel = sourceRefsKnowledgeBaseSummary(citationRefs);
 
@@ -7839,7 +7872,7 @@ function WritingCanvasNode({ data }: NodeProps<WritingFlowNode>) {
             <span>Session</span>
             <code>{writingNodeSessionId(node)}</code>
           </div>
-          <AskProcessTimeline steps={normalizeAskAgentSteps(timelineResult?.agent_steps)} rawEvents={timelineRawEvents} />
+          {timelineProps ? <AskProcessTimeline {...timelineProps} /> : null}
         </div>
       ) : null}
       {citationRefs.length ? (
@@ -7990,6 +8023,7 @@ function WritingComposer({
   const selectedAnswerIds = new Set(selectedEdges.map((edge) => edge.source_node_id));
   const selectedAnswers = nodes.filter((node) => selectedAnswerIds.has(node.node_id));
   const drafts = nodes.filter((node) => node.node_type === "draft");
+  const askPreviewTimelineProps = askPreview ? askProcessTimelineProps(askPreview, true) : undefined;
   return (
     <aside className="writing-composer" aria-label="文章结构" data-testid="writing-composer">
       <div>
@@ -8021,7 +8055,7 @@ function WritingComposer({
       {askPreview ? (
         <div className="writing-composer-section">
           <strong>正在运行</strong>
-          <AskProcessTimeline steps={normalizeAskAgentSteps(askPreview.agent_steps)} rawEvents={agenticTraceEvents(askPreview)} />
+          {askPreviewTimelineProps ? <AskProcessTimeline {...askPreviewTimelineProps} defaultOpen /> : null}
         </div>
       ) : runningCount ? (
         <div className="writing-composer-section">
@@ -8056,6 +8090,13 @@ function writingNodeLastAsk(result: WorkspaceAskResponse, query: string, session
     route: result.route || {},
     timing: result.timing || {},
     agent_steps: (result.agent_steps || []).slice(-40),
+    progress: (result.progress || []).slice(-40),
+    evidence_check: result.evidence_check || {},
+    quality_signals: result.quality_signals || {},
+    citations: (result.citations || []).slice(0, 20),
+    source_refs: (result.source_refs || []).slice(0, 20),
+    source_windows: (result.source_windows || []).slice(0, 20),
+    no_answer_reasons: result.no_answer_reasons || result.evidence_check?.no_answer_reasons || result.evidence?.no_answer_reasons || [],
     trace: {
       events: agenticTraceEvents(result).slice(-40),
       run_id: typeof result.trace?.run_id === "string" ? result.trace.run_id : undefined,
@@ -8078,6 +8119,13 @@ function writingNodeLastAskPreview(node: WritingNode): WorkspaceAskResponse | un
     route: isPlainObject(data.route) ? data.route as WorkspaceAskResponse["route"] : undefined,
     timing: isPlainObject(data.timing) ? data.timing as WorkspaceAskResponse["timing"] : undefined,
     agent_steps: Array.isArray(data.agent_steps) ? data.agent_steps as WorkspaceAskResponse["agent_steps"] : [],
+    progress: Array.isArray(data.progress) ? data.progress as WorkspaceAskResponse["progress"] : [],
+    evidence_check: isPlainObject(data.evidence_check) ? data.evidence_check : undefined,
+    quality_signals: isPlainObject(data.quality_signals) ? data.quality_signals : undefined,
+    citations: Array.isArray(data.citations) ? data.citations as WorkspaceAskResponse["citations"] : [],
+    source_refs: Array.isArray(data.source_refs) ? data.source_refs as WorkspaceAskResponse["source_refs"] : [],
+    source_windows: Array.isArray(data.source_windows) ? data.source_windows as WorkspaceAskResponse["source_windows"] : [],
+    no_answer_reasons: Array.isArray(data.no_answer_reasons) ? data.no_answer_reasons : [],
     trace: isPlainObject(data.trace) ? data.trace : undefined
   };
 }
