@@ -184,9 +184,15 @@ Knowledge-base scope contract:
   from resolved `source_item_ids`.
 - `route.scope_applied` is the canonical resolved scope. It includes `mode`,
   `knowledge_base_ids`, `knowledge_base_source_item_count`, `source_item_ids`,
-  `source_item_count`, `dropped_scope_ids`, `dropped_source_item_ids`,
-  `attachment_ids`, `allow_expand_scope`, `conversation_id`, and
-  `context_node_count`.
+  `source_item_count`, `knowledge_base_readiness`,
+  `knowledge_base_readiness_warnings`, `dropped_scope_ids`,
+  `dropped_source_item_ids`, `attachment_ids`, `allow_expand_scope`,
+  `conversation_id`, and `context_node_count`.
+- `knowledge_base_readiness` is a compact per-KB Ask-scope summary with
+  retrieval readiness, source/document/chunk counts, embedding coverage/status,
+  processing status, offline index counters, and recent sync/processing/digest
+  timestamps. `knowledge_base_readiness_warnings` records selected KBs that are
+  empty, failed, missing retrievable chunks, or otherwise not retrieval-ready.
 - `dropped_scope_ids` currently records explicit source item ids supplied by the
   caller but removed by KB/source intersection. It is not used to reveal
   inaccessible KB ids.

@@ -87,6 +87,7 @@
 - 旧资料迁移：`core/tests/test_knowledge_base_migration.py` 会在临时 Postgres 库中先跑 001-020 migration，写入 legacy tenant/user/source/source_item，再运行 `021_knowledge_bases.sql` 两次，确认 default KB backfill、source/source_item membership 和幂等性。
 - scoped Ask：`frontend/e2e/multi-kb-scoped-ask.spec.ts` 使用 AuthNode/Gateway 浏览器 session 创建两个临时知识库，写入互斥证据，调用 hard `knowledge_base_ids` scope 的 Ask，并断言 citation/source_ref/source_window 不包含未选 KB。2026-07-04 复跑 `npm run e2e:multi-kb-ask` 通过，且 `PSKA_MULTI_KB_SCOPE_%` 临时数据 residue 计数为 `0,0,0,0,0,0`。
 - KB readiness UI：资料库页基于真实 `counts/readiness` 展示处理状态、资料/原文/片段数、embedding coverage、embedding model、offline index freshness、最近同步和最近 Digest；`frontend/e2e/multi-kb-scoped-ask.spec.ts` 会进入临时 KB 的资料库页并断言 readiness 面板可见。
+- Ask scope readiness：`route.scope_applied` 会返回选中知识库的 compact `knowledge_base_readiness` 与 `knowledge_base_readiness_warnings`；Ask 结果头部展示“范围可检索/待检查”，no-answer diagnostics 会说明空库、无 chunks、处理失败等通用原因。
 - 资料 membership UI：手工 smoke 已覆盖同一资料 link 到第二 KB、按当前 KB 删除 membership、切回原 KB 后资料仍保留，并修复了 KB 切换时删除 preview 残留的问题。
 - API contract：`docs/API_REFERENCE.md` 已补 KB CRUD、ingest/list/search scope、Ask `route.scope_applied`、deep `tool_policy.scope`、documents membership delete/link/move、MCP KB scope 语义。
 - dropped scope：hard KB scope 与显式 `source_item_ids` 做交集时，`route.scope_applied.dropped_scope_ids` / `dropped_source_item_ids` 会记录被 KB membership 剔除的显式 source ids；不可访问 KB 仍 fail-closed，不泄露 id。

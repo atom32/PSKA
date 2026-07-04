@@ -1096,24 +1096,6 @@ function TodayWorkspace({
   const previousActiveConversationId = useRef(activeConversationId);
   const liveSearchResult = searchResult;
   const liveResultMatchesActive = Boolean(liveSearchResult) && liveConversationId === activeConversationId;
-  const liveResultPersisted = liveSearchResult ? conversationRuns.some((run) => {
-    const storedResult = askResultFromRun(run);
-    if (!storedResult) {
-      return false;
-    }
-    if (liveSearchResult.run_id) {
-      return run.run_id === liveSearchResult.run_id;
-    }
-    return Boolean(liveSearchResult.query) && run.query === liveSearchResult.query;
-  }) || conversationMessages.some((message) => {
-    if (message.role !== "assistant") {
-      return false;
-    }
-    if (liveSearchResult.run_id && message.run_id === liveSearchResult.run_id) {
-      return true;
-    }
-    return Boolean(liveSearchResult.query) && displayText(message.content, "").trim() === displayText(liveSearchResult.answer, "").trim();
-  }) : false;
   const askScopeLabel = scopeMode === "all"
     ? "全部资料库"
     : scopeMode === "selected"
@@ -1340,7 +1322,7 @@ function TodayWorkspace({
             isLoading={askConversationsQuery.isLoading || askConversationQuery.isLoading}
             knowledgeBases={knowledgeBases}
             liveQuery={submittedSearchQuery}
-            liveResult={liveResultMatchesActive && (searching || !liveResultPersisted) ? searchResult : null}
+            liveResult={liveResultMatchesActive ? searchResult : null}
             livePending={searching}
             onAskFromEvidence={askFromEvidence}
             onOpenWriting={() => onOpenWorkspace("writing")}
@@ -2535,6 +2517,7 @@ function AskResult({
   const markdown = buildAskMarkdown((result as WorkspaceAskResponse).query || "", answer, refs, gaps, conflicts);
   const canCopy = Boolean(answer || refs.length || gaps.length || conflicts.length);
   const scopeLabel = askResultScopeLabel(result, knowledgeBases);
+  const scopeReadinessHint = askScopeReadinessHint(result);
   const askRunId = displayText((result as WorkspaceAskResponse).run_id, "");
   const canCreateBrief = Boolean(serviceToken && askRunId && answer && refs.length > 0 && !pending && !result.error);
 
@@ -2589,6 +2572,12 @@ function AskResult({
             <span className="kb-inline-scope ask-result-scope" title="本次 Ask 范围">
               <BookOpen size={13} />
               {trimText(scopeLabel, 24)}
+            </span>
+          ) : null}
+          {scopeReadinessHint ? (
+            <span className={`ask-scope-readiness ${scopeReadinessHint.className}`} title={scopeReadinessHint.detail} data-testid="ask-scope-readiness">
+              {scopeReadinessHint.className === "success" ? <CheckCircle2 size={13} /> : <AlertTriangle size={13} />}
+              {scopeReadinessHint.label}
             </span>
           ) : null}
         </div>
@@ -4749,11 +4738,15 @@ function askRouteLabel(route?: WorkspaceAskResponse["route"]) {
   return route?.fallback_from ? `${label} · 已降级` : label;
 }
 
-function askResultScopeLabel(result: WorkspaceAskResponse | WorkspaceSearchResponse, knowledgeBases: KnowledgeBase[]) {
+function askResultScopeApplied(result: WorkspaceAskResponse | WorkspaceSearchResponse) {
   const askResult = result as WorkspaceAskResponse;
   const resultScope = isRecord(askResult.scope_applied) ? askResult.scope_applied : {};
   const routeScope = isRecord(askResult.route?.scope_applied) ? askResult.route?.scope_applied || {} : {};
-  const scope = Object.keys(resultScope).length ? resultScope : routeScope;
+  return Object.keys(resultScope).length ? resultScope : routeScope;
+}
+
+function askResultScopeLabel(result: WorkspaceAskResponse | WorkspaceSearchResponse, knowledgeBases: KnowledgeBase[]) {
+  const scope = askResultScopeApplied(result);
   if (!Object.keys(scope).length) {
     return "";
   }
@@ -4777,6 +4770,67 @@ function askResultScopeLabel(result: WorkspaceAskResponse | WorkspaceSearchRespo
     return `${sourceItemCount} 个资料`;
   }
   return String(scope.mode || "") === "hard" ? "未选择资料库" : "全部资料库";
+}
+
+function askScopeReadinessHint(result: WorkspaceAskResponse | WorkspaceSearchResponse) {
+  const scope = askResultScopeApplied(result);
+  const knowledgeBaseIds = Array.isArray(scope.knowledge_base_ids)
+    ? scope.knowledge_base_ids.filter((item): item is string => typeof item === "string" && item.length > 0)
+    : [];
+  if (!knowledgeBaseIds.length) {
+    return null;
+  }
+  const warnings = Array.isArray(scope.knowledge_base_readiness_warnings)
+    ? scope.knowledge_base_readiness_warnings.filter(isRecord)
+    : [];
+  if (warnings.length) {
+    const first = warnings[0];
+    const status = displayText(first.status, "not_ready");
+    return {
+      className: "warning",
+      label: askScopeReadinessWarningLabel(status, warnings.length),
+      detail: displayText(first.detail, "选中的知识库还没有达到稳定可检索状态。")
+    };
+  }
+  const readiness = Array.isArray(scope.knowledge_base_readiness)
+    ? scope.knowledge_base_readiness.filter(isRecord)
+    : [];
+  if (!readiness.length) {
+    return null;
+  }
+  const readyCount = readiness.filter((item) => item.retrieval_ready === true || Number(item.chunk_count || 0) > 0).length;
+  if (readyCount === readiness.length) {
+    return {
+      className: "success",
+      label: readiness.length > 1 ? `${readyCount} 个可检索` : "范围可检索",
+      detail: "本次 Ask 的知识库范围已有可检索片段。"
+    };
+  }
+  return {
+    className: "warning",
+    label: readyCount > 0 ? `${readyCount}/${readiness.length} 可检索` : "范围待检查",
+    detail: "部分选中的知识库还没有可检索片段。"
+  };
+}
+
+function askScopeReadinessWarningLabel(status: string, count: number) {
+  const base = (() => {
+    switch (status) {
+      case "empty":
+        return "知识库为空";
+      case "processing_failed":
+        return "处理异常";
+      case "no_chunks":
+        return "暂无片段";
+      case "index_not_fresh":
+        return "索引待刷新";
+      case "not_ready":
+        return "范围待检查";
+      default:
+        return "范围待检查";
+    }
+  })();
+  return count > 1 ? `${base} +${count - 1}` : base;
 }
 
 function askFallbackLabel(reason?: string) {
@@ -7038,27 +7092,41 @@ function AskConversationPanel({
     });
     return mapped;
   }, [runs]);
-  const assistantRunIds = useMemo(() => new Set(messages
+  const visibleMessages = useMemo(() => messages.slice(-12), [messages]);
+  const visibleAssistantRunIds = useMemo(() => new Set(visibleMessages
     .filter((message) => message.role === "assistant")
     .map((message) => displayText(message.run_id, ""))
-    .filter(Boolean)), [messages]);
+    .filter(Boolean)), [visibleMessages]);
+  const visibleRenderedRunIds = useMemo(() => new Set(visibleMessages
+    .map((message) => displayText(message.run_id, ""))
+    .filter((runId) => Boolean(runId) && runById.has(runId))), [runById, visibleMessages]);
   const liveResultAlreadyRendered = useMemo(() => {
     if (!liveResult) {
       return false;
     }
     const liveRunId = displayText(liveResult.run_id, "");
-    if (liveRunId && (assistantRunIds.has(liveRunId) || runById.has(liveRunId))) {
+    if (liveRunId && visibleRenderedRunIds.has(liveRunId)) {
       return true;
     }
     const liveQueryText = displayText(liveResult.query || liveQuery, "").trim();
     if (!liveQueryText) {
       return false;
     }
-    return runs.some((run) => {
-      const storedResult = askResultFromRun(run);
+    if (visibleMessages.some((message) => message.role === "assistant" && displayText(message.content, "").trim() === displayText(liveResult.answer, "").trim())) {
+      return true;
+    }
+    return visibleMessages.some((message) => {
+      const runId = displayText(message.run_id, "");
+      if (!runId || !runById.has(runId)) {
+        return false;
+      }
+      const storedResult = runById.get(runId);
       return Boolean(storedResult && storedResult.status !== "running" && displayText(storedResult.query, "").trim() === liveQueryText);
+    }) || runs.some((run) => {
+      const storedResult = askResultFromRun(run);
+      return Boolean(!liveRunId && storedResult && storedResult.status !== "running" && displayText(storedResult.query, "").trim() === liveQueryText);
     });
-  }, [assistantRunIds, liveQuery, liveResult, runById, runs]);
+  }, [liveQuery, liveResult, runById, runs, visibleMessages, visibleRenderedRunIds]);
   const showLiveResult = Boolean(liveResult) && !liveResultAlreadyRendered;
   return (
     <div className="ask-conversation-panel">
@@ -7072,9 +7140,9 @@ function AskConversationPanel({
               <span>问 PSKA 一个问题，或带着资料继续追问。</span>
             </div>
           ) : null}
-          {messages.slice(-12).map((message) => {
+          {visibleMessages.map((message) => {
             const messageRunId = displayText(message.run_id, "");
-            const orphanRunResult = message.role !== "assistant" && messageRunId && !assistantRunIds.has(messageRunId)
+            const orphanRunResult = message.role !== "assistant" && messageRunId && !visibleAssistantRunIds.has(messageRunId)
               ? runById.get(messageRunId)
               : null;
             return (

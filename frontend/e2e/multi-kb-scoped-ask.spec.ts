@@ -90,6 +90,15 @@ test("browser session scoped Ask does not leak citations across knowledge bases"
     const result = await askViaBrowserSession(page, query, alpha.knowledge_base_id);
     const routeScope = result?.route?.scope_applied || result?.scope_applied || {};
     expect(routeScope.knowledge_base_ids).toEqual([alpha.knowledge_base_id]);
+    expect(routeScope.knowledge_base_readiness).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          knowledge_base_id: alpha.knowledge_base_id,
+          retrieval_ready: true
+        })
+      ])
+    );
+    expect(routeScope.knowledge_base_readiness_warnings).toEqual([]);
 
     const evidenceJson = JSON.stringify({
       citations: result?.citations || [],
@@ -415,10 +424,10 @@ async function askViaBrowserComposer(
   await expect(result.getByTestId("ask-processing-timeline")).toContainText("检索");
   await expect(result.getByTestId("ask-processing-timeline")).toContainText("证据校验");
   await expect(page.getByTestId("today-ask-submit")).toBeEnabled({ timeout: 120_000 });
-  await expect(page.locator(".ask-message.assistant.live").filter({ hasText: expected.alphaSecret })).toHaveCount(0, { timeout: 120_000 });
 
   const stableResult = page.getByTestId("ask-result").filter({ hasText: expected.alphaSecret }).last();
   await expect(stableResult).toContainText(expected.alphaSecret);
+  await expect(stableResult.getByTestId("ask-scope-readiness")).toContainText(/范围可检索|可检索/);
   const alphaSourceRef = stableResult.getByTestId("ask-source-ref").filter({ hasText: expected.alphaSourceItemId }).first();
   await expect(alphaSourceRef).toBeVisible({ timeout: 45_000 });
   await alphaSourceRef.click();

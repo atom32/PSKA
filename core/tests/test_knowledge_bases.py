@@ -853,6 +853,11 @@ def test_workspace_ask_knowledge_base_scope_filters_rag_evidence() -> None:
     assert response["route"]["scope_applied"]["knowledge_base_ids"] == [alpha_kb["knowledge_base_id"]]
     assert response["route"]["scope_applied"]["source_item_ids"] == alpha["source_item_ids"]
     assert {result["source_item_id"] for result in response["evidence"]["results"]} == set(alpha["source_item_ids"])
+    readiness = response["route"]["scope_applied"]["knowledge_base_readiness"][0]
+    assert readiness["knowledge_base_id"] == alpha_kb["knowledge_base_id"]
+    assert readiness["source_item_count"] == 1
+    assert readiness["retrieval_ready"] is True
+    assert response["route"]["scope_applied"]["knowledge_base_readiness_warnings"] == []
 
     empty_intersection = api.workspace_ask(
         {
@@ -942,9 +947,16 @@ def test_workspace_ask_empty_knowledge_base_reports_scope_diagnostics() -> None:
     assert response["answer_type"] == "no_answer"
     assert response["route"]["scope_applied"]["knowledge_base_ids"] == [empty_kb["knowledge_base_id"]]
     assert response["route"]["scope_applied"]["source_item_count"] == 0
+    readiness = response["route"]["scope_applied"]["knowledge_base_readiness"][0]
+    assert readiness["knowledge_base_id"] == empty_kb["knowledge_base_id"]
+    assert readiness["retrieval_ready"] is False
+    assert readiness["source_item_count"] == 0
+    assert response["route"]["scope_applied"]["knowledge_base_readiness_warnings"][0]["status"] == "empty"
     assert diagnostics["primary_reason"] == "selected_knowledge_base_empty"
     assert by_dimension["knowledge_base_scope"]["status"] == "selected_knowledge_base_empty"
+    assert by_dimension["knowledge_base_readiness"]["status"] == "empty"
     assert "selected_knowledge_base_empty" in response["quality_signals"]["flags"]
+    assert "knowledge_base_empty" in response["quality_signals"]["flags"]
 
 
 def test_workspace_ask_inaccessible_knowledge_base_scope_does_not_leak_id() -> None:

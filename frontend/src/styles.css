@@ -1100,6 +1100,38 @@ button.context-item-main {
   flex: 0 0 auto;
 }
 
+.ask-result-header .ask-scope-readiness {
+  min-height: 26px;
+  max-width: 180px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ask-result-header .ask-scope-readiness svg {
+  flex: 0 0 auto;
+}
+
+.ask-result-header .ask-scope-readiness.success {
+  border-color: rgba(35, 110, 88, 0.28);
+  background: #f2fbf6;
+  color: #236e58;
+}
+
+.ask-result-header .ask-scope-readiness.warning {
+  border-color: rgba(143, 92, 36, 0.28);
+  background: #fff8ed;
+  color: #8f5c24;
+}
+
 .ask-result-header button {
   border: 1px solid var(--line);
   border-radius: 6px;

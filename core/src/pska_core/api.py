@@ -8129,6 +8129,8 @@ def _ask_scope_applied(scope: dict[str, Any], *, ask_intent: str) -> dict[str, A
         "mode": _ask_scope_mode(scope, ask_intent=ask_intent),
         "knowledge_base_ids": _knowledge_base_ids_from_scope(scope),
         "knowledge_base_source_item_count": len(knowledge_base_source_item_ids),
+        "knowledge_base_readiness": _list_of_dicts(scope.get("knowledge_base_readiness")),
+        "knowledge_base_readiness_warnings": _list_of_dicts(scope.get("knowledge_base_readiness_warnings")),
         "source_item_ids": source_item_ids,
         "source_item_count": len(source_item_ids),
         "dropped_scope_ids": _string_list(scope.get("dropped_scope_ids")),
@@ -10532,6 +10534,7 @@ def _ask_no_answer_diagnostics(
         fallback=len(_string_list(scope_applied.get("knowledge_base_source_item_ids"))),
     )
     source_item_count = _int_value(scope_applied.get("source_item_count"), fallback=len(scoped_source_item_ids))
+    readiness_warnings = _list_of_dicts(scope_applied.get("knowledge_base_readiness_warnings"))
 
     def add(dimension: str, status: str, detail: str) -> None:
         dimensions.append({"dimension": dimension, "status": status, "detail": detail})
@@ -10563,6 +10566,16 @@ def _ask_no_answer_diagnostics(
                 "ok",
                 f"Selected knowledge base scope resolved to {source_item_count} active source item(s).",
             )
+        if readiness_warnings:
+            first_warning = readiness_warnings[0]
+            warning_count = len(readiness_warnings)
+            status = str(first_warning.get("status") or "not_ready")
+            detail = str(first_warning.get("detail") or "Selected knowledge base is not retrieval-ready.")
+            if warning_count > 1:
+                detail = f"{detail} {warning_count} selected knowledge base(s) reported readiness warnings."
+            add("knowledge_base_readiness", status, detail)
+        else:
+            add("knowledge_base_readiness", "ok", "Selected knowledge base readiness reports retrieval-ready scope.")
 
     if citations:
         add("evidence", "ok", f"{len(citations)} citations are available.")
@@ -10713,6 +10726,12 @@ def _ask_quality_signals(payload: dict[str, Any]) -> dict[str, Any]:
         flags.append("selected_scope_empty")
     elif knowledge_base_ids and not citations and not results:
         flags.append("selected_knowledge_base_no_relevant_chunks")
+    for warning in _list_of_dicts(scope_applied.get("knowledge_base_readiness_warnings")):
+        status = str(warning.get("status") or "").strip()
+        if status:
+            flag = f"knowledge_base_{status}"
+            if flag not in flags:
+                flags.append(flag)
     flags.extend(flag for flag in _ask_answer_quality_flags(answer) if flag not in flags)
 
     evidence_status = "grounded" if citations else "retrieved_without_citations" if results else "no_evidence"
@@ -11585,19 +11604,28 @@ def _resolve_knowledge_base_scope(store: Any, scope: dict[str, Any], *, tenant_i
     knowledge_base_ids = _knowledge_base_ids_from_scope(resolved)
     if not knowledge_base_ids:
         return resolved
+    knowledge_bases: list[Any] = []
     for knowledge_base_id in knowledge_base_ids:
-        _get_accessible_knowledge_base(store, knowledge_base_id, tenant_id=tenant_id, owner_user_id=owner_user_id)
+        knowledge_bases.append(_get_accessible_knowledge_base(store, knowledge_base_id, tenant_id=tenant_id, owner_user_id=owner_user_id))
     scoped_source_item_ids = store.list_knowledge_base_source_item_ids(
         set(knowledge_base_ids),
         tenant_id=tenant_id,
         owner_user_id=owner_user_id,
     )
+    readiness = [_knowledge_base_scope_readiness_payload(store, knowledge_base) for knowledge_base in knowledge_bases]
+    readiness_warnings = [
+        warning
+        for warning in (_knowledge_base_scope_readiness_warning(item) for item in readiness)
+        if warning
+    ]
     has_explicit_source_item_ids = "source_item_ids" in resolved
     requested_source_item_ids = set(_string_list(resolved.get("source_item_ids")))
     source_item_ids = requested_source_item_ids & scoped_source_item_ids if has_explicit_source_item_ids else set(scoped_source_item_ids)
     dropped_source_item_ids = sorted(requested_source_item_ids - source_item_ids) if has_explicit_source_item_ids else []
     resolved["knowledge_base_ids"] = knowledge_base_ids
     resolved["knowledge_base_source_item_ids"] = sorted(scoped_source_item_ids)
+    resolved["knowledge_base_readiness"] = readiness
+    resolved["knowledge_base_readiness_warnings"] = readiness_warnings
     resolved["source_item_ids"] = sorted(source_item_ids)
     resolved["dropped_source_item_ids"] = dropped_source_item_ids
     resolved["dropped_scope_ids"] = dropped_source_item_ids
@@ -11611,6 +11639,68 @@ def _get_accessible_knowledge_base(store: Any, knowledge_base_id: str, *, tenant
         return store.get_knowledge_base(knowledge_base_id, tenant_id=tenant_id, owner_user_id=owner_user_id)
     except KeyError as exc:
         raise PermissionError("knowledge base is not accessible") from exc
+
+
+def _knowledge_base_scope_readiness_payload(store: Any, knowledge_base: Any) -> dict[str, Any]:
+    payload = _knowledge_base_payload(store, knowledge_base)
+    readiness = payload.get("readiness") if isinstance(payload.get("readiness"), dict) else {}
+    counts = payload.get("counts") if isinstance(payload.get("counts"), dict) else {}
+    source_item_count = _int_value(readiness.get("source_item_count"), fallback=_int_value(counts.get("source_items")))
+    chunk_count = _int_value(readiness.get("chunk_count"), fallback=_int_value(counts.get("chunks")))
+    embedded_chunk_count = _int_value(readiness.get("embedded_chunk_count"), fallback=_int_value(counts.get("embedded_chunks")))
+    processing_status = str(readiness.get("processing_status") or ("ready" if chunk_count else "empty" if source_item_count == 0 else "pending"))
+    return {
+        "knowledge_base_id": str(payload.get("knowledge_base_id") or getattr(knowledge_base, "knowledge_base_id", "")),
+        "name": str(payload.get("name") or getattr(knowledge_base, "name", "") or getattr(knowledge_base, "slug", "")),
+        "retrieval_ready": bool(readiness.get("retrieval_ready")) or chunk_count > 0,
+        "processing_status": processing_status,
+        "source_item_count": source_item_count,
+        "document_count": _int_value(readiness.get("document_count"), fallback=_int_value(counts.get("documents"))),
+        "chunk_count": chunk_count,
+        "embedded_chunk_count": embedded_chunk_count,
+        "embedding_coverage": readiness.get("embedding_coverage"),
+        "embedding_status": readiness.get("embedding_status"),
+        "processing_count": _int_value(readiness.get("processing_count")),
+        "failed_processing_count": _int_value(readiness.get("failed_processing_count"), fallback=_int_value(counts.get("failed_processing_spans"))),
+        "offline_index_state_count": _int_value(readiness.get("offline_index_state_count"), fallback=_int_value(counts.get("offline_index_states"))),
+        "offline_index_dirty_count": _int_value(readiness.get("offline_index_dirty_count"), fallback=_int_value(counts.get("offline_index_dirty"))),
+        "offline_index_fresh": readiness.get("offline_index_fresh"),
+        "last_sync_at": readiness.get("last_sync_at"),
+        "last_processing_at": readiness.get("last_processing_at"),
+        "last_digest_at": readiness.get("last_digest_at"),
+        "last_error": readiness.get("last_error"),
+    }
+
+
+def _knowledge_base_scope_readiness_warning(item: dict[str, Any]) -> dict[str, Any] | None:
+    knowledge_base_id = str(item.get("knowledge_base_id") or "")
+    name = str(item.get("name") or knowledge_base_id or "knowledge base")
+    source_item_count = _int_value(item.get("source_item_count"))
+    chunk_count = _int_value(item.get("chunk_count"))
+    failed_count = _int_value(item.get("failed_processing_count"))
+    processing_status = str(item.get("processing_status") or "").lower()
+    status = ""
+    detail = ""
+    if source_item_count <= 0:
+        status = "empty"
+        detail = f"{name} has no active source items in the selected scope."
+    elif processing_status in {"failed", "error"} or failed_count > 0:
+        status = "processing_failed"
+        detail = f"{name} has failed processing or sync records."
+    elif chunk_count <= 0:
+        status = "no_chunks"
+        detail = f"{name} has source items but no retrievable chunks yet."
+    elif not item.get("retrieval_ready"):
+        status = "not_ready"
+        detail = f"{name} is not marked retrieval-ready."
+    if not status:
+        return None
+    return {
+        "knowledge_base_id": knowledge_base_id,
+        "name": name,
+        "status": status,
+        "detail": detail,
+    }
 
 
 def _knowledge_base_scope_for_ids(store: Any, knowledge_base_ids: list[str], *, tenant_id: str, owner_user_id: str) -> dict[str, Any]:
