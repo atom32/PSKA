@@ -76,6 +76,7 @@ test("browser session scoped Ask does not leak citations across knowledge bases"
     await page.goto(frontendUrl, { waitUntil: "domcontentloaded" });
     await openWorkspace(page, "Today");
     await selectCurrentKnowledgeBase(page, alpha.knowledge_base_id);
+    await expectKnowledgeBaseScopeMenuSearch(page, alpha, beta);
     await expectTodayReviewHealth(page, reviewFixture);
     await expectKnowledgeBaseReadinessPanel(page, alpha.name);
     await openWorkspace(page, "Today");
@@ -392,6 +393,24 @@ async function selectCurrentKnowledgeBase(page: Page, knowledgeBaseId: string) {
   await expect(selector.locator(`option[value="${knowledgeBaseId}"]`)).toHaveCount(1, { timeout: 45_000 });
   await selector.selectOption(knowledgeBaseId);
   await expect(selector).toHaveValue(knowledgeBaseId);
+}
+
+async function expectKnowledgeBaseScopeMenuSearch(page: Page, alpha: KnowledgeBase, beta: KnowledgeBase) {
+  const menu = page.locator(".kb-scope-menu");
+  await menu.locator("summary").click();
+  const panel = page.locator(".kb-scope-menu-panel");
+  await expect(panel).toBeVisible();
+  await panel.getByTestId("kb-scope-search").fill(alpha.name);
+  await expect(panel.getByTestId("kb-scope-filter-summary")).toContainText("1 个匹配");
+  const options = panel.getByTestId("kb-scope-option");
+  await expect(options).toHaveCount(1);
+  await expect(options.first()).toContainText(alpha.name);
+  await expect(options.first()).toContainText(/可检索|待处理/);
+  await expect(options.first()).toContainText(/资料/);
+  await expect(panel).not.toContainText(beta.name);
+  await panel.getByTestId("kb-scope-search").fill("");
+  await expect(panel.getByTestId("kb-scope-option").filter({ hasText: beta.name })).toBeVisible();
+  await menu.locator("summary").click();
 }
 
 async function askViaBrowserSession(page: Page, query: string, knowledgeBaseId: string): Promise<any> {

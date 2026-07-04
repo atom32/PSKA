@@ -951,10 +951,16 @@ function KnowledgeBaseScopeChip({
   onSelectedKnowledgeBaseIdsChange: (knowledgeBaseIds: string[]) => void;
   onScopeModeChange: (mode: "current" | "all" | "selected" | "attachments") => void;
 }) {
+  const [scopeSearch, setScopeSearch] = useState("");
   const current = knowledgeBases.find((kb) => kb.knowledge_base_id === currentKnowledgeBaseId);
   const selectedIds = selectedKnowledgeBaseIds.length ? selectedKnowledgeBaseIds : current?.knowledge_base_id ? [current.knowledge_base_id] : [];
   const selectedIdSet = new Set(selectedIds);
   const selectedLabel = scopeMode === "selected" && selectedIds.length > 0 ? `${selectedIds.length} 个` : "多选";
+  const searchTerm = scopeSearch.trim().toLowerCase();
+  const filteredKnowledgeBases = searchTerm
+    ? knowledgeBases.filter((knowledgeBase) => knowledgeBaseSearchText(knowledgeBase).includes(searchTerm))
+    : knowledgeBases;
+  const selectedVisibleCount = filteredKnowledgeBases.filter((knowledgeBase) => selectedIdSet.has(knowledgeBase.knowledge_base_id)).length;
 
   function updateSelectedKnowledgeBases(nextIds: string[]) {
     const activeIds = Array.from(new Set(nextIds.filter((id) => knowledgeBases.some((kb) => kb.knowledge_base_id === id))));
@@ -1006,28 +1012,78 @@ function KnowledgeBaseScopeChip({
           {selectedLabel}
         </summary>
         <div className="kb-scope-menu-panel">
-          {knowledgeBases.map((knowledgeBase) => (
-            <label key={knowledgeBase.knowledge_base_id}>
+          <label className="kb-scope-search" aria-label="搜索知识库">
+            <Search size={14} />
+            <input
+              value={scopeSearch}
+              onChange={(event) => setScopeSearch(event.target.value)}
+              placeholder="搜索知识库"
+              data-testid="kb-scope-search"
+            />
+          </label>
+          {filteredKnowledgeBases.length === 0 ? (
+            <div className="kb-scope-empty" data-testid="kb-scope-empty">没有匹配的知识库。</div>
+          ) : null}
+          {filteredKnowledgeBases.map((knowledgeBase) => (
+            <label key={knowledgeBase.knowledge_base_id} className="kb-scope-option" data-testid="kb-scope-option">
               <input
                 type="checkbox"
                 checked={selectedIdSet.has(knowledgeBase.knowledge_base_id)}
                 onChange={(event) => toggleSelectedKnowledgeBase(knowledgeBase.knowledge_base_id, event.target.checked)}
               />
-              <span>{knowledgeBase.name || knowledgeBase.slug || "知识库"}</span>
+              <span className="kb-scope-option-text">
+                <strong>{knowledgeBase.name || knowledgeBase.slug || "知识库"}</strong>
+                <small>{knowledgeBaseReadinessLine(knowledgeBase)}</small>
+              </span>
             </label>
           ))}
           <div className="kb-scope-menu-actions">
             <button type="button" onClick={() => updateSelectedKnowledgeBases(knowledgeBases.map((knowledgeBase) => knowledgeBase.knowledge_base_id))}>
               全选
             </button>
+            {searchTerm ? (
+              <button type="button" onClick={() => updateSelectedKnowledgeBases(filteredKnowledgeBases.map((knowledgeBase) => knowledgeBase.knowledge_base_id))}>
+                选中结果
+              </button>
+            ) : null}
             <button type="button" onClick={() => updateSelectedKnowledgeBases([])}>
               清空
             </button>
           </div>
+          {searchTerm ? (
+            <small className="kb-scope-filter-summary" data-testid="kb-scope-filter-summary">
+              {filteredKnowledgeBases.length} 个匹配 · {selectedVisibleCount} 个已选
+            </small>
+          ) : null}
         </div>
       </details>
     </div>
   );
+}
+
+function knowledgeBaseSearchText(knowledgeBase: KnowledgeBase) {
+  return [
+    knowledgeBase.name,
+    knowledgeBase.slug,
+    knowledgeBase.description,
+    knowledgeBase.knowledge_base_id
+  ].filter(Boolean).join(" ").toLowerCase();
+}
+
+function knowledgeBaseReadinessLine(knowledgeBase: KnowledgeBase) {
+  const readiness = knowledgeBase.readiness || {};
+  const counts = knowledgeBase.counts || {};
+  const sourceCount = firstFiniteNumber(readiness.source_item_count, counts.source_items) || 0;
+  const chunkCount = firstFiniteNumber(readiness.active_chunk_count, readiness.chunk_count, counts.active_chunks, counts.chunks) || 0;
+  const embeddedCount = firstFiniteNumber(readiness.embedded_chunk_count, counts.embedded_chunks);
+  const coverage = firstFiniteNumber(readiness.embedding_coverage);
+  const ready = readiness.retrieval_ready !== false && chunkCount > 0;
+  const coverageLabel = coverage !== undefined
+    ? `embedding ${Math.round(Math.max(0, Math.min(1, coverage)) * 100)}%`
+    : embeddedCount !== undefined && chunkCount > 0
+      ? `embedding ${Math.round((embeddedCount / chunkCount) * 100)}%`
+      : "embedding 待检查";
+  return `${ready ? "可检索" : "待处理"} · ${sourceCount} 资料 · ${chunkCount} chunks · ${coverageLabel}`;
 }
 
 type TodayAction = "待处理" | "处理中" | "已接受" | "已忽略" | "稍后" | "已批准" | "已批准并应用" | "已拒绝" | "操作失败";

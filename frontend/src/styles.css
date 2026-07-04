@@ -417,7 +417,7 @@ button.context-item-main {
   top: calc(100% + 8px);
   right: 0;
   z-index: 30;
-  width: min(280px, calc(100vw - 28px));
+  width: min(340px, calc(100vw - 28px));
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--paper);
@@ -427,9 +427,9 @@ button.context-item-main {
   padding: 8px;
 }
 
-.kb-scope-menu-panel label {
+.kb-scope-search,
+.kb-scope-option {
   min-width: 0;
-  min-height: 32px;
   border: 1px solid transparent;
   border-radius: 7px;
   display: flex;
@@ -440,23 +440,72 @@ button.context-item-main {
   font-size: 13px;
 }
 
-.kb-scope-menu-panel label:hover {
+.kb-scope-search {
+  min-height: 34px;
   border-color: var(--line);
   background: #fffefa;
 }
 
-.kb-scope-menu-panel input {
+.kb-scope-search input {
+  min-width: 0;
+  width: 100%;
+  height: 28px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+}
+
+.kb-scope-option {
+  min-height: 46px;
+  align-items: flex-start;
+  padding: 7px 8px;
+}
+
+.kb-scope-option:hover {
+  border-color: var(--line);
+  background: #fffefa;
+}
+
+.kb-scope-option input {
+  flex: 0 0 auto;
   width: 15px;
   height: 15px;
-  margin: 0;
+  margin: 2px 0 0;
   accent-color: #2e7564;
 }
 
-.kb-scope-menu-panel span {
+.kb-scope-option-text {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.kb-scope-option-text strong,
+.kb-scope-option-text small {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.kb-scope-option-text strong {
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.kb-scope-option-text small,
+.kb-scope-filter-summary,
+.kb-scope-empty {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.kb-scope-empty {
+  border: 1px dashed var(--line);
+  border-radius: 7px;
+  padding: 9px 10px;
 }
 
 .kb-scope-menu-actions {
@@ -465,6 +514,10 @@ button.context-item-main {
   gap: 6px;
   border-top: 1px solid var(--line);
   padding-top: 7px;
+}
+
+.kb-scope-filter-summary {
+  text-align: right;
 }
 
 .identity-fields {

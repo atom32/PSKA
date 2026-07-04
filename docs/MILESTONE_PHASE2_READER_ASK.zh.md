@@ -46,6 +46,7 @@
 - Review Center 已增加“稍后”队列：pending Review 可以单条或批量 snooze 到 `snoozed` 状态，`snoozed` tab 可以单条或批量恢复到 pending；后端 `ReviewService` 会写入 `review.snooze` / `review.restore` audit event。
 - Review Center 的 applied 卡片已增加“应用 lineage”面板，基于真实 `application_result` 展示写入目标、审计动作、状态、target id 和应用时保留的证据引用数量。
 - Today 右侧 Review 卡片已接入同一类证据健康摘要，把待审候选在日常入口中标成“需复核 / 补引用 / 缺证据”，减少用户必须先进入 Review Center 才知道证据状态的跳转。
+- Ask scope selector 的多知识库菜单已支持搜索 KB，并在每个候选项上展示可检索状态、资料数、chunk 数和 embedding 覆盖率，便于发问前确认范围 readiness。
 - Graph Ask 主路径和 legacy Graph Path 面板都已增加证据健康摘要，把 citations、agentic repair 和错误状态提炼成“有引用 / 缺引用 / 已重写 / 需复核 / 失败”等短标签。
 - Linking digest 生成的 `relationship_candidate` Review proposal 已携带 `relation_type`、成员、证据摘要和 source refs，Review Center 的 apply-ready 判断会校验真实 apply 所需字段，避免“看起来可应用但应用失败”的候选。
 - Review Center 的 applied relationship item 已持久返回 `application_result.target_ids.created_hyperedge_id`，并提供“在 Graph 查看”动作，点击后会切到 Graph、拉取对应 `hyperedge:<id>` 的 1-hop subgraph 并打开节点 inspector。
