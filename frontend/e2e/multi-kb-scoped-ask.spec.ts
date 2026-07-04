@@ -233,6 +233,12 @@ async function expectTodayReviewHealth(page: Page, fixture: ReviewHealthFixture)
 async function expectReviewCenterHealth(page: Page, fixture: ReviewHealthFixture) {
   await openWorkspace(page, "Review");
   await page.getByTestId("review-filter-pending").click();
+  const analytics = page.getByTestId("review-analytics");
+  await expect(analytics).toBeVisible({ timeout: 45_000 });
+  await expect(analytics).toContainText("队列态势");
+  await expect(analytics).toContainText("待审");
+  await expect(analytics).toContainText("缺证据");
+  await expect(analytics.getByTestId("review-analytics-type").first()).toBeVisible();
   const reviewCard = page.locator(".review-center-item").filter({ hasText: fixture.reviewItemId }).first();
   await expect(reviewCard).toBeVisible({ timeout: 45_000 });
   await expect(reviewCard).toContainText(fixture.topic);

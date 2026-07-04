@@ -2323,6 +2323,20 @@ def test_local_console_review_inbox_summarizes_pending_reviews() -> None:
             },
         )
     )
+    api.store.add_review_item(
+        ReviewItem(
+            review_item_id="rev_profile_approved",
+            owner_user_id="user_primary",
+            review_type=ReviewType.PROFILE_UPDATE,
+            title="Approved profile candidate",
+            proposal={
+                "profile_delta": {"topic": "approved"},
+                "confidence": 0.93,
+                "source_refs": [{"source_item_id": "src_approved", "chunk_id": "chk_approved"}],
+            },
+            status="approved",
+        )
+    )
 
     with _http_server(api) as base_url:
         page_status, _headers, body = _http_text(base_url, "GET", "/console/reviews")
@@ -2333,6 +2347,13 @@ def test_local_console_review_inbox_summarizes_pending_reviews() -> None:
     assert data_status == 200
     by_id = {item["review_item_id"]: item for item in payload["review_items"]}
     assert payload["total_matching"] == 5
+    assert payload["analytics"]["total"] == 6
+    assert payload["analytics"]["status_counts"]["pending"] == 5
+    assert payload["analytics"]["status_counts"]["approved"] == 1
+    assert payload["analytics"]["review_type_counts"]["profile_update"] == 3
+    assert payload["analytics"]["source_ref_status_counts"] == {"missing": 2, "present": 4}
+    assert payload["analytics"]["apply_ready_count"] == 2
+    assert payload["analytics"]["by_review_type"]["profile_update"]["status_counts"]["approved"] == 1
     assert by_id["rev_profile_ready"]["review_type"] == "profile_update"
     assert by_id["rev_profile_ready"]["confidence"] == 0.82
     assert by_id["rev_profile_ready"]["source_ref_status"] == "present"

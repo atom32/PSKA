@@ -140,6 +140,7 @@ import type {
   AskMessage,
   AskRun,
   ReviewApplicationResult,
+  ReviewCenterAnalytics,
   ReviewCenterItem,
   SourcePreviewResponse,
   SourceSyncResponse,
@@ -1543,6 +1544,7 @@ function ReviewCenter({
   });
   const items = reviewQuery.data?.review_items || [];
   const total = reviewQuery.data?.total_matching ?? reviewQuery.data?.count ?? items.length;
+  const analytics = reviewQuery.data?.analytics;
   const scopeLabel = knowledgeBaseScopeLabel(scopeMode, currentKnowledgeBase, selectedKnowledgeBaseIds);
   const selectableItems = useMemo(() => items.filter((item) => reviewBulkSelectable(item, status)), [items, status]);
   const selectedItems = useMemo(() => items.filter((item) => selectedReviewIds.has(item.review_item_id)), [items, selectedReviewIds]);
@@ -1688,6 +1690,10 @@ function ReviewCenter({
           </button>
         ))}
       </div>
+
+      {!reviewQuery.isLoading && !reviewQuery.isError ? (
+        <ReviewAnalyticsPanel analytics={analytics} activeStatus={status} />
+      ) : null}
 
       {!reviewQuery.isLoading && !reviewQuery.isError && selectableItems.length ? (
         <>
@@ -1984,6 +1990,70 @@ function reviewDecisionActionLabel(action?: string, decision?: string) {
     return "恢复待审";
   }
   return displayText(action || decision, "决策");
+}
+
+function ReviewAnalyticsPanel({ analytics, activeStatus }: { analytics?: ReviewCenterAnalytics; activeStatus: string }) {
+  if (!analytics) {
+    return null;
+  }
+  const statusCounts = analytics.status_counts || {};
+  const sourceCounts = analytics.source_ref_status_counts || {};
+  const rows = Object.entries(analytics.by_review_type || {})
+    .sort(([, left], [, right]) => reviewAnalyticsNumber(right.total) - reviewAnalyticsNumber(left.total))
+    .slice(0, 5);
+  const metrics = [
+    { label: "待审", value: reviewAnalyticsCount(statusCounts, "pending"), hint: "当前积压" },
+    { label: "可应用", value: reviewAnalyticsNumber(analytics.apply_ready_count), hint: "批准后可写入" },
+    { label: "缺证据", value: reviewAnalyticsCount(sourceCounts, "missing"), hint: "需补证据" },
+    { label: "最久待审", value: `${reviewAnalyticsNumber(analytics.pending_oldest_age_days)} 天`, hint: "队列年龄" }
+  ];
+  return (
+    <section className="review-analytics" data-testid="review-analytics" aria-label="Review 队列态势">
+      <div className="review-analytics-head">
+        <div>
+          <strong>队列态势</strong>
+          <small>{reviewAnalyticsNumber(analytics.total)} 条候选 · 当前查看 {statusLabel(activeStatus)}</small>
+        </div>
+        <small>平均待审 {reviewAnalyticsNumber(analytics.pending_average_age_days)} 天</small>
+      </div>
+      <div className="review-analytics-metrics">
+        {metrics.map((metric) => (
+          <span key={metric.label}>
+            <strong>{metric.value}</strong>
+            <small>{metric.label} · {metric.hint}</small>
+          </span>
+        ))}
+      </div>
+      {rows.length ? (
+        <div className="review-analytics-types" data-testid="review-analytics-types">
+          {rows.map(([reviewType, row]) => {
+            const rowStatusCounts = row.status_counts || {};
+            return (
+              <article key={reviewType} data-testid="review-analytics-type">
+                <div>
+                  <strong>{reviewType}</strong>
+                  <small>{reviewAnalyticsNumber(row.total)} 条 · 可应用 {reviewAnalyticsNumber(row.apply_ready)}</small>
+                </div>
+                <div className="review-analytics-statuses">
+                  {["pending", "approved", "applied", "rejected", "snoozed"].map((value) => (
+                    <span key={`${reviewType}-${value}`}>{statusLabel(value)} {reviewAnalyticsCount(rowStatusCounts, value)}</span>
+                  ))}
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function reviewAnalyticsCount(record: Record<string, number> | undefined, key: string) {
+  return reviewAnalyticsNumber(record?.[key]);
+}
+
+function reviewAnalyticsNumber(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
 function ReviewSelectionComparison({ items }: { items: ReviewCenterItem[] }) {

@@ -342,6 +342,11 @@ For a complete seed-and-run scenario, see
 | `POST /review-items/{id}/reject` | Reject a review item |
 | `POST /review-items/{id}/apply` | Apply an approved item |
 
+`/console/reviews/data` returns `review_items` for the selected status plus
+`analytics` for the current owner/KB scope, including status counts,
+review-type counts, evidence health, apply-readiness counts, and a
+`by_review_type` status matrix.
+
 Approve request:
 
 ```json

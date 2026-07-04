@@ -1772,20 +1772,21 @@ class PSKAApi:
         scope = _knowledge_base_scope_for_ids(self.store, knowledge_base_ids or [], tenant_id=tenant_id, owner_user_id=owner_user_id)
         scoped_source_item_ids = set(_string_list(scope.get("source_item_ids")))
         has_kb_scope = bool(_knowledge_base_ids_from_scope(scope))
-        all_items = _console_review_items(
+        all_scoped_items = _console_review_items(
             to_jsonable(self.store.list_review_items(tenant_id=tenant_id)),
-            status=status,
+            status="",
             owner_user_id=owner_user_id,
             limit=10_000,
             store=self.store,
         )
-        all_items = sorted(all_items, key=lambda item: str(item.get("created_at") or ""), reverse=True)
+        all_scoped_items = sorted(all_scoped_items, key=lambda item: str(item.get("created_at") or ""), reverse=True)
         if has_kb_scope:
-            all_items = [
+            all_scoped_items = [
                 item
-                for item in all_items
+                for item in all_scoped_items
                 if _source_refs_match_source_item_ids(_list_of_dicts(item.get("source_refs")), scoped_source_item_ids)
             ]
+        all_items = [item for item in all_scoped_items if not status or item.get("status") == status]
         all_items = _enrich_review_items_knowledge_bases(
             self.store,
             all_items,
@@ -1803,6 +1804,7 @@ class PSKAApi:
             "count": len(items),
             "total_matching": len(all_items),
             "scope_applied": _knowledge_scope_applied(scope),
+            "analytics": _review_center_analytics(all_scoped_items),
             "supports_single_item_actions": True,
         }
 
@@ -6866,6 +6868,76 @@ def _console_review_items(items: list[dict[str, Any]], *, status: str, owner_use
         and (not owner_user_id or item.get("owner_user_id") == owner_user_id)
     ]
     return matching[: max(0, limit)]
+
+
+def _review_center_analytics(items: list[dict[str, Any]]) -> dict[str, Any]:
+    status_counts = _review_count_by(items, "status", fallback="unknown")
+    review_type_counts = _review_count_by(items, "review_type", fallback="review")
+    source_ref_status_counts = _review_count_by(items, "source_ref_status", fallback="missing")
+    quality_tier_counts = _review_count_by(items, "quality_tier", fallback="unscored")
+    recommended_action_counts = _review_count_by(items, "recommended_action", fallback="review")
+    by_review_type: dict[str, dict[str, Any]] = {}
+    now = datetime.now(UTC)
+    pending_ages: list[float] = []
+    for item in items:
+        review_type = str(item.get("review_type") or "review")
+        status = str(item.get("status") or "unknown")
+        current = by_review_type.setdefault(
+            review_type,
+            {
+                "total": 0,
+                "status_counts": {},
+                "source_ref_status_counts": {},
+                "apply_ready": 0,
+                "apply_supported": 0,
+            },
+        )
+        current["total"] += 1
+        current["status_counts"][status] = current["status_counts"].get(status, 0) + 1
+        source_status = str(item.get("source_ref_status") or "missing")
+        current["source_ref_status_counts"][source_status] = current["source_ref_status_counts"].get(source_status, 0) + 1
+        if item.get("apply_ready"):
+            current["apply_ready"] += 1
+        if item.get("apply_supported"):
+            current["apply_supported"] += 1
+        if status == "pending":
+            created_at = _review_item_created_at(item.get("created_at"))
+            if created_at:
+                pending_ages.append(max(0.0, (now - created_at).total_seconds() / 86400))
+    return {
+        "total": len(items),
+        "status_counts": status_counts,
+        "review_type_counts": review_type_counts,
+        "source_ref_status_counts": source_ref_status_counts,
+        "quality_tier_counts": quality_tier_counts,
+        "recommended_action_counts": recommended_action_counts,
+        "apply_ready_count": len([item for item in items if item.get("apply_ready")]),
+        "apply_supported_count": len([item for item in items if item.get("apply_supported")]),
+        "review_eligible_count": len([item for item in items if item.get("review_eligible")]),
+        "pending_oldest_age_days": round(max(pending_ages), 1) if pending_ages else 0,
+        "pending_average_age_days": round(sum(pending_ages) / len(pending_ages), 1) if pending_ages else 0,
+        "by_review_type": by_review_type,
+    }
+
+
+def _review_count_by(items: list[dict[str, Any]], key: str, *, fallback: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in items:
+        value = str(item.get(key) or fallback)
+        counts[value] = counts.get(value, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def _review_item_created_at(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return _as_aware(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return _as_aware(parsed)
+    return None
 
 
 def _console_review_item(item: dict[str, Any], *, store: Any | None = None) -> dict[str, Any]:

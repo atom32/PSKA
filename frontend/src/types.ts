@@ -1355,10 +1355,35 @@ export type ReviewCenterResponse = {
   owner_user_id?: string;
   status?: string;
   scope_applied?: Record<string, unknown>;
+  analytics?: ReviewCenterAnalytics;
   review_items?: ReviewCenterItem[];
   count?: number;
   total_matching?: number;
   supports_single_item_actions?: boolean;
+};
+
+export type ReviewCenterAnalytics = {
+  total?: number;
+  status_counts?: Record<string, number>;
+  review_type_counts?: Record<string, number>;
+  source_ref_status_counts?: Record<string, number>;
+  quality_tier_counts?: Record<string, number>;
+  recommended_action_counts?: Record<string, number>;
+  apply_ready_count?: number;
+  apply_supported_count?: number;
+  review_eligible_count?: number;
+  pending_oldest_age_days?: number;
+  pending_average_age_days?: number;
+  by_review_type?: Record<
+    string,
+    {
+      total?: number;
+      status_counts?: Record<string, number>;
+      source_ref_status_counts?: Record<string, number>;
+      apply_ready?: number;
+      apply_supported?: number;
+    }
+  >;
 };
 
 export type ReviewApplicationResult = {
