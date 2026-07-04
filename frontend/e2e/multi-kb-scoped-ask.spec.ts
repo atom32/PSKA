@@ -98,6 +98,7 @@ test("browser session scoped Ask does not leak citations across knowledge bases"
     expect(evidenceJson).not.toContain(betaSecret);
 
     await askViaBrowserComposer(page, query, {
+      marker,
       alphaSecret,
       betaSecret,
       alphaSourceItemId
@@ -260,7 +261,7 @@ async function askViaBrowserSession(page: Page, query: string, knowledgeBaseId: 
 async function askViaBrowserComposer(
   page: Page,
   query: string,
-  expected: { alphaSecret: string; betaSecret: string; alphaSourceItemId: string }
+  expected: { marker: string; alphaSecret: string; betaSecret: string; alphaSourceItemId: string }
 ) {
   await page.getByTestId("today-ask-input").fill(query);
   await page.getByTestId("today-ask-submit").click();
@@ -277,6 +278,23 @@ async function askViaBrowserComposer(
   await page.getByTestId("ask-from-evidence").last().click();
   await expect(page.getByTestId("reader-focus-chip")).toBeVisible();
   await expect(page.getByTestId("today-ask-input")).toHaveValue(new RegExp(escapeRegExp(expected.alphaSourceItemId)));
+  await saveAskResultToWriting(page, expected);
+}
+
+async function saveAskResultToWriting(page: Page, expected: { marker: string; alphaSecret: string; betaSecret: string }) {
+  const result = page.getByTestId("ask-result").last();
+  const createBrief = result.getByTestId("ask-create-brief");
+  await expect(createBrief).toBeEnabled({ timeout: 45_000 });
+  await createBrief.click();
+  await expect(page.getByTestId("writing-toolbar")).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByTestId("writing-board-title-input")).toHaveValue(/Brief:/);
+  const briefNode = page
+    .locator('[data-testid="writing-node"][data-node-type="draft"], [data-testid="writing-node"][data-node-type="answer"]')
+    .filter({ hasText: expected.alphaSecret })
+    .first();
+  await expect(briefNode).toBeVisible({ timeout: 45_000 });
+  await expect(briefNode).not.toContainText(expected.betaSecret);
+  await expect(page.getByTestId("writing-citation-inspector").first()).toBeVisible();
 }
 
 async function askViaGraphWorkspace(
@@ -394,6 +412,52 @@ delete from knowledge_topics
 where tenant_id = ${tenant}
   and owner_user_id = ${owner}
   and (label like any(${markerArray}) or normalized_label like any(${markerArray}) or metadata::text like any(${markerArray}));
+with target_writing_boards as (
+  select board_id from writing_boards
+  where tenant_id = ${tenant}
+    and owner_user_id = ${owner}
+    and (title like any(${markerArray}) or goal like any(${markerArray}) or metadata::text like any(${markerArray}))
+  union
+  select board_id from writing_nodes
+  where tenant_id = ${tenant}
+    and owner_user_id = ${owner}
+    and (
+      title like any(${markerArray})
+      or body_markdown like any(${markerArray})
+      or source_refs::text like any(${markerArray})
+      or citations::text like any(${markerArray})
+      or metadata::text like any(${markerArray})
+    )
+)
+delete from writing_edges
+where tenant_id = ${tenant}
+  and owner_user_id = ${owner}
+  and board_id in (select board_id from target_writing_boards);
+with target_writing_boards as (
+  select board_id from writing_boards
+  where tenant_id = ${tenant}
+    and owner_user_id = ${owner}
+    and (title like any(${markerArray}) or goal like any(${markerArray}) or metadata::text like any(${markerArray}))
+  union
+  select board_id from writing_nodes
+  where tenant_id = ${tenant}
+    and owner_user_id = ${owner}
+    and (
+      title like any(${markerArray})
+      or body_markdown like any(${markerArray})
+      or source_refs::text like any(${markerArray})
+      or citations::text like any(${markerArray})
+      or metadata::text like any(${markerArray})
+    )
+)
+delete from writing_nodes
+where tenant_id = ${tenant}
+  and owner_user_id = ${owner}
+  and board_id in (select board_id from target_writing_boards);
+delete from writing_boards
+where tenant_id = ${tenant}
+  and owner_user_id = ${owner}
+  and (title like any(${markerArray}) or goal like any(${markerArray}) or metadata::text like any(${markerArray}));
 with target_items as (
   select source_item_id from source_items
   where tenant_id = ${tenant} and owner_user_id = ${owner} and ${sourceMarkerClause}
@@ -425,7 +489,10 @@ select
   (select count(*) from review_items where tenant_id = ${tenant} and owner_user_id = ${owner} and (title like any(${markerArray}) or proposal::text like any(${markerArray}))) as review_items,
   (select count(*) from knowledge_topics where tenant_id = ${tenant} and owner_user_id = ${owner} and (label like any(${markerArray}) or normalized_label like any(${markerArray}) or metadata::text like any(${markerArray}))) as knowledge_topics,
   (select count(*) from topic_mentions where tenant_id = ${tenant} and owner_user_id = ${owner} and (mention_text like any(${markerArray}) or metadata::text like any(${markerArray}))) as topic_mentions,
-  (select count(*) from artifact_supports where tenant_id = ${tenant} and owner_user_id = ${owner} and (artifact_id like any(${markerArray}) or metadata::text like any(${markerArray}))) as artifact_supports;
+  (select count(*) from artifact_supports where tenant_id = ${tenant} and owner_user_id = ${owner} and (artifact_id like any(${markerArray}) or metadata::text like any(${markerArray}))) as artifact_supports,
+  (select count(*) from writing_boards where tenant_id = ${tenant} and owner_user_id = ${owner} and (title like any(${markerArray}) or goal like any(${markerArray}) or metadata::text like any(${markerArray}))) as writing_boards,
+  (select count(*) from writing_nodes where tenant_id = ${tenant} and owner_user_id = ${owner} and (title like any(${markerArray}) or body_markdown like any(${markerArray}) or source_refs::text like any(${markerArray}) or citations::text like any(${markerArray}) or metadata::text like any(${markerArray}))) as writing_nodes,
+  (select count(*) from writing_edges where tenant_id = ${tenant} and owner_user_id = ${owner} and metadata::text like any(${markerArray})) as writing_edges;
 `;
   const output = execFileSync("psql", ["-X", "-d", databaseUrl, "-A", "-F", ",", "-q", "-c", sql], {
     encoding: "utf8",
@@ -434,7 +501,7 @@ select
   const residue = output
     .split(/\r?\n/)
     .map((line) => line.trim())
-    .find((line) => /^0,0,0,0,0,0,0,0,0,0$/.test(line));
+    .find((line) => /^0,0,0,0,0,0,0,0,0,0,0,0,0$/.test(line));
   if (!residue) {
     throw new Error(`multi-KB scoped Ask e2e cleanup left residue for marker ${marker}: ${output}`);
   }

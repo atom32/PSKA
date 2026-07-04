@@ -1309,6 +1309,7 @@ function TodayWorkspace({
             liveResult={liveResultMatchesActive && (searching || !liveResultPersisted) ? searchResult : null}
             livePending={searching}
             onAskFromEvidence={askFromEvidence}
+            onOpenWriting={() => onOpenWorkspace("writing")}
             composer={(
               <form className="today-search-form today-chat-composer" onSubmit={runTodaySearch} data-testid="today-ask-form">
                 <textarea
@@ -1720,15 +1721,19 @@ function AskResult({
   pending = false,
   knowledgeBases = [],
   serviceToken,
-  onAskFromEvidence
+  onAskFromEvidence,
+  onOpenWriting
 }: {
   result: WorkspaceAskResponse | WorkspaceSearchResponse;
   pending?: boolean;
   knowledgeBases?: KnowledgeBase[];
   serviceToken?: PSKAAuth;
   onAskFromEvidence?: (refItem: SearchEvidenceRef) => void;
+  onOpenWriting?: () => void;
 }) {
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "failed">("idle");
+  const [briefStatus, setBriefStatus] = useState<"idle" | "creating" | "saved" | "failed">("idle");
+  const [briefMessage, setBriefMessage] = useState("");
   const [selectedRefIndex, setSelectedRefIndex] = useState(0);
   const askEvidence = (result as WorkspaceAskResponse).evidence;
   const route = (result as WorkspaceAskResponse).route;
@@ -1771,6 +1776,8 @@ function AskResult({
   const markdown = buildAskMarkdown((result as WorkspaceAskResponse).query || "", answer, refs, gaps, conflicts);
   const canCopy = Boolean(answer || refs.length || gaps.length || conflicts.length);
   const scopeLabel = askResultScopeLabel(result, knowledgeBases);
+  const askRunId = displayText((result as WorkspaceAskResponse).run_id, "");
+  const canCreateBrief = Boolean(serviceToken && askRunId && answer && refs.length > 0 && !pending && !result.error);
 
   async function handleCopyMarkdown() {
     try {
@@ -1778,6 +1785,29 @@ function AskResult({
       setCopyStatus("copied");
     } catch {
       setCopyStatus("failed");
+    }
+  }
+
+  async function handleCreateBrief() {
+    if (!serviceToken || !askRunId || briefStatus === "creating") {
+      return;
+    }
+    setBriefStatus("creating");
+    setBriefMessage("");
+    try {
+      const payload = await createEvidenceBrief(serviceToken, {
+        ask_run_ids: [askRunId],
+        title: `Brief: ${trimText((result as WorkspaceAskResponse).query || answer, 56)}`
+      });
+      if (payload.ok === false) {
+        throw new Error(evidenceBriefUnavailableMessage(payload));
+      }
+      setBriefStatus("saved");
+      setBriefMessage(payload.board?.title || payload.brief?.title || "已生成 Writing Brief");
+      onOpenWriting?.();
+    } catch (error) {
+      setBriefStatus("failed");
+      setBriefMessage(error instanceof Error ? error.message : "生成 Brief 失败。");
     }
   }
 
@@ -1803,10 +1833,23 @@ function AskResult({
             </span>
           ) : null}
         </div>
-        <button type="button" onClick={() => void handleCopyMarkdown()} disabled={!canCopy}>
-          {copyStatus === "copied" ? "已复制" : copyStatus === "failed" ? "复制失败" : "复制 Markdown"}
-        </button>
+        <div className="ask-result-actions">
+          <button
+            type="button"
+            onClick={() => void handleCreateBrief()}
+            disabled={!canCreateBrief || briefStatus === "creating"}
+            title={canCreateBrief ? "把本轮带引用回答生成 Writing Evidence Brief" : "需要已完成且有引用的 Ask run"}
+            data-testid="ask-create-brief"
+          >
+            <TextCursorInput size={14} />
+            <span>{briefStatus === "creating" ? "生成中" : briefStatus === "saved" ? "已生成" : "生成 Brief"}</span>
+          </button>
+          <button type="button" onClick={() => void handleCopyMarkdown()} disabled={!canCopy}>
+            {copyStatus === "copied" ? "已复制" : copyStatus === "failed" ? "复制失败" : "复制 Markdown"}
+          </button>
+        </div>
       </div>
+      {briefMessage ? <small className={`search-note ask-brief-status ${briefStatus}`} data-testid="ask-create-brief-status">{briefMessage}</small> : null}
       {progressEvents.length ? <AskProgressStrip progress={progressEvents} /> : null}
       {displaySteps.length || rawEvents.length || evidenceCheck || qualitySignals ? (
         <AskProcessTimeline
@@ -6110,6 +6153,7 @@ function AskConversationPanel({
   liveResult,
   livePending,
   onAskFromEvidence,
+  onOpenWriting,
   composer
 }: {
   serviceToken: PSKAAuth;
@@ -6121,6 +6165,7 @@ function AskConversationPanel({
   liveResult?: WorkspaceAskResponse | null;
   livePending?: boolean;
   onAskFromEvidence?: (refItem: SearchEvidenceRef) => void;
+  onOpenWriting?: () => void;
   composer: ReactNode;
 }) {
   const runById = useMemo(() => {
@@ -6179,7 +6224,7 @@ function AskConversationPanel({
                   <span>{message.role === "assistant" ? "PSKA" : "你"}</span>
                   {message.role === "assistant" ? (
                     runById.get(messageRunId) ? (
-                      <AskResult result={runById.get(messageRunId) as WorkspaceAskResponse} knowledgeBases={knowledgeBases} serviceToken={serviceToken} onAskFromEvidence={onAskFromEvidence} />
+                      <AskResult result={runById.get(messageRunId) as WorkspaceAskResponse} knowledgeBases={knowledgeBases} serviceToken={serviceToken} onAskFromEvidence={onAskFromEvidence} onOpenWriting={onOpenWriting} />
                     ) : (
                       <p>{trimText(message.content || "", 800)}</p>
                     )
@@ -6190,7 +6235,7 @@ function AskConversationPanel({
                 {orphanRunResult ? (
                   <article className="ask-message assistant orphan-run">
                     <span>PSKA</span>
-                    <AskResult result={orphanRunResult} pending={orphanRunResult.status === "running"} knowledgeBases={knowledgeBases} serviceToken={serviceToken} onAskFromEvidence={onAskFromEvidence} />
+                    <AskResult result={orphanRunResult} pending={orphanRunResult.status === "running"} knowledgeBases={knowledgeBases} serviceToken={serviceToken} onAskFromEvidence={onAskFromEvidence} onOpenWriting={onOpenWriting} />
                   </article>
                 ) : null}
               </div>
@@ -6206,7 +6251,7 @@ function AskConversationPanel({
               ) : null}
               <article className="ask-message assistant live">
                 <span>PSKA</span>
-                <AskResult result={liveResult as WorkspaceAskResponse} pending={livePending} knowledgeBases={knowledgeBases} serviceToken={serviceToken} onAskFromEvidence={onAskFromEvidence} />
+                <AskResult result={liveResult as WorkspaceAskResponse} pending={livePending} knowledgeBases={knowledgeBases} serviceToken={serviceToken} onAskFromEvidence={onAskFromEvidence} onOpenWriting={onOpenWriting} />
               </article>
             </>
           ) : null}

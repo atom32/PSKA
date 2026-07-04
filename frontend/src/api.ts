@@ -1190,7 +1190,15 @@ export async function composeWritingDraft(
 
 export async function createEvidenceBrief(
   serviceToken: PSKAAuth,
-  payload: { job_id?: string; digest_note_ids?: string[]; knowledge_claim_ids?: string[]; review_item_ids?: string[]; title?: string; limit?: number }
+  payload: {
+    job_id?: string;
+    digest_note_ids?: string[];
+    knowledge_claim_ids?: string[];
+    review_item_ids?: string[];
+    ask_run_ids?: string[];
+    title?: string;
+    limit?: number;
+  }
 ): Promise<EvidenceBriefResponse> {
   const response = await fetch("/workspace/evidence-briefs", {
     method: "POST",
