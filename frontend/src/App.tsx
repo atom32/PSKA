@@ -1879,6 +1879,7 @@ function ReviewCenter({
                     </details>
                   </>
                 ) : null}
+                <ReviewDecisionHistory item={item} />
                 <ReviewApplicationLineage item={item} />
               </div>
               <div className="review-center-actions">
@@ -1946,6 +1947,40 @@ function reviewActionStatusLabel(action: ReviewAction) {
     return "已批准并应用";
   }
   return "已批准";
+}
+
+function reviewDecisionActionLabel(action?: string, decision?: string) {
+  if (action === "review.approve") {
+    return "批准";
+  }
+  if (action === "review.apply") {
+    return "写入长期知识";
+  }
+  if (action === "review.reject") {
+    return "拒绝";
+  }
+  if (action === "review.snooze") {
+    return "稍后";
+  }
+  if (action === "review.restore") {
+    return "恢复待审";
+  }
+  if (decision === "approved") {
+    return "批准";
+  }
+  if (decision === "applied") {
+    return "写入长期知识";
+  }
+  if (decision === "rejected") {
+    return "拒绝";
+  }
+  if (decision === "snoozed") {
+    return "稍后";
+  }
+  if (decision === "pending") {
+    return "恢复待审";
+  }
+  return displayText(action || decision, "决策");
 }
 
 function ReviewSelectionComparison({ items }: { items: ReviewCenterItem[] }) {
@@ -2020,6 +2055,44 @@ function ReviewSelectionComparison({ items }: { items: ReviewCenterItem[] }) {
       </div>
       {items.length > visibleItems.length ? <small>已显示前 {visibleItems.length} 个候选，其余仍会参与批量动作。</small> : null}
     </section>
+  );
+}
+
+function ReviewDecisionHistory({ item }: { item: ReviewCenterItem }) {
+  const history = item.application_result?.history?.filter((event) => event.action || event.decision) || [];
+  if (!history.length) {
+    return null;
+  }
+  return (
+    <div className="review-decision-history" data-testid="review-decision-history">
+      <div className="review-decision-history-header">
+        <strong>决策记录</strong>
+        <small>{history.length} 条</small>
+      </div>
+      <ol>
+        {history.map((event, index) => {
+          const targetEntries = Object.entries(event.target_ids || {}).filter(([, value]) => Boolean(value));
+          const sourceRefCount = Number(event.source_ref_count || 0);
+          return (
+            <li key={event.audit_event_id || `${item.review_item_id}-decision-${index}`}>
+              <div className="review-decision-history-main">
+                <span>{reviewDecisionActionLabel(event.action, event.decision)}</span>
+                <small>{formatReviewDate(event.created_at || undefined)}</small>
+              </div>
+              <div className="review-decision-history-meta">
+                {event.decision ? <span>{statusLabel(event.decision)}</span> : null}
+                {event.actor_user_id ? <span>{event.actor_user_id}</span> : null}
+                {event.reason ? <span>{event.reason}</span> : null}
+                {sourceRefCount > 0 ? <span>{sourceRefCount} 条证据</span> : null}
+                {targetEntries.map(([key, value]) => (
+                  <code key={`${event.audit_event_id || index}-${key}`}>{reviewApplicationTargetKeyLabel(key)}: {value}</code>
+                ))}
+              </div>
+            </li>
+          );
+        })}
+      </ol>
+    </div>
   );
 }
 

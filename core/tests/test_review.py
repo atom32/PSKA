@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from pska_core.enums import ReviewType, UserRole, Visibility
+from pska_core.api import _review_application_result
 from pska_core.ingest import IngestService
 from pska_core.memory import MemoryService
 from pska_core.models import ReviewItem, SourceRef, User
@@ -53,6 +54,14 @@ def test_snoozed_review_can_be_restored_to_pending_with_audit() -> None:
         "pending",
         "approved",
     ]
+    payload = _review_application_result(store, approved)
+    history = payload["history"]
+    assert [event["decision"] for event in history] == ["snoozed", "pending", "approved"]
+    assert [event["action"] for event in history] == ["review.snooze", "review.restore", "review.approve"]
+    assert history[0]["reason"] == "later"
+    assert history[1]["reason"] == "ready"
+    assert history[-1]["actor_user_id"] == "user_primary"
+    assert all(event["created_at"] for event in history)
 
 
 def test_profile_update_applies_only_after_approval() -> None:

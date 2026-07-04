@@ -1801,8 +1801,8 @@ class PostgresKnowledgeStore:
         with self.connect() as conn:
             conn.execute(
                 """
-                insert into audit_events(audit_event_id, actor_user_id, action, target_type, target_id, decision, metadata, tenant_id)
-                values (%s, %s, %s, %s, %s, %s, %s, %s)
+                insert into audit_events(audit_event_id, actor_user_id, action, target_type, target_id, decision, metadata, created_at, tenant_id)
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 on conflict (audit_event_id) do nothing
                 """,
                 (
@@ -1813,6 +1813,7 @@ class PostgresKnowledgeStore:
                     event.target_id,
                     event.decision,
                     Jsonb(to_jsonable(event.metadata)),
+                    event.created_at,
                     event.tenant_id,
                 ),
             )
@@ -1842,6 +1843,7 @@ class PostgresKnowledgeStore:
                 target_id=row["target_id"],
                 decision=row["decision"],
                 metadata=dict(row["metadata"] or {}),
+                created_at=row["created_at"],
                 tenant_id=row.get("tenant_id") or DEFAULT_TENANT_ID,
             )
             for row in rows

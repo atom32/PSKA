@@ -2706,6 +2706,77 @@ button.context-item-main {
   max-height: 180px;
 }
 
+.review-decision-history {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+  border: 1px solid rgba(91, 78, 45, 0.18);
+  border-radius: 8px;
+  background: #fffaf0;
+  padding: 10px;
+}
+
+.review-decision-history-header,
+.review-decision-history-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.review-decision-history-header strong,
+.review-decision-history-main span {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.review-decision-history-header small,
+.review-decision-history-main small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.review-decision-history ol {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.review-decision-history li {
+  min-width: 0;
+  border: 1px solid rgba(91, 78, 45, 0.14);
+  border-radius: 7px;
+  background: #fffefa;
+  padding: 8px;
+}
+
+.review-decision-history-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 7px;
+}
+
+.review-decision-history-meta span,
+.review-decision-history-meta code {
+  border-radius: 999px;
+  background: rgba(91, 78, 45, 0.09);
+  color: #5b4e2d;
+  padding: 4px 7px;
+  font-size: 11px;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
+.review-decision-history-meta code {
+  border-radius: 6px;
+  font-family: var(--mono);
+}
+
 .review-application-lineage {
   display: grid;
   gap: 10px;
@@ -6679,6 +6750,12 @@ button.context-item-main {
 
   .review-evidence-comparison .citation-inspector-heading {
     grid-column: auto;
+  }
+
+  .review-decision-history-header,
+  .review-decision-history-main {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .review-application-lineage dl {

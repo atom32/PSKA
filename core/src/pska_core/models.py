@@ -716,4 +716,5 @@ class AuditEvent:
     target_id: str
     decision: str
     metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: datetime = field(default_factory=utc_now)
     tenant_id: str = DEFAULT_TENANT_ID

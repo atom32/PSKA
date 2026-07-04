@@ -1315,7 +1315,20 @@ export type ReviewApplicationResult = {
   target_ids?: Record<string, string>;
   source_refs?: Array<Record<string, unknown>>;
   summary?: string;
+  history?: ReviewDecisionHistoryEvent[];
   metadata?: Record<string, unknown>;
+};
+
+export type ReviewDecisionHistoryEvent = {
+  audit_event_id?: string;
+  action?: string;
+  decision?: string;
+  actor_user_id?: string;
+  created_at?: string | null;
+  reason?: string | null;
+  promotion_type?: string | null;
+  target_ids?: Record<string, string>;
+  source_ref_count?: number;
 };
 
 export type ReviewActionResponse = {

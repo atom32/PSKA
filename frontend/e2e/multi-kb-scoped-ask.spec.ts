@@ -248,6 +248,11 @@ async function expectReviewCenterHealth(page: Page, fixture: ReviewHealthFixture
   await expect(appliedCard).toBeVisible({ timeout: 45_000 });
   await expect(appliedCard).toContainText(fixture.topic);
   await expect(appliedCard).toContainText(/Created graph relationship|已批准并应用|已应用|applied/);
+  const decisionHistory = appliedCard.getByTestId("review-decision-history");
+  await expect(decisionHistory).toBeVisible();
+  await expect(decisionHistory).toContainText("决策记录");
+  await expect(decisionHistory).toContainText("批准");
+  await expect(decisionHistory).toContainText("写入长期知识");
   const lineage = appliedCard.getByTestId("review-application-lineage");
   await expect(lineage).toBeVisible();
   await expect(lineage).toContainText("应用 lineage");
@@ -295,6 +300,10 @@ async function expectReviewSnoozeRestore(page: Page, fixture: ReviewHealthFixtur
   await expect(snoozedCard).toBeVisible({ timeout: 45_000 });
   await expect(snoozedCard).toContainText(fixture.topic);
   await expect(snoozedCard).toContainText("稍后");
+  const snoozedHistory = snoozedCard.getByTestId("review-decision-history");
+  await expect(snoozedHistory).toBeVisible();
+  await expect(snoozedHistory).toContainText("决策记录");
+  await expect(snoozedHistory).toContainText("稍后");
   await expect(snoozedCard.getByTestId("review-action-restore")).toBeVisible();
   await snoozedCard.getByTestId("review-action-restore").click();
   await expect(page.locator(".review-center-item").filter({ hasText: fixture.reviewItemId })).toHaveCount(0, { timeout: 45_000 });
@@ -302,6 +311,10 @@ async function expectReviewSnoozeRestore(page: Page, fixture: ReviewHealthFixtur
   await page.getByTestId("review-filter-pending").click();
   const restoredCard = page.locator(".review-center-item").filter({ hasText: fixture.reviewItemId }).first();
   await expect(restoredCard).toBeVisible({ timeout: 45_000 });
+  const restoredHistory = restoredCard.getByTestId("review-decision-history");
+  await expect(restoredHistory).toBeVisible();
+  await expect(restoredHistory).toContainText("稍后");
+  await expect(restoredHistory).toContainText("恢复待审");
   await expect(restoredCard.getByTestId("review-action-approve")).toBeVisible();
 }
 

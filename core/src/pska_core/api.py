@@ -6774,16 +6774,10 @@ def _console_review_application_result(store: Any, item: dict[str, Any]) -> dict
 def _review_application_result(store: Any, review_item: ReviewItem) -> dict[str, Any]:
     events = store.list_audit_events("review_item", review_item.review_item_id)
     latest = events[-1] if events else None
-    metadata = latest.metadata if latest and isinstance(latest.metadata, dict) else {}
+    metadata = _review_event_metadata(latest)
     applied = review_item.status == "applied"
-    target_ids = {
-        key: metadata.get(key)
-        for key in ("agent_memory_id", "profile_card_id", "created_hyperedge_id")
-        if metadata.get(key)
-    }
-    promotion_type = metadata.get("promotion_type")
-    if not promotion_type and metadata.get("created_hyperedge_id"):
-        promotion_type = "hyperedge"
+    target_ids = _review_application_target_ids(metadata)
+    promotion_type = _review_application_promotion_type(metadata)
     return {
         "applied": applied,
         "status": review_item.status,
@@ -6793,8 +6787,51 @@ def _review_application_result(store: Any, review_item: ReviewItem) -> dict[str,
         "target_ids": target_ids,
         "source_refs": metadata.get("source_refs") or [],
         "summary": _review_application_summary(review_item, metadata),
+        "history": _review_application_history(events),
         "metadata": metadata,
     }
+
+
+def _review_event_metadata(event: Any | None) -> dict[str, Any]:
+    metadata = getattr(event, "metadata", {}) if event else {}
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _review_application_target_ids(metadata: dict[str, Any]) -> dict[str, str]:
+    return {
+        key: metadata.get(key)
+        for key in ("agent_memory_id", "profile_card_id", "created_hyperedge_id")
+        if metadata.get(key)
+    }
+
+
+def _review_application_promotion_type(metadata: dict[str, Any]) -> str | None:
+    promotion_type = metadata.get("promotion_type")
+    if not promotion_type and metadata.get("created_hyperedge_id"):
+        return "hyperedge"
+    return str(promotion_type) if promotion_type else None
+
+
+def _review_application_history(events: list[Any]) -> list[dict[str, Any]]:
+    history: list[dict[str, Any]] = []
+    for event in events[-12:]:
+        metadata = _review_event_metadata(event)
+        source_refs = metadata.get("source_refs") or []
+        created_at = getattr(event, "created_at", None)
+        history.append(
+            {
+                "audit_event_id": getattr(event, "audit_event_id", ""),
+                "action": getattr(event, "action", ""),
+                "decision": getattr(event, "decision", ""),
+                "actor_user_id": getattr(event, "actor_user_id", ""),
+                "created_at": created_at.isoformat() if isinstance(created_at, datetime) else created_at,
+                "reason": metadata.get("reason"),
+                "promotion_type": _review_application_promotion_type(metadata),
+                "target_ids": _review_application_target_ids(metadata),
+                "source_ref_count": len(source_refs) if isinstance(source_refs, list) else 0,
+            }
+        )
+    return history
 
 
 def _review_application_summary(review_item: ReviewItem, metadata: dict[str, Any]) -> str:
