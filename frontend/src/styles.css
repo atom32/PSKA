@@ -1687,6 +1687,47 @@ button.context-item-main {
   background: #fff8f2;
 }
 
+.ask-diagnostic-actions {
+  display: grid;
+  gap: 7px;
+  margin-top: 9px;
+}
+
+.ask-diagnostic-actions article {
+  border: 1px solid rgba(134, 70, 44, 0.16);
+  border-radius: 7px;
+  background: #fffdfa;
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr);
+  gap: 8px;
+  padding: 8px;
+}
+
+.ask-diagnostic-actions article > span {
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  background: #f4dfcd;
+  color: #86462c;
+  display: inline-grid;
+  place-items: center;
+  font-size: 11px;
+  font-weight: 850;
+}
+
+.ask-diagnostic-actions strong {
+  display: block;
+  color: #4a2b1d;
+  font-size: 12px;
+}
+
+.ask-diagnostic-actions p {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .ask-diagnostics-panel ul {
   display: grid;
   gap: 7px;

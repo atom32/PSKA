@@ -2694,15 +2694,29 @@ function evidenceFollowupDraft(refItem: SearchEvidenceRef) {
 
 function AskNoAnswerDiagnostics({ diagnostics }: { diagnostics: AskNoAnswerDiagnostic }) {
   const visible = diagnostics.dimensions.filter((item) => item.status !== "ok" && item.status !== "not_applicable");
+  const actions = askDiagnosticActions(diagnostics);
   if (!visible.length) {
     return null;
   }
   return (
-    <div className="ask-diagnostics-panel">
+    <div className="ask-diagnostics-panel" data-testid="ask-no-answer-diagnostics">
       <div className="card-row">
         <strong>为什么还不能直接采信</strong>
         {diagnostics.primaryReason ? <span className="pill warning">{askDiagnosticLabel(diagnostics.primaryReason)}</span> : null}
       </div>
+      {actions.length ? (
+        <div className="ask-diagnostic-actions" aria-label="建议下一步">
+          {actions.map((action, index) => (
+            <article key={action.id} data-testid="ask-diagnostic-action">
+              <span>{index + 1}</span>
+              <div>
+                <strong>{action.title}</strong>
+                <p>{action.detail}</p>
+              </div>
+            </article>
+          ))}
+        </div>
+      ) : null}
       <ul>
         {visible.slice(0, 6).map((item) => (
           <li key={`${item.dimension}-${item.status}`}>
@@ -2787,6 +2801,49 @@ function askDiagnosticDimensionLabel(value: string) {
   return labels[value] || value;
 }
 
+function askDiagnosticActions(diagnostics: AskNoAnswerDiagnostic) {
+  const statuses = new Set(diagnostics.dimensions.map((item) => item.status));
+  const dimensions = new Set(diagnostics.dimensions.map((item) => item.dimension));
+  const actions: Array<{ id: string; title: string; detail: string }> = [];
+  const add = (id: string, title: string, detail: string) => {
+    if (!actions.some((item) => item.id === id)) {
+      actions.push({ id, title, detail });
+    }
+  };
+
+  if (statuses.has("selected_knowledge_base_empty") || statuses.has("selected_scope_empty")) {
+    add("scope-has-no-sources", "换一个有资料的范围", "当前选择的知识库或 source 过滤后没有可用资料。切到全部/多知识库，或先把资料加入当前知识库。");
+  }
+  if (statuses.has("selected_knowledge_base_no_relevant_chunks") || statuses.has("no_relevant_chunks") || statuses.has("no_visible_evidence")) {
+    add("broaden-or-rephrase", "扩大范围或改写问题", "当前检索没有命中可回答片段。扩大知识库范围，或把问题改成包含资料里可能出现的关键词、时间、对象。");
+  }
+  if (statuses.has("possibly_filtered_or_unindexed")) {
+    add("check-indexing", "检查资料是否已入库并切片", "没有可见证据可能来自未同步、未切片、未索引或权限过滤。到资料库确认对应资料处于可检索状态。");
+  }
+  if (statuses.has("missing_citations") || statuses.has("uncited_answer")) {
+    add("require-citations", "重新要求带引用回答", "系统找到了候选内容但没有形成最终引用。用 Deep Ask 重试，或缩小问题范围，让答案必须逐条引用证据。");
+  }
+  if (statuses.has("insufficient_evidence") || statuses.has("not_enough_signal")) {
+    add("collect-more-evidence", "补充证据后再问", "当前证据不足以支撑可靠结论。先补充原文、上传相关资料，或把问题拆成更小的可验证子问题。");
+  }
+  if (statuses.has("conflicts_detected")) {
+    add("resolve-conflicts", "先核对冲突来源", "证据之间存在冲突。打开引用逐条检查原文，把冲突记录到 Writing 或 Review 后再合成结论。");
+  }
+  if (statuses.has("tool_channel_error") || statuses.has("tool_error") || (dimensions.has("fastreact") && statuses.has("fallback"))) {
+    add("retry-agentic", "检查 FastReAct / MCP 后重试", "Deep Ask 工具链路出现错误或回退。确认 FastReAct ready、PSKA MCP ready，再重试同一问题。");
+  }
+  if (statuses.has("tool_denied")) {
+    add("policy-check", "检查工具策略", "需要的 MCP 工具被策略拒绝。检查当前 tool profile、scope policy 和服务配置。");
+  }
+  if (statuses.has("source_refs_not_visible")) {
+    add("permission-check", "检查账号和可见性", "部分引用对当前 tenant/user 不可见。确认登录账号、知识库成员关系和资料可见性设置。");
+  }
+  if (!actions.length) {
+    add("inspect-process", "查看过程和引用", "先展开过程时间线与 citation inspector，确认检索、读取和证据校验停在哪一步。");
+  }
+  return actions.slice(0, 3);
+}
+
 function askDiagnosticLabel(value: string) {
   const labels: Record<string, string> = {
     no_visible_evidence: "没有可见证据",
@@ -2800,6 +2857,9 @@ function askDiagnosticLabel(value: string) {
     missing_citations: "缺少引用",
     source_refs_not_visible: "引用不可见",
     possibly_filtered_or_unindexed: "可能未索引或不可见",
+    tool_channel_error: "工具链路错误",
+    tool_error: "MCP 工具错误",
+    tool_denied: "工具被拒绝",
     empty_answer: "空回答",
     uncited_answer: "回答未引用",
     agentic_service_unavailable: "FastReAct 不可用",
