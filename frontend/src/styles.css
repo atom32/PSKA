@@ -6812,6 +6812,69 @@ button.context-item-main {
   gap: 9px;
 }
 
+.graph-head-main {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.graph-scope-status {
+  border: 1px solid rgba(49, 95, 124, 0.24);
+  border-radius: 8px;
+  background: rgba(230, 241, 245, 0.68);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 8px;
+}
+
+.graph-scope-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.graph-scope-copy strong {
+  color: var(--ink);
+  font-size: 16px;
+  line-height: 1.1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.graph-scope-copy small {
+  color: #315f7c;
+  font-size: 11px;
+}
+
+.graph-scope-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(50px, auto));
+  gap: 5px;
+}
+
+.graph-scope-metrics span {
+  border: 1px solid rgba(49, 95, 124, 0.18);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.7);
+  color: #315f7c;
+  font-size: 11px;
+  min-width: 50px;
+  padding: 6px 7px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.graph-scope-metrics strong {
+  color: var(--ink);
+  display: block;
+  font-size: 15px;
+  line-height: 1;
+  margin-bottom: 2px;
+}
+
 .graph-summary {
   position: static;
   display: grid;
@@ -8035,6 +8098,14 @@ button.context-item-main {
 
   .graph-dock-actions {
     justify-content: flex-start;
+  }
+
+  .graph-scope-status {
+    grid-template-columns: 1fr;
+  }
+
+  .graph-scope-metrics {
+    grid-template-columns: repeat(2, minmax(84px, 1fr));
   }
 
   .graph-summary {

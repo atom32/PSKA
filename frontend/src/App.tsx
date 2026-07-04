@@ -11072,6 +11072,22 @@ function GraphWorkspace({
   const selectedNeighborhood = useMemo(() => graphNodeNeighborhood(graph, selectedNodeId), [graph, selectedNodeId]);
   const loading = graphQuery.isLoading;
   const error = graphQuery.isError;
+  const graphCounts = graph?.counts || {};
+  const graphProjection = graph?.projection || {};
+  const graphNodeCount = firstFiniteNumber(graphProjection.nodes, graph?.nodes?.length) || 0;
+  const graphEdgeCount = firstFiniteNumber(graphProjection.edges, graph?.edges?.length) || 0;
+  const graphSourceCount = firstFiniteNumber(graphCounts.sources, graphProjection.source_nodes) || 0;
+  const graphDocumentCount = firstFiniteNumber(graphCounts.documents) || 0;
+  const graphScopeModeLabel =
+    scopeMode === "all"
+      ? "全部资料库"
+      : scopeMode === "selected"
+        ? "多知识库"
+        : scopeMode === "attachments"
+          ? "附件范围"
+          : "当前知识库";
+  const graphScopeKnowledgeBaseCount = kbScopedOptions.knowledgeBaseIds?.length ?? (kbScopedOptions.knowledgeBaseId ? 1 : 0);
+  const graphScopeHint = scopeMode === "all" ? "未限制 KB" : graphScopeKnowledgeBaseCount > 0 ? `${graphScopeKnowledgeBaseCount} 个 KB` : "等待选择 KB";
   const typeOptions = ["source", "document", "passage", "claim", "digest", "phrase", "entity", "fact", "hyperedge", "memory", "memory_suggestion", "action"];
 
   useEffect(() => {
@@ -11219,12 +11235,26 @@ function GraphWorkspace({
       </div>
       <div className={`graph-control-dock ${controlsOpen ? "open" : ""}`} aria-label="Graph 控制抽屉">
         <div className="graph-control-head">
-          <div className="graph-summary" aria-label="Graph 摘要">
-            <span><strong>{scopeLabel}</strong> 范围</span>
-            <span><strong>{graph?.counts?.sources ?? 0}</strong> Sources</span>
-            <span><strong>{graph?.counts?.claims ?? 0}</strong> Claims</span>
-            <span><strong>{graph?.counts?.digest_notes ?? 0}</strong> Digest</span>
-            <span><strong>{graph?.counts?.facts ?? 0}</strong> Facts</span>
+          <div className="graph-head-main">
+            <div className="graph-scope-status" data-testid="graph-scope-status" aria-label="Graph 知识库范围">
+              <div className="graph-scope-copy">
+                <span className="eyebrow">Graph scope</span>
+                <strong>{scopeLabel}</strong>
+                <small>{graphScopeModeLabel} / {graphScopeHint}</small>
+              </div>
+              <div className="graph-scope-metrics" aria-label="Graph 范围计数">
+                <span><strong>{graphNodeCount}</strong> 节点</span>
+                <span><strong>{graphEdgeCount}</strong> 边</span>
+                <span><strong>{graphSourceCount}</strong> Sources</span>
+                <span><strong>{graphDocumentCount}</strong> Docs</span>
+              </div>
+            </div>
+            <div className="graph-summary" aria-label="Graph 摘要">
+              <span><strong>{graphCounts.claims ?? 0}</strong> Claims</span>
+              <span><strong>{graphCounts.digest_notes ?? 0}</strong> Digest</span>
+              <span><strong>{graphCounts.facts ?? 0}</strong> Facts</span>
+              <span><strong>{graphElements.length}</strong> Visible</span>
+            </div>
           </div>
           <div className="graph-dock-actions">
             <button type="button" className={insightsOpen ? "active" : ""} onClick={() => setInsightsOpen((value) => !value)}>

@@ -124,6 +124,7 @@ test("browser session scoped Ask does not leak citations across knowledge bases"
       alphaSourceItemId
     });
     await askViaGraphWorkspace(page, query, {
+      knowledgeBaseName: alpha.name,
       alphaSecret,
       betaSecret
     });
@@ -626,9 +627,14 @@ async function expectEvidenceBriefLibrary(page: Page, briefTitle: string, expect
 async function askViaGraphWorkspace(
   page: Page,
   query: string,
-  expected: { alphaSecret: string; betaSecret: string }
+  expected: { knowledgeBaseName: string; alphaSecret: string; betaSecret: string }
 ) {
   await openWorkspace(page, "Graph");
+  const scopeStatus = page.getByTestId("graph-scope-status");
+  await expect(scopeStatus).toBeVisible({ timeout: 45_000 });
+  await expect(scopeStatus).toContainText(expected.knowledgeBaseName);
+  await expect(scopeStatus).toContainText("当前知识库");
+  await expect(scopeStatus).toContainText("节点");
   await page.getByRole("button", { name: /Controls/ }).click();
   await page.locator(".graph-path-search input").fill(query);
   await page.locator(".graph-path-search button[type='submit']").click();
