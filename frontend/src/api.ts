@@ -5,6 +5,7 @@ import type {
   DigestLogsResponse,
   DigestNowResponse,
   EvidenceBriefResponse,
+  EvidenceWikiContentUpdateResponse,
   EvidenceWikiPageResponse,
   EvidenceWikiPublishResponse,
   EvidenceWikiSearchResponse,
@@ -1272,6 +1273,26 @@ export async function updateEvidenceWikiTaxonomy(
     throw new Error(await responseError(response, "Evidence Wiki 分类保存失败"));
   }
   return (await response.json()) as EvidenceWikiTaxonomyUpdateResponse;
+}
+
+export async function updateEvidenceWikiContent(
+  serviceToken: PSKAAuth,
+  boardId: string,
+  payload: {
+    title?: string;
+    summary?: string;
+    body_markdown?: string;
+  }
+): Promise<EvidenceWikiContentUpdateResponse> {
+  const response = await fetch(`/workspace/evidence-wiki/pages/${encodeURIComponent(boardId)}/content`, {
+    method: "POST",
+    headers: headers(serviceToken),
+    body: JSON.stringify({ ...payload, ...requestUserPayload(serviceToken) })
+  });
+  if (!response.ok) {
+    throw new Error(await responseError(response, "Evidence Wiki 页面保存失败"));
+  }
+  return (await response.json()) as EvidenceWikiContentUpdateResponse;
 }
 
 export async function publishEvidenceWikiBrief(

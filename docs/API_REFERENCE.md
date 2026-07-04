@@ -326,6 +326,7 @@ Core endpoints:
 | `POST /workspace/evidence-wiki/search` | Search scoped published Evidence Wiki pages. Empty `query` lists published pages in scope. |
 | `GET /workspace/evidence-wiki/pages/{board_id}` | Load a read-only published Evidence Wiki page. |
 | `POST /workspace/evidence-wiki/pages/{board_id}/taxonomy` | Update durable Evidence Wiki taxonomy metadata for one Evidence Brief page. |
+| `POST /workspace/evidence-wiki/pages/{board_id}/content` | Update one Evidence Wiki page title, summary, and managed page body node. |
 
 `compose` is intentionally retrieval-free. It only uses the selected answer
 nodes' Markdown, citations, and source refs, so the retrieval owner remains the
@@ -334,7 +335,10 @@ from the Inquiry Graph: connected nodes are sent as structured scope, not as a
 hidden second search channel.
 
 Published Evidence Wiki page payloads include source refs, lineage, access
-hints, review-gate state, `taxonomy`, and `related_pages`. Taxonomy is stored in
+hints, review-gate state, `taxonomy`, page content metadata, and
+`related_pages`. Page content edits are persisted as a managed Writing `draft`
+node with `metadata.artifact_type=evidence_wiki_page_body`, so the Wiki page
+and its Writing source stay on the same durable data path. Taxonomy is stored in
 Writing board metadata under `wiki_taxonomy` with domain-agnostic `tags`,
 `categories`, `topics`, and `collections`; search can filter on these fields
 and returns `taxonomy_facets` for the current scoped result set. Related pages

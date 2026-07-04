@@ -466,6 +466,11 @@ async function expectEvidenceBriefLibrary(page: Page, briefTitle: string, expect
   await expect(wikiPage).not.toContainText(expected.betaSecret);
   await expect(wikiPage.getByTestId("writing-brief-wiki-page-access")).toContainText("当前用户可见");
   await expect(wikiPage.getByTestId("writing-brief-wiki-page-open")).toBeVisible();
+  const editedWikiBody = `Edited Wiki page body for ${expected.marker}: ${expected.alphaSecret}`;
+  const contentEditor = wikiPage.getByTestId("writing-brief-wiki-content-editor");
+  await contentEditor.getByTestId("writing-brief-wiki-content-body").fill(editedWikiBody);
+  await contentEditor.getByRole("button", { name: /保存页面/ }).click();
+  await expect(wikiPage.getByTestId("writing-brief-wiki-page-body")).toContainText(editedWikiBody, { timeout: 45_000 });
   const taxonomyTag = `wiki-${expected.marker}`;
   const taxonomyEditor = wikiPage.getByTestId("writing-brief-wiki-taxonomy-editor");
   await taxonomyEditor.getByTestId("writing-brief-wiki-taxonomy-tags").fill(taxonomyTag);

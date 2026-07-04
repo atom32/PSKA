@@ -5336,6 +5336,81 @@ button.context-item-main {
   color: var(--accent-strong);
 }
 
+.writing-brief-wiki-content-editor {
+  min-width: 0;
+  border-top: 1px solid rgba(46, 117, 100, 0.14);
+  display: grid;
+  gap: 8px;
+  padding-top: 10px;
+}
+
+.writing-brief-wiki-content-editor-grid {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.writing-brief-wiki-content-editor label {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.writing-brief-wiki-content-editor label span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.writing-brief-wiki-content-editor input,
+.writing-brief-wiki-content-editor textarea {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid rgba(46, 117, 100, 0.18);
+  border-radius: 7px;
+  background: var(--paper);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.45;
+  padding: 7px 8px;
+}
+
+.writing-brief-wiki-content-editor textarea {
+  resize: vertical;
+}
+
+.writing-brief-wiki-content-editor-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.writing-brief-wiki-content-editor-actions small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.writing-brief-wiki-content-editor-actions button {
+  border: 0;
+  border-radius: 7px;
+  background: var(--accent);
+  color: white;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 800;
+  padding: 7px 10px;
+}
+
+.writing-brief-wiki-content-editor-actions button:disabled {
+  opacity: 0.58;
+}
+
 .writing-brief-wiki-taxonomy-editor {
   min-width: 0;
   border: 1px solid rgba(46, 117, 100, 0.14);

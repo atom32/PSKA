@@ -2974,9 +2974,22 @@ def test_evidence_brief_creates_writing_draft_with_lineage_and_refs() -> None:
     assert taxonomy_update["ok"] is True
     assert taxonomy_update["taxonomy"]["tags"] == ["citation", "source grounded"]
     assert taxonomy_update["page"]["taxonomy"]["categories"] == ["governance"]
+    content_update = api.workspace_evidence_wiki_update_content(
+        board["board_id"],
+        {
+            "body_markdown": "Edited Evidence Wiki page copy keeps Evidence brief drafts grounded in citations.",
+            "summary": "Edited citation governance summary.",
+        },
+        context=context,
+    )
+    assert content_update["ok"] is True
+    assert content_update["content_node"]["metadata"]["artifact_type"] == "evidence_wiki_page_body"
+    assert content_update["content_node"]["source_refs"][0]["source_item_id"] == source.source_item_id
+    assert content_update["page"]["summary"] == "Edited citation governance summary."
+    assert "Edited Evidence Wiki page copy" in content_update["page"]["body_markdown"]
     search = api.workspace_evidence_wiki_search(
         {
-            "query": "Evidence brief drafts must keep citations",
+            "query": "Edited Evidence Wiki page copy",
             "knowledge_base_ids": [knowledge_base["knowledge_base_id"]],
         },
         context=context,
@@ -2984,7 +2997,7 @@ def test_evidence_brief_creates_writing_draft_with_lineage_and_refs() -> None:
     assert search["count"] == 1
     assert search["scope_applied"]["knowledge_base_ids"] == [knowledge_base["knowledge_base_id"]]
     assert search["results"][0]["board"]["board_id"] == board["board_id"]
-    assert "Evidence brief drafts must keep citations" in search["results"][0]["snippet"]
+    assert "Edited Evidence Wiki page copy" in search["results"][0]["snippet"]
     assert search["results"][0]["source_refs"][0]["source_item_id"] == source.source_item_id
     assert search["results"][0]["access"] == {"visibility": "owner", "tenant_id": "tenant_a", "owner_user_id": "user_primary"}
     assert search["results"][0]["taxonomy"]["tags"] == ["citation", "source grounded"]
@@ -3008,7 +3021,8 @@ def test_evidence_brief_creates_writing_draft_with_lineage_and_refs() -> None:
     assert page["ok"] is True
     assert page["page"]["board_id"] == board["board_id"]
     assert page["page"]["publish_status"] == "published"
-    assert "Evidence brief drafts must keep citations" in page["page"]["body_markdown"]
+    assert "Edited Evidence Wiki page copy" in page["page"]["body_markdown"]
+    assert page["page"]["content_node_id"] == content_update["content_node"]["node_id"]
     assert page["page"]["source_refs"][0]["source_item_id"] == source.source_item_id
     assert page["page"]["lineage"]["review_item_ids"] == ["rev_brief"]
     assert page["page"]["access"] == {"visibility": "owner", "tenant_id": "tenant_a", "owner_user_id": "user_primary"}

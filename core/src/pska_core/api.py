@@ -4827,6 +4827,101 @@ class PSKAApi:
                 )
         return response
 
+    def workspace_evidence_wiki_update_content(
+        self,
+        board_id: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        context: RequestContext | None = None,
+    ) -> dict[str, Any]:
+        payload, tenant_id, owner = _writing_request_scope(context, payload or {})
+        board_id = str(board_id or payload.get("board_id") or "").strip()
+        if not board_id:
+            return {"ok": False, "reason": "missing_board_id", "error": "Evidence Wiki content update needs a board_id."}
+        board = self.store.get_writing_board(board_id, tenant_id=tenant_id, owner_user_id=owner)
+        metadata = dict(getattr(board, "metadata", {}) or {})
+        if metadata.get("kind") != "evidence_wiki_brief":
+            return {
+                "ok": False,
+                "reason": "not_evidence_wiki_brief",
+                "error": "Only Evidence Brief boards can carry Evidence Wiki page content.",
+                "board": _writing_board_payload(board),
+            }
+        nodes = self.store.list_writing_nodes(board_id, tenant_id=tenant_id, owner_user_id=owner)
+        existing_content_node = _evidence_wiki_page_content_node(nodes)
+        now = datetime.now(UTC).isoformat()
+        title = str(payload.get("title") or "").strip() if "title" in payload else None
+        summary = str(payload.get("summary") or "").strip() if "summary" in payload else None
+        body_markdown = str(payload.get("body_markdown") if "body_markdown" in payload else payload.get("body", "")).strip()
+        if "body_markdown" not in payload and "body" not in payload:
+            body_markdown = str(getattr(existing_content_node, "body_markdown", "") or _evidence_wiki_page_body(board, nodes)).strip()
+        next_metadata = {
+            **metadata,
+            "wiki_content_updated_at": now,
+            "wiki_content_editor_user_id": owner,
+            "wiki_content_revision": int(metadata.get("wiki_content_revision") or 0) + 1,
+        }
+        if summary is not None:
+            next_metadata["wiki_summary"] = summary
+        content_node_id = (
+            str(getattr(existing_content_node, "node_id", "") or "")
+            or f"wnode_{uuid5(NAMESPACE_URL, f'pska.evidence_wiki.page_content:{tenant_id}:{owner}:{board_id}').hex}"
+        )
+        next_metadata["wiki_content_node_id"] = content_node_id
+        updated_board = self.store.update_writing_board(
+            board_id,
+            tenant_id=tenant_id,
+            owner_user_id=owner,
+            title=title,
+            metadata=next_metadata,
+        )
+        node_metadata = dict(getattr(existing_content_node, "metadata", {}) or {})
+        node_metadata.update(
+            {
+                "artifact_type": "evidence_wiki_page_body",
+                "wiki_editor_managed": True,
+                "wiki_content_updated_at": now,
+            }
+        )
+        content_node = WritingNode(
+            node_id=content_node_id,
+            board_id=board_id,
+            tenant_id=tenant_id,
+            owner_user_id=owner,
+            node_type="draft",
+            title="Evidence Wiki page body",
+            body_markdown=body_markdown,
+            position=dict(getattr(existing_content_node, "position", {}) or {"x": 140, "y": 140}),
+            size=dict(getattr(existing_content_node, "size", {}) or {}),
+            status="ready",
+            source_refs=_evidence_wiki_board_source_refs(updated_board),
+            citations=list(getattr(existing_content_node, "citations", []) or []),
+            quality_signals=dict(getattr(existing_content_node, "quality_signals", {}) or {}),
+            metadata=node_metadata,
+        )
+        content_node = self.store.upsert_writing_node(content_node)
+        nodes = self.store.list_writing_nodes(board_id, tenant_id=tenant_id, owner_user_id=owner)
+        response: dict[str, Any] = {
+            "ok": True,
+            "board": _writing_board_payload(updated_board),
+            "content_node": _writing_node_payload(content_node),
+        }
+        if _evidence_wiki_board_is_published(updated_board):
+            review_gate = _evidence_wiki_review_gate(self.store, updated_board, tenant_id=tenant_id, owner_user_id=owner)
+            if not review_gate.get("blocked"):
+                response["page"] = _evidence_wiki_page_payload(
+                    updated_board,
+                    nodes,
+                    review_gate=review_gate,
+                    related_pages=_evidence_wiki_related_pages(
+                        self.store,
+                        updated_board,
+                        tenant_id=tenant_id,
+                        owner_user_id=owner,
+                    ),
+                )
+        return response
+
     def workspace_evidence_wiki_publish(self, payload: dict[str, Any] | None = None, context: RequestContext | None = None) -> dict[str, Any]:
         payload, tenant_id, owner = _writing_request_scope(context, payload or {})
         board_id = str(payload.get("board_id") or "").strip()
@@ -6035,6 +6130,8 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
                 parts = _evidence_wiki_page_path_parts(path)
                 if len(parts) == 2 and parts[1] == "taxonomy":
                     return self._json(200, self.api.workspace_evidence_wiki_update_taxonomy(unquote(parts[0]), payload, context=context))
+                if len(parts) == 2 and parts[1] == "content":
+                    return self._json(200, self.api.workspace_evidence_wiki_update_content(unquote(parts[0]), payload, context=context))
             if path == "/workspace/evidence-wiki/publish":
                 return self._json(200, self.api.workspace_evidence_wiki_publish(payload, context=context))
             if path == "/workspace/evidence-wiki/search":
@@ -14668,11 +14765,15 @@ def _evidence_wiki_page_payload(
     metadata = dict(getattr(board, "metadata", {}) or {})
     lineage = metadata.get("lineage") if isinstance(metadata.get("lineage"), dict) else {}
     body_markdown = _evidence_wiki_page_body(board, nodes)
+    summary = str(metadata.get("wiki_summary") or "").strip()
     return {
         "board_id": getattr(board, "board_id", ""),
         "title": getattr(board, "title", "") or "Evidence Wiki Brief",
-        "summary": _evidence_wiki_snippet(body_markdown or str(getattr(board, "goal", "") or ""), "", radius=420),
+        "summary": summary or _evidence_wiki_snippet(body_markdown or str(getattr(board, "goal", "") or ""), "", radius=420),
         "body_markdown": body_markdown,
+        "content_node_id": str(metadata.get("wiki_content_node_id") or ""),
+        "wiki_content_updated_at": metadata.get("wiki_content_updated_at"),
+        "wiki_content_revision": metadata.get("wiki_content_revision") or 0,
         "published_at": metadata.get("published_at") or metadata.get("publish_updated_at"),
         "publish_updated_at": metadata.get("publish_updated_at"),
         "status": metadata.get("status") or metadata.get("publish_status"),
@@ -14896,6 +14997,11 @@ def _evidence_wiki_access_payload(board: Any) -> dict[str, Any]:
 
 
 def _evidence_wiki_page_body(board: Any, nodes: list[Any]) -> str:
+    content_node = _evidence_wiki_page_content_node(nodes)
+    if content_node is not None:
+        content_body = str(getattr(content_node, "body_markdown", "") or "").strip()
+        if content_body:
+            return content_body
     rank = {"draft": 0, "answer": 1, "section": 2, "evidence": 3, "question": 4, "gap": 5}
     ordered_nodes = sorted(
         nodes,
@@ -14921,6 +15027,15 @@ def _evidence_wiki_page_body(board: Any, nodes: list[Any]) -> str:
     if pieces:
         return "\n\n".join(pieces).strip()
     return str(getattr(board, "goal", "") or getattr(board, "title", "") or "").strip()
+
+
+def _evidence_wiki_page_content_node(nodes: list[Any]) -> Any | None:
+    for node in nodes:
+        metadata = dict(getattr(node, "metadata", {}) or {})
+        artifact_type = str(metadata.get("artifact_type") or metadata.get("kind") or "").strip()
+        if artifact_type == "evidence_wiki_page_body" or metadata.get("wiki_editor_managed") is True:
+            return node
+    return None
 
 
 def _evidence_wiki_review_gate(store: Any, board: Any, *, tenant_id: str, owner_user_id: str) -> dict[str, Any]:

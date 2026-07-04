@@ -121,6 +121,7 @@ import {
   syncKnowledgeSources,
   suggestWritingQuestions,
   unpinKnowledgeBase,
+  updateEvidenceWikiContent,
   updateEvidenceWikiTaxonomy,
   updatePromptProfiles,
   uploadWorkspaceSource
@@ -9231,6 +9232,9 @@ function EvidenceBriefLibrary({
   const [wikiTaxonomyDraft, setWikiTaxonomyDraft] = useState<EvidenceWikiTaxonomyDraft>({ ...EMPTY_EVIDENCE_WIKI_TAXONOMY_DRAFT });
   const [wikiTaxonomySaving, setWikiTaxonomySaving] = useState(false);
   const [wikiTaxonomyStatus, setWikiTaxonomyStatus] = useState("");
+  const [wikiContentDraft, setWikiContentDraft] = useState({ title: "", summary: "", body_markdown: "" });
+  const [wikiContentSaving, setWikiContentSaving] = useState(false);
+  const [wikiContentStatus, setWikiContentStatus] = useState("");
   const [selectedWikiPageBoardId, setSelectedWikiPageBoardId] = useState("");
   const normalizedWikiQuery = wikiQuery.trim();
   const wikiTaxonomyFilterCount = evidenceWikiTaxonomyFilterCount(wikiTaxonomyFilters);
@@ -9281,6 +9285,15 @@ function EvidenceBriefLibrary({
     setWikiTaxonomyStatus("");
   }, [wikiPage?.board_id, wikiPage?.taxonomy]);
 
+  useEffect(() => {
+    setWikiContentDraft({
+      title: wikiPage?.title || "",
+      summary: wikiPage?.summary || "",
+      body_markdown: wikiPage?.body_markdown || ""
+    });
+    setWikiContentStatus("");
+  }, [wikiPage?.board_id, wikiPage?.title, wikiPage?.summary, wikiPage?.body_markdown]);
+
   function handleOpenWikiPage(board: WritingBoard | undefined) {
     if (!board?.board_id) {
       return;
@@ -9325,6 +9338,40 @@ function EvidenceBriefLibrary({
       setWikiTaxonomyStatus(error instanceof Error ? error.message : "Evidence Wiki 分类保存失败。");
     } finally {
       setWikiTaxonomySaving(false);
+    }
+  }
+
+  async function handleSaveWikiContent() {
+    if (!selectedWikiPageBoardId || wikiContentSaving) {
+      return;
+    }
+    setWikiContentSaving(true);
+    setWikiContentStatus("");
+    try {
+      const payload = await updateEvidenceWikiContent(serviceToken, selectedWikiPageBoardId, {
+        title: wikiContentDraft.title,
+        summary: wikiContentDraft.summary,
+        body_markdown: wikiContentDraft.body_markdown
+      });
+      if (payload.ok === false) {
+        throw new Error(payload.error || "Evidence Wiki 页面保存失败。");
+      }
+      const page = payload.page;
+      if (page) {
+        setWikiContentDraft({
+          title: page.title || wikiContentDraft.title,
+          summary: page.summary || wikiContentDraft.summary,
+          body_markdown: page.body_markdown || wikiContentDraft.body_markdown
+        });
+      }
+      setWikiContentStatus("已保存");
+      await queryClient.invalidateQueries({ queryKey: ["evidence-wiki-search"] });
+      await queryClient.invalidateQueries({ queryKey: ["evidence-wiki-page"] });
+      await queryClient.invalidateQueries({ queryKey: ["writing-boards"] });
+    } catch (error) {
+      setWikiContentStatus(error instanceof Error ? error.message : "Evidence Wiki 页面保存失败。");
+    } finally {
+      setWikiContentSaving(false);
     }
   }
 
@@ -9458,6 +9505,50 @@ function EvidenceBriefLibrary({
                   打开写作源
                 </button>
               </div>
+              <form
+                className="writing-brief-wiki-content-editor"
+                data-testid="writing-brief-wiki-content-editor"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void handleSaveWikiContent();
+                }}
+              >
+                <div className="writing-brief-wiki-content-editor-grid">
+                  <label>
+                    <span>标题</span>
+                    <input
+                      value={wikiContentDraft.title}
+                      onChange={(event) => setWikiContentDraft((current) => ({ ...current, title: event.target.value }))}
+                      data-testid="writing-brief-wiki-content-title"
+                    />
+                  </label>
+                  <label>
+                    <span>摘要</span>
+                    <input
+                      value={wikiContentDraft.summary}
+                      onChange={(event) => setWikiContentDraft((current) => ({ ...current, summary: event.target.value }))}
+                      data-testid="writing-brief-wiki-content-summary"
+                    />
+                  </label>
+                </div>
+                <label>
+                  <span>正文</span>
+                  <textarea
+                    value={wikiContentDraft.body_markdown}
+                    onChange={(event) => setWikiContentDraft((current) => ({ ...current, body_markdown: event.target.value }))}
+                    rows={7}
+                    data-testid="writing-brief-wiki-content-body"
+                  />
+                </label>
+                <div className="writing-brief-wiki-content-editor-actions">
+                  {wikiPage.wiki_content_updated_at ? <small>修订 {wikiPage.wiki_content_revision || 0} · {formatReviewDate(wikiPage.wiki_content_updated_at)}</small> : null}
+                  {wikiContentStatus ? <small>{wikiContentStatus}</small> : null}
+                  <button type="submit" disabled={wikiContentSaving}>
+                    <FileText size={13} />
+                    {wikiContentSaving ? "保存中" : "保存页面"}
+                  </button>
+                </div>
+              </form>
               {evidenceWikiTaxonomySummary(wikiPage.taxonomy) ? (
                 <div className="writing-brief-wiki-taxonomy-chips" data-testid="writing-brief-wiki-taxonomy">
                   {EVIDENCE_WIKI_TAXONOMY_FIELDS.flatMap((field) =>
@@ -9499,7 +9590,7 @@ function EvidenceBriefLibrary({
                   </button>
                 </div>
               </form>
-              <article className="writing-brief-wiki-page-body">{trimText(wikiPage.body_markdown || wikiPage.summary || "", 1600)}</article>
+              <article className="writing-brief-wiki-page-body" data-testid="writing-brief-wiki-page-body">{trimText(wikiPage.body_markdown || wikiPage.summary || "", 1600)}</article>
               {wikiPageRefs.length ? (
                 <div className="writing-brief-wiki-page-refs" aria-label="Evidence Wiki 引用来源">
                   {wikiPageRefs.slice(0, 6).map((ref, index) => (

@@ -172,6 +172,9 @@ export type EvidenceWikiPage = {
   title?: string;
   summary?: string;
   body_markdown?: string;
+  content_node_id?: string;
+  wiki_content_updated_at?: string | null;
+  wiki_content_revision?: number;
   published_at?: string | null;
   publish_updated_at?: string | null;
   status?: string;
@@ -215,6 +218,15 @@ export type EvidenceWikiTaxonomyUpdateResponse = {
   error?: string;
   taxonomy?: EvidenceWikiTaxonomy;
   board?: WritingBoard;
+  page?: EvidenceWikiPage;
+};
+
+export type EvidenceWikiContentUpdateResponse = {
+  ok?: boolean;
+  reason?: string;
+  error?: string;
+  board?: WritingBoard;
+  content_node?: WritingNode;
   page?: EvidenceWikiPage;
 };
 
