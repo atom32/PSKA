@@ -298,7 +298,7 @@ async function askViaBrowserComposer(
   await saveAskResultToWriting(page, expected);
 }
 
-async function saveAskResultToWriting(page: Page, expected: { marker: string; alphaSecret: string; betaSecret: string }) {
+async function saveAskResultToWriting(page: Page, expected: { alphaSecret: string; betaSecret: string }) {
   const result = page.getByTestId("ask-result").filter({ hasText: expected.alphaSecret }).last();
   const createBrief = result.getByTestId("ask-create-brief");
   await expect(createBrief).toBeEnabled({ timeout: 45_000 });
@@ -328,6 +328,23 @@ async function askViaGraphWorkspace(
   await expect(result).not.toContainText(expected.betaSecret);
   await expect(result.getByTestId("graph-path-evidence-health")).toBeVisible();
   await expect(result.getByTestId("ask-processing-timeline")).toContainText("证据校验");
+  await saveGraphAskResultToWriting(page, expected);
+}
+
+async function saveGraphAskResultToWriting(page: Page, expected: { alphaSecret: string; betaSecret: string }) {
+  const result = page.getByTestId("graph-ask-result-panel").filter({ hasText: expected.alphaSecret }).last();
+  const saveToWriting = result.getByTestId("graph-ask-save-writing");
+  await expect(saveToWriting).toBeEnabled({ timeout: 45_000 });
+  await saveToWriting.click();
+  await expect(page.getByTestId("writing-toolbar")).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByTestId("writing-board-title-input")).toHaveValue(/Graph Brief:/);
+  const graphAnswerNode = page
+    .locator('[data-testid="writing-node"][data-node-type="answer"], [data-testid="writing-node"][data-node-type="evidence"]')
+    .filter({ hasText: expected.alphaSecret })
+    .first();
+  await expect(graphAnswerNode).toBeVisible({ timeout: 45_000 });
+  await expect(graphAnswerNode).not.toContainText(expected.betaSecret);
+  await expect(page.getByTestId("writing-citation-inspector").first()).toBeVisible();
 }
 
 async function cleanupFixtures(page: Page, sourceItemIds: string[], knowledgeBaseIds: string[]) {

@@ -224,6 +224,7 @@ export default function App() {
   const [pinStatus, setPinStatus] = useState<"idle" | "saved" | "failed">("idle");
   const [gatewayAuthenticated, setGatewayAuthenticated] = useState<boolean | null>(null);
   const [activeAskConversationId, setActiveAskConversationId] = useState("");
+  const [targetWritingBoardId, setTargetWritingBoardId] = useState("");
   const activeMode: WorkspaceMode = mode === "document" || mode === "canvas" ? "writing" : mode;
 
   useEffect(() => {
@@ -415,6 +416,13 @@ export default function App() {
       });
   }
 
+  function openWritingBoard(boardId?: string) {
+    if (boardId) {
+      setTargetWritingBoardId(boardId);
+    }
+    setMode("writing");
+  }
+
   return (
     <main className={`app-shell ${leftCollapsed ? "left-collapsed" : ""} ${activeMode === "writing" ? "writing-mode" : ""} ${activeMode === "today" ? "today-mode" : ""}`}>
       <LeftSidebar
@@ -486,6 +494,7 @@ export default function App() {
             selectedKnowledgeBaseIds={selectedKnowledgeBaseIds}
             onPinCurrent={pinCurrentWorkspace}
             pinStatus={pinStatus}
+            onOpenWriting={openWritingBoard}
           />
         ) : activeMode === "corpus" ? (
           <CorpusWorkspace
@@ -508,6 +517,8 @@ export default function App() {
             selectedKnowledgeBaseIds={selectedKnowledgeBaseIds}
             onPinCurrent={pinCurrentWorkspace}
             pinStatus={pinStatus}
+            targetBoardId={targetWritingBoardId}
+            onTargetBoardHandled={() => setTargetWritingBoardId("")}
           />
         ) : (
           <CanvasWorkspace brain={brain} onPinCurrent={pinCurrentWorkspace} pinStatus={pinStatus} />
@@ -1740,7 +1751,7 @@ function AskResult({
   knowledgeBases?: KnowledgeBase[];
   serviceToken?: PSKAAuth;
   onAskFromEvidence?: (refItem: SearchEvidenceRef) => void;
-  onOpenWriting?: () => void;
+  onOpenWriting?: (boardId?: string) => void;
 }) {
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "failed">("idle");
   const [briefStatus, setBriefStatus] = useState<"idle" | "creating" | "saved" | "failed">("idle");
@@ -1815,7 +1826,7 @@ function AskResult({
       }
       setBriefStatus("saved");
       setBriefMessage(payload.board?.title || payload.brief?.title || "已生成 Writing Brief");
-      onOpenWriting?.();
+      onOpenWriting?.(payload.board?.board_id || payload.brief?.board_id);
     } catch (error) {
       setBriefStatus("failed");
       setBriefMessage(error instanceof Error ? error.message : "生成 Brief 失败。");
@@ -6176,7 +6187,7 @@ function AskConversationPanel({
   liveResult?: WorkspaceAskResponse | null;
   livePending?: boolean;
   onAskFromEvidence?: (refItem: SearchEvidenceRef) => void;
-  onOpenWriting?: () => void;
+  onOpenWriting?: (boardId?: string) => void;
   composer: ReactNode;
 }) {
   const runById = useMemo(() => {
@@ -7480,7 +7491,9 @@ function WritingWorkspace({
   scopeMode,
   selectedKnowledgeBaseIds,
   onPinCurrent,
-  pinStatus
+  pinStatus,
+  targetBoardId,
+  onTargetBoardHandled
 }: {
   serviceToken: PSKAAuth;
   knowledgeBases: KnowledgeBase[];
@@ -7489,6 +7502,8 @@ function WritingWorkspace({
   selectedKnowledgeBaseIds: string[];
   onPinCurrent: () => void;
   pinStatus: "idle" | "saved" | "failed";
+  targetBoardId?: string;
+  onTargetBoardHandled?: () => void;
 }) {
   const [activeBoardId, setActiveBoardId] = useState("");
   const [projectManagerOpen, setProjectManagerOpen] = useState(false);
@@ -7515,6 +7530,16 @@ function WritingWorkspace({
       setActiveBoardId(boards[0].board_id);
     }
   }, [activeBoardId, boards, projectManagerOpen]);
+
+  useEffect(() => {
+    if (!targetBoardId) {
+      return;
+    }
+    setActiveBoardId(targetBoardId);
+    setProjectManagerOpen(false);
+    didAutoSelectBoard.current = true;
+    onTargetBoardHandled?.();
+  }, [targetBoardId, onTargetBoardHandled]);
 
   const boardQuery = useQuery({
     queryKey: ["writing-board", serviceToken, activeBoardId],
@@ -8602,7 +8627,8 @@ function GraphWorkspace({
   scopeMode,
   selectedKnowledgeBaseIds,
   onPinCurrent,
-  pinStatus
+  pinStatus,
+  onOpenWriting
 }: {
   serviceToken: PSKAAuth;
   currentKnowledgeBase?: KnowledgeBase;
@@ -8610,6 +8636,7 @@ function GraphWorkspace({
   selectedKnowledgeBaseIds: string[];
   onPinCurrent: () => void;
   pinStatus: "idle" | "saved" | "failed";
+  onOpenWriting?: (boardId?: string) => void;
 }) {
   const [graphLimit, setGraphLimit] = useState(20);
   const [activeTypes, setActiveTypes] = useState(() => new Set(["source", "document", "passage", "claim", "digest", "fact", "hyperedge", "memory", "memory_suggestion", "action"]));
@@ -8845,6 +8872,7 @@ function GraphWorkspace({
             pathStatus={pathStatus}
             pathError={pathError}
             serviceToken={serviceToken}
+            onOpenWriting={onOpenWriting}
           />
         </div>
       ) : (
@@ -8916,6 +8944,7 @@ function GraphWorkspace({
               pathStatus={pathStatus}
               pathError={pathError}
               serviceToken={serviceToken}
+              onOpenWriting={onOpenWriting}
             />
           </aside>
         </div>
@@ -9019,23 +9048,135 @@ function GraphAskResultPanel({
   pathResult,
   pathStatus,
   pathError,
-  serviceToken
+  serviceToken,
+  onOpenWriting
 }: {
   graphAskResult: WorkspaceAskResponse | null;
   pathResult: WorkspaceGraphPathResponse | null;
   pathStatus: "idle" | "loading" | "success" | "error";
   pathError: string;
   serviceToken?: PSKAAuth;
+  onOpenWriting?: (boardId?: string) => void;
 }) {
   if (graphAskResult) {
     return (
       <div className="graph-ask-result-panel" data-testid="graph-ask-result-panel">
         <GraphAskEvidenceHealth result={graphAskResult} pending={pathStatus === "loading"} error={pathError} />
-        <AskResult result={graphAskResult} pending={pathStatus === "loading"} serviceToken={serviceToken} />
+        <GraphAskWritingAction result={graphAskResult} pending={pathStatus === "loading"} serviceToken={serviceToken} onOpenWriting={onOpenWriting} />
+        <AskResult result={graphAskResult} pending={pathStatus === "loading"} serviceToken={serviceToken} onOpenWriting={onOpenWriting} />
       </div>
     );
   }
   return <GraphPathPanel result={pathResult} status={pathStatus} error={pathError} serviceToken={serviceToken} />;
+}
+
+function GraphAskWritingAction({
+  result,
+  pending,
+  serviceToken,
+  onOpenWriting
+}: {
+  result: WorkspaceAskResponse;
+  pending?: boolean;
+  serviceToken?: PSKAAuth;
+  onOpenWriting?: (boardId?: string) => void;
+}) {
+  const [status, setStatus] = useState<"idle" | "saving" | "saved" | "failed">("idle");
+  const [message, setMessage] = useState("");
+  const refs = useMemo(() => graphAskWritingRefs(result), [result]);
+  const canSave = Boolean(serviceToken && refs.length && !pending && !result.error && result.ok !== false);
+
+  async function saveToWriting() {
+    if (!serviceToken || !canSave) {
+      return;
+    }
+    setStatus("saving");
+    setMessage("");
+    try {
+      const query = String(result.query || "Graph Ask").trim() || "Graph Ask";
+      const board = await createWritingBoard(serviceToken, {
+        title: `Graph Brief: ${trimText(query, 72)}`,
+        goal: "Graph Ask evidence draft with citations.",
+        metadata: {
+          kind: "graph_ask_evidence",
+          source_surface: "graph",
+          query,
+          route: result.route || {},
+          evidence_check: result.evidence_check || {},
+          quality_signals: result.quality_signals || {},
+          knowledge_base_scope: result.route?.scope_applied || result.scope_applied || {}
+        }
+      });
+      const boardId = board.board?.board_id;
+      if (!boardId) {
+        throw new Error("Writing board was not created.");
+      }
+      const sessionId = `graph:${Date.now()}`;
+      const answer = await createWritingNode(serviceToken, boardId, {
+        node_type: result.answer_type === "no_answer" ? "gap" : "answer",
+        title: `Graph Ask：${trimText(query, 48)}`,
+        body_markdown: graphAskWritingMarkdown(result, refs),
+        position: { x: 120, y: 120 },
+        status: result.answer_type === "no_answer" ? "needs_review" : "complete",
+        source_refs: refs,
+        citations: refs,
+        quality_signals: result.quality_signals || {},
+        metadata: {
+          expanded: true,
+          kind: "graph_ask_answer",
+          source_surface: "graph",
+          route: result.route || {},
+          last_ask: writingNodeLastAsk(result, query, sessionId, result.route?.scope_applied || result.scope_applied || {})
+        }
+      });
+      if (refs.length) {
+        const evidence = await createWritingNode(serviceToken, boardId, {
+          node_type: "evidence",
+          title: `Graph citations ${refs.length}`,
+          body_markdown: graphAskEvidenceMarkdown(refs),
+          position: { x: 540, y: 120 },
+          source_refs: refs,
+          citations: refs,
+          metadata: {
+            expanded: false,
+            kind: "graph_ask_citations",
+            source_surface: "graph"
+          }
+        });
+        if (answer.node?.node_id && evidence.node?.node_id) {
+          await createWritingEdge(serviceToken, boardId, {
+            source_node_id: answer.node.node_id,
+            target_node_id: evidence.node.node_id,
+            edge_type: "supported_by",
+            label: "Graph evidence"
+          });
+        }
+      }
+      setStatus("saved");
+      setMessage(board.board?.title || "已保存到 Writing");
+      onOpenWriting?.(boardId);
+    } catch (error) {
+      setStatus("failed");
+      setMessage(error instanceof Error ? error.message : "保存到 Writing 失败。");
+    }
+  }
+
+  return (
+    <div className="graph-path-run graph-ask-writing-action">
+      <button
+        className="primary"
+        data-testid="graph-ask-save-writing"
+        type="button"
+        disabled={!canSave || status === "saving"}
+        onClick={() => void saveToWriting()}
+        title={canSave ? "把 Graph Ask 结果和 citations 保存为 Writing 节点" : "需要完成且带 citations 的 Graph Ask 结果"}
+      >
+        <FileText size={14} />
+        {status === "saving" ? "保存中" : "保存到 Writing"}
+      </button>
+      {message ? <small data-testid="graph-ask-save-writing-status">{message}</small> : null}
+    </div>
+  );
 }
 
 function GraphAskEvidenceHealth({
@@ -9107,6 +9248,44 @@ function graphAskEvidenceHealth(result: WorkspaceAskResponse, pending = false, e
     };
   }
   return health;
+}
+
+function graphAskWritingRefs(result: WorkspaceAskResponse): SearchEvidenceRef[] {
+  const evidence = result.evidence || {};
+  return normalizeSearchRefs([
+    ...(result.source_refs || []),
+    ...(result.citations || []),
+    ...(result.source_windows || []),
+    ...(evidence.citations || []),
+    ...(evidence.source_refs || []),
+    ...(evidence.results || []),
+    ...(evidence.source_windows || [])
+  ]).slice(0, 20);
+}
+
+function graphAskWritingMarkdown(result: WorkspaceAskResponse, refs: SearchEvidenceRef[]) {
+  const lines = [`# ${result.query || "Graph Ask"}`, ""];
+  const answer = cleanAgenticAnswer(result.answer || finalAnswerFromTraceEvents(result) || "");
+  if (answer) {
+    lines.push(answer, "");
+  }
+  if (result.evidence_check?.status) {
+    lines.push(`Evidence check: ${result.evidence_check.status}`, "");
+  }
+  if (refs.length) {
+    lines.push("## Citations", "", ...refs.slice(0, 8).map((ref, index) => `${index + 1}. ${ref.title || ref.source_item_id || ref.chunk_id || "Citation"}`));
+  }
+  return lines.join("\n");
+}
+
+function graphAskEvidenceMarkdown(refs: SearchEvidenceRef[]) {
+  return refs
+    .slice(0, 12)
+    .map((ref, index) => {
+      const coordinates = [ref.source_item_id, ref.document_id, ref.chunk_id].filter(Boolean).join(" / ");
+      return `${index + 1}. ${ref.title || ref.source_item_id || "Citation"}${coordinates ? `\n   ${coordinates}` : ""}`;
+    })
+    .join("\n");
 }
 
 function GraphPathPanel({
