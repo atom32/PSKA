@@ -4716,6 +4716,71 @@ class PSKAApi:
             "results": results,
         }
 
+    def workspace_evidence_wiki_publish(self, payload: dict[str, Any] | None = None, context: RequestContext | None = None) -> dict[str, Any]:
+        payload, tenant_id, owner = _writing_request_scope(context, payload or {})
+        board_id = str(payload.get("board_id") or "").strip()
+        if not board_id:
+            return {"ok": False, "reason": "missing_board_id", "error": "Evidence Wiki 发布需要 board_id。"}
+        publish_status = str(payload.get("publish_status") or payload.get("status") or "published").strip().lower()
+        if publish_status not in {"draft", "published"}:
+            return {"ok": False, "reason": "invalid_publish_status", "error": "publish_status must be draft or published."}
+        board = self.store.get_writing_board(board_id, tenant_id=tenant_id, owner_user_id=owner)
+        metadata = dict(getattr(board, "metadata", {}) or {})
+        if metadata.get("kind") != "evidence_wiki_brief":
+            return {
+                "ok": False,
+                "reason": "not_evidence_wiki_brief",
+                "error": "Only Evidence Brief boards can be published to Evidence Wiki.",
+                "board": _writing_board_payload(board),
+            }
+        now = datetime.now(UTC).isoformat()
+        if publish_status == "published":
+            lifecycle = str(metadata.get("lifecycle_status") or metadata.get("status") or "").strip().lower()
+            if lifecycle in {"expired", "rolled_back"}:
+                return {
+                    "ok": False,
+                    "reason": "inactive_lifecycle",
+                    "error": "Evidence Brief must be active before it can be published.",
+                    "board": _writing_board_payload(board),
+                }
+            review_gate = _evidence_wiki_review_gate(self.store, board, tenant_id=tenant_id, owner_user_id=owner)
+            if review_gate.get("blocked"):
+                return {
+                    "ok": False,
+                    "reason": review_gate.get("reason") or "review_gate",
+                    "error": review_gate.get("error") or "Evidence Wiki publish review gate failed.",
+                    "review_gate": review_gate,
+                    "board": _writing_board_payload(board),
+                }
+            next_metadata = {
+                **metadata,
+                "status": "published",
+                "publish_status": "published",
+                "published_at": metadata.get("published_at") or now,
+                "publish_updated_at": now,
+            }
+        else:
+            review_gate = _evidence_wiki_review_gate(self.store, board, tenant_id=tenant_id, owner_user_id=owner)
+            next_metadata = {
+                **metadata,
+                "status": "draft",
+                "publish_status": "draft",
+                "unpublished_at": now,
+                "publish_updated_at": now,
+            }
+        updated = self.store.update_writing_board(
+            board_id,
+            tenant_id=tenant_id,
+            owner_user_id=owner,
+            metadata=next_metadata,
+        )
+        return {
+            "ok": True,
+            "publish_status": publish_status,
+            "review_gate": review_gate,
+            "board": _writing_board_payload(updated),
+        }
+
     def workspace_writing_create_board(self, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
         payload, tenant_id, owner = _writing_request_scope(context, payload)
         title = str(payload.get("title") or "").strip() or "Untitled inquiry"
@@ -5851,6 +5916,8 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
                 return self._json(200, self.api.workspace_digest_linking_run(payload, context=context))
             if path == "/workspace/evidence-briefs":
                 return self._json(200, self.api.workspace_evidence_brief_create(payload, context=context))
+            if path == "/workspace/evidence-wiki/publish":
+                return self._json(200, self.api.workspace_evidence_wiki_publish(payload, context=context))
             if path == "/workspace/evidence-wiki/search":
                 return self._json(200, self.api.workspace_evidence_wiki_search(payload, context=context))
             if path == "/workspace/writer/suggest":
@@ -14256,6 +14323,52 @@ def _evidence_wiki_board_source_refs(board: Any) -> list[dict[str, Any]]:
             *_list_of_dicts(metadata.get("source_refs")),
         ]
     )
+
+
+def _evidence_wiki_review_gate(store: Any, board: Any, *, tenant_id: str, owner_user_id: str) -> dict[str, Any]:
+    metadata = dict(getattr(board, "metadata", {}) or {})
+    lineage = metadata.get("lineage") if isinstance(metadata.get("lineage"), dict) else {}
+    review_item_ids = _string_list(lineage.get("review_item_ids")) if isinstance(lineage, dict) else []
+    review_status = str(metadata.get("review_status") or (lineage.get("review_status") if isinstance(lineage, dict) else "") or "").strip().lower()
+    gate: dict[str, Any] = {
+        "blocked": False,
+        "reason": "clear",
+        "review_status": review_status or "none",
+        "review_item_ids": review_item_ids,
+        "review_items": [],
+    }
+    if not review_item_ids:
+        if review_status in {"needs_review", "pending"}:
+            return {
+                **gate,
+                "blocked": True,
+                "reason": "review_gate",
+                "error": "Evidence Wiki publishing is blocked until linked review items are approved or applied.",
+            }
+        return gate
+
+    blocking_statuses = {"pending", "snoozed", "rejected", "missing", "forbidden"}
+    for review_item_id in review_item_ids:
+        try:
+            item = store.get_review_item(review_item_id)
+        except Exception:  # noqa: BLE001 - stale lineage should block publishing instead of silently passing.
+            gate["review_items"].append({"review_item_id": review_item_id, "status": "missing"})
+            continue
+        status = str(getattr(item, "status", "") or "").strip().lower()
+        if getattr(item, "tenant_id", tenant_id) != tenant_id or getattr(item, "owner_user_id", owner_user_id) != owner_user_id:
+            status = "forbidden"
+        gate["review_items"].append({"review_item_id": review_item_id, "status": status})
+    blockers = [item for item in gate["review_items"] if item.get("status") in blocking_statuses]
+    if blockers:
+        gate.update(
+            {
+                "blocked": True,
+                "reason": "review_gate",
+                "error": "Evidence Wiki publishing is blocked until linked review items are approved or applied.",
+                "blocking_review_items": blockers,
+            }
+        )
+    return gate
 
 
 def _evidence_wiki_board_match(board: Any, nodes: list[Any], query: str) -> dict[str, Any] | None:

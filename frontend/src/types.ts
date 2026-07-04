@@ -150,6 +150,15 @@ export type EvidenceWikiSearchResponse = {
   results?: EvidenceWikiSearchResult[];
 };
 
+export type EvidenceWikiPublishResponse = {
+  ok?: boolean;
+  reason?: string;
+  error?: string;
+  publish_status?: string;
+  review_gate?: Record<string, unknown>;
+  board?: WritingBoard;
+};
+
 export type WorkspaceCorpusSource = {
   source_item_id?: string;
   title?: string;

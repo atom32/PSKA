@@ -2901,13 +2901,17 @@ def test_evidence_brief_creates_writing_draft_with_lineage_and_refs() -> None:
     draft_search = api.workspace_evidence_wiki_search({"query": "Evidence brief drafts must keep citations"}, context=context)
     assert draft_search["results"] == []
 
-    published_metadata = {
-        **persisted["board"]["metadata"],
-        "status": "published",
-        "publish_status": "published",
-        "published_at": "2026-01-01T00:00:00+00:00",
-    }
-    api.workspace_writing_update_board(board["board_id"], {"metadata": published_metadata}, context=context)
+    blocked_publish = api.workspace_evidence_wiki_publish({"board_id": board["board_id"], "publish_status": "published"}, context=context)
+    assert blocked_publish["ok"] is False
+    assert blocked_publish["reason"] == "review_gate"
+    assert blocked_publish["review_gate"]["blocking_review_items"] == [{"review_item_id": "rev_brief", "status": "pending"}]
+    assert api.workspace_evidence_wiki_search({"query": "Evidence brief drafts must keep citations"}, context=context)["results"] == []
+
+    ReviewService(api.store).approve("rev_brief", actor_user_id="user_primary")
+    published = api.workspace_evidence_wiki_publish({"board_id": board["board_id"], "publish_status": "published"}, context=context)
+    assert published["ok"] is True
+    assert published["publish_status"] == "published"
+    assert published["review_gate"]["review_items"] == [{"review_item_id": "rev_brief", "status": "approved"}]
     search = api.workspace_evidence_wiki_search(
         {
             "query": "Evidence brief drafts must keep citations",

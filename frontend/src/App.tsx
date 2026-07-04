@@ -106,6 +106,7 @@ import {
   pinKnowledgeBase,
   previewChunking,
   previewKnowledgeSource,
+  publishEvidenceWikiBrief,
   recordWorkspaceActivity,
   rejectReviewItem,
   restoreKnowledgeBase,
@@ -8508,22 +8509,12 @@ function WritingWorkspace({
     if (briefActionBoardId) {
       return;
     }
-    const now = new Date().toISOString();
-    const metadata = evidenceBriefMetadata(boardToUpdate);
-    const nextMetadata: Record<string, unknown> = {
-      ...metadata,
-      status: publishStatus === "published" ? "published" : "draft",
-      publish_status: publishStatus,
-      publish_updated_at: now
-    };
-    if (publishStatus === "published") {
-      nextMetadata.published_at = now;
-    } else {
-      nextMetadata.unpublished_at = now;
-    }
     setBriefActionBoardId(boardToUpdate.board_id);
     try {
-      await patchWritingBoard(serviceToken, boardToUpdate.board_id, { metadata: nextMetadata });
+      const payload = await publishEvidenceWikiBrief(serviceToken, { board_id: boardToUpdate.board_id, publish_status: publishStatus });
+      if (payload.ok === false) {
+        throw new Error(payload.error || "Evidence Wiki 发布门禁未通过。");
+      }
       setWorkspaceMessage(`Evidence Brief ${publishStatus === "published" ? "已发布到 Wiki" : "已取消发布，回到草稿"}。`);
       await boardsQuery.refetch();
       if (activeBoardId === boardToUpdate.board_id) {
