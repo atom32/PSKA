@@ -9296,6 +9296,7 @@ type WritingNodeData = Record<string, unknown> & {
   serviceToken: PSKAAuth;
   selected: boolean;
   running: boolean;
+  askScopeLabel: string;
   askPreview?: WorkspaceAskResponse;
   suggestions: WritingQuestionSuggestion[];
   canAddToSection: boolean;
@@ -9390,7 +9391,7 @@ function WritingWorkspace({
     () => writingBoardKnowledgeScope(board, newBoardKnowledgeScope),
     [board?.metadata, newBoardKnowledgeScope]
   );
-  const activeBoardScopeLabel = writingBoardKnowledgeScopeLabel(activeBoardScope, knowledgeBases, currentKnowledgeBase);
+  const activeBoardScopeLabel = writingBoardKnowledgeScopeLabel(activeBoardScope.scope, knowledgeBases, currentKnowledgeBase);
 
   useEffect(() => {
     if (sections.length && !sections.some((section) => section.node_id === selectedSectionId)) {
@@ -9888,6 +9889,7 @@ function WritingWorkspace({
           serviceToken,
           selected: selectedSectionId === node.node_id,
           running: runningNodeIds.includes(node.node_id),
+          askScopeLabel: activeBoardScopeLabel,
           askPreview: askPreviews[node.node_id] || writingNodeLastAskPreview(node),
           suggestions: suggestions[node.node_id] || [],
           canAddToSection: Boolean(selectedSectionId && node.node_type === "answer"),
@@ -9903,7 +9905,7 @@ function WritingWorkspace({
           }
         }
       })),
-    [selectedSectionId, runningNodeIds, askPreviews, suggestions, writingNodes, serviceToken]
+    [selectedSectionId, runningNodeIds, activeBoardScopeLabel, askPreviews, suggestions, writingNodes, serviceToken]
   );
   const xyEdges: Edge[] = useMemo(
     () =>
@@ -10011,7 +10013,7 @@ function WritingWorkspace({
         <button type="button" onClick={() => void addNode("section")} data-testid="writing-add-section">章节</button>
         <button type="button" onClick={closeBoard} data-testid="writing-close-board">关闭项目</button>
         <button type="button" onClick={() => void copyBoardMarkdown()} data-testid="writing-export-markdown">导出 Markdown</button>
-        <span className="kb-inline-scope">{activeBoardScopeLabel}</span>
+        <span className="kb-inline-scope" data-testid="writing-board-scope">{activeBoardScopeLabel}</span>
         <button type="button" onClick={onPinCurrent}>
           <Pin size={15} />
           {pinStatus === "saved" ? "已置顶" : pinStatus === "failed" ? "失败" : "置顶"}
@@ -10698,6 +10700,7 @@ function WritingCanvasNode({ data }: NodeProps<WritingFlowNode>) {
   const citationRefs = node.citations?.length ? node.citations : node.source_refs || [];
   const citationKnowledgeBaseLabel = sourceRefsKnowledgeBaseSummary(citationRefs);
   const askHealth = writingNodeAskHealth(node, timelineResult, data.running, citationRefs.length);
+  const askScopeLabel = trimText(data.askScopeLabel || "全部资料库", 24);
 
   return (
     <div
@@ -10734,6 +10737,13 @@ function WritingCanvasNode({ data }: NodeProps<WritingFlowNode>) {
           }}
         >
           <MarkdownAnswer content={node.body_markdown} className="nodrag" />
+        </div>
+      ) : null}
+      {node.node_type === "question" ? (
+        <div className="writing-node-scope nodrag" data-testid="writing-node-ask-scope" title={`Ask 范围：${data.askScopeLabel || "全部资料库"}`}>
+          <BookOpen size={12} />
+          <span>Ask</span>
+          <strong>{askScopeLabel}</strong>
         </div>
       ) : null}
       {hasTimeline ? (
@@ -11046,6 +11056,7 @@ function buildWritingAskScope(
     });
   });
   const knowledgeBaseIds = Array.isArray(boardScope.knowledge_base_ids) ? boardScope.knowledge_base_ids.filter((item): item is string => typeof item === "string" && item.length > 0) : [];
+  const scopedSourceItemIds = Array.from(sourceItemIds).slice(0, 20);
   return {
     ...(knowledgeBaseIds.length ? { mode: "hard", knowledge_base_ids: knowledgeBaseIds } : {}),
     board_id: boardId,
@@ -11061,7 +11072,7 @@ function buildWritingAskScope(
       edge_type: edge.edge_type,
       label: edge.label || writingEdgeLabel(edge.edge_type)
     })),
-    source_item_ids: Array.from(sourceItemIds).slice(0, 20)
+    ...(scopedSourceItemIds.length ? { source_item_ids: scopedSourceItemIds } : {})
   };
 }
 

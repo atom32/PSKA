@@ -6712,6 +6712,34 @@ button.context-item-main {
   font-size: 12px;
 }
 
+.writing-node-scope {
+  max-width: 100%;
+  min-height: 24px;
+  border: 1px solid rgba(197, 150, 61, 0.28);
+  border-radius: 7px;
+  background: rgba(255, 253, 240, 0.88);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 8px;
+  padding: 3px 7px;
+  color: #7a520f;
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+.writing-node-scope span {
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.writing-node-scope strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .writing-node-timeline {
   max-height: 250px;
   overflow: auto;

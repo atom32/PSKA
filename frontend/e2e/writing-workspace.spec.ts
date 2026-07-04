@@ -10,77 +10,99 @@ const password =
   process.env.PSKA_E2E_PASSWORD ||
   (userId === "user_primary" ? "primary-local" : userId === "alice" ? "alice-local" : "pska-local");
 const marker = process.env.PSKA_E2E_MARKER || `pska-writing-e2e-${Date.now()}`;
-const sourceTitle = process.env.PSKA_E2E_SOURCE_TITLE || "helio-company-brief.md";
+const sourceTitle = process.env.PSKA_E2E_SOURCE_TITLE || `writing-scope-fixture-${marker}.md`;
+const fixtureSecret = `WRITING_SCOPE_${marker.replace(/[^a-zA-Z0-9]/g, "_")}`;
 const reportPath = process.env.PSKA_E2E_REPORT_PATH || "";
 
 test.setTimeout(900_000);
 
 test("workspace files to corpus to parallel writing draft", async ({ page, request }) => {
+  let fixtureSourceItemId: string | undefined;
+  let fixtureKnowledgeBaseId: string | undefined;
   const callbackUrl = await authnodeCallbackUrl(request);
   await page.goto(callbackUrl);
   await expect(page.getByTestId("gateway-session")).toContainText(userId);
   await expect(page.getByTestId("gateway-session")).toContainText(tenantId);
 
-  await openWorkspace(page, "语料库");
-  await expect(page.getByTestId("corpus-source-list")).toContainText(sourceTitle, { timeout: 45_000 });
+  try {
+    const fixture = await createWritingSourceFixture(page, sourceTitle, writingFixtureText(marker, fixtureSecret));
+    fixtureSourceItemId = fixture.sourceItemId;
+    fixtureKnowledgeBaseId = fixture.knowledgeBaseId;
 
-  await openWorkspace(page, "写作");
-  await createBoard(page);
+    await page.reload();
+    await expect(page.getByTestId("gateway-session")).toContainText(userId);
+    await expect(page.getByTestId("gateway-session")).toContainText(tenantId);
 
-  const questions = [
-    {
-      title: "What is Helio Forge Systems and why is it being considered?",
-      body: "Summarize the company, stage, product, and reserve decision context using only PSKA evidence."
-    },
-    {
-      title: "Which Q3 reserve allocation criteria does Helio satisfy or miss?",
-      body: "Compare Helio against the policy dimensions and keep support evidence separate from gaps."
-    },
-    {
-      title: "What customer traction evidence supports shortlist inclusion?",
-      body: "Look for pilots, expansions, concentration risk, and commercial proof."
-    },
-    {
-      title: "What financial and technical risks argue against inclusion?",
-      body: "Find the strongest counter-evidence across unit economics, runway, reliability, and sales motion."
+    await openWorkspace(page, "资料库");
+    await page.getByRole("combobox", { name: "当前知识库" }).selectOption(fixture.knowledgeBaseId);
+    await page.getByTestId("knowledge-base-tab-sources").click();
+    await page.getByTestId("corpus-search-input").fill(sourceTitle);
+    await expect(page.getByTestId("document-lifecycle-list")).toContainText(sourceTitle, { timeout: 45_000 });
+
+    await openWorkspace(page, "写作");
+    await createBoard(page, fixture.knowledgeBaseId, fixture.knowledgeBaseName);
+
+    const questions = [
+      {
+        title: `What is the reserve recommendation for ${marker}?`,
+        body: `Use only the PSKA fixture evidence. Include the marker ${fixtureSecret}, candidate name, and recommendation.`
+      },
+      {
+        title: `Who owns diligence for ${marker} and what is the reserve ceiling?`,
+        body: "Extract the named owner, Q3 reserve ceiling, and the exact condition that must be satisfied before allocation."
+      },
+      {
+        title: `What traction evidence supports ${marker}?`,
+        body: "Separate renewal, expansion, and customer proof evidence from unsupported claims."
+      },
+      {
+        title: `What risks argue against approving ${marker} now?`,
+        body: "Find the strongest counter-evidence across concentration, reliability, and compliance readiness."
+      }
+    ];
+    for (const question of questions) {
+      await createQuestion(page, question.title, question.body);
     }
-  ];
-  for (const question of questions) {
-    await createQuestion(page, question.title, question.body);
-  }
 
-  await runQuestionsInParallel(page, questions.length);
-  const initialAnswerCount = await page.locator('[data-testid="writing-node"][data-node-type="answer"]').count();
-  expect(initialAnswerCount).toBeGreaterThanOrEqual(questions.length);
-  await expect(page.locator('[data-testid="writing-node-timeline"]').first()).toBeVisible();
+    await runQuestionsInParallel(page, questions.length);
+    const initialAnswerCount = await page.locator('[data-testid="writing-node"][data-node-type="answer"]').count();
+    expect(initialAnswerCount).toBeGreaterThanOrEqual(questions.length);
+    await expect(page.locator('[data-testid="writing-node-timeline"]').first()).toBeVisible();
 
-  const followupNodeId = await createConnectedFollowupNode(page);
-  await page.reload();
-  await ensureWritingBoardOpen(page);
-  const followupNode = page.locator(`[data-testid="writing-node"][data-node-id="${followupNodeId}"]`);
-  await expect(followupNode).toBeVisible();
-  await runQuestionNodesViaSession(page, [followupNodeId]);
-  await page.reload();
-  await ensureWritingBoardOpen(page);
-  await expect(page.locator('[data-testid="writing-node"][data-node-type="answer"]')).toHaveCount(initialAnswerCount + 1, {
-    timeout: 240_000
-  });
+    const followupNodeId = await createConnectedFollowupNode(page);
+    await page.reload();
+    await ensureWritingBoardOpen(page);
+    const followupNode = page.locator(`[data-testid="writing-node"][data-node-id="${followupNodeId}"]`);
+    await expect(followupNode).toBeVisible();
+    await runQuestionNodesViaSession(page, [followupNodeId]);
+    await page.reload();
+    await ensureWritingBoardOpen(page);
+    await expect(page.locator('[data-testid="writing-node"][data-node-type="answer"]')).toHaveCount(initialAnswerCount + 1, {
+      timeout: 240_000
+    });
 
-  await addAnswersToSection(page, Math.min(initialAnswerCount + 1, 5));
-  await page.getByTestId("writing-compose-draft").click();
-  await expect(page.locator('[data-testid="writing-node"][data-node-type="draft"]')).toHaveCount(1, { timeout: 45_000 });
+    await addAnswersToSection(page, Math.min(initialAnswerCount + 1, 5));
+    await page.getByTestId("writing-compose-draft").click();
+    await expect(page.locator('[data-testid="writing-node"][data-node-type="draft"]')).toHaveCount(1, { timeout: 45_000 });
 
-  const result = await collectBoardResult(page);
-  expect(result.answer_count).toBeGreaterThanOrEqual(questions.length + 1);
-  expect(result.draft_length).toBeGreaterThan(200);
-  expect(result.citation_count).toBeGreaterThan(0);
-  expect(result.timeline_count).toBeGreaterThanOrEqual(questions.length);
-  expect(result.health_signal_count).toBeGreaterThanOrEqual(questions.length);
-  expect(result.draft_text).not.toMatch(/FastReAct|MCP|tool_call|GraphRAG/i);
+    const result = await collectBoardResult(page);
+    expect(result.answer_count).toBeGreaterThanOrEqual(questions.length + 1);
+    expect(result.draft_length).toBeGreaterThan(200);
+    expect(result.citation_count).toBeGreaterThan(0);
+    expect(result.timeline_count).toBeGreaterThanOrEqual(questions.length);
+    expect(result.health_signal_count).toBeGreaterThanOrEqual(questions.length);
+    expect(result.board_kb_count).toBeGreaterThan(0);
+    expect(result.writing_ask_scoped_count).toBeGreaterThanOrEqual(questions.length + 1);
+    expect(result.combined_text).toContain(fixtureSecret);
+    expect(result.draft_text).not.toMatch(/FastReAct|MCP|tool_call|GraphRAG/i);
 
-  if (reportPath) {
-    fs.mkdirSync(path.dirname(reportPath), { recursive: true });
-    fs.writeFileSync(reportPath, JSON.stringify({ ok: true, ...result }, null, 2), "utf-8");
+    if (reportPath) {
+      fs.mkdirSync(path.dirname(reportPath), { recursive: true });
+      fs.writeFileSync(reportPath, JSON.stringify({ ok: true, ...result }, null, 2), "utf-8");
+    }
+  } finally {
+    await softDeleteSourceItemIfPossible(page, fixtureSourceItemId);
+    await archiveKnowledgeBaseIfPossible(page, fixtureKnowledgeBaseId);
   }
 });
 
@@ -107,25 +129,195 @@ async function authnodeCallbackUrl(request: APIRequestContext) {
 }
 
 async function openWorkspace(page: Page, label: string) {
-  await page.getByRole("button", { name: new RegExp(label) }).first().click();
+  const navigationLabel = label === "语料库" ? "资料库" : label;
+  await page.getByRole("button", { name: new RegExp(navigationLabel) }).first().click();
 }
 
-async function createBoard(page: Page) {
+function writingFixtureText(markerValue: string, secret: string) {
+  return [
+    `Writing scope fixture marker: ${secret}.`,
+    `Reserve candidate: Solara Meridian Labs for ${markerValue}.`,
+    "Recommendation: keep Solara Meridian Labs on the watchlist only, not approved for immediate allocation.",
+    "Diligence owner: Mira Chen.",
+    "Q3 reserve ceiling: 760000 USD.",
+    "Condition before allocation: complete SOC2 evidence review and confirm pilot renewal evidence from Northstar Bank.",
+    "Traction evidence: Northstar Bank pilot renewal, Atlas Health expansion intent, and three production workflow references.",
+    "Risks: customer concentration, unverified reliability telemetry, and incomplete compliance evidence.",
+    "Next diligence: collect reliability logs, validate concentration exposure, and attach the SOC2 evidence memo before any reserve release."
+  ].join("\n");
+}
+
+async function createWritingSourceFixture(page: Page, title: string, text: string): Promise<{ sourceItemId?: string; knowledgeBaseId: string; knowledgeBaseName?: string }> {
+  return page.evaluate(async ({ fixtureTitle, fixtureText, markerValue }) => {
+    const api = async (path: string, init?: RequestInit) => {
+      const response = await fetch(path, {
+        ...init,
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          ...(init?.headers || {})
+        }
+      });
+      if (!response.ok) {
+        throw new Error(`${init?.method || "GET"} ${path} failed: ${response.status} ${await response.text()}`);
+      }
+      return response.json();
+    };
+    const createdKnowledgeBase = await api("/workspace/knowledge-bases", {
+      method: "POST",
+      body: JSON.stringify({
+        name: `Writing E2E ${markerValue}`,
+        description: "Temporary isolated knowledge base for Writing scope e2e coverage.",
+        kb_type: "document"
+      })
+    });
+    const knowledgeBase = createdKnowledgeBase.knowledge_base;
+    if (!knowledgeBase?.knowledge_base_id) {
+      throw new Error("Writing fixture could not find a writable knowledge base");
+    }
+    const source = await api("/workspace/sources/text", {
+      method: "POST",
+      body: JSON.stringify({
+        title: fixtureTitle,
+        text: fixtureText,
+        knowledge_base_id: knowledgeBase.knowledge_base_id,
+        digest_mode: "manual"
+      })
+    });
+    return {
+      sourceItemId: Array.isArray(source.source_item_ids) ? source.source_item_ids[0] : undefined,
+      knowledgeBaseId: knowledgeBase.knowledge_base_id,
+      knowledgeBaseName: typeof knowledgeBase.name === "string" ? knowledgeBase.name : undefined
+    };
+  }, { fixtureTitle: title, fixtureText: text, markerValue: marker });
+}
+
+async function softDeleteSourceItemIfPossible(page: Page, sourceItemId: string | undefined) {
+  if (!sourceItemId) {
+    return;
+  }
+  try {
+    await page.evaluate(async (id) => {
+      const response = await fetch("/workspace/documents/delete", {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          source_item_ids: [id],
+          execute: true,
+          restore: false,
+          hard_delete: false,
+          reason: "writing workspace e2e cleanup"
+        })
+      });
+      if (!response.ok) {
+        throw new Error(`Cleanup delete failed with HTTP ${response.status}: ${await response.text()}`);
+      }
+    }, sourceItemId);
+  } catch {
+    // Keep the primary test failure visible; cleanup is best effort.
+  }
+}
+
+async function archiveKnowledgeBaseIfPossible(page: Page, knowledgeBaseId: string | undefined) {
+  if (!knowledgeBaseId) {
+    return;
+  }
+  try {
+    await page.evaluate(async (id) => {
+      const response = await fetch(`/workspace/knowledge-bases/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({})
+      });
+      if (!response.ok) {
+        throw new Error(`Cleanup knowledge base failed with HTTP ${response.status}: ${await response.text()}`);
+      }
+    }, knowledgeBaseId);
+  } catch {
+    // Keep the primary test failure visible; cleanup is best effort.
+  }
+}
+
+async function createBoard(page: Page, knowledgeBaseId: string, knowledgeBaseName?: string) {
   const startPanel = page.getByTestId("writing-start-panel");
   const toolbar = page.getByTestId("writing-toolbar");
-  if (!(await toolbar.isVisible().catch(() => false))) {
-    await expect(startPanel).toBeVisible({ timeout: 45_000 });
-    await page.getByTestId("writing-new-goal").fill(
-      `Write an evidence-backed reserve allocation memo for Helio Forge Systems. ${marker}`
-    );
-    await page.getByTestId("writing-create-board").click();
+  await expect(page.locator('[data-testid="writing-toolbar"], [data-testid="writing-start-panel"]').first()).toBeVisible({
+    timeout: 45_000
+  });
+  if (await toolbar.isVisible().catch(() => false)) {
+    await page.getByTestId("writing-close-board").click();
   }
+  await expect(startPanel).toBeVisible({ timeout: 45_000 });
+  await page.getByTestId("writing-new-goal").fill(
+    `Write an evidence-backed reserve allocation memo for ${marker}.`
+  );
+  await page.getByTestId("writing-create-board").click();
   await expect(toolbar).toBeVisible({ timeout: 45_000 });
-  await page.getByTestId("writing-board-title-input").fill(`Helio Forge Systems memo ${marker}`);
+  await page.getByTestId("writing-board-title-input").fill(`Writing fixture memo ${marker}`);
   await page.getByTestId("writing-board-goal-input").fill(
-    `Build an inquiry graph before drafting the reserve allocation memo. ${marker}`
+    `Build an inquiry graph before drafting the reserve allocation memo for ${marker}.`
   );
   await page.getByTestId("writing-board-goal-input").press("Tab");
+  await expect(page.getByTestId("writing-board-scope")).toBeVisible();
+  await bindCurrentWritingBoardToKnowledgeBase(page, knowledgeBaseId, knowledgeBaseName);
+  await page.reload();
+  await ensureWritingBoardOpen(page);
+  await expect(page.getByTestId("writing-board-scope")).not.toHaveText("全部资料库", { timeout: 30_000 });
+}
+
+async function bindCurrentWritingBoardToKnowledgeBase(page: Page, knowledgeBaseId: string, knowledgeBaseName?: string) {
+  await page.evaluate(async ({ markerValue, targetKnowledgeBaseId, targetKnowledgeBaseName }) => {
+    const api = async (path: string, init?: RequestInit) => {
+      const response = await fetch(path, {
+        ...init,
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          ...(init?.headers || {})
+        }
+      });
+      if (!response.ok) {
+        throw new Error(`${init?.method || "GET"} ${path} failed: ${response.status} ${await response.text()}`);
+      }
+      return response.json();
+    };
+    const boardsResponse = await api("/workspace/writing/boards?limit=50");
+    const board = (boardsResponse.boards || []).find((item: any) => `${item.title || ""} ${item.goal || ""}`.includes(markerValue));
+    if (!board?.board_id) {
+      throw new Error("E2E writing board was not found while binding knowledge base scope");
+    }
+    const detail = await api(`/workspace/writing/boards/${encodeURIComponent(board.board_id)}`);
+    const metadata = detail.board?.metadata && typeof detail.board.metadata === "object" && !Array.isArray(detail.board.metadata)
+      ? detail.board.metadata
+      : {};
+    const knowledgeBaseScope = {
+      mode: "hard",
+      knowledge_base_ids: [targetKnowledgeBaseId],
+      ...(targetKnowledgeBaseName ? { knowledge_base_name: targetKnowledgeBaseName } : {})
+    };
+    const updated = await api(`/workspace/writing/boards/${encodeURIComponent(board.board_id)}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        metadata: {
+          ...metadata,
+          knowledge_base_ids: [targetKnowledgeBaseId],
+          knowledge_base_scope: knowledgeBaseScope
+        }
+      })
+    });
+    const updatedIds = Array.isArray(updated.board?.metadata?.knowledge_base_ids)
+      ? updated.board.metadata.knowledge_base_ids
+      : updated.board?.metadata?.knowledge_base_scope?.knowledge_base_ids;
+    if (!Array.isArray(updatedIds) || !updatedIds.includes(targetKnowledgeBaseId)) {
+      throw new Error(`E2E writing board scope was not persisted for ${targetKnowledgeBaseId}`);
+    }
+  }, { markerValue: marker, targetKnowledgeBaseId: knowledgeBaseId, targetKnowledgeBaseName: knowledgeBaseName || "" });
 }
 
 async function createQuestion(page: Page, title: string, body: string) {
@@ -141,17 +333,28 @@ async function createQuestion(page: Page, title: string, body: string) {
   }
   const node = writingNodeById(page, nodeId);
   await expect(node).toBeVisible();
-  await node.getByTestId("writing-node-title-input").fill(title);
-  await node.getByTestId("writing-node-body-input").fill(body);
-  await node.getByTestId("writing-node-body-input").press("Tab");
+  await expect(node.getByTestId("writing-node-ask-scope")).toBeVisible();
+  await expect(node.getByTestId("writing-node-ask-scope")).not.toHaveText("全部资料库", { timeout: 20_000 });
+  await node.getByTestId("writing-node-toggle").click();
+  const editor = page.getByTestId("writing-floating-editor");
+  await expect(editor).toBeVisible({ timeout: 20_000 });
+  await editor.getByTestId("writing-editor-title").fill(title, { timeout: 20_000 });
+  await editor.getByTestId("writing-editor-body").fill(body, { timeout: 20_000 });
+  await editor.getByTestId("writing-editor-close").click();
+  await expect(editor).toBeHidden({ timeout: 20_000 });
+  await expect(node).toContainText(title, { timeout: 20_000 });
   await page.waitForTimeout(300);
 }
 
 async function runQuestionsInParallel(page: Page, questionCount: number) {
   const questions = page.locator('[data-testid="writing-node"][data-node-type="question"]');
   await expect(questions).toHaveCount(questionCount, { timeout: 30_000 });
+  await expect(page.getByTestId("writing-node-ask-scope")).toHaveCount(questionCount, { timeout: 30_000 });
   const ids = await questionNodeIds(page);
-  await runQuestionNodesViaSession(page, ids.slice(0, questionCount));
+  const runResult = await runQuestionNodesViaSession(page, ids.slice(0, questionCount));
+  if (runResult.boardKnowledgeBaseIds.length) {
+    expect(runResult.scopedQuestionCount).toBe(questionCount);
+  }
   await page.reload();
   await ensureWritingBoardOpen(page);
   await expect(page.locator('[data-testid="writing-node"][data-node-type="answer"]')).toHaveCount(questionCount, {
@@ -177,17 +380,27 @@ async function ensureWritingBoardOpen(page: Page) {
   await expect(page.locator('[data-testid="writing-toolbar"], [data-testid="writing-project-list"]').first()).toBeVisible({
     timeout: 45_000
   });
-  if (await toolbar.isVisible().catch(() => false)) {
+  if ((await toolbar.isVisible().catch(() => false)) && await currentWritingBoardContainsMarker(page)) {
     return;
+  }
+  if (await toolbar.isVisible().catch(() => false)) {
+    await page.getByTestId("writing-close-board").click();
   }
   await expect(page.getByTestId("writing-project-list")).toBeVisible({ timeout: 45_000 });
   const project = page.getByTestId("writing-project").filter({ hasText: marker }).first();
   await expect(project).toBeVisible({ timeout: 45_000 });
   await project.getByTestId("writing-open-board").click();
   await expect(toolbar).toBeVisible({ timeout: 45_000 });
+  await expect(page.getByTestId("writing-board-title-input")).toHaveValue(new RegExp(marker), { timeout: 20_000 });
 }
 
-async function runQuestionNodesViaSession(page: Page, nodeIds: string[]) {
+async function currentWritingBoardContainsMarker(page: Page) {
+  const title = await page.getByTestId("writing-board-title-input").inputValue({ timeout: 1_000 }).catch(() => "");
+  const goal = await page.getByTestId("writing-board-goal-input").inputValue({ timeout: 1_000 }).catch(() => "");
+  return `${title} ${goal}`.includes(marker);
+}
+
+async function runQuestionNodesViaSession(page: Page, nodeIds: string[]): Promise<{ answerNodeIds: string[]; boardKnowledgeBaseIds: string[]; scopedQuestionCount: number }> {
   return page.evaluate(async ({ markerValue, targetNodeIds }) => {
     const api = async (path: string, init?: RequestInit) => {
       const response = await fetch(path, {
@@ -209,6 +422,18 @@ async function runQuestionNodesViaSession(page: Page, nodeIds: string[]) {
       throw new Error("E2E writing board was not found before running Ask");
     }
     const detail = await api(`/workspace/writing/boards/${encodeURIComponent(board.board_id)}`);
+    const isRecord = (value: any) => Boolean(value && typeof value === "object" && !Array.isArray(value));
+    const boardDetail = detail.board || board;
+    const boardMetadata = isRecord(boardDetail.metadata) ? boardDetail.metadata : {};
+    const rawBoardScope = isRecord(boardMetadata.knowledge_base_scope) ? boardMetadata.knowledge_base_scope : {};
+    const scopeIds = Array.isArray(rawBoardScope.knowledge_base_ids) ? rawBoardScope.knowledge_base_ids.filter((item: any) => typeof item === "string" && item.length > 0) : [];
+    const metadataIds = Array.isArray(boardMetadata.knowledge_base_ids) ? boardMetadata.knowledge_base_ids.filter((item: any) => typeof item === "string" && item.length > 0) : [];
+    const boardKnowledgeBaseIds = Array.from(new Set([...scopeIds, ...metadataIds]));
+    const boardKnowledgeBaseScope = boardKnowledgeBaseIds.length
+      ? { ...rawBoardScope, mode: "hard", knowledge_base_ids: boardKnowledgeBaseIds }
+      : Object.keys(rawBoardScope).length
+        ? { ...rawBoardScope, knowledge_base_ids: [] }
+        : {};
     const nodes = detail.nodes || [];
     const edges = detail.edges || [];
     const nodeById = new Map(nodes.map((node: any) => [node.node_id, node]));
@@ -233,7 +458,11 @@ async function runQuestionNodesViaSession(page: Page, nodeIds: string[]) {
           source_refs: item.source_refs || [],
           quality_signals: item.quality_signals || {}
         }));
+      const scopedSourceItemIds = Array.from(new Set(contextNodes.flatMap((item: any) =>
+        [...(item.citations || []), ...(item.source_refs || [])].map((ref: any) => ref.source_item_id).filter(Boolean)
+      )));
       const scope = {
+        ...(boardKnowledgeBaseIds.length ? { mode: "hard", knowledge_base_ids: boardKnowledgeBaseIds } : {}),
         board_id: board.board_id,
         node_id: node.node_id,
         session_id: sessionId,
@@ -241,9 +470,7 @@ async function runQuestionNodesViaSession(page: Page, nodeIds: string[]) {
         context_rule: "directly connected writing nodes are included as structured context",
         context_edges: connectedEdges,
         context_nodes: contextNodes,
-        source_item_ids: Array.from(new Set(contextNodes.flatMap((item: any) =>
-          [...(item.citations || []), ...(item.source_refs || [])].map((ref: any) => ref.source_item_id).filter(Boolean)
-        )))
+        ...(scopedSourceItemIds.length ? { source_item_ids: scopedSourceItemIds } : {})
       };
       const result: any = {
         answer: "",
@@ -345,7 +572,7 @@ async function runQuestionNodesViaSession(page: Page, nodeIds: string[]) {
           citations: result.citations || [],
           source_refs: result.source_refs || [],
           quality_signals: result.quality_signals || {},
-          metadata: { route: result.route || {}, timing: result.timing || {}, session_id: sessionId, source_question_id: node.node_id, expanded: true }
+          metadata: { route: result.route || {}, timing: result.timing || {}, session_id: sessionId, source_question_id: node.node_id, expanded: true, knowledge_base_scope: boardKnowledgeBaseScope }
         })
       });
       await api(`/workspace/writing/boards/${encodeURIComponent(board.board_id)}/edges`, {
@@ -373,7 +600,7 @@ async function runQuestionNodesViaSession(page: Page, nodeIds: string[]) {
             position: { x: Number(node.position?.x || 0) + 790, y: Number(node.position?.y || 0) - 80 },
             citations: result.citations || [],
             source_refs: result.source_refs || [],
-            metadata: { expanded: false }
+            metadata: { expanded: false, knowledge_base_scope: boardKnowledgeBaseScope }
           })
         });
         await api(`/workspace/writing/boards/${encodeURIComponent(board.board_id)}/edges`, {
@@ -393,6 +620,7 @@ async function runQuestionNodesViaSession(page: Page, nodeIds: string[]) {
           metadata: {
             ...(node.metadata || {}),
             session_id: sessionId,
+            knowledge_base_scope: boardKnowledgeBaseScope,
             last_ask: {
               query,
               route: result.route || {},
@@ -417,7 +645,11 @@ async function runQuestionNodesViaSession(page: Page, nodeIds: string[]) {
     };
 
     const answerNodeIds = await Promise.all(targets.map((node: any) => askStream(node)));
-    return { answerNodeIds };
+    return {
+      answerNodeIds,
+      boardKnowledgeBaseIds,
+      scopedQuestionCount: boardKnowledgeBaseIds.length ? answerNodeIds.length : 0
+    };
   }, { markerValue: marker, targetNodeIds: nodeIds });
 }
 
@@ -433,6 +665,17 @@ async function createConnectedFollowupNode(page: Page) {
       headers: { Accept: "application/json" }
     });
     const detail = await detailResponse.json();
+    const isRecord = (value: any) => Boolean(value && typeof value === "object" && !Array.isArray(value));
+    const boardMetadata = isRecord((detail.board || board).metadata) ? (detail.board || board).metadata : {};
+    const rawBoardScope = isRecord(boardMetadata.knowledge_base_scope) ? boardMetadata.knowledge_base_scope : {};
+    const scopeIds = Array.isArray(rawBoardScope.knowledge_base_ids) ? rawBoardScope.knowledge_base_ids.filter((item: any) => typeof item === "string" && item.length > 0) : [];
+    const metadataIds = Array.isArray(boardMetadata.knowledge_base_ids) ? boardMetadata.knowledge_base_ids.filter((item: any) => typeof item === "string" && item.length > 0) : [];
+    const boardKnowledgeBaseIds = Array.from(new Set([...scopeIds, ...metadataIds]));
+    const boardKnowledgeBaseScope = boardKnowledgeBaseIds.length
+      ? { ...rawBoardScope, mode: "hard", knowledge_base_ids: boardKnowledgeBaseIds }
+      : Object.keys(rawBoardScope).length
+        ? { ...rawBoardScope, knowledge_base_ids: [] }
+        : {};
     const answers = (detail.nodes || []).filter((node: any) => node.node_type === "answer");
     if (answers.length < 2) {
       throw new Error("Need at least two answers before creating connected follow-up");
@@ -445,7 +688,7 @@ async function createConnectedFollowupNode(page: Page) {
         title: "What final recommendation follows from the connected answers?",
         body_markdown: "Use the directly connected answer nodes as context. State conditions, gaps, and next diligence steps.",
         position: { x: 860, y: 640 },
-        metadata: { expanded: true, e2e_marker: markerValue }
+        metadata: { expanded: true, e2e_marker: markerValue, knowledge_base_scope: boardKnowledgeBaseScope }
       })
     });
     const created = await nodeResponse.json();
@@ -520,11 +763,19 @@ async function collectBoardResult(page: Page) {
       headers: { Accept: "application/json" }
     });
     const detail = await detailResponse.json();
+    const isRecord = (value: any) => Boolean(value && typeof value === "object" && !Array.isArray(value));
+    const boardDetail = detail.board || board;
+    const boardMetadata = isRecord(boardDetail.metadata) ? boardDetail.metadata : {};
+    const rawBoardScope = isRecord(boardMetadata.knowledge_base_scope) ? boardMetadata.knowledge_base_scope : {};
+    const scopeIds = Array.isArray(rawBoardScope.knowledge_base_ids) ? rawBoardScope.knowledge_base_ids.filter((item: any) => typeof item === "string" && item.length > 0) : [];
+    const metadataIds = Array.isArray(boardMetadata.knowledge_base_ids) ? boardMetadata.knowledge_base_ids.filter((item: any) => typeof item === "string" && item.length > 0) : [];
+    const boardKnowledgeBaseIds = Array.from(new Set([...scopeIds, ...metadataIds]));
     const nodes = detail.nodes || [];
     const answerNodes = nodes.filter((node: any) => node.node_type === "answer");
     const draftNodes = nodes.filter((node: any) => node.node_type === "draft");
     const questionNodes = nodes.filter((node: any) => node.node_type === "question");
     const draftText = draftNodes.map((node: any) => node.body_markdown || "").join("\n\n");
+    const combinedText = nodes.map((node: any) => `${node.title || ""}\n${node.body_markdown || ""}`).join("\n\n");
     const citationCount = nodes.reduce((total: number, node: any) => {
       return total + (node.citations || []).length + (node.source_refs || []).length;
     }, 0);
@@ -532,6 +783,10 @@ async function collectBoardResult(page: Page) {
     const healthSignalCount = nodes.filter((node: any) =>
       Object.keys(node.quality_signals || {}).length > 0 || Object.keys(node.metadata?.last_ask?.quality_signals || {}).length > 0
     ).length;
+    const writingAskScopedCount = questionNodes.filter((node: any) => {
+      const ids = Array.isArray(node.metadata?.last_ask?.scope?.knowledge_base_ids) ? node.metadata.last_ask.scope.knowledge_base_ids : [];
+      return boardKnowledgeBaseIds.length > 0 && boardKnowledgeBaseIds.every((knowledgeBaseId: string) => ids.includes(knowledgeBaseId));
+    }).length;
     return {
       board_id: board.board_id,
       node_count: nodes.length,
@@ -539,9 +794,12 @@ async function collectBoardResult(page: Page) {
       draft_count: draftNodes.length,
       draft_length: draftText.length,
       draft_text: draftText,
+      combined_text: combinedText,
       citation_count: citationCount,
       timeline_count: timelineCount,
-      health_signal_count: healthSignalCount
+      health_signal_count: healthSignalCount,
+      board_kb_count: boardKnowledgeBaseIds.length,
+      writing_ask_scoped_count: writingAskScopedCount
     };
   }, { markerValue: marker });
 }
