@@ -2836,6 +2836,65 @@ button.context-item-main {
   overflow-wrap: anywhere;
 }
 
+.review-application-preview {
+  display: grid;
+  gap: 8px;
+  border: 1px solid rgba(35, 90, 77, 0.14);
+  border-radius: 7px;
+  background: #fffefa;
+  padding: 8px;
+}
+
+.review-application-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.review-application-preview-header strong {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.review-application-preview-header small {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
+.review-application-preview p {
+  margin: 0;
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.review-application-preview-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.review-application-preview-meta span,
+.review-application-preview-meta code {
+  border-radius: 6px;
+  background: rgba(35, 90, 77, 0.08);
+  color: #235a4d;
+  padding: 5px 7px;
+  font-size: 11px;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
+.review-application-preview-meta code {
+  font-family: var(--mono);
+}
+
 .review-application-targets {
   display: flex;
   flex-wrap: wrap;
@@ -6760,6 +6819,11 @@ button.context-item-main {
 
   .review-application-lineage dl {
     grid-template-columns: 1fr;
+  }
+
+  .review-application-preview-header {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .review-summary {

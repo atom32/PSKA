@@ -6785,6 +6785,7 @@ def _review_application_result(store: Any, review_item: ReviewItem) -> dict[str,
         "action": latest.action if latest else None,
         "promotion_type": promotion_type,
         "target_ids": target_ids,
+        "target_preview": _review_application_target_preview(store, review_item, target_ids),
         "source_refs": metadata.get("source_refs") or [],
         "summary": _review_application_summary(review_item, metadata),
         "history": _review_application_history(events),
@@ -6832,6 +6833,85 @@ def _review_application_history(events: list[Any]) -> list[dict[str, Any]]:
             }
         )
     return history
+
+
+def _review_application_target_preview(store: Any, review_item: ReviewItem, target_ids: dict[str, str]) -> dict[str, Any] | None:
+    memory_id = target_ids.get("agent_memory_id")
+    if memory_id:
+        try:
+            memory = store.get_agent_memory(memory_id)
+        except Exception:  # noqa: BLE001 - stale audit metadata should not break Review Center.
+            memory = None
+        if memory and _review_target_owner_matches(memory, review_item):
+            source_refs = getattr(memory, "source_refs", []) or []
+            return {
+                "target_type": "agent_memory",
+                "target_id": memory_id,
+                "title": "Agent memory",
+                "body": getattr(memory, "text", "") or "",
+                "confidence": getattr(memory, "confidence", None),
+                "source_ref_count": len(source_refs),
+                "updated_at": _review_preview_datetime(getattr(memory, "last_verified_at", None)),
+                "attributes": [
+                    {"label": "Layer", "value": _review_preview_value(getattr(memory, "layer", ""))},
+                    {"label": "Decay", "value": _review_preview_value(getattr(memory, "decay_policy", ""))},
+                ],
+            }
+
+    profile_card_id = target_ids.get("profile_card_id")
+    if profile_card_id:
+        card = _review_profile_card_by_id(store, review_item, profile_card_id)
+        if card:
+            profile = getattr(card, "profile", {}) or {}
+            attributes = [
+                {"label": str(key), "value": _review_preview_value(value)}
+                for key, value in sorted(profile.items(), key=lambda item: str(item[0]))[:8]
+            ]
+            source_refs = getattr(card, "source_refs", []) or []
+            return {
+                "target_type": "profile_card",
+                "target_id": profile_card_id,
+                "title": "Profile card",
+                "body": "; ".join(f"{item['label']}: {item['value']}" for item in attributes[:4]),
+                "confidence": getattr(card, "confidence", None),
+                "source_ref_count": len(source_refs),
+                "updated_at": _review_preview_datetime(getattr(card, "last_verified_at", None)),
+                "attributes": attributes,
+            }
+    return None
+
+
+def _review_profile_card_by_id(store: Any, review_item: ReviewItem, profile_card_id: str) -> Any | None:
+    try:
+        cards = store.list_profile_cards(owner_user_id=review_item.owner_user_id, tenant_id=review_item.tenant_id)
+    except Exception:  # noqa: BLE001 - stale audit metadata should not break Review Center.
+        return None
+    for card in cards:
+        if getattr(card, "profile_card_id", "") == profile_card_id and _review_target_owner_matches(card, review_item):
+            return card
+    return None
+
+
+def _review_target_owner_matches(target: Any, review_item: ReviewItem) -> bool:
+    if getattr(target, "owner_user_id", review_item.owner_user_id) != review_item.owner_user_id:
+        return False
+    return getattr(target, "tenant_id", review_item.tenant_id) == review_item.tenant_id
+
+
+def _review_preview_datetime(value: Any) -> str | None:
+    return value.isoformat() if isinstance(value, datetime) else None
+
+
+def _review_preview_value(value: Any) -> str:
+    if hasattr(value, "value"):
+        value = value.value
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+    return json.dumps(to_jsonable(value), ensure_ascii=False, sort_keys=True)
 
 
 def _review_application_summary(review_item: ReviewItem, metadata: dict[str, Any]) -> str:

@@ -1313,10 +1313,22 @@ export type ReviewApplicationResult = {
   action?: string;
   promotion_type?: string;
   target_ids?: Record<string, string>;
+  target_preview?: ReviewAppliedTargetPreview | null;
   source_refs?: Array<Record<string, unknown>>;
   summary?: string;
   history?: ReviewDecisionHistoryEvent[];
   metadata?: Record<string, unknown>;
+};
+
+export type ReviewAppliedTargetPreview = {
+  target_type?: string;
+  target_id?: string;
+  title?: string;
+  body?: string;
+  confidence?: number | null;
+  source_ref_count?: number;
+  updated_at?: string | null;
+  attributes?: Array<{ label?: string; value?: string }>;
 };
 
 export type ReviewDecisionHistoryEvent = {

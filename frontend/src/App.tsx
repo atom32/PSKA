@@ -2128,6 +2128,7 @@ function ReviewApplicationLineage({ item }: { item: ReviewCenterItem }) {
           <dd>{evidenceRefs.length ? `${evidenceRefs.length} 条证据引用` : "未记录"}</dd>
         </div>
       </dl>
+      <ReviewApplicationTargetPreview preview={result.target_preview || null} />
       {targetEntries.length ? (
         <div className="review-application-targets">
           {targetEntries.map(([key, value]) => (
@@ -2136,6 +2137,33 @@ function ReviewApplicationLineage({ item }: { item: ReviewCenterItem }) {
         </div>
       ) : null}
       {evidenceRefs.length ? <small>应用时保留了可回查证据，可在上方“证据对比”检查原文。</small> : null}
+    </div>
+  );
+}
+
+function ReviewApplicationTargetPreview({ preview }: { preview: NonNullable<ReviewApplicationResult["target_preview"]> | null }) {
+  if (!preview) {
+    return null;
+  }
+  const attributes = preview.attributes?.filter((item) => item.label || item.value) || [];
+  const confidence = typeof preview.confidence === "number" ? confidenceLabel(preview.confidence) : "";
+  return (
+    <div className="review-application-preview" data-testid="review-application-target-preview">
+      <div className="review-application-preview-header">
+        <strong>{displayText(preview.title, reviewTargetPreviewLabel(preview.target_type))}</strong>
+        {preview.target_id ? <small>{preview.target_id}</small> : null}
+      </div>
+      {preview.body ? <p>{trimText(preview.body, 220)}</p> : null}
+      <div className="review-application-preview-meta">
+        {confidence ? <span>置信度 {confidence}</span> : null}
+        {typeof preview.source_ref_count === "number" ? <span>{preview.source_ref_count} 条证据</span> : null}
+        {preview.updated_at ? <span>{formatReviewDate(preview.updated_at)}</span> : null}
+        {attributes.map((item) => (
+          <code key={`${displayText(preview.target_id)}-${displayText(item.label)}-${displayText(item.value)}`}>
+            {displayText(item.label, "属性")}: {displayText(item.value, "未提供")}
+          </code>
+        ))}
+      </div>
     </div>
   );
 }
@@ -2183,6 +2211,19 @@ function reviewApplicationTargetLabel(result: ReviewApplicationResult) {
     return "Profile card";
   }
   return "长期知识";
+}
+
+function reviewTargetPreviewLabel(targetType?: string) {
+  if (targetType === "agent_memory") {
+    return "Agent memory";
+  }
+  if (targetType === "profile_card") {
+    return "Profile card";
+  }
+  if (targetType === "hyperedge") {
+    return "Graph relationship";
+  }
+  return "写入目标";
 }
 
 function reviewApplicationTargetKeyLabel(key: string) {

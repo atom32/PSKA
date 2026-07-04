@@ -85,6 +85,17 @@ def test_profile_update_applies_only_after_approval() -> None:
         "approved",
         "applied",
     ]
+    payload = _review_application_result(store, applied)
+    assert payload["target_preview"] == {
+        "target_type": "profile_card",
+        "target_id": card.profile_card_id,
+        "title": "Profile card",
+        "body": "communication: concise",
+        "confidence": card.confidence,
+        "source_ref_count": 1,
+        "updated_at": card.last_verified_at.isoformat(),
+        "attributes": [{"label": "communication", "value": "concise"}],
+    }
 
 
 def test_repeated_profile_update_merges_source_refs_and_confidence() -> None:
@@ -147,6 +158,15 @@ def test_memory_candidate_review_promotes_agent_memory_with_audit() -> None:
     assert events[-1].metadata["promotion_type"] == "agent_memory"
     assert events[-1].metadata["action"] == "created"
     assert events[-1].metadata["agent_memory_id"] == memory.agent_memory_id
+    payload = _review_application_result(store, applied)
+    preview = payload["target_preview"]
+    assert preview["target_type"] == "agent_memory"
+    assert preview["target_id"] == memory.agent_memory_id
+    assert preview["body"] == "PSKA prefers evidence-first answers."
+    assert preview["confidence"] == 0.72
+    assert preview["source_ref_count"] == 1
+    assert preview["updated_at"] == memory.last_verified_at.isoformat()
+    assert preview["attributes"] == [{"label": "Layer", "value": "semantic"}, {"label": "Decay", "value": "manual"}]
 
 
 def test_repeated_low_confidence_memory_candidate_updates_existing_memory() -> None:
