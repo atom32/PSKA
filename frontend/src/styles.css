@@ -5394,6 +5394,30 @@ button.context-item-main {
   font-size: 11px;
 }
 
+.writing-brief-wiki-content-review {
+  border: 1px solid rgba(39, 37, 31, 0.14);
+  border-radius: 999px;
+  background: rgba(39, 37, 31, 0.05);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.45;
+  padding: 2px 8px;
+  white-space: nowrap;
+}
+
+.writing-brief-wiki-content-review.needs_review {
+  border-color: rgba(185, 122, 42, 0.36);
+  background: #fff6df;
+  color: #7d4e13;
+}
+
+.writing-brief-wiki-content-review.published {
+  border-color: rgba(46, 117, 100, 0.28);
+  background: var(--accent-soft);
+  color: #235a4d;
+}
+
 .writing-brief-wiki-content-editor-actions button {
   border: 0;
   border-radius: 7px;

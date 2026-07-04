@@ -4717,6 +4717,7 @@ class PSKAApi:
                         "published_at": metadata.get("published_at") or metadata.get("publish_updated_at"),
                         "access": _evidence_wiki_access_payload(board),
                         "taxonomy": taxonomy,
+                        "content_review": _evidence_wiki_content_review_payload(metadata),
                     }
                 )
         return {
@@ -4862,6 +4863,24 @@ class PSKAApi:
             "wiki_content_editor_user_id": owner,
             "wiki_content_revision": next_revision,
         }
+        if _evidence_wiki_board_is_published(board):
+            next_metadata.update(
+                {
+                    "wiki_content_review_status": "needs_review",
+                    "wiki_content_review_required": True,
+                    "wiki_content_review_reason": "content_changed_after_publish",
+                    "wiki_content_review_revision": next_revision,
+                }
+            )
+        else:
+            next_metadata.update(
+                {
+                    "wiki_content_review_status": "draft",
+                    "wiki_content_review_required": False,
+                    "wiki_content_review_reason": "draft_page",
+                    "wiki_content_review_revision": next_revision,
+                }
+            )
         if summary is not None:
             next_metadata["wiki_summary"] = summary
         content_node_id = (
@@ -5023,6 +5042,11 @@ class PSKAApi:
                 "publish_status": "published",
                 "published_at": metadata.get("published_at") or now,
                 "publish_updated_at": now,
+                "wiki_published_content_revision": _int_value(metadata.get("wiki_content_revision"), fallback=0),
+                "wiki_content_review_status": "published",
+                "wiki_content_review_required": False,
+                "wiki_content_review_reason": "published_revision_current",
+                "wiki_content_reviewed_at": now,
             }
         else:
             review_gate = _evidence_wiki_review_gate(self.store, board, tenant_id=tenant_id, owner_user_id=owner)
@@ -5032,6 +5056,9 @@ class PSKAApi:
                 "publish_status": "draft",
                 "unpublished_at": now,
                 "publish_updated_at": now,
+                "wiki_content_review_status": "draft",
+                "wiki_content_review_required": False,
+                "wiki_content_review_reason": "draft_page",
             }
         updated = self.store.update_writing_board(
             board_id,
@@ -14837,6 +14864,7 @@ def _evidence_wiki_page_payload(
         "wiki_content_revision": metadata.get("wiki_content_revision") or 0,
         "content_revision_count": len(_evidence_wiki_content_revisions(metadata)),
         "content_revisions": _evidence_wiki_content_revisions(metadata),
+        "content_review": _evidence_wiki_content_review_payload(metadata),
         "published_at": metadata.get("published_at") or metadata.get("publish_updated_at"),
         "publish_updated_at": metadata.get("publish_updated_at"),
         "status": metadata.get("status") or metadata.get("publish_status"),
@@ -15182,6 +15210,30 @@ def _evidence_wiki_find_content_revision(
         if revision and str(item.get("revision") or "") == revision:
             return item
     return None
+
+
+def _evidence_wiki_content_review_payload(metadata: dict[str, Any]) -> dict[str, Any]:
+    current_revision = _int_value(metadata.get("wiki_content_revision"), fallback=0)
+    raw_published_revision = metadata.get("wiki_published_content_revision")
+    published_revision = _int_value(raw_published_revision, fallback=current_revision if raw_published_revision is None else 0)
+    status = str(metadata.get("wiki_content_review_status") or "").strip().lower()
+    if status not in {"draft", "needs_review", "published"}:
+        status = "needs_review" if current_revision and current_revision != published_revision else "published"
+    needs_review = status == "needs_review" or bool(current_revision and current_revision != published_revision and status == "published")
+    if needs_review:
+        status = "needs_review"
+    reason = str(metadata.get("wiki_content_review_reason") or "").strip()
+    if not reason:
+        reason = "content_changed_after_publish" if needs_review else ("draft_page" if status == "draft" else "published_revision_current")
+    return {
+        "status": status,
+        "needs_review": needs_review,
+        "current_revision": current_revision,
+        "published_revision": published_revision,
+        "reason": reason,
+        "updated_at": metadata.get("wiki_content_updated_at"),
+        "published_at": metadata.get("wiki_content_reviewed_at") or metadata.get("publish_updated_at"),
+    }
 
 
 def _evidence_wiki_review_gate(store: Any, board: Any, *, tenant_id: str, owner_user_id: str) -> dict[str, Any]:

@@ -468,13 +468,16 @@ async function expectEvidenceBriefLibrary(page: Page, briefTitle: string, expect
   await expect(wikiPage.getByTestId("writing-brief-wiki-page-open")).toBeVisible();
   const editedWikiBody = `Edited Wiki page body for ${expected.marker}: ${expected.alphaSecret}`;
   const contentEditor = wikiPage.getByTestId("writing-brief-wiki-content-editor");
+  await expect(wikiPage.getByTestId("writing-brief-wiki-content-review-status")).toContainText("已同步发布");
   await contentEditor.getByTestId("writing-brief-wiki-content-body").fill(editedWikiBody);
   await contentEditor.getByRole("button", { name: /保存页面/ }).click();
   await expect(wikiPage.getByTestId("writing-brief-wiki-page-body")).toContainText(editedWikiBody, { timeout: 45_000 });
+  await expect(wikiPage.getByTestId("writing-brief-wiki-content-review-status")).toContainText("待更新发布", { timeout: 45_000 });
   const secondWikiBody = `Second Wiki page body for ${expected.marker}: ${expected.alphaSecret}`;
   await contentEditor.getByTestId("writing-brief-wiki-content-body").fill(secondWikiBody);
   await contentEditor.getByRole("button", { name: /保存页面/ }).click();
   await expect(wikiPage.getByTestId("writing-brief-wiki-page-body")).toContainText(secondWikiBody, { timeout: 45_000 });
+  await expect(wikiPage.getByTestId("writing-brief-wiki-content-review-status")).toContainText("待更新发布", { timeout: 45_000 });
   await wikiPage
     .getByTestId("writing-brief-wiki-revision")
     .filter({ hasText: `Edited Wiki page body for ${expected.marker}` })
@@ -482,6 +485,9 @@ async function expectEvidenceBriefLibrary(page: Page, briefTitle: string, expect
     .getByTestId("writing-brief-wiki-revision-restore")
     .click();
   await expect(wikiPage.getByTestId("writing-brief-wiki-page-body")).toContainText(editedWikiBody, { timeout: 45_000 });
+  await expect(wikiPage.getByTestId("writing-brief-wiki-content-review-status")).toContainText("待更新发布", { timeout: 45_000 });
+  await wikiPage.getByTestId("writing-brief-wiki-content-publish").click();
+  await expect(wikiPage.getByTestId("writing-brief-wiki-content-review-status")).toContainText("已同步发布", { timeout: 45_000 });
   const taxonomyTag = `wiki-${expected.marker}`;
   const taxonomyEditor = wikiPage.getByTestId("writing-brief-wiki-taxonomy-editor");
   await taxonomyEditor.getByTestId("writing-brief-wiki-taxonomy-tags").fill(taxonomyTag);

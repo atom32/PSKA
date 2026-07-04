@@ -136,6 +136,7 @@ import type {
   ConsoleSourcesResponse,
   DigestNowResponse,
   DigestLogsResponse,
+  EvidenceWikiContentReview,
   EvidenceWikiContentRevision,
   EvidenceWikiTaxonomy,
   EvidenceWikiTaxonomyFacet,
@@ -8204,6 +8205,28 @@ function evidenceBriefPublishLabel(status: EvidenceBriefPublishStatus) {
   return status === "published" ? "已发布到 Wiki" : "Wiki 草稿";
 }
 
+function evidenceWikiContentReviewStatus(review?: EvidenceWikiContentReview): "draft" | "needs_review" | "published" {
+  const status = displayText(review?.status, "").toLowerCase();
+  if (review?.needs_review || status === "needs_review") {
+    return "needs_review";
+  }
+  if (status === "draft") {
+    return "draft";
+  }
+  return "published";
+}
+
+function evidenceWikiContentReviewLabel(review?: EvidenceWikiContentReview) {
+  const status = evidenceWikiContentReviewStatus(review);
+  if (status === "needs_review") {
+    return "待更新发布";
+  }
+  if (status === "draft") {
+    return "草稿内容";
+  }
+  return "已同步发布";
+}
+
 function evidenceBriefStringList(value: unknown): string[] {
   if (Array.isArray(value)) {
     return value.filter((item): item is string => typeof item === "string" && item.length > 0);
@@ -9281,6 +9304,11 @@ function EvidenceBriefLibrary({
   const wikiPageRefs = wikiPage?.source_refs || [];
   const wikiRelatedPages = wikiPage?.related_pages || [];
   const wikiContentRevisions = wikiPage?.content_revisions || [];
+  const wikiContentReview = wikiPage?.content_review;
+  const wikiContentReviewStatus = evidenceWikiContentReviewStatus(wikiContentReview);
+  const wikiContentNeedsPublish = wikiContentReviewStatus === "needs_review";
+  const wikiPageBoard = wikiPageQuery.data?.board || boards.find((item) => item.board_id === selectedWikiPageBoardId) || selectedBrief;
+  const wikiPageBusy = Boolean(wikiPageBoard && busyBoardId === wikiPageBoard.board_id);
   const wikiResults = wikiSearchQuery.data?.results || [];
   const wikiTaxonomyFacetItems = evidenceWikiTaxonomyFacets(wikiSearchQuery.data?.taxonomy_facets);
 
@@ -9579,7 +9607,24 @@ function EvidenceBriefLibrary({
                 </label>
                 <div className="writing-brief-wiki-content-editor-actions">
                   {wikiPage.wiki_content_updated_at ? <small>修订 {wikiPage.wiki_content_revision || 0} · {formatReviewDate(wikiPage.wiki_content_updated_at)}</small> : null}
+                  <span
+                    className={`writing-brief-wiki-content-review ${wikiContentReviewStatus}`}
+                    data-testid="writing-brief-wiki-content-review-status"
+                  >
+                    {evidenceWikiContentReviewLabel(wikiContentReview)}
+                  </span>
                   {wikiContentStatus ? <small>{wikiContentStatus}</small> : null}
+                  {wikiContentNeedsPublish ? (
+                    <button
+                      type="button"
+                      disabled={!wikiPageBoard || wikiPageBusy}
+                      onClick={() => wikiPageBoard && handlePublishChange(wikiPageBoard, "published")}
+                      data-testid="writing-brief-wiki-content-publish"
+                    >
+                      <CheckCircle2 size={13} />
+                      {wikiPageBusy ? "发布中" : "更新发布"}
+                    </button>
+                  ) : null}
                   <button type="submit" disabled={wikiContentSaving}>
                     <FileText size={13} />
                     {wikiContentSaving ? "保存中" : "保存页面"}

@@ -142,6 +142,7 @@ export type EvidenceWikiSearchResult = {
   published_at?: string | null;
   access?: Record<string, unknown>;
   taxonomy?: EvidenceWikiTaxonomy;
+  content_review?: EvidenceWikiContentReview;
 };
 
 export type EvidenceWikiTaxonomy = {
@@ -168,6 +169,16 @@ export type EvidenceWikiContentRevision = {
   restored_from_revision_id?: string;
 };
 
+export type EvidenceWikiContentReview = {
+  status?: "draft" | "needs_review" | "published" | string;
+  needs_review?: boolean;
+  current_revision?: number;
+  published_revision?: number;
+  reason?: string;
+  updated_at?: string | null;
+  published_at?: string | null;
+};
+
 export type EvidenceWikiSearchResponse = {
   ok?: boolean;
   query?: string;
@@ -189,6 +200,7 @@ export type EvidenceWikiPage = {
   wiki_content_revision?: number;
   content_revision_count?: number;
   content_revisions?: EvidenceWikiContentRevision[];
+  content_review?: EvidenceWikiContentReview;
   published_at?: string | null;
   publish_updated_at?: string | null;
   status?: string;

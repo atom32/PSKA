@@ -2988,6 +2988,10 @@ def test_evidence_brief_creates_writing_draft_with_lineage_and_refs() -> None:
     assert content_update["page"]["summary"] == "Edited citation governance summary."
     assert "Edited Evidence Wiki page copy" in content_update["page"]["body_markdown"]
     assert content_update["page"]["content_revisions"][0]["revision"] == 1
+    assert content_update["page"]["content_review"]["status"] == "needs_review"
+    assert content_update["page"]["content_review"]["needs_review"] is True
+    assert content_update["page"]["content_review"]["current_revision"] == 1
+    assert content_update["page"]["content_review"]["published_revision"] == 0
     second_content_update = api.workspace_evidence_wiki_update_content(
         board["board_id"],
         {
@@ -2998,6 +3002,8 @@ def test_evidence_brief_creates_writing_draft_with_lineage_and_refs() -> None:
     )
     assert second_content_update["ok"] is True
     assert second_content_update["page"]["wiki_content_revision"] == 2
+    assert second_content_update["page"]["content_review"]["status"] == "needs_review"
+    assert second_content_update["page"]["content_review"]["current_revision"] == 2
     assert "Second Evidence Wiki page copy" in second_content_update["page"]["body_markdown"]
     restored_content = api.workspace_evidence_wiki_restore_content(
         board["board_id"],
@@ -3007,6 +3013,8 @@ def test_evidence_brief_creates_writing_draft_with_lineage_and_refs() -> None:
     assert restored_content["ok"] is True
     assert restored_content["page"]["wiki_content_revision"] == 3
     assert restored_content["page"]["content_revision_count"] == 3
+    assert restored_content["page"]["content_review"]["status"] == "needs_review"
+    assert restored_content["page"]["content_review"]["current_revision"] == 3
     assert restored_content["page"]["content_revisions"][0]["restored_from_revision_id"] == content_update["page"]["content_revisions"][0]["revision_id"]
     assert "Edited Evidence Wiki page copy" in restored_content["page"]["body_markdown"]
     search = api.workspace_evidence_wiki_search(
@@ -3023,6 +3031,11 @@ def test_evidence_brief_creates_writing_draft_with_lineage_and_refs() -> None:
     assert search["results"][0]["source_refs"][0]["source_item_id"] == source.source_item_id
     assert search["results"][0]["access"] == {"visibility": "owner", "tenant_id": "tenant_a", "owner_user_id": "user_primary"}
     assert search["results"][0]["taxonomy"]["tags"] == ["citation", "source grounded"]
+    assert search["results"][0]["content_review"]["status"] == "needs_review"
+    republished = api.workspace_evidence_wiki_publish({"board_id": board["board_id"], "publish_status": "published"}, context=context)
+    assert republished["ok"] is True
+    assert republished["board"]["metadata"]["wiki_published_content_revision"] == 3
+    assert republished["board"]["metadata"]["wiki_content_review_status"] == "published"
     tagged_search = api.workspace_evidence_wiki_search(
         {
             "query": "",
@@ -3033,6 +3046,8 @@ def test_evidence_brief_creates_writing_draft_with_lineage_and_refs() -> None:
     )
     assert tagged_search["count"] == 1
     assert tagged_search["results"][0]["board"]["board_id"] == board["board_id"]
+    assert tagged_search["results"][0]["content_review"]["status"] == "published"
+    assert tagged_search["results"][0]["content_review"]["needs_review"] is False
     assert tagged_search["taxonomy_filters"] == {"tags": ["source grounded"]}
     assert tagged_search["taxonomy_facets"]["categories"][0] == {"value": "governance", "count": 1}
     assert api.workspace_evidence_wiki_search({"query": "", "tags": ["unrelated"]}, context=context)["results"] == []
@@ -3043,6 +3058,9 @@ def test_evidence_brief_creates_writing_draft_with_lineage_and_refs() -> None:
     assert page["ok"] is True
     assert page["page"]["board_id"] == board["board_id"]
     assert page["page"]["publish_status"] == "published"
+    assert page["page"]["content_review"]["status"] == "published"
+    assert page["page"]["content_review"]["current_revision"] == 3
+    assert page["page"]["content_review"]["published_revision"] == 3
     assert "Edited Evidence Wiki page copy" in page["page"]["body_markdown"]
     assert page["page"]["content_node_id"] == content_update["content_node"]["node_id"]
     assert page["page"]["source_refs"][0]["source_item_id"] == source.source_item_id
