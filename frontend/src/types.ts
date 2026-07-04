@@ -1292,6 +1292,7 @@ export type ReviewCenterItem = {
   apply_supported?: boolean;
   apply_ready?: boolean;
   can_apply_now?: boolean;
+  application_result?: ReviewApplicationResult;
 };
 
 export type ReviewCenterResponse = {
@@ -1305,19 +1306,21 @@ export type ReviewCenterResponse = {
   supports_single_item_actions?: boolean;
 };
 
+export type ReviewApplicationResult = {
+  applied?: boolean;
+  status?: string;
+  review_type?: string;
+  action?: string;
+  promotion_type?: string;
+  target_ids?: Record<string, string>;
+  source_refs?: Array<Record<string, unknown>>;
+  summary?: string;
+  metadata?: Record<string, unknown>;
+};
+
 export type ReviewActionResponse = {
   review_item?: ReviewCenterItem & { status?: string };
-  application_result?: {
-    applied?: boolean;
-    status?: string;
-    review_type?: string;
-    action?: string;
-    promotion_type?: string;
-    target_ids?: Record<string, string>;
-    source_refs?: Array<Record<string, unknown>>;
-    summary?: string;
-    metadata?: Record<string, unknown>;
-  };
+  application_result?: ReviewApplicationResult;
 };
 
 export type WorkspaceActivityType = "opened" | "edited" | "viewed" | "pinned";

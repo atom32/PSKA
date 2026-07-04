@@ -238,6 +238,13 @@ async function expectReviewCenterHealth(page: Page, fixture: ReviewHealthFixture
   await expect(appliedCard).toBeVisible({ timeout: 45_000 });
   await expect(appliedCard).toContainText(fixture.topic);
   await expect(appliedCard).toContainText(/Created graph relationship|已应用|applied/);
+  const openGraph = appliedCard.getByTestId("review-action-open-graph");
+  await expect(openGraph).toBeVisible();
+  await openGraph.click();
+  const graphInspector = page.locator(".graph-inspector").filter({ hasText: "shared_topic" }).first();
+  await expect(graphInspector).toBeVisible({ timeout: 60_000 });
+  await expect(graphInspector).toContainText(fixture.topic);
+  await expect(graphInspector.getByTestId("graph-citation-inspector")).toBeVisible();
 }
 
 async function openWorkspace(page: Page, label: string) {

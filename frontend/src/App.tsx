@@ -225,6 +225,7 @@ export default function App() {
   const [gatewayAuthenticated, setGatewayAuthenticated] = useState<boolean | null>(null);
   const [activeAskConversationId, setActiveAskConversationId] = useState("");
   const [targetWritingBoardId, setTargetWritingBoardId] = useState("");
+  const [graphFocusNodeId, setGraphFocusNodeId] = useState("");
   const activeMode: WorkspaceMode = mode === "document" || mode === "canvas" ? "writing" : mode;
 
   useEffect(() => {
@@ -423,6 +424,11 @@ export default function App() {
     setMode("writing");
   }
 
+  function openGraphNode(nodeId: string) {
+    setGraphFocusNodeId(nodeId);
+    setMode("graph");
+  }
+
   return (
     <main className={`app-shell ${leftCollapsed ? "left-collapsed" : ""} ${activeMode === "writing" ? "writing-mode" : ""} ${activeMode === "today" ? "today-mode" : ""}`}>
       <LeftSidebar
@@ -485,6 +491,7 @@ export default function App() {
             selectedKnowledgeBaseIds={selectedKnowledgeBaseIds}
             onPinCurrent={pinCurrentWorkspace}
             pinStatus={pinStatus}
+            onOpenGraphNode={openGraphNode}
           />
         ) : activeMode === "graph" ? (
           <GraphWorkspace
@@ -495,6 +502,8 @@ export default function App() {
             onPinCurrent={pinCurrentWorkspace}
             pinStatus={pinStatus}
             onOpenWriting={openWritingBoard}
+            focusNodeId={graphFocusNodeId}
+            onFocusConsumed={() => setGraphFocusNodeId("")}
           />
         ) : activeMode === "corpus" ? (
           <CorpusWorkspace
@@ -1499,7 +1508,8 @@ function ReviewCenter({
   scopeMode,
   selectedKnowledgeBaseIds,
   onPinCurrent,
-  pinStatus
+  pinStatus,
+  onOpenGraphNode
 }: {
   serviceToken: PSKAAuth;
   currentKnowledgeBase?: KnowledgeBase;
@@ -1507,6 +1517,7 @@ function ReviewCenter({
   selectedKnowledgeBaseIds: string[];
   onPinCurrent: () => void;
   pinStatus: "idle" | "saved" | "failed";
+  onOpenGraphNode?: (nodeId: string) => void;
 }) {
   const [status, setStatus] = useState("pending");
   const [actions, setActions] = useState<Record<string, ReviewActionState>>({});
@@ -1604,6 +1615,8 @@ function ReviewCenter({
             const proposalSummary = reviewProposalSummary(item);
             const knowledgeBaseLabel = knowledgeBaseLineageLabel(item);
             const evidenceHealth = reviewItemEvidenceHealth(item);
+            const graphTargetNodeId = reviewAppliedGraphNodeId(item);
+            const actionSummary = actions[item.review_item_id] || item.application_result?.summary || item.status || "pending";
             return (
             <article className="review-center-item" key={item.review_item_id}>
               <div className="review-item-main">
@@ -1678,7 +1691,7 @@ function ReviewCenter({
                 ) : null}
               </div>
               <div className="review-center-actions">
-                <small>{actions[item.review_item_id] || item.status || "pending"}</small>
+                <small>{actionSummary}</small>
                 {item.status === "pending" ? (
                   <>
                     <button data-testid="review-action-approve" type="button" onClick={() => runReviewAction(item, "approve")}>
@@ -1703,6 +1716,11 @@ function ReviewCenter({
                     应用
                   </button>
                 ) : null}
+                {graphTargetNodeId && onOpenGraphNode ? (
+                  <button data-testid="review-action-open-graph" type="button" onClick={() => onOpenGraphNode(graphTargetNodeId)}>
+                    在 Graph 查看
+                  </button>
+                ) : null}
               </div>
             </article>
             );
@@ -1724,6 +1742,21 @@ function reviewActionStatusLabel(action: "approve" | "approve_apply" | "reject" 
     return "已应用";
   }
   return action === "approve_apply" ? "已批准并应用" : "已批准";
+}
+
+function reviewAppliedGraphNodeId(item: ReviewCenterItem) {
+  const result = item.application_result;
+  const targetIds = result?.target_ids || {};
+  const metadata = result?.metadata || {};
+  const hyperedgeId = displayText(targetIds.created_hyperedge_id || metadata.created_hyperedge_id, "");
+  if (!hyperedgeId || result?.applied === false) {
+    return "";
+  }
+  const promotionType = displayText(result?.promotion_type, "");
+  if (promotionType && promotionType !== "hyperedge") {
+    return "";
+  }
+  return graphHyperedgeNodeId(hyperedgeId);
 }
 
 function normalizeContinueItems(data?: TodayResponse): TodayContinueItem[] {
@@ -8628,7 +8661,9 @@ function GraphWorkspace({
   selectedKnowledgeBaseIds,
   onPinCurrent,
   pinStatus,
-  onOpenWriting
+  onOpenWriting,
+  focusNodeId,
+  onFocusConsumed
 }: {
   serviceToken: PSKAAuth;
   currentKnowledgeBase?: KnowledgeBase;
@@ -8637,6 +8672,8 @@ function GraphWorkspace({
   onPinCurrent: () => void;
   pinStatus: "idle" | "saved" | "failed";
   onOpenWriting?: (boardId?: string) => void;
+  focusNodeId?: string;
+  onFocusConsumed?: () => void;
 }) {
   const [graphLimit, setGraphLimit] = useState(20);
   const [activeTypes, setActiveTypes] = useState(() => new Set(["source", "document", "passage", "claim", "digest", "fact", "hyperedge", "memory", "memory_suggestion", "action"]));
@@ -8683,6 +8720,57 @@ function GraphWorkspace({
     setExpandedGraph(null);
     setSelectedNodeId(null);
   }, [kbScopeKey]);
+
+  useEffect(() => {
+    if (!focusNodeId) {
+      return;
+    }
+    let cancelled = false;
+    const focusType = focusNodeId.split(":")[0];
+    if (focusType) {
+      setActiveTypes((current) => {
+        if (current.has(focusType)) {
+          return current;
+        }
+        const next = new Set(current);
+        next.add(focusType);
+        return next;
+      });
+    }
+    setSelectedNodeId(focusNodeId);
+    setNeighborhoodOnly(true);
+    setExpandStatus("loading");
+    setExpandError("");
+    loadGraphSubgraph(serviceToken, focusNodeId, 160, 1, [], kbScopedOptions)
+      .then((payload) => {
+        if (cancelled) {
+          return;
+        }
+        setExpandedGraph((current) => mergeGraphResponses(current, payload));
+        if (!(payload.nodes || []).some((node) => node.id === focusNodeId)) {
+          setExpandStatus("error");
+          setExpandError("Graph 节点暂未在当前范围内。");
+          return;
+        }
+        setSelectedNodeId(focusNodeId);
+        setExpandStatus("idle");
+      })
+      .catch((err) => {
+        if (cancelled) {
+          return;
+        }
+        setExpandStatus("error");
+        setExpandError(err instanceof Error ? err.message : "Graph 节点定位失败。");
+      })
+      .finally(() => {
+        if (!cancelled) {
+          onFocusConsumed?.();
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [focusNodeId, serviceToken, kbScopeKey]);
 
   function toggleType(type: string) {
     setActiveTypes((current) => {

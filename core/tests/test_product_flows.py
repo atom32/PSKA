@@ -735,12 +735,18 @@ def test_linking_digest_relationship_candidate_can_apply_to_hyperedge() -> None:
     applied_edges = list(api.store.hyperedges.values())
     applied_edge = next(edge for edge in applied_edges if edge.relation_type == "shared_topic")
     applied_members = [member for member in api.store.hyperedge_members if member.hyperedge_id == applied_edge.hyperedge_id]
+    applied_reviews = api.console_reviews(status="applied", owner_user_id="user_primary")
+    applied_review_item = next(item for item in applied_reviews["review_items"] if item["review_item_id"] == review_item["review_item_id"])
+    applied_graph = api.workspace_graph_subgraph(node_id=f"hyperedge:{applied_edge.hyperedge_id}", limit=80)
 
     assert review_item["proposal"]["relation_type"] == "shared_topic"
     assert len(review_item["proposal"]["members"]) >= 2
     assert applied_review.status == "applied"
     assert {ref.source_item_id for ref in applied_edge.source_refs} == {first, second}
     assert len(applied_members) >= 2
+    assert applied_review_item["application_result"]["promotion_type"] == "hyperedge"
+    assert applied_review_item["application_result"]["target_ids"]["created_hyperedge_id"] == applied_edge.hyperedge_id
+    assert any(node["id"] == f"hyperedge:{applied_edge.hyperedge_id}" for node in applied_graph["nodes"])
 
 
 def test_linking_digest_ignores_negated_topic_mentions() -> None:

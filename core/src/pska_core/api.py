@@ -1765,6 +1765,7 @@ class PSKAApi:
             status=status,
             owner_user_id=owner_user_id,
             limit=10_000,
+            store=self.store,
         )
         all_items = sorted(all_items, key=lambda item: str(item.get("created_at") or ""), reverse=True)
         if has_kb_scope:
@@ -6687,9 +6688,9 @@ def _console_recent_sources(source_items: list[Any], *, owner_user_id: str, limi
     ]
 
 
-def _console_review_items(items: list[dict[str, Any]], *, status: str, owner_user_id: str, limit: int) -> list[dict[str, Any]]:
+def _console_review_items(items: list[dict[str, Any]], *, status: str, owner_user_id: str, limit: int, store: Any | None = None) -> list[dict[str, Any]]:
     matching = [
-        _console_review_item(item)
+        _console_review_item(item, store=store)
         for item in items
         if (not status or item.get("status") == status)
         and (not owner_user_id or item.get("owner_user_id") == owner_user_id)
@@ -6697,7 +6698,7 @@ def _console_review_items(items: list[dict[str, Any]], *, status: str, owner_use
     return matching[: max(0, limit)]
 
 
-def _console_review_item(item: dict[str, Any]) -> dict[str, Any]:
+def _console_review_item(item: dict[str, Any], *, store: Any | None = None) -> dict[str, Any]:
     proposal = item.get("proposal") if isinstance(item.get("proposal"), dict) else {}
     review_type = _console_review_type(item.get("review_type"))
     source_refs = _console_review_source_refs(proposal)
@@ -6710,7 +6711,7 @@ def _console_review_item(item: dict[str, Any]) -> dict[str, Any]:
         actions.insert(1, "approve_apply")
     if status == "approved" and apply_ready:
         actions = ["apply"]
-    return {
+    payload = {
         "review_item_id": item.get("review_item_id"),
         "owner_user_id": item.get("owner_user_id"),
         "review_type": review_type,
@@ -6732,6 +6733,21 @@ def _console_review_item(item: dict[str, Any]) -> dict[str, Any]:
         "apply_ready": apply_ready,
         "can_apply_now": status == "approved" and apply_ready,
     }
+    application_result = _console_review_application_result(store, item) if store else None
+    if application_result:
+        payload["application_result"] = application_result
+    return payload
+
+
+def _console_review_application_result(store: Any, item: dict[str, Any]) -> dict[str, Any] | None:
+    review_item_id = str(item.get("review_item_id") or "")
+    if not review_item_id:
+        return None
+    try:
+        review_item = store.get_review_item(review_item_id)
+    except Exception:  # noqa: BLE001 - console data should still render if a stale item disappears.
+        return None
+    return _review_application_result(store, review_item)
 
 
 def _review_application_result(store: Any, review_item: ReviewItem) -> dict[str, Any]:
