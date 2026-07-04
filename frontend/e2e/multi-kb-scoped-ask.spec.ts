@@ -314,6 +314,13 @@ async function expectReviewBulkReject(page: Page, fixtures: ReviewHealthFixture[
     await reviewCard.getByTestId("review-select-item").check();
   }
   await expect(page.getByTestId("review-bulk-selection")).toContainText(`${fixtures.length} 已选择`);
+  const comparison = page.getByTestId("review-selection-comparison");
+  await expect(comparison).toBeVisible();
+  await expect(comparison.getByTestId("review-comparison-count")).toContainText(`${fixtures.length} 个候选`);
+  await expect(comparison.getByTestId("review-comparison-card")).toHaveCount(fixtures.length);
+  for (const fixture of fixtures) {
+    await expect(comparison).toContainText(fixture.topic);
+  }
   await expect(page.getByTestId("review-bulk-reject")).toBeEnabled();
   await page.getByTestId("review-bulk-reject").click();
   await expect(page.getByTestId("review-bulk-message")).toContainText(`已处理 ${fixtures.length}/${fixtures.length} 条`, { timeout: 60_000 });

@@ -1687,80 +1687,83 @@ function ReviewCenter({
       </div>
 
       {!reviewQuery.isLoading && !reviewQuery.isError && selectableItems.length ? (
-        <div className="review-bulkbar" data-testid="review-bulkbar">
-          <label className="review-select-all">
-            <input
-              data-testid="review-select-all"
-              type="checkbox"
-              checked={allSelectableSelected}
-              onChange={(event) => toggleSelectableItems(event.target.checked)}
-            />
-            <span>选择当前页</span>
-          </label>
-          <span data-testid="review-bulk-selection">{selectedItems.length} 已选择</span>
-          <div className="review-bulk-actions">
-            {status === "pending" ? (
-              <>
+        <>
+          <div className="review-bulkbar" data-testid="review-bulkbar">
+            <label className="review-select-all">
+              <input
+                data-testid="review-select-all"
+                type="checkbox"
+                checked={allSelectableSelected}
+                onChange={(event) => toggleSelectableItems(event.target.checked)}
+              />
+              <span>选择当前页</span>
+            </label>
+            <span data-testid="review-bulk-selection">{selectedItems.length} 已选择</span>
+            <div className="review-bulk-actions">
+              {status === "pending" ? (
+                <>
+                  <button
+                    data-testid="review-bulk-approve"
+                    type="button"
+                    disabled={!selectedItems.some((item) => reviewCanRunBulkAction(item, "approve"))}
+                    onClick={() => void runBulkReviewAction("approve")}
+                  >
+                    <CheckCircle2 size={14} />
+                    批量批准
+                  </button>
+                  <button
+                    className="danger"
+                    data-testid="review-bulk-reject"
+                    type="button"
+                    disabled={!selectedItems.some((item) => reviewCanRunBulkAction(item, "reject"))}
+                    onClick={() => void runBulkReviewAction("reject")}
+                  >
+                    <X size={14} />
+                    批量拒绝
+                  </button>
+                  <button
+                    data-testid="review-bulk-snooze"
+                    type="button"
+                    disabled={!selectedItems.some((item) => reviewCanRunBulkAction(item, "snooze"))}
+                    onClick={() => void runBulkReviewAction("snooze")}
+                  >
+                    <CalendarDays size={14} />
+                    批量稍后
+                  </button>
+                </>
+              ) : null}
+              {status === "snoozed" ? (
                 <button
-                  data-testid="review-bulk-approve"
+                  className="primary"
+                  data-testid="review-bulk-restore"
                   type="button"
-                  disabled={!selectedItems.some((item) => reviewCanRunBulkAction(item, "approve"))}
-                  onClick={() => void runBulkReviewAction("approve")}
+                  disabled={!selectedItems.some((item) => reviewCanRunBulkAction(item, "restore"))}
+                  onClick={() => void runBulkReviewAction("restore")}
+                >
+                  <RotateCcw size={14} />
+                  批量恢复
+                </button>
+              ) : null}
+              {status === "approved" ? (
+                <button
+                  className="primary"
+                  data-testid="review-bulk-apply"
+                  type="button"
+                  disabled={!selectedItems.some((item) => reviewCanRunBulkAction(item, "apply"))}
+                  onClick={() => void runBulkReviewAction("apply")}
                 >
                   <CheckCircle2 size={14} />
-                  批量批准
+                  批量应用
                 </button>
-                <button
-                  className="danger"
-                  data-testid="review-bulk-reject"
-                  type="button"
-                  disabled={!selectedItems.some((item) => reviewCanRunBulkAction(item, "reject"))}
-                  onClick={() => void runBulkReviewAction("reject")}
-                >
-                  <X size={14} />
-                  批量拒绝
-                </button>
-                <button
-                  data-testid="review-bulk-snooze"
-                  type="button"
-                  disabled={!selectedItems.some((item) => reviewCanRunBulkAction(item, "snooze"))}
-                  onClick={() => void runBulkReviewAction("snooze")}
-                >
-                  <CalendarDays size={14} />
-                  批量稍后
-                </button>
-              </>
-            ) : null}
-            {status === "snoozed" ? (
-              <button
-                className="primary"
-                data-testid="review-bulk-restore"
-                type="button"
-                disabled={!selectedItems.some((item) => reviewCanRunBulkAction(item, "restore"))}
-                onClick={() => void runBulkReviewAction("restore")}
-              >
-                <RotateCcw size={14} />
-                批量恢复
+              ) : null}
+              <button data-testid="review-bulk-clear" type="button" disabled={!selectedItems.length} onClick={() => setSelectedReviewIds(new Set())}>
+                清除
               </button>
-            ) : null}
-            {status === "approved" ? (
-              <button
-                className="primary"
-                data-testid="review-bulk-apply"
-                type="button"
-                disabled={!selectedItems.some((item) => reviewCanRunBulkAction(item, "apply"))}
-                onClick={() => void runBulkReviewAction("apply")}
-              >
-                <CheckCircle2 size={14} />
-                批量应用
-              </button>
-            ) : null}
-            <button data-testid="review-bulk-clear" type="button" disabled={!selectedItems.length} onClick={() => setSelectedReviewIds(new Set())}>
-              清除
-            </button>
+            </div>
+            {bulkMessage ? <small data-testid="review-bulk-message">{bulkMessage}</small> : null}
           </div>
-          {bulkMessage ? <small data-testid="review-bulk-message">{bulkMessage}</small> : null}
-        </div>
+          <ReviewSelectionComparison items={selectedItems} />
+        </>
       ) : null}
 
       {reviewQuery.isError ? (
@@ -1945,6 +1948,81 @@ function reviewActionStatusLabel(action: ReviewAction) {
   return "已批准";
 }
 
+function ReviewSelectionComparison({ items }: { items: ReviewCenterItem[] }) {
+  if (items.length < 2) {
+    return null;
+  }
+  const visibleItems = items.slice(0, 4);
+  const sharedSourceItemIds = reviewSharedSourceItemIds(visibleItems);
+  return (
+    <section className="review-selection-comparison" data-testid="review-selection-comparison">
+      <div className="review-selection-comparison-header">
+        <div>
+          <strong>候选对照</strong>
+          <small data-testid="review-comparison-count">{items.length} 个候选 · 共享证据 {sharedSourceItemIds.length}</small>
+        </div>
+        {sharedSourceItemIds.length ? (
+          <div className="review-comparison-shared" aria-label="共享证据">
+            {sharedSourceItemIds.slice(0, 3).map((sourceItemId) => <code key={sourceItemId}>{sourceItemId}</code>)}
+          </div>
+        ) : (
+          <small>这些候选暂未共享相同 source_item_id。</small>
+        )}
+      </div>
+      <div className="review-comparison-grid">
+        {visibleItems.map((item) => {
+          const evidenceHealth = reviewItemEvidenceHealth(item);
+          const supportBasis = reviewSupportBasis(item).slice(0, 4);
+          const sourceItemIds = reviewSourceItemIds(item);
+          return (
+            <article className="review-comparison-card" data-testid="review-comparison-card" key={`compare-${item.review_item_id}`}>
+              <h3>{displayText(item.title, item.review_item_id)}</h3>
+              <div className="review-comparison-metrics">
+                <span>
+                  <strong>{confidenceLabel(item.confidence)}</strong>
+                  <small>置信度</small>
+                </span>
+                <span>
+                  <strong>{item.source_refs?.length || 0}</strong>
+                  <small>引用</small>
+                </span>
+                <span>
+                  <strong>{sourceItemIds.length}</strong>
+                  <small>source</small>
+                </span>
+              </div>
+              <dl>
+                <div>
+                  <dt>状态</dt>
+                  <dd>{statusLabel(item.status || "pending")}</dd>
+                </div>
+                <div>
+                  <dt>建议</dt>
+                  <dd>{recommendedActionLabel(item.recommended_action)}</dd>
+                </div>
+                <div>
+                  <dt>证据健康</dt>
+                  <dd>{evidenceHealth ? evidenceHealth.label : "未标注"}</dd>
+                </div>
+                <div>
+                  <dt>知识库</dt>
+                  <dd>{knowledgeBaseLineageLabel(item) || "当前范围"}</dd>
+                </div>
+              </dl>
+              {supportBasis.length ? (
+                <div className="review-comparison-support">
+                  {supportBasis.map((basis) => <code key={`${item.review_item_id}-${basis}`}>{basis}</code>)}
+                </div>
+              ) : null}
+            </article>
+          );
+        })}
+      </div>
+      {items.length > visibleItems.length ? <small>已显示前 {visibleItems.length} 个候选，其余仍会参与批量动作。</small> : null}
+    </section>
+  );
+}
+
 function ReviewApplicationLineage({ item }: { item: ReviewCenterItem }) {
   const result = item.application_result;
   if (!result || result.applied !== true) {
@@ -2070,6 +2148,24 @@ function reviewEvidenceResult(item: ReviewCenterItem): WorkspaceSearchResponse {
       knowledge_base_ids: knowledgeBaseIds
     }
   };
+}
+
+function reviewSourceItemIds(item: ReviewCenterItem) {
+  return Array.from(
+    new Set(
+      (item.source_refs || [])
+        .map((ref) => displayText(ref.source_item_id, ""))
+        .filter(Boolean)
+    )
+  );
+}
+
+function reviewSharedSourceItemIds(items: ReviewCenterItem[]) {
+  if (!items.length) {
+    return [];
+  }
+  const [first, ...rest] = items.map((item) => reviewSourceItemIds(item));
+  return first.filter((sourceItemId) => rest.every((sourceItemIds) => sourceItemIds.includes(sourceItemId)));
 }
 
 function reviewBulkSelectable(item: ReviewCenterItem, status: string) {
