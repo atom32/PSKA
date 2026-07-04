@@ -79,6 +79,7 @@ test("browser session scoped Ask does not leak citations across knowledge bases"
     await expectKnowledgeBaseScopeMenuSearch(page, alpha, beta);
     await expectTodayReviewHealth(page, reviewFixture);
     await expectKnowledgeBaseReadinessPanel(page, alpha.name);
+    await expectKnowledgeBaseDetailTabs(page);
     await openWorkspace(page, "Today");
 
     const snoozeReviewFixture = await createReviewHealthFixture(page, alpha.knowledge_base_id, marker, createdSourceItemIds);
@@ -253,6 +254,35 @@ async function expectKnowledgeBaseReadinessPanel(page: Page, knowledgeBaseName: 
   await expect(panel).toContainText("索引");
   await expect(panel).toContainText("最近同步");
   await expect(panel.getByTestId("knowledge-base-readiness-reason")).toContainText(/检索|处理|索引|资料/);
+}
+
+async function expectKnowledgeBaseDetailTabs(page: Page) {
+  await openWorkspace(page, "资料库");
+  const tabs = page.getByTestId("knowledge-base-detail-tabs");
+  await expect(tabs).toContainText("资料");
+  await expect(tabs).toContainText("Ask");
+  await expect(tabs).toContainText("处理");
+  await expect(tabs).toContainText("Digest");
+  await expect(tabs).toContainText("设置");
+  await expect(page.getByTestId("corpus-search-input")).toBeVisible();
+
+  await page.getByTestId("knowledge-base-tab-ask").click();
+  await expect(page.getByTestId("knowledge-base-search-input")).toBeVisible();
+  await expect(page.locator(".kb-search-panel")).toContainText("证据搜索");
+
+  await page.getByTestId("knowledge-base-tab-processing").click();
+  await expect(page.locator(".chunk-preview-surface")).toBeVisible();
+  await expect(page.locator(".corpus-advanced-details")).toBeVisible();
+
+  await page.getByTestId("knowledge-base-tab-digest").click();
+  await expect(page.locator(".digest-log-panel")).toBeVisible();
+
+  await page.getByTestId("knowledge-base-tab-settings").click();
+  await expect(page.locator(".kb-manage-strip")).toBeVisible();
+  await expect(page.locator(".prompt-profile-panel")).toBeVisible();
+
+  await page.getByTestId("knowledge-base-tab-sources").click();
+  await expect(page.getByTestId("corpus-search-input")).toBeVisible();
 }
 
 async function expectReviewCenterHealth(page: Page, fixture: ReviewHealthFixture) {

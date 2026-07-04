@@ -5645,6 +5645,16 @@ function SectionTitle({ icon, title, subtitle }: { icon: JSX.Element; title: str
   );
 }
 
+type KnowledgeBaseDetailTab = "sources" | "ask" | "processing" | "digest" | "settings";
+
+const KNOWLEDGE_BASE_DETAIL_TABS: Array<{ id: KnowledgeBaseDetailTab; label: string }> = [
+  { id: "sources", label: "资料" },
+  { id: "ask", label: "Ask" },
+  { id: "processing", label: "处理" },
+  { id: "digest", label: "Digest" },
+  { id: "settings", label: "设置" }
+];
+
 function CorpusWorkspace({
   serviceToken,
   knowledgeBases,
@@ -5675,6 +5685,7 @@ function CorpusWorkspace({
   const [knowledgeBaseDraftName, setKnowledgeBaseDraftName] = useState("");
   const [knowledgeBaseDraftDescription, setKnowledgeBaseDraftDescription] = useState("");
   const [knowledgeBaseArchiveConfirm, setKnowledgeBaseArchiveConfirm] = useState(false);
+  const [knowledgeBaseTab, setKnowledgeBaseTab] = useState<KnowledgeBaseDetailTab>("sources");
   const [uploadDigestAfter, setUploadDigestAfter] = useState(true);
   const [uploadProgress, setUploadProgress] = useState<CorpusUploadProgress>({ phase: "idle" });
   const [documentDeletePreview, setDocumentDeletePreview] = useState<WorkspaceDocumentDeleteResponse | null>(null);
@@ -5791,6 +5802,7 @@ function CorpusWorkspace({
   };
   const actionRunning = operationStatus === "syncing" || operationStatus === "digesting" || operationStatus === "cleaning" || operationStatus === "briefing";
   const statusMessage = operationMessage || latestSyncMessage(sourceSummary);
+  const showCorpusDataPanels = knowledgeBaseTab === "sources" || knowledgeBaseTab === "processing" || knowledgeBaseTab === "digest";
 
   useEffect(() => {
     if (corpus) {
@@ -6521,7 +6533,23 @@ function CorpusWorkspace({
         <button type="submit" disabled={actionRunning || !newKnowledgeBaseName.trim()}>新建</button>
       </form>
 
-      {currentKnowledgeBase ? (
+      <div className="kb-detail-tabs" role="tablist" aria-label="知识库详情视图" data-testid="knowledge-base-detail-tabs">
+        {KNOWLEDGE_BASE_DETAIL_TABS.map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            role="tab"
+            aria-selected={knowledgeBaseTab === tab.id}
+            className={knowledgeBaseTab === tab.id ? "active" : ""}
+            onClick={() => setKnowledgeBaseTab(tab.id)}
+            data-testid={`knowledge-base-tab-${tab.id}`}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {knowledgeBaseTab === "settings" && currentKnowledgeBase ? (
         editingKnowledgeBase ? (
           <form className="kb-manage-strip editing" onSubmit={handleSaveKnowledgeBase}>
             <Settings2 size={16} />
@@ -6577,7 +6605,7 @@ function CorpusWorkspace({
         )
       ) : null}
 
-      {archivedKnowledgeBases.length > 0 || archivedKnowledgeBasesQuery.isLoading ? (
+      {knowledgeBaseTab === "settings" && (archivedKnowledgeBases.length > 0 || archivedKnowledgeBasesQuery.isLoading) ? (
         <details className="kb-archive-strip">
           <summary>
             <RotateCcw size={16} />
@@ -6640,20 +6668,23 @@ function CorpusWorkspace({
         ) : null}
       </div>
 
-      <UnderstandingSummary payload={digestLogs} />
+      {knowledgeBaseTab === "digest" ? <UnderstandingSummary payload={digestLogs} /> : null}
 
-      <KnowledgeBaseSearchPanel
-        query={knowledgeBaseSearchQuery}
-        status={knowledgeBaseSearchStatus}
-        error={knowledgeBaseSearchError}
-        result={knowledgeBaseSearchResult}
-        currentKnowledgeBaseName={currentKnowledgeBase?.name || "当前知识库"}
-        currentKnowledgeBaseReadyLabel={readinessPill.label}
-        disabled={!currentKnowledgeBaseId}
-        onQueryChange={setKnowledgeBaseSearchQuery}
-        onSubmit={handleKnowledgeBaseSearch}
-      />
+      {knowledgeBaseTab === "ask" ? (
+        <KnowledgeBaseSearchPanel
+          query={knowledgeBaseSearchQuery}
+          status={knowledgeBaseSearchStatus}
+          error={knowledgeBaseSearchError}
+          result={knowledgeBaseSearchResult}
+          currentKnowledgeBaseName={currentKnowledgeBase?.name || "当前知识库"}
+          currentKnowledgeBaseReadyLabel={readinessPill.label}
+          disabled={!currentKnowledgeBaseId}
+          onQueryChange={setKnowledgeBaseSearchQuery}
+          onSubmit={handleKnowledgeBaseSearch}
+        />
+      ) : null}
 
+      {knowledgeBaseTab === "sources" ? (
       <div className="product-flow-grid">
         <SourceIngestPanel
           targetKnowledgeBaseName={currentKnowledgeBase?.name || "当前知识库"}
@@ -6669,6 +6700,11 @@ function CorpusWorkspace({
           onTextSubmit={handleCreateTextSource}
           onUploadSubmit={handleUploadSource}
         />
+      </div>
+      ) : null}
+
+      {knowledgeBaseTab === "settings" ? (
+      <div className="product-flow-grid single">
         <PromptProfilePanel
           promptAsk={promptAsk}
           promptDigest={promptDigest}
@@ -6684,12 +6720,16 @@ function CorpusWorkspace({
           onSave={handleSavePromptProfiles}
         />
       </div>
+      ) : null}
 
+      {knowledgeBaseTab === "ask" ? (
       <button className="floating-ask-bubble" type="button" onClick={() => onOpenWorkspace("today")} title="回到 Today 提问">
         <MessageCircle size={18} />
         Ask
       </button>
+      ) : null}
 
+      {knowledgeBaseTab === "processing" ? (
       <section className="today-section chunk-preview-surface">
         <SectionTitle icon={<TextCursorInput size={18} />} title="Chunk Preview" subtitle="处理配置调试" />
         <form className="chunk-preview-form" onSubmit={handleChunkPreview}>
@@ -6727,7 +6767,10 @@ function CorpusWorkspace({
         {chunkPreviewError ? <div className="review-empty error-state compact">{chunkPreviewError}</div> : null}
         <ChunkPreviewPanel payload={chunkPreviewResult} />
       </section>
+      ) : null}
 
+      {knowledgeBaseTab === "sources" ? (
+      <>
       <div className="corpus-tools">
         <label>
           <Search size={16} />
@@ -6753,13 +6796,17 @@ function CorpusWorkspace({
         onRestore={(sourceItemId) => void handleDocumentLifecycle(sourceItemId, true, true)}
         onPurge={(sourceItemId) => void handleDocumentLifecycle(sourceItemId, true, false, true)}
       />
+      </>
+      ) : null}
 
-      {corpusQuery.isError || sourcesQuery.isError ? (
+      {showCorpusDataPanels ? (
+      corpusQuery.isError || sourcesQuery.isError ? (
         <div className="review-empty error-state">资料库无法完整加载。请检查 8765 后端、数据库或服务令牌。</div>
       ) : corpusQuery.isLoading && sourcesQuery.isLoading ? (
         <div className="review-empty">正在加载真实资料库...</div>
       ) : (
         <div className="corpus-workspace-grid">
+          {knowledgeBaseTab === "sources" ? (
           <section className="corpus-panel corpus-chunk-panel">
             <SectionTitle icon={<TextCursorInput size={18} />} title="可检索片段" subtitle={`${filteredChunks.length} 个片段`} />
             {filteredChunks.length === 0 ? (
@@ -6778,8 +6825,10 @@ function CorpusWorkspace({
               </div>
             )}
           </section>
+          ) : null}
 
-          <details className="corpus-panel connector-panel corpus-advanced-details">
+          {knowledgeBaseTab === "processing" ? (
+          <details className="corpus-panel connector-panel corpus-advanced-details" open>
             <summary>
               <span>高级同步</span>
               <small>URL/RSS 与管理员同步状态</small>
@@ -6816,7 +6865,9 @@ function CorpusWorkspace({
               onConfirmCleanup={(knowledgeSourceId) => void handleCleanupKnowledgeSource(knowledgeSourceId, true)}
             />
           </details>
+          ) : null}
 
+          {knowledgeBaseTab === "digest" ? (
           <section className="corpus-panel digest-log-panel">
             <SectionTitle icon={<Sparkles size={18} />} title="Digest 任务日志" subtitle={`${digestLogs?.count ?? 0} 次最近理解任务`} />
             <DigestLogPanel
@@ -6829,8 +6880,10 @@ function CorpusWorkspace({
               onCreateBrief={(jobId) => void handleCreateEvidenceBrief(jobId)}
             />
           </section>
+          ) : null}
         </div>
-      )}
+      )
+      ) : null}
     </section>
   );
 }
