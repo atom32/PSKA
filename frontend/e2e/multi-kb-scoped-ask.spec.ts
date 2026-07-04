@@ -6,7 +6,6 @@ const frontendUrl = (process.env.PSKA_E2E_FRONTEND_URL || "http://127.0.0.1:5173
 const authnodeUrl = (process.env.PSKA_E2E_AUTHNODE_URL || "http://127.0.0.1:8788").replace(/\/$/, "");
 const tenantId = process.env.PSKA_E2E_TENANT_ID || "tenant_graphintell";
 const userId = process.env.PSKA_E2E_USER_ID || "test_user";
-const password = resolvePassword();
 
 type KnowledgeBase = {
   knowledge_base_id: string;
@@ -87,6 +86,12 @@ test("browser session scoped Ask does not leak citations across knowledge bases"
     expect(evidenceJson).not.toContain(betaSourceItemId);
     expect(evidenceJson).not.toContain(beta.knowledge_base_id);
     expect(evidenceJson).not.toContain(betaSecret);
+
+    await askViaBrowserComposer(page, query, {
+      alphaSecret,
+      betaSecret,
+      alphaSourceItemId
+    });
   } finally {
     await cleanupFixtures(page, createdSourceItemIds, createdKnowledgeBaseIds);
     cleanupDatabaseResidue(marker);
@@ -98,7 +103,7 @@ async function authnodeCallbackUrl(request: APIRequestContext) {
     form: {
       username: userId,
       tenant_id: tenantId,
-      password,
+      password: resolvePassword(),
       target: "pska",
       return_to: `${frontendUrl}/auth/callback`,
       next: "/"
@@ -187,6 +192,22 @@ async function askViaBrowserSession(page: Page, query: string, knowledgeBaseId: 
   });
 }
 
+async function askViaBrowserComposer(
+  page: Page,
+  query: string,
+  expected: { alphaSecret: string; betaSecret: string; alphaSourceItemId: string }
+) {
+  await page.getByTestId("today-ask-input").fill(query);
+  await page.getByTestId("today-ask-submit").click();
+  const result = page.getByTestId("ask-result").last();
+  await expect(result).toContainText(expected.alphaSecret, { timeout: 120_000 });
+  await expect(result).not.toContainText(expected.betaSecret);
+  await expect(page.getByTestId("ask-evidence-inspector").last()).toContainText(expected.alphaSecret);
+  await page.getByTestId("ask-from-evidence").last().click();
+  await expect(page.getByTestId("reader-focus-chip")).toBeVisible();
+  await expect(page.getByTestId("today-ask-input")).toHaveValue(new RegExp(escapeRegExp(expected.alphaSourceItemId)));
+}
+
 async function cleanupFixtures(page: Page, sourceItemIds: string[], knowledgeBaseIds: string[]) {
   if (sourceItemIds.length) {
     await api(page, "/workspace/documents/delete", {
@@ -268,6 +289,10 @@ select
 
 function sqlLiteral(value: string) {
   return `'${value.replace(/'/g, "''")}'`;
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function requireOne(values: string[] | undefined, label: string) {

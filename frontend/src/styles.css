@@ -937,6 +937,47 @@ button.context-item-main {
   white-space: nowrap;
 }
 
+.reader-focus-chip {
+  min-height: 34px;
+  max-width: 280px;
+  border: 1px solid rgba(35, 90, 77, 0.2);
+  border-radius: 7px;
+  background: #f6fbf7;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 6px 0 9px;
+  color: #235a4d;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.reader-focus-chip svg {
+  flex: 0 0 auto;
+}
+
+.reader-focus-chip button {
+  min-width: 24px;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: #235a4d;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  cursor: pointer;
+}
+
+.reader-focus-chip button:hover {
+  background: rgba(35, 90, 77, 0.1);
+}
+
 .ask-settings {
   position: relative;
 }
@@ -1364,6 +1405,14 @@ button.context-item-main {
   overflow-wrap: anywhere;
 }
 
+.evidence-window .evidence-range {
+  display: block;
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
 .evidence-window code,
 .evidence-window a {
   display: block;
@@ -1374,13 +1423,60 @@ button.context-item-main {
   overflow-wrap: anywhere;
 }
 
-.evidence-window p {
+.evidence-window .evidence-source-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  text-decoration: none;
+}
+
+.evidence-window .evidence-source-link span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.evidence-window blockquote {
   margin: 8px 0 0;
+  border-left: 3px solid rgba(35, 90, 77, 0.22);
+  border-radius: 4px;
+  background: #fffefa;
   color: var(--muted);
   font-size: 13px;
   line-height: 1.52;
+  max-height: 260px;
+  overflow: auto;
+  padding: 9px 10px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.evidence-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.evidence-actions button {
+  min-height: 32px;
+  border: 1px solid rgba(35, 90, 77, 0.22);
+  border-radius: 7px;
+  background: #f6fbf7;
+  color: #235a4d;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.evidence-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .ask-diagnostics-panel {

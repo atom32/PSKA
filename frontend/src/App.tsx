@@ -1030,7 +1030,9 @@ function TodayWorkspace({
   const [askMaxTokens, setAskMaxTokens] = useState(4096);
   const [askTopK, setAskTopK] = useState(8);
   const [forceDeepThinking, setForceDeepThinking] = useState(false);
+  const [readerFocusRef, setReaderFocusRef] = useState<SearchEvidenceRef | null>(null);
   const [rightRailCollapsed, setRightRailCollapsed] = useState(false);
+  const askInputRef = useRef<HTMLTextAreaElement | null>(null);
   const todayQuery = useQuery({
     queryKey: ["today", serviceToken],
     queryFn: () => loadToday(serviceToken),
@@ -1103,6 +1105,7 @@ function TodayWorkspace({
     setSearchError(null);
     setAttachmentFile(null);
     setAttachmentStatus("");
+    setReaderFocusRef(null);
   }, [activeConversationId, searching]);
 
   function mark(id: string, value: TodayAction) {
@@ -1141,7 +1144,9 @@ function TodayWorkspace({
     setSearchResult(latestAskResult);
     try {
       const askIntent = forceDeepThinking ? "deep" : "auto";
-      const askScope = knowledgeBaseAskScope(scopeMode, currentKnowledgeBase, selectedKnowledgeBaseIds);
+      const focusSourceItemIds = readerFocusRef?.source_item_id ? [readerFocusRef.source_item_id] : [];
+      const baseAskScope = knowledgeBaseAskScope(scopeMode, currentKnowledgeBase, selectedKnowledgeBaseIds);
+      const askScope = focusSourceItemIds.length ? { ...baseAskScope, source_item_ids: focusSourceItemIds } : baseAskScope;
       if (!conversationId) {
         const created = await createAskConversation(serviceToken, query.slice(0, 60), { scope: askScope });
         conversationId = created.conversation?.conversation_id || "";
@@ -1157,9 +1162,10 @@ function TodayWorkspace({
         const sourceItemIds = upload.source_item_ids || [];
         setAttachmentStatus(`${attachmentFile.name} 已加入资料库，并用于本次提问`);
         setAttachmentFile(null);
+        const scopedSourceItemIds = Array.from(new Set([...focusSourceItemIds, ...sourceItemIds]));
         const attachmentScope = {
           ...askScope,
-          ...(sourceItemIds.length ? { source_item_ids: sourceItemIds } : {})
+          ...(scopedSourceItemIds.length ? { source_item_ids: scopedSourceItemIds } : {})
         };
         const result = conversationId ? await askConversationStream(conversationId, query, serviceToken, updateLiveResult, { surface: "today", intent: askIntent, skipIntentClassifier: forceDeepThinking, topK: askTopK, temperature: askTemperature, maxTokens: askMaxTokens, sourceItemIds, scope: attachmentScope }) : await askWorkspaceStream(query, serviceToken, askIntent, "today", updateLiveResult, { topK: askTopK, scope: attachmentScope, skipIntentClassifier: forceDeepThinking });
         latestAskResult = result;
@@ -1187,7 +1193,14 @@ function TodayWorkspace({
       refreshAskConversationData(conversationId);
     } finally {
       setSearching(false);
+      setReaderFocusRef(null);
     }
+  }
+
+  function askFromEvidence(refItem: SearchEvidenceRef) {
+    setReaderFocusRef(refItem);
+    setSearchQuery(evidenceFollowupDraft(refItem));
+    setTimeout(() => askInputRef.current?.focus(), 0);
   }
 
   function handleTodayAskKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -1292,9 +1305,11 @@ function TodayWorkspace({
             liveQuery={submittedSearchQuery}
             liveResult={liveResultMatchesActive && (searching || !liveResultPersisted) ? searchResult : null}
             livePending={searching}
+            onAskFromEvidence={askFromEvidence}
             composer={(
               <form className="today-search-form today-chat-composer" onSubmit={runTodaySearch} data-testid="today-ask-form">
                 <textarea
+                  ref={askInputRef}
                   value={searchQuery}
                   onChange={(event) => setSearchQuery(event.target.value)}
                   onKeyDown={handleTodayAskKeyDown}
@@ -1312,6 +1327,15 @@ function TodayWorkspace({
                       <BookOpen size={14} />
                       {trimText(askScopeLabel, 18)}
                     </span>
+                    {readerFocusRef ? (
+                      <span className="reader-focus-chip" title="下一问限定到这条引用" data-testid="reader-focus-chip">
+                        <FileText size={14} />
+                        {trimText(readerFocusRef.title || readerFocusRef.source_item_id || "引用片段", 22)}
+                        <button type="button" onClick={() => setReaderFocusRef(null)} title="取消原文焦点">
+                          <X size={13} />
+                        </button>
+                      </span>
+                    ) : null}
                     <details className="ask-settings">
                       <summary title="Ask 参数">
                         <SlidersHorizontal size={16} />
@@ -1667,11 +1691,13 @@ function normalizeContinueItems(data?: TodayResponse): TodayContinueItem[] {
 function AskResult({
   result,
   pending = false,
-  knowledgeBases = []
+  knowledgeBases = [],
+  onAskFromEvidence
 }: {
   result: WorkspaceAskResponse | WorkspaceSearchResponse;
   pending?: boolean;
   knowledgeBases?: KnowledgeBase[];
+  onAskFromEvidence?: (refItem: SearchEvidenceRef) => void;
 }) {
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "failed">("idle");
   const [selectedRefIndex, setSelectedRefIndex] = useState(0);
@@ -1787,7 +1813,7 @@ function AskResult({
             );
           })}
           </div>
-          <EvidenceWindow refItem={selectedRef} />
+          <EvidenceWindow refItem={selectedRef} onAskFromEvidence={onAskFromEvidence} />
         </div>
       ) : null}
       {qualitySignals ? <AskQualitySignals signals={qualitySignals} /> : null}
@@ -2296,11 +2322,13 @@ type AskNoAnswerDiagnostic = {
   dimensions: Array<{ dimension: string; status: string; detail: string }>;
 };
 
-function EvidenceWindow({ refItem }: { refItem?: SearchEvidenceRef }) {
+function EvidenceWindow({ refItem, onAskFromEvidence }: { refItem?: SearchEvidenceRef; onAskFromEvidence?: (refItem: SearchEvidenceRef) => void }) {
   if (!refItem) {
     return null;
   }
   const knowledgeBaseLabel = sourceRefKnowledgeBaseLabel(refItem);
+  const evidenceText = evidencePreviewText(refItem);
+  const rangeLabel = evidenceRangeLabel(refItem);
   const coordinates = [
     refItem.source_item_id ? `source ${refItem.source_item_id}` : "",
     refItem.document_id ? `doc ${refItem.document_id}` : "",
@@ -2308,18 +2336,65 @@ function EvidenceWindow({ refItem }: { refItem?: SearchEvidenceRef }) {
     refItem.passage_window_id ? `passage ${refItem.passage_window_id}` : ""
   ].filter(Boolean);
   return (
-    <aside className="evidence-window" aria-label="证据窗口">
+    <aside className="evidence-window" aria-label="证据窗口" data-testid="ask-evidence-inspector">
       <div className="card-row">
-        <span className="pill">Evidence</span>
+        <span className="pill">Citation</span>
         {knowledgeBaseLabel ? <span className="pill">{knowledgeBaseLabel}</span> : null}
+        {refItem.source_window?.window_policy ? <span className="pill muted">{refItem.source_window.window_policy}</span> : null}
         {typeof refItem.score === "number" ? <small>score {Math.round(refItem.score * 100)}</small> : null}
       </div>
       <strong>{displayText(refItem.title || refItem.source_item_id, "来源")}</strong>
+      {rangeLabel ? <small className="evidence-range">{rangeLabel}</small> : null}
       {coordinates.length ? <code>{coordinates.join(" / ")}</code> : null}
-      {refItem.url ? <a href={refItem.url} target="_blank" rel="noreferrer">{refItem.url}</a> : null}
-      <p>{displayText(refItem.source_window?.text || refItem.snippet, "该引用没有返回可预览文本。")}</p>
+      {refItem.url ? (
+        <a className="evidence-source-link" href={refItem.url} target="_blank" rel="noreferrer">
+          <Link2 size={13} />
+          <span>{trimText(refItem.url, 90)}</span>
+        </a>
+      ) : null}
+      <blockquote>{displayText(evidenceText, "该引用没有返回可预览文本。")}</blockquote>
+      {onAskFromEvidence ? (
+        <div className="evidence-actions">
+          <button type="button" onClick={() => onAskFromEvidence(refItem)} disabled={!evidenceText && !refItem.source_item_id} data-testid="ask-from-evidence">
+            <MessageCircle size={14} />
+            <span>追问这段</span>
+          </button>
+        </div>
+      ) : null}
     </aside>
   );
+}
+
+function evidencePreviewText(refItem: SearchEvidenceRef) {
+  return displayText(refItem.source_window?.text || refItem.snippet, "");
+}
+
+function evidenceRangeLabel(refItem: SearchEvidenceRef) {
+  const start = refItem.source_window?.start_char;
+  const end = refItem.source_window?.end_char;
+  if (typeof start === "number" && typeof end === "number" && end >= start) {
+    return `原文字符 ${start}-${end}`;
+  }
+  if (typeof start === "number") {
+    return `原文字符 ${start}+`;
+  }
+  return "";
+}
+
+function evidenceFollowupDraft(refItem: SearchEvidenceRef) {
+  const title = displayText(refItem.title || refItem.source_item_id, "这段原文");
+  const evidenceText = trimText(evidencePreviewText(refItem), 1200);
+  const identifiers = [
+    refItem.source_item_id ? `source_item_id: ${refItem.source_item_id}` : "",
+    refItem.chunk_id ? `chunk_id: ${refItem.chunk_id}` : "",
+    refItem.passage_window_id ? `passage_window_id: ${refItem.passage_window_id}` : ""
+  ].filter(Boolean);
+  return [
+    `请只根据「${title}」这段原文继续分析。`,
+    identifiers.length ? identifiers.join(" / ") : "",
+    evidenceText ? `原文：\n${evidenceText}` : "",
+    "我的问题："
+  ].filter(Boolean).join("\n\n");
 }
 
 function AskNoAnswerDiagnostics({ diagnostics }: { diagnostics: AskNoAnswerDiagnostic }) {
@@ -4924,6 +4999,7 @@ function AskConversationPanel({
   liveQuery,
   liveResult,
   livePending,
+  onAskFromEvidence,
   composer
 }: {
   messages: AskMessage[];
@@ -4933,6 +5009,7 @@ function AskConversationPanel({
   liveQuery?: string;
   liveResult?: WorkspaceAskResponse | null;
   livePending?: boolean;
+  onAskFromEvidence?: (refItem: SearchEvidenceRef) => void;
   composer: ReactNode;
 }) {
   const runById = useMemo(() => {
@@ -4991,7 +5068,7 @@ function AskConversationPanel({
                   <span>{message.role === "assistant" ? "PSKA" : "你"}</span>
                   {message.role === "assistant" ? (
                     runById.get(messageRunId) ? (
-                      <AskResult result={runById.get(messageRunId) as WorkspaceAskResponse} knowledgeBases={knowledgeBases} />
+                      <AskResult result={runById.get(messageRunId) as WorkspaceAskResponse} knowledgeBases={knowledgeBases} onAskFromEvidence={onAskFromEvidence} />
                     ) : (
                       <p>{trimText(message.content || "", 800)}</p>
                     )
@@ -5002,7 +5079,7 @@ function AskConversationPanel({
                 {orphanRunResult ? (
                   <article className="ask-message assistant orphan-run">
                     <span>PSKA</span>
-                    <AskResult result={orphanRunResult} pending={orphanRunResult.status === "running"} knowledgeBases={knowledgeBases} />
+                    <AskResult result={orphanRunResult} pending={orphanRunResult.status === "running"} knowledgeBases={knowledgeBases} onAskFromEvidence={onAskFromEvidence} />
                   </article>
                 ) : null}
               </div>
@@ -5018,7 +5095,7 @@ function AskConversationPanel({
               ) : null}
               <article className="ask-message assistant live">
                 <span>PSKA</span>
-                <AskResult result={liveResult as WorkspaceAskResponse} pending={livePending} knowledgeBases={knowledgeBases} />
+                <AskResult result={liveResult as WorkspaceAskResponse} pending={livePending} knowledgeBases={knowledgeBases} onAskFromEvidence={onAskFromEvidence} />
               </article>
             </>
           ) : null}

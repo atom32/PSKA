@@ -796,11 +796,11 @@ Inquiry Graph 比线性 chat 更适合组织长文、报告和研究 brief。
 
 ## 13. 近期执行建议
 
-当前 `tenant` 分支已经从计划进入 Phase 1 实现：DB/API/store、前端 KB rail/scope picker、documents membership 管理、Ask/Digest/Review/Graph/Writing 的 KB scope 传递，以及真实迁移/scoped Ask smoke 都已有落地。额外地，真实 `~/FastReAct` + PSKA HTTP MCP + DeepSeek smoke 已验证 deep Ask 会把选中 KB hard scope 注入 PSKA MCP tool calls，未选 KB 不进入答案或 trace。接下来建议立刻做三件事：
+当前 `tenant` 分支已经完成 Phase 1 发布候选并进入 Phase 2 开工：DB/API/store、前端 KB rail/scope picker、documents membership 管理、Ask/Digest/Review/Graph/Writing 的 KB scope 传递，以及真实迁移/scoped Ask smoke 都已有落地。额外地，真实 `~/FastReAct` + PSKA HTTP MCP + DeepSeek smoke 已验证 deep Ask 会把选中 KB hard scope 注入 PSKA MCP tool calls，未选 KB 不进入答案或 trace。Phase 2 第一条切片已经把 Ask citation inspector 与 source-focused follow-up 接到 Today/Ask composer。接下来建议立刻做三件事：
 
-1. 把 `docs/MILESTONE_PHASE1_MULTI_KB_RAG.zh.md` 作为 Phase 1 验收包主文档，逐项对齐证据、测试和已知非目标。
-2. 补齐 release notes 的 KB scope contract，保证前端、MCP、FastReAct 后续接入使用同一语义。
-3. 跑全量 core/frontend/FastReAct 验证后，决定 Phase 1 是否把 FastReAct deep scope 透传作为正式发布项，还是以提前打通的实验能力标注。
+1. 把 `docs/MILESTONE_PHASE2_READER_ASK.zh.md` 作为 Phase 2 验收包主文档，继续补 ReaderPane、原文定位和 citation 复用。
+2. 把 CitationInspector 复用到 Graph/Writing 的引用展示，保证所有证据入口共享同一种 citation 坐标语义。
+3. 继续跑真实浏览器 scoped Ask 验收，确认从 citation 追问时 `source_item_ids` hard scope 不被 UI 或对话 API 丢失。
 
 原因：
 

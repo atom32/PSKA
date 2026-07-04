@@ -32,6 +32,7 @@ Directory-level material packs can opt into source collection ingest with
 - [API Reference](API_REFERENCE.md): HTTP endpoints used by the workspace, CLI, and integrations.
 - [Feature Reality Check](FEATURE_REALITY_CHECK.md): what is shipped, partial, or design-only.
 - [Phase 1 Multi-KB RAG Milestone](MILESTONE_PHASE1_MULTI_KB_RAG.zh.md): Chinese milestone and acceptance evidence for one-account-many-knowledge-bases.
+- [Phase 2 Reader/Ask Milestone](MILESTONE_PHASE2_READER_ASK.zh.md): Chinese milestone for citation inspection, source-focused follow-up, and ReaderPane work.
 - [WeKnora Core Coverage Acceptance](WEKNORA_COVERAGE.zh.md): Chinese
   multi-tenant coverage checklist, E2E script, and competitor comparison bar.
 - [Telemetry Design](TELEMETRY.md): design-only telemetry notes.
