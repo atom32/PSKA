@@ -4471,6 +4471,11 @@ button.context-item-main {
   color: #235a4d;
 }
 
+.kb-linked-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
 .kb-linked-metrics {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));

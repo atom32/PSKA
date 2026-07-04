@@ -5721,6 +5721,8 @@ function CorpusWorkspace({
   const [sourceFormError, setSourceFormError] = useState("");
   const [operationStatus, setOperationStatus] = useState<"idle" | "syncing" | "digesting" | "queued" | "cleaning" | "briefing" | "success" | "error">("idle");
   const [operationMessage, setOperationMessage] = useState("");
+  const [kbWritingCreateStatus, setKbWritingCreateStatus] = useState<"idle" | "creating" | "success" | "error">("idle");
+  const [kbWritingCreateMessage, setKbWritingCreateMessage] = useState("");
   const [cleanupPreview, setCleanupPreview] = useState<KnowledgeSourceCleanupResponse | null>(null);
   const [cleanupTargetId, setCleanupTargetId] = useState<string | null>(null);
   const [cleanupConfirmText, setCleanupConfirmText] = useState("");
@@ -5841,6 +5843,8 @@ function CorpusWorkspace({
     setKnowledgeBaseSearchResult(null);
     setKnowledgeBaseSearchStatus("idle");
     setKnowledgeBaseSearchError("");
+    setKbWritingCreateStatus("idle");
+    setKbWritingCreateMessage("");
     setDocumentDeletePreview(null);
     setDocumentDeleteTarget("");
   }, [currentKnowledgeBase?.knowledge_base_id]);
@@ -6297,6 +6301,43 @@ function CorpusWorkspace({
     }
   }
 
+  async function handleCreateKnowledgeBaseWritingBoard() {
+    const knowledgeBaseId = currentKnowledgeBase?.knowledge_base_id || currentKnowledgeBaseId;
+    const knowledgeBaseName = currentKnowledgeBase?.name || "当前知识库";
+    if (!knowledgeBaseId) {
+      return;
+    }
+    const scope = {
+      mode: "hard",
+      knowledge_base_ids: [knowledgeBaseId],
+      knowledge_base_name: knowledgeBaseName
+    };
+    setKbWritingCreateStatus("creating");
+    setKbWritingCreateMessage("正在创建绑定当前知识库的 Writing board...");
+    try {
+      const payload = await createWritingBoard(serviceToken, {
+        title: `${knowledgeBaseName} Writing`,
+        goal: `围绕 ${knowledgeBaseName} 的证据组织问题、答案和草稿。`,
+        metadata: {
+          kind: "knowledge_base_writing_board",
+          knowledge_base_ids: [knowledgeBaseId],
+          knowledge_base_scope: scope
+        }
+      });
+      if (payload.ok === false) {
+        throw new Error("Writing board 创建失败。");
+      }
+      const boardId = payload.board?.board_id || "";
+      setKbWritingCreateStatus("success");
+      setKbWritingCreateMessage(payload.board?.title || "Writing board 已创建。");
+      await writingBoardsQuery.refetch();
+      onOpenWriting?.(boardId);
+    } catch (error) {
+      setKbWritingCreateStatus("error");
+      setKbWritingCreateMessage(error instanceof Error ? error.message : "Writing board 创建失败。");
+    }
+  }
+
   async function handleFileSync() {
     setOperationStatus("syncing");
     setOperationMessage("正在同步当前账号的高级资料源...");
@@ -6726,6 +6767,9 @@ function CorpusWorkspace({
           knowledgeBases={knowledgeBases}
           currentKnowledgeBase={currentKnowledgeBase}
           onOpenWriting={onOpenWriting || (() => onOpenWorkspace("writing"))}
+          createStatus={kbWritingCreateStatus}
+          createMessage={kbWritingCreateMessage}
+          onCreateBoard={() => void handleCreateKnowledgeBaseWritingBoard()}
         />
       ) : null}
 
@@ -7114,7 +7158,10 @@ function KnowledgeBaseWritingPanel({
   currentKnowledgeBaseName,
   knowledgeBases,
   currentKnowledgeBase,
-  onOpenWriting
+  onOpenWriting,
+  createStatus,
+  createMessage,
+  onCreateBoard
 }: {
   boards: WritingBoard[];
   isLoading: boolean;
@@ -7123,6 +7170,9 @@ function KnowledgeBaseWritingPanel({
   knowledgeBases: KnowledgeBase[];
   currentKnowledgeBase?: KnowledgeBase;
   onOpenWriting: (boardId?: string) => void;
+  createStatus: "idle" | "creating" | "success" | "error";
+  createMessage: string;
+  onCreateBoard: () => void;
 }) {
   const briefCount = boards.filter((board) => writingBoardLooksLikeBrief(board)).length;
   const latest = boards[0];
@@ -7130,11 +7180,20 @@ function KnowledgeBaseWritingPanel({
     <section className="today-section kb-linked-panel" data-testid="knowledge-base-writing-panel">
       <SectionTitle icon={<TextCursorInput size={18} />} title="Writing" subtitle={currentKnowledgeBaseName} />
       <div className="kb-linked-actions">
+        <button type="button" onClick={onCreateBoard} disabled={createStatus === "creating"} data-testid="knowledge-base-create-writing-board">
+          <TextCursorInput size={15} />
+          {createStatus === "creating" ? "创建中" : "新建当前 KB 画布"}
+        </button>
         <button type="button" onClick={() => onOpenWriting()} data-testid="knowledge-base-open-writing">
           <TextCursorInput size={15} />
           打开 Writing 工作区
         </button>
       </div>
+      {createMessage ? (
+        <div className={`review-empty compact ${createStatus === "error" ? "error-state" : ""}`} data-testid="knowledge-base-writing-create-status">
+          {createMessage}
+        </div>
+      ) : null}
       {isError ? <div className="review-empty error-state compact">Writing 项目无法加载。</div> : null}
       {isLoading ? <div className="review-empty compact">正在读取当前知识库的 Writing 资产...</div> : null}
       <div className="kb-linked-metrics" aria-label="当前知识库 Writing 摘要">

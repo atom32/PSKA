@@ -285,6 +285,7 @@ async function expectKnowledgeBaseDetailTabs(page: Page) {
 
   await page.getByTestId("knowledge-base-tab-writing").click();
   await expect(page.getByTestId("knowledge-base-writing-panel")).toBeVisible();
+  await expect(page.getByTestId("knowledge-base-create-writing-board")).toBeVisible();
   await expect(page.getByTestId("knowledge-base-open-writing")).toBeVisible();
 
   await page.getByTestId("knowledge-base-tab-settings").click();
