@@ -3263,6 +3263,96 @@ function AskQualitySignals({ signals }: { signals: Record<string, unknown> }) {
   );
 }
 
+type AskHealthView = {
+  tone: "good" | "warning" | "error" | "neutral";
+  label: string;
+  detail: string;
+  meta: string;
+};
+
+function askHealthFromSignals({
+  qualitySignals,
+  evidenceCheck,
+  status,
+  citationCount,
+  running
+}: {
+  qualitySignals?: Record<string, unknown>;
+  evidenceCheck?: Record<string, unknown>;
+  status?: string;
+  citationCount?: number;
+  running?: boolean;
+}): AskHealthView | null {
+  const qualityBand = displayText(qualitySignals?.quality_band, "");
+  const evidenceStatus = displayText(evidenceCheck?.status || qualitySignals?.evidence_status, "");
+  const reportReadiness = displayText(qualitySignals?.report_readiness, "");
+  const citations = firstFiniteNumber(citationCount, qualitySignals?.citation_count, qualitySignals?.source_ref_count);
+  const gaps = firstFiniteNumber(qualitySignals?.gap_count);
+  const conflicts = firstFiniteNumber(qualitySignals?.conflict_count);
+  const normalizedStatus = displayText(status, "").toLowerCase();
+  const directAnswer = evidenceStatus === "not_applicable" || displayText(qualitySignals?.retrieval_owner, "") === "none";
+
+  if (running) {
+    return {
+      tone: "neutral",
+      label: "处理中",
+      detail: "Ask PSKA 正在运行，展开节点可查看实时阶段。",
+      meta: ""
+    };
+  }
+  if (normalizedStatus === "error" || qualityBand === "failed") {
+    return {
+      tone: "error",
+      label: "失败",
+      detail: "Ask PSKA 未能产生可采信结果。",
+      meta: reportReadiness ? askReportReadinessLabel(reportReadiness) : ""
+    };
+  }
+  if (directAnswer) {
+    return {
+      tone: "neutral",
+      label: "无需证据",
+      detail: "本次回答不需要进入知识库检索或引用校验。",
+      meta: qualityBand ? askQualityBandLabel(qualityBand) : ""
+    };
+  }
+  if (
+    ["no_answerable_evidence", "needs_review", "needs_citation_review"].includes(qualityBand) ||
+    ["insufficient", "insufficient_evidence", "no_evidence", "retrieved_without_citations"].includes(evidenceStatus) ||
+    (gaps || 0) > 0 ||
+    (conflicts || 0) > 0
+  ) {
+    return {
+      tone: "warning",
+      label: qualityBand === "needs_review" ? "需复核" : qualityBand === "needs_citation_review" ? "补引用" : "证据不足",
+      detail: "证据支撑、引用或冲突状态需要复核。",
+      meta: [
+        evidenceStatus ? askEvidenceStatusLabel(evidenceStatus) : "",
+        citations !== undefined ? `引用 ${citations}` : "",
+        gaps ? `缺口 ${gaps}` : "",
+        conflicts ? `冲突 ${conflicts}` : ""
+      ].filter(Boolean).join(" · ")
+    };
+  }
+  if ((citations || 0) > 0 || qualityBand === "grounded" || evidenceStatus === "grounded") {
+    return {
+      tone: "good",
+      label: "有引用",
+      detail: "回答保留了可检查引用，可展开节点检查原文。",
+      meta: citations !== undefined ? `引用 ${citations}` : askQualityBandLabel(qualityBand)
+    };
+  }
+  if (qualityBand || evidenceStatus || normalizedStatus === "complete") {
+    return {
+      tone: "neutral",
+      label: qualityBand ? askQualityBandLabel(qualityBand) : "已完成",
+      detail: "Ask PSKA 已完成，展开节点查看阶段与引用。",
+      meta: evidenceStatus ? askEvidenceStatusLabel(evidenceStatus) : ""
+    };
+  }
+  return null;
+}
+
 function normalizeAskNoAnswerDiagnostics(value: unknown): AskNoAnswerDiagnostic | null {
   if (!isRecord(value)) {
     return null;
@@ -7839,6 +7929,7 @@ function WritingCanvasNode({ data }: NodeProps<WritingFlowNode>) {
   const hasTimeline = askProcessTimelineHasContent(timelineProps);
   const citationRefs = node.citations?.length ? node.citations : node.source_refs || [];
   const citationKnowledgeBaseLabel = sourceRefsKnowledgeBaseSummary(citationRefs);
+  const askHealth = writingNodeAskHealth(node, timelineResult, data.running, citationRefs.length);
 
   return (
     <div
@@ -7850,8 +7941,19 @@ function WritingCanvasNode({ data }: NodeProps<WritingFlowNode>) {
     >
       <Handle type="target" position={Position.Left} />
       <div className="writing-node-top">
-        <span>{writingNodeLabel(node.node_type)}</span>
-        <small>{data.running ? "运行中" : node.status || "idle"}</small>
+        <div className="writing-node-top-main">
+          <span>{writingNodeLabel(node.node_type)}</span>
+          <small>{data.running ? "运行中" : node.status || "idle"}</small>
+        </div>
+        {askHealth ? (
+          <span
+            className={`writing-node-health ${askHealth.tone}`}
+            data-testid="writing-node-ask-health"
+            title={askHealth.detail}
+          >
+            {trimText([askHealth.label, askHealth.meta].filter(Boolean).join(" · "), 24)}
+          </span>
+        ) : null}
       </div>
       <h3>{displayText(node.title, writingNodeDefaultTitle(node.node_type))}</h3>
       {node.body_markdown ? (
@@ -8080,6 +8182,26 @@ function WritingComposer({
 function writingNodeSessionId(node: WritingNode) {
   const existing = node.metadata?.session_id;
   return typeof existing === "string" && existing.trim() ? existing : `writing:${node.board_id}:${node.node_id}`;
+}
+
+function writingNodeAskHealth(node: WritingNode, preview: WorkspaceAskResponse | undefined, running: boolean, citationCount: number) {
+  if (preview) {
+    return askHealthFromSignals({
+      qualitySignals: preview.quality_signals,
+      evidenceCheck: preview.evidence_check,
+      status: preview.status || node.status,
+      citationCount,
+      running
+    });
+  }
+  if (node.node_type !== "answer" && node.node_type !== "evidence" && node.node_type !== "draft") {
+    return running ? askHealthFromSignals({ running, status: node.status, citationCount }) : null;
+  }
+  return askHealthFromSignals({
+    qualitySignals: node.quality_signals,
+    status: node.status,
+    citationCount
+  });
 }
 
 function writingNodeLastAsk(result: WorkspaceAskResponse, query: string, sessionId: string, scope: Record<string, unknown>) {

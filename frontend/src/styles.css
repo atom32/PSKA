@@ -4566,17 +4566,61 @@ button.context-item-main {
   margin-bottom: 8px;
 }
 
-.writing-node-top span {
+.writing-node-top-main {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.writing-node-top-main span {
   color: var(--muted);
   font-size: 11px;
   font-weight: 800;
   text-transform: uppercase;
 }
 
-.writing-node-top small {
+.writing-node-top-main small {
   color: #2e7564;
   font-size: 11px;
   font-weight: 720;
+}
+
+.writing-node-health {
+  max-width: 128px;
+  min-height: 22px;
+  border: 1px solid rgba(39, 37, 31, 0.12);
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 1 auto;
+  padding: 3px 7px;
+  overflow: hidden;
+  color: var(--muted);
+  background: #f7f5ed;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.writing-node-health.good {
+  border-color: rgba(35, 90, 77, 0.22);
+  background: #edf8f1;
+  color: #235a4d;
+}
+
+.writing-node-health.warning {
+  border-color: rgba(184, 112, 29, 0.28);
+  background: #fff5df;
+  color: #8c520e;
+}
+
+.writing-node-health.error {
+  border-color: rgba(176, 64, 54, 0.3);
+  background: #fff1ef;
+  color: #9d342b;
 }
 
 .writing-node h3 {
