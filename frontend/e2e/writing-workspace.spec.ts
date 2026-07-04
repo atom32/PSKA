@@ -75,6 +75,7 @@ test("workspace files to corpus to parallel writing draft", async ({ page, reque
   expect(result.draft_length).toBeGreaterThan(200);
   expect(result.citation_count).toBeGreaterThan(0);
   expect(result.timeline_count).toBeGreaterThanOrEqual(questions.length);
+  expect(result.health_signal_count).toBeGreaterThanOrEqual(questions.length);
   expect(result.draft_text).not.toMatch(/FastReAct|MCP|tool_call|GraphRAG/i);
 
   if (reportPath) {
@@ -156,6 +157,8 @@ async function runQuestionsInParallel(page: Page, questionCount: number) {
   await expect(page.locator('[data-testid="writing-node"][data-node-type="answer"]')).toHaveCount(questionCount, {
     timeout: 240_000
   });
+  await expect(page.getByTestId("writing-node-ask-health").first()).toBeVisible({ timeout: 45_000 });
+  expect(await page.getByTestId("writing-node-ask-health").count()).toBeGreaterThanOrEqual(questionCount);
 }
 
 async function questionNodeIds(page: Page) {
@@ -242,7 +245,18 @@ async function runQuestionNodesViaSession(page: Page, nodeIds: string[]) {
           [...(item.citations || []), ...(item.source_refs || [])].map((ref: any) => ref.source_item_id).filter(Boolean)
         )))
       };
-      const result: any = { answer: "", citations: [], source_refs: [], agent_steps: [], timing: {}, evidence: {}, trace: {} };
+      const result: any = {
+        answer: "",
+        citations: [],
+        source_refs: [],
+        agent_steps: [],
+        progress: [],
+        timing: {},
+        evidence: {},
+        evidence_check: {},
+        quality_signals: {},
+        trace: {}
+      };
       const response = await fetch("/workspace/ask/stream", {
         method: "POST",
         headers: { Accept: "text/event-stream", "Content-Type": "application/json" },
@@ -270,10 +284,16 @@ async function runQuestionNodesViaSession(page: Page, nodeIds: string[]) {
         } else if (event === "agent_step") {
           if (data.step) result.agent_steps.push(data.step);
           result.timing = { ...(result.timing || {}), ...(data.timing || {}) };
+        } else if (event === "progress") {
+          if (data.progress) result.progress.push(data.progress);
+          result.timing = { ...(result.timing || {}), ...(data.timing || {}) };
         } else if (event === "evidence") {
           result.evidence = data.evidence || result.evidence;
           result.citations = Array.isArray(data.citations) ? data.citations : result.citations;
           result.source_refs = result.evidence?.source_refs || result.citations;
+          result.quality_signals = data.quality_signals || result.quality_signals;
+        } else if (event === "evidence_check") {
+          result.evidence_check = data.evidence_check || result.evidence_check;
           result.quality_signals = data.quality_signals || result.quality_signals;
         } else if (event === "answer_delta") {
           result.answer = `${result.answer || ""}${typeof data.delta === "string" ? data.delta : ""}`;
@@ -286,6 +306,7 @@ async function runQuestionNodesViaSession(page: Page, nodeIds: string[]) {
         } else if (event === "done") {
           result.ok = data.ok !== false;
           result.timing = { ...(result.timing || {}), ...(data.timing || {}) };
+          result.evidence_check = data.evidence_check || result.evidence_check;
           result.quality_signals = data.quality_signals || result.quality_signals;
         } else if (event === "error") {
           result.ok = false;
@@ -379,6 +400,13 @@ async function runQuestionNodesViaSession(page: Page, nodeIds: string[]) {
               trace: result.trace || {},
               timing: result.timing || {},
               agent_steps: result.agent_steps || [],
+              progress: result.progress || [],
+              evidence_check: result.evidence_check || {},
+              quality_signals: result.quality_signals || {},
+              citations: (result.citations || []).slice(0, 20),
+              source_refs: (result.source_refs || []).slice(0, 20),
+              source_windows: (result.source_windows || []).slice(0, 20),
+              no_answer_reasons: result.no_answer_reasons || result.evidence_check?.no_answer_reasons || result.evidence?.no_answer_reasons || [],
               saved_at: new Date().toISOString(),
               session_id: sessionId
             }
@@ -501,6 +529,9 @@ async function collectBoardResult(page: Page) {
       return total + (node.citations || []).length + (node.source_refs || []).length;
     }, 0);
     const timelineCount = questionNodes.filter((node: any) => node.metadata?.last_ask?.agent_steps?.length).length;
+    const healthSignalCount = nodes.filter((node: any) =>
+      Object.keys(node.quality_signals || {}).length > 0 || Object.keys(node.metadata?.last_ask?.quality_signals || {}).length > 0
+    ).length;
     return {
       board_id: board.board_id,
       node_count: nodes.length,
@@ -509,7 +540,8 @@ async function collectBoardResult(page: Page) {
       draft_length: draftText.length,
       draft_text: draftText,
       citation_count: citationCount,
-      timeline_count: timelineCount
+      timeline_count: timelineCount,
+      health_signal_count: healthSignalCount
     };
   }, { markerValue: marker });
 }
