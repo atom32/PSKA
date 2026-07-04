@@ -17,6 +17,12 @@ type TextSourceResponse = {
   source_item_ids?: string[];
 };
 
+type ReviewHealthFixture = {
+  topic: string;
+  reviewItemId: string;
+  sourceItemIds: string[];
+};
+
 test.setTimeout(300_000);
 
 function resolvePassword() {
@@ -41,6 +47,7 @@ test("browser session scoped Ask does not leak citations across knowledge bases"
   const betaSecret = `BETA_ONLY_${marker}`;
   const createdKnowledgeBaseIds: string[] = [];
   const createdSourceItemIds: string[] = [];
+  let reviewFixture: ReviewHealthFixture | null = null;
 
   await page.goto(await authnodeCallbackUrl(request));
   await expect(page.getByTestId("gateway-session")).toContainText(userId);
@@ -63,9 +70,12 @@ test("browser session scoped Ask does not leak citations across knowledge bases"
     const betaSourceItemId = requireOne(betaSource.source_item_ids, "beta source_item_id");
     createdSourceItemIds.push(alphaSourceItemId, betaSourceItemId);
 
+    reviewFixture = await createReviewHealthFixture(page, alpha.knowledge_base_id, marker, createdSourceItemIds);
+
     await page.goto(frontendUrl, { waitUntil: "domcontentloaded" });
     await openWorkspace(page, "Today");
     await selectCurrentKnowledgeBase(page, alpha.knowledge_base_id);
+    await expectTodayReviewHealth(page, reviewFixture);
 
     const query = `What is the scoped Ask answer for marker ${marker}?`;
     const result = await askViaBrowserSession(page, query, alpha.knowledge_base_id);
@@ -96,9 +106,10 @@ test("browser session scoped Ask does not leak citations across knowledge bases"
       alphaSecret,
       betaSecret
     });
+    await expectReviewCenterHealth(page, reviewFixture);
   } finally {
     await cleanupFixtures(page, createdSourceItemIds, createdKnowledgeBaseIds);
-    cleanupDatabaseResidue(marker);
+    cleanupDatabaseResidue(marker, reviewFixture?.topic);
   }
 });
 
@@ -165,6 +176,56 @@ async function createTextSource(
       digest_mode: "manual"
     })
   });
+}
+
+async function createReviewHealthFixture(
+  page: Page,
+  knowledgeBaseId: string,
+  marker: string,
+  createdSourceItemIds: string[]
+): Promise<ReviewHealthFixture> {
+  const topic = `rhtopic${randomUUID().replace(/-/g, "").slice(0, 8).toLowerCase()}`;
+  const first = await createTextSource(page, knowledgeBaseId, {
+    title: `${topic} ${marker}`,
+    text: `Alpha linking evidence for ${marker}. The review health topic is ${topic}.`
+  });
+  const second = await createTextSource(page, knowledgeBaseId, {
+    title: `${topic} ${marker}`,
+    text: `Beta linking evidence for ${marker}. The review health topic is ${topic}.`
+  });
+  const sourceItemIds = [
+    requireOne(first.source_item_ids, "first review fixture source_item_id"),
+    requireOne(second.source_item_ids, "second review fixture source_item_id")
+  ];
+  createdSourceItemIds.push(...sourceItemIds);
+  const linking = await api<{
+    relationship_candidate_count?: number;
+    review_items?: Array<{ review_item_id?: string; title?: string; proposal?: Record<string, unknown> }>;
+  }>(page, "/workspace/digest/linking/run", {
+    method: "POST",
+    body: JSON.stringify({ source_item_ids: sourceItemIds, max_topics_per_source: 3 })
+  });
+  expect(linking.relationship_candidate_count || 0).toBeGreaterThan(0);
+  const review = (linking.review_items || []).find((item) => JSON.stringify(item).includes(topic));
+  if (!review?.review_item_id) {
+    throw new Error(`Linking run did not create a review item for ${topic}: ${JSON.stringify(linking)}`);
+  }
+  return { topic, reviewItemId: review.review_item_id, sourceItemIds };
+}
+
+async function expectTodayReviewHealth(page: Page, fixture: ReviewHealthFixture) {
+  const reviewCard = page.locator(".today-card.review-card").filter({ hasText: fixture.topic }).first();
+  await expect(reviewCard).toBeVisible({ timeout: 45_000 });
+  await expect(reviewCard.getByTestId("today-review-evidence-health")).toBeVisible();
+  await expect(reviewCard.getByTestId("today-review-evidence-health")).toContainText("需复核");
+}
+
+async function expectReviewCenterHealth(page: Page, fixture: ReviewHealthFixture) {
+  await openWorkspace(page, "Review");
+  const reviewCard = page.locator(".review-center-item").filter({ hasText: fixture.topic }).first();
+  await expect(reviewCard).toBeVisible({ timeout: 45_000 });
+  await expect(reviewCard.getByTestId("review-evidence-health")).toBeVisible();
+  await expect(reviewCard.getByTestId("review-evidence-health")).toContainText("可审核");
 }
 
 async function openWorkspace(page: Page, label: string) {
@@ -254,18 +315,20 @@ async function cleanupFixtures(page: Page, sourceItemIds: string[], knowledgeBas
   }
 }
 
-function cleanupDatabaseResidue(marker: string) {
+function cleanupDatabaseResidue(marker: string, extraMarker?: string) {
   const databaseUrl = process.env.PSKA_E2E_DATABASE_URL || "postgresql:///pska";
   const tenant = sqlLiteral(tenantId);
   const owner = sqlLiteral(userId);
-  const markerLike = sqlLiteral(`%${marker}%`);
+  const markers = [marker, extraMarker].filter((value): value is string => Boolean(value));
+  const markerArray = `array[${markers.map((value) => sqlLiteral(`%${value}%`)).join(", ")}]`;
+  const sourceMarkerClause = `(title like any(${markerArray}) or content_text like any(${markerArray}))`;
   const sql = `
 with target_items as (
   select source_item_id from source_items
-  where tenant_id = ${tenant} and owner_user_id = ${owner} and (title like ${markerLike} or content_text like ${markerLike})
+  where tenant_id = ${tenant} and owner_user_id = ${owner} and ${sourceMarkerClause}
 ), target_kbs as (
   select knowledge_base_id from knowledge_bases
-  where tenant_id = ${tenant} and owner_user_id = ${owner} and name like ${markerLike}
+  where tenant_id = ${tenant} and owner_user_id = ${owner} and name like any(${markerArray})
 )
 delete from knowledge_base_source_items
 where tenant_id = ${tenant}
@@ -273,32 +336,96 @@ where tenant_id = ${tenant}
        or knowledge_base_id in (select knowledge_base_id from target_kbs));
 with target_items as (
   select source_item_id from source_items
-  where tenant_id = ${tenant} and owner_user_id = ${owner} and (title like ${markerLike} or content_text like ${markerLike})
+  where tenant_id = ${tenant} and owner_user_id = ${owner} and ${sourceMarkerClause}
+), target_reviews as (
+  select review_item_id from review_items
+  where tenant_id = ${tenant}
+    and owner_user_id = ${owner}
+    and (
+      title like any(${markerArray})
+      or proposal::text like any(${markerArray})
+      or exists (
+        select 1 from target_items
+        where review_items.proposal::text like '%' || target_items.source_item_id || '%'
+      )
+    )
+), target_topics as (
+  select topic_id from knowledge_topics
+  where tenant_id = ${tenant}
+    and owner_user_id = ${owner}
+    and (label like any(${markerArray}) or normalized_label like any(${markerArray}) or metadata::text like any(${markerArray}))
+  union
+  select topic_id from topic_mentions
+  where tenant_id = ${tenant}
+    and owner_user_id = ${owner}
+    and source_item_id in (select source_item_id from target_items)
+)
+delete from artifact_supports
+where tenant_id = ${tenant}
+  and owner_user_id = ${owner}
+  and (
+    source_item_id in (select source_item_id from target_items)
+    or artifact_id in (select review_item_id from target_reviews)
+    or topic_id in (select topic_id from target_topics)
+  );
+with target_items as (
+  select source_item_id from source_items
+  where tenant_id = ${tenant} and owner_user_id = ${owner} and ${sourceMarkerClause}
+), target_topics as (
+  select topic_id from knowledge_topics
+  where tenant_id = ${tenant}
+    and owner_user_id = ${owner}
+    and (label like any(${markerArray}) or normalized_label like any(${markerArray}) or metadata::text like any(${markerArray}))
+)
+delete from topic_mentions
+where tenant_id = ${tenant}
+  and owner_user_id = ${owner}
+  and (
+    source_item_id in (select source_item_id from target_items)
+    or topic_id in (select topic_id from target_topics)
+    or mention_text like any(${markerArray})
+    or metadata::text like any(${markerArray})
+  );
+delete from review_items
+where tenant_id = ${tenant}
+  and owner_user_id = ${owner}
+  and (title like any(${markerArray}) or proposal::text like any(${markerArray}));
+delete from knowledge_topics
+where tenant_id = ${tenant}
+  and owner_user_id = ${owner}
+  and (label like any(${markerArray}) or normalized_label like any(${markerArray}) or metadata::text like any(${markerArray}));
+with target_items as (
+  select source_item_id from source_items
+  where tenant_id = ${tenant} and owner_user_id = ${owner} and ${sourceMarkerClause}
 )
 delete from passage_windows where tenant_id = ${tenant} and source_item_id in (select source_item_id from target_items);
 with target_items as (
   select source_item_id from source_items
-  where tenant_id = ${tenant} and owner_user_id = ${owner} and (title like ${markerLike} or content_text like ${markerLike})
+  where tenant_id = ${tenant} and owner_user_id = ${owner} and ${sourceMarkerClause}
 )
 delete from chunks where tenant_id = ${tenant} and source_item_id in (select source_item_id from target_items);
 with target_items as (
   select source_item_id from source_items
-  where tenant_id = ${tenant} and owner_user_id = ${owner} and (title like ${markerLike} or content_text like ${markerLike})
+  where tenant_id = ${tenant} and owner_user_id = ${owner} and ${sourceMarkerClause}
 )
 delete from documents where tenant_id = ${tenant} and source_item_id in (select source_item_id from target_items);
 delete from source_items
-where tenant_id = ${tenant} and owner_user_id = ${owner} and (title like ${markerLike} or content_text like ${markerLike});
+where tenant_id = ${tenant} and owner_user_id = ${owner} and ${sourceMarkerClause};
 delete from knowledge_sources
-where tenant_id = ${tenant} and owner_user_id = ${owner} and (name like ${markerLike} or uri like ${markerLike});
+where tenant_id = ${tenant} and owner_user_id = ${owner} and (name like any(${markerArray}) or uri like any(${markerArray}));
 delete from knowledge_bases
-where tenant_id = ${tenant} and owner_user_id = ${owner} and name like ${markerLike};
+where tenant_id = ${tenant} and owner_user_id = ${owner} and name like any(${markerArray});
 select
-  (select count(*) from knowledge_bases where tenant_id = ${tenant} and owner_user_id = ${owner} and name like ${markerLike}) as knowledge_bases,
-  (select count(*) from knowledge_sources where tenant_id = ${tenant} and owner_user_id = ${owner} and (name like ${markerLike} or uri like ${markerLike})) as knowledge_sources,
-  (select count(*) from source_items where tenant_id = ${tenant} and owner_user_id = ${owner} and (title like ${markerLike} or content_text like ${markerLike})) as source_items,
-  (select count(*) from documents where tenant_id = ${tenant} and body like ${markerLike}) as documents,
-  (select count(*) from chunks where tenant_id = ${tenant} and text like ${markerLike}) as chunks,
-  (select count(*) from passage_windows where tenant_id = ${tenant} and text like ${markerLike}) as passage_windows;
+  (select count(*) from knowledge_bases where tenant_id = ${tenant} and owner_user_id = ${owner} and name like any(${markerArray})) as knowledge_bases,
+  (select count(*) from knowledge_sources where tenant_id = ${tenant} and owner_user_id = ${owner} and (name like any(${markerArray}) or uri like any(${markerArray}))) as knowledge_sources,
+  (select count(*) from source_items where tenant_id = ${tenant} and owner_user_id = ${owner} and ${sourceMarkerClause}) as source_items,
+  (select count(*) from documents where tenant_id = ${tenant} and body like any(${markerArray})) as documents,
+  (select count(*) from chunks where tenant_id = ${tenant} and text like any(${markerArray})) as chunks,
+  (select count(*) from passage_windows where tenant_id = ${tenant} and text like any(${markerArray})) as passage_windows,
+  (select count(*) from review_items where tenant_id = ${tenant} and owner_user_id = ${owner} and (title like any(${markerArray}) or proposal::text like any(${markerArray}))) as review_items,
+  (select count(*) from knowledge_topics where tenant_id = ${tenant} and owner_user_id = ${owner} and (label like any(${markerArray}) or normalized_label like any(${markerArray}) or metadata::text like any(${markerArray}))) as knowledge_topics,
+  (select count(*) from topic_mentions where tenant_id = ${tenant} and owner_user_id = ${owner} and (mention_text like any(${markerArray}) or metadata::text like any(${markerArray}))) as topic_mentions,
+  (select count(*) from artifact_supports where tenant_id = ${tenant} and owner_user_id = ${owner} and (artifact_id like any(${markerArray}) or metadata::text like any(${markerArray}))) as artifact_supports;
 `;
   const output = execFileSync("psql", ["-X", "-d", databaseUrl, "-A", "-F", ",", "-q", "-c", sql], {
     encoding: "utf8",
@@ -307,7 +434,7 @@ select
   const residue = output
     .split(/\r?\n/)
     .map((line) => line.trim())
-    .find((line) => /^0,0,0,0,0,0$/.test(line));
+    .find((line) => /^0,0,0,0,0,0,0,0,0,0$/.test(line));
   if (!residue) {
     throw new Error(`multi-KB scoped Ask e2e cleanup left residue for marker ${marker}: ${output}`);
   }

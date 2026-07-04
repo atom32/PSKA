@@ -39,7 +39,7 @@
 - Review Center 列表已复用同一类证据健康摘要，把 `source_ref_status`、`quality_tier`、`review_eligible` 和 apply readiness 提炼成“可审核 / 缺证据 / 仅诊断 / 需检查”等短标签。
 - Today 右侧 Review 卡片已接入同一类证据健康摘要，把待审候选在日常入口中标成“需复核 / 补引用 / 缺证据”，减少用户必须先进入 Review Center 才知道证据状态的跳转。
 - Graph Ask 主路径和 legacy Graph Path 面板都已增加证据健康摘要，把 citations、agentic repair 和错误状态提炼成“有引用 / 缺引用 / 已重写 / 需复核 / 失败”等短标签。
-- `frontend/e2e/multi-kb-scoped-ask.spec.ts` 已扩展真实浏览器验收：UI Ask 展示 alpha citation inspector，点击“查看原文”后 ReaderPane 包含 alpha 原文且不包含 beta secret；点击“追问这段”后输入框包含 alpha `source_item_id`；Graph Ask 在空图/有图主路径也会显示 `graph-path-evidence-health` 且不泄露 beta 证据。
+- `frontend/e2e/multi-kb-scoped-ask.spec.ts` 已扩展真实浏览器验收：UI Ask 展示 alpha citation inspector，点击“查看原文”后 ReaderPane 包含 alpha 原文且不包含 beta secret；点击“追问这段”后输入框包含 alpha `source_item_id`；Graph Ask 在空图/有图主路径也会显示 `graph-path-evidence-health` 且不泄露 beta 证据；真实 linking digest 生成的 Review candidate 会在 Today 右栏显示 `today-review-evidence-health`，并在 Review Center 显示 `review-evidence-health`。
 - `frontend/e2e/writing-workspace.spec.ts` 已扩展真实浏览器验收：Writing answer/question 运行后应出现 `writing-node-ask-health`，并且持久化节点/`last_ask` 保留可支撑健康摘要的 `quality_signals`。
 
 ## 验收证据

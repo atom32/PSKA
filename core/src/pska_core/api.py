@@ -1766,6 +1766,7 @@ class PSKAApi:
             owner_user_id=owner_user_id,
             limit=10_000,
         )
+        all_items = sorted(all_items, key=lambda item: str(item.get("created_at") or ""), reverse=True)
         if has_kb_scope:
             all_items = [
                 item
