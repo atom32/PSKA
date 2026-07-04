@@ -31,6 +31,7 @@
 - Citation inspector 增加“追问这段”动作。
 - Today/Ask composer 会把选中的 citation 转成下一问草稿，并显示可清除的原文焦点 chip。
 - 下一问会把该 citation 的 `source_item_id` 注入 Ask `scope.source_item_ids`，避免从原文继续问时范围回退到整个 KB。
+- Citation inspector 已复用到 Writing answer/evidence/draft 节点和 Graph 节点 / Graph Path citations；这些入口共享同一套 citation 坐标、KB lineage、ReaderPane 原文加载和高亮能力。
 - `frontend/e2e/multi-kb-scoped-ask.spec.ts` 已扩展真实浏览器验收：UI Ask 展示 alpha citation inspector，点击“查看原文”后 ReaderPane 包含 alpha 原文且不包含 beta secret；点击“追问这段”后输入框包含 alpha `source_item_id`。
 
 ## 验收证据
@@ -56,5 +57,4 @@ PSKA_E2E_PASSWORD="<local AuthNode password>" \
 
 ## 下一步
 
-- CitationInspector 复用到 Graph/Writing 引用展示。
 - no-answer diagnostics 进一步压缩成用户能直接行动的修复建议。

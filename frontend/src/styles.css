@@ -1452,6 +1452,80 @@ button.context-item-main {
   overflow-wrap: anywhere;
 }
 
+.citation-inspector-panel {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.citation-inspector-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.citation-inspector-heading strong {
+  margin: 0;
+  font-size: 12px;
+}
+
+.citation-inspector-heading small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.citation-inspector-ref-list {
+  display: grid;
+  gap: 6px;
+}
+
+.citation-inspector-ref-list button {
+  width: 100%;
+  border: 1px solid rgba(35, 90, 77, 0.14);
+  border-radius: 7px;
+  background: #fffefa;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 6px;
+  padding: 7px;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.citation-inspector-ref-list button.active,
+.citation-inspector-ref-list button:focus-visible {
+  border-color: rgba(35, 90, 77, 0.34);
+  background: #f6fbf7;
+  outline: 0;
+}
+
+.citation-inspector-ref-list button span {
+  color: #235a4d;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.citation-inspector-ref-list button strong {
+  margin: 0;
+  min-width: 0;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.citation-inspector-ref-list button small {
+  grid-column: 2;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.citation-inspector-panel .evidence-window {
+  background: #fbfaf5;
+}
+
 .evidence-actions {
   display: flex;
   justify-content: flex-end;
@@ -4438,6 +4512,27 @@ button.context-item-main {
   white-space: nowrap;
 }
 
+.writing-node-citation-details {
+  margin-top: 7px;
+  border-top: 1px solid rgba(35, 90, 77, 0.12);
+  padding-top: 7px;
+}
+
+.writing-node-citation-details summary {
+  color: #235a4d;
+  font-size: 11px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.writing-node-citation-details .citation-inspector-panel {
+  margin-top: 7px;
+}
+
+.writing-node-citation-details .evidence-window {
+  padding: 9px;
+}
+
 .writing-node-actions {
   display: flex;
   flex-wrap: wrap;
@@ -5056,6 +5151,12 @@ button.context-item-main {
   background: #f7f1e4;
   white-space: normal;
   overflow-wrap: anywhere;
+}
+
+.graph-citation-inspector {
+  margin-top: 10px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
 }
 
 .graph-neighborhood-panel {

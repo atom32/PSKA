@@ -2398,22 +2398,85 @@ function EvidenceWindow({
         </a>
       ) : null}
       <blockquote>{displayText(evidenceText, "该引用没有返回可预览文本。")}</blockquote>
-      {onAskFromEvidence ? (
+      {canLoadReader || onAskFromEvidence ? (
         <div className="evidence-actions">
-          <button type="button" onClick={() => void openReader()} disabled={!canLoadReader || readerStatus === "loading"} data-testid="open-reader-pane">
-            <BookOpen size={14} />
-            <span>{readerStatus === "loading" ? "加载原文" : "查看原文"}</span>
-          </button>
-          <button type="button" onClick={() => onAskFromEvidence(refItem)} disabled={!evidenceText && !refItem.source_item_id} data-testid="ask-from-evidence">
-            <MessageCircle size={14} />
-            <span>追问这段</span>
-          </button>
+          {canLoadReader ? (
+            <button type="button" onClick={() => void openReader()} disabled={readerStatus === "loading"} data-testid="open-reader-pane">
+              <BookOpen size={14} />
+              <span>{readerStatus === "loading" ? "加载原文" : "查看原文"}</span>
+            </button>
+          ) : null}
+          {onAskFromEvidence ? (
+            <button type="button" onClick={() => onAskFromEvidence(refItem)} disabled={!evidenceText && !refItem.source_item_id} data-testid="ask-from-evidence">
+              <MessageCircle size={14} />
+              <span>追问这段</span>
+            </button>
+          ) : null}
         </div>
       ) : null}
       {readerStatus === "error" ? <div className="reader-pane-error">{readerError}</div> : null}
       {reader ? <ReaderPane reader={reader} focusRef={refItem} /> : null}
     </aside>
   );
+}
+
+function CitationInspectorPanel({
+  refs,
+  result,
+  serviceToken,
+  title = "Evidence refs",
+  className = "",
+  testId = "citation-inspector-panel"
+}: {
+  refs: unknown[];
+  result?: WorkspaceAskResponse | WorkspaceSearchResponse;
+  serviceToken?: PSKAAuth;
+  title?: string;
+  className?: string;
+  testId?: string;
+}) {
+  const normalizedRefs = normalizeSearchRefs(refs);
+  const refKeys = normalizedRefs.map((ref, index) => citationInspectorRefKey(ref, index)).join("|");
+  const [selectedKey, setSelectedKey] = useState("");
+  useEffect(() => {
+    if (!normalizedRefs.length) {
+      setSelectedKey("");
+      return;
+    }
+    if (!normalizedRefs.some((ref, index) => citationInspectorRefKey(ref, index) === selectedKey)) {
+      setSelectedKey(citationInspectorRefKey(normalizedRefs[0], 0));
+    }
+  }, [refKeys, normalizedRefs.length, selectedKey]);
+  if (!normalizedRefs.length) {
+    return null;
+  }
+  const selectedRef = normalizedRefs.find((ref, index) => citationInspectorRefKey(ref, index) === selectedKey) || normalizedRefs[0];
+  const inspectorResult = result || ({ citations: normalizedRefs } as WorkspaceSearchResponse);
+  return (
+    <div className={`citation-inspector-panel ${className}`.trim()} data-testid={testId}>
+      <div className="citation-inspector-heading">
+        <strong>{title}</strong>
+        <small>{normalizedRefs.length} refs</small>
+      </div>
+      <div className="citation-inspector-ref-list">
+        {normalizedRefs.slice(0, 6).map((ref, index) => {
+          const key = citationInspectorRefKey(ref, index);
+          return (
+            <button key={key} type="button" className={key === selectedKey ? "active" : ""} onClick={() => setSelectedKey(key)} data-testid="citation-inspector-ref">
+              <span>{index + 1}</span>
+              <strong>{trimText(ref.title || ref.source_item_id || ref.chunk_id || "引用", 52)}</strong>
+              {sourceRefKnowledgeBaseLabel(ref) ? <small>{sourceRefKnowledgeBaseLabel(ref)}</small> : null}
+            </button>
+          );
+        })}
+      </div>
+      <EvidenceWindow refItem={selectedRef} result={inspectorResult} serviceToken={serviceToken} />
+    </div>
+  );
+}
+
+function citationInspectorRefKey(ref: SearchEvidenceRef, index: number) {
+  return searchRefKey(ref) || `ref-${index}`;
 }
 
 function ReaderPane({ reader, focusRef }: { reader: WorkspaceReaderSourceResponse; focusRef: SearchEvidenceRef }) {
@@ -6523,6 +6586,7 @@ function findOpenWritingPosition(
 
 type WritingNodeData = Record<string, unknown> & {
   node: WritingNode;
+  serviceToken: PSKAAuth;
   selected: boolean;
   running: boolean;
   askPreview?: WorkspaceAskResponse;
@@ -7005,6 +7069,7 @@ function WritingWorkspace({
         },
         data: {
           node,
+          serviceToken,
           selected: selectedSectionId === node.node_id,
           running: runningNodeIds.includes(node.node_id),
           askPreview: askPreviews[node.node_id] || writingNodeLastAskPreview(node),
@@ -7022,7 +7087,7 @@ function WritingWorkspace({
           }
         }
       })),
-    [selectedSectionId, runningNodeIds, askPreviews, suggestions, writingNodes]
+    [selectedSectionId, runningNodeIds, askPreviews, suggestions, writingNodes, serviceToken]
   );
   const xyEdges: Edge[] = useMemo(
     () =>
@@ -7209,10 +7274,22 @@ function WritingCanvasNode({ data }: NodeProps<WritingFlowNode>) {
         </div>
       ) : null}
       {citationRefs.length ? (
-        <div className="writing-node-citation-bar">
-          <span>引用 {citationRefs.length}</span>
-          {citationKnowledgeBaseLabel ? <small>{citationKnowledgeBaseLabel}</small> : null}
-        </div>
+        <>
+          <div className="writing-node-citation-bar">
+            <span>引用 {citationRefs.length}</span>
+            {citationKnowledgeBaseLabel ? <small>{citationKnowledgeBaseLabel}</small> : null}
+          </div>
+          <details className="writing-node-citation-details nodrag" data-testid="writing-citation-inspector">
+            <summary>检查引用</summary>
+            <CitationInspectorPanel
+              refs={citationRefs}
+              result={{ citations: node.citations || [], source_refs: node.source_refs || [] } as WorkspaceSearchResponse}
+              serviceToken={data.serviceToken}
+              title="Writing 引用"
+              testId="writing-citation-inspector-panel"
+            />
+          </details>
+        </>
       ) : null}
       <div className="writing-node-actions nodrag">
         <button type="button" onClick={() => data.onOpenEditor(node)} data-testid="writing-node-toggle">编辑</button>
@@ -7888,12 +7965,14 @@ function GraphWorkspace({
                 </div>
                 {expandError ? <p className="graph-path-warning">{expandError}</p> : null}
                 {selectedNode.source_refs?.length ? (
-                  <div className="graph-source-refs">
-                    <strong>Evidence refs</strong>
-                    {selectedNode.source_refs.slice(0, 6).map((ref, index) => (
-                      <code key={`${selectedNode.id}-${index}`}>{ref.passage_window_id || ref.chunk_id || ref.document_id || ref.source_item_id}</code>
-                    ))}
-                  </div>
+                  <CitationInspectorPanel
+                    refs={selectedNode.source_refs}
+                    result={{ source_refs: selectedNode.source_refs } as WorkspaceSearchResponse}
+                    serviceToken={serviceToken}
+                    title="Graph Evidence refs"
+                    className="graph-citation-inspector"
+                    testId="graph-citation-inspector"
+                  />
                 ) : null}
                 <GraphNeighborhoodPanel graph={graph} selectedNodeId={selectedNodeId} neighborhood={selectedNeighborhood} />
                 <GraphEvidencePathPanel evidencePath={selectedEvidencePath} />
@@ -7905,7 +7984,7 @@ function GraphWorkspace({
                 <p>点击 digest、claim、hyperedge 或 passage，查看它如何追溯到原文证据。</p>
               </>
             )}
-            {graphAskResult ? <AskResult result={graphAskResult} pending={pathStatus === "loading"} /> : <GraphPathPanel result={pathResult} status={pathStatus} error={pathError} />}
+            {graphAskResult ? <AskResult result={graphAskResult} pending={pathStatus === "loading"} serviceToken={serviceToken} /> : <GraphPathPanel result={pathResult} status={pathStatus} error={pathError} serviceToken={serviceToken} />}
           </aside>
         </div>
       )}
@@ -8006,11 +8085,13 @@ function GraphInsightsPanel({
 function GraphPathPanel({
   result,
   status,
-  error
+  error,
+  serviceToken
 }: {
   result: WorkspaceGraphPathResponse | null;
   status: "idle" | "loading" | "success" | "error";
   error: string;
+  serviceToken?: PSKAAuth;
 }) {
   if (status === "idle" && !result) {
     return (
@@ -8064,6 +8145,16 @@ function GraphPathPanel({
         <span><strong>{filteredFacts.length}</strong> Filtered</span>
         <span><strong>{graphPaths.length}</strong> Paths</span>
       </div>
+      {citations.length ? (
+        <CitationInspectorPanel
+          refs={citations}
+          result={{ citations } as WorkspaceSearchResponse}
+          serviceToken={serviceToken}
+          title="Graph Citations"
+          className="graph-citation-inspector"
+          testId="graph-path-citation-inspector"
+        />
+      ) : null}
       {result?.path_summary?.filter_mode ? (
         <p className="graph-path-filter-note">
           {displayText(result.path_summary.filter_mode)} · kept {result.path_summary.kept_fact_count ?? facts.length} · filtered {result.path_summary.filtered_fact_count ?? filteredFacts.length}
