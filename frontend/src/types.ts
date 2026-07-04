@@ -156,6 +156,18 @@ export type EvidenceWikiTaxonomyFacet = {
   count?: number;
 };
 
+export type EvidenceWikiContentRevision = {
+  revision_id?: string;
+  revision?: number;
+  title?: string;
+  summary?: string;
+  body_markdown?: string;
+  content_node_id?: string;
+  edited_at?: string | null;
+  editor_user_id?: string;
+  restored_from_revision_id?: string;
+};
+
 export type EvidenceWikiSearchResponse = {
   ok?: boolean;
   query?: string;
@@ -175,6 +187,8 @@ export type EvidenceWikiPage = {
   content_node_id?: string;
   wiki_content_updated_at?: string | null;
   wiki_content_revision?: number;
+  content_revision_count?: number;
+  content_revisions?: EvidenceWikiContentRevision[];
   published_at?: string | null;
   publish_updated_at?: string | null;
   status?: string;
@@ -228,6 +242,7 @@ export type EvidenceWikiContentUpdateResponse = {
   board?: WritingBoard;
   content_node?: WritingNode;
   page?: EvidenceWikiPage;
+  content_revisions?: EvidenceWikiContentRevision[];
 };
 
 export type EvidenceWikiPublishResponse = {

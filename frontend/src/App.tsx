@@ -111,6 +111,7 @@ import {
   recordWorkspaceActivity,
   rejectReviewItem,
   restoreKnowledgeBase,
+  restoreEvidenceWikiContent,
   restoreReviewItem,
   retryDigestJob,
   runDigestNow,
@@ -135,6 +136,7 @@ import type {
   ConsoleSourcesResponse,
   DigestNowResponse,
   DigestLogsResponse,
+  EvidenceWikiContentRevision,
   EvidenceWikiTaxonomy,
   EvidenceWikiTaxonomyFacet,
   KnowledgeBase,
@@ -9235,6 +9237,7 @@ function EvidenceBriefLibrary({
   const [wikiContentDraft, setWikiContentDraft] = useState({ title: "", summary: "", body_markdown: "" });
   const [wikiContentSaving, setWikiContentSaving] = useState(false);
   const [wikiContentStatus, setWikiContentStatus] = useState("");
+  const [wikiContentRestoringRevisionId, setWikiContentRestoringRevisionId] = useState("");
   const [selectedWikiPageBoardId, setSelectedWikiPageBoardId] = useState("");
   const normalizedWikiQuery = wikiQuery.trim();
   const wikiTaxonomyFilterCount = evidenceWikiTaxonomyFilterCount(wikiTaxonomyFilters);
@@ -9277,6 +9280,7 @@ function EvidenceBriefLibrary({
   const wikiPage = wikiPageQuery.data?.page;
   const wikiPageRefs = wikiPage?.source_refs || [];
   const wikiRelatedPages = wikiPage?.related_pages || [];
+  const wikiContentRevisions = wikiPage?.content_revisions || [];
   const wikiResults = wikiSearchQuery.data?.results || [];
   const wikiTaxonomyFacetItems = evidenceWikiTaxonomyFacets(wikiSearchQuery.data?.taxonomy_facets);
 
@@ -9372,6 +9376,39 @@ function EvidenceBriefLibrary({
       setWikiContentStatus(error instanceof Error ? error.message : "Evidence Wiki 页面保存失败。");
     } finally {
       setWikiContentSaving(false);
+    }
+  }
+
+  async function handleRestoreWikiContent(revision: EvidenceWikiContentRevision) {
+    if (!selectedWikiPageBoardId || !revision.revision_id || wikiContentRestoringRevisionId) {
+      return;
+    }
+    setWikiContentRestoringRevisionId(revision.revision_id);
+    setWikiContentStatus("");
+    try {
+      const payload = await restoreEvidenceWikiContent(serviceToken, selectedWikiPageBoardId, {
+        revision_id: revision.revision_id,
+        revision: revision.revision
+      });
+      if (payload.ok === false) {
+        throw new Error(payload.error || "Evidence Wiki 修订恢复失败。");
+      }
+      const page = payload.page;
+      if (page) {
+        setWikiContentDraft({
+          title: page.title || "",
+          summary: page.summary || "",
+          body_markdown: page.body_markdown || ""
+        });
+      }
+      setWikiContentStatus("已恢复");
+      await queryClient.invalidateQueries({ queryKey: ["evidence-wiki-search"] });
+      await queryClient.invalidateQueries({ queryKey: ["evidence-wiki-page"] });
+      await queryClient.invalidateQueries({ queryKey: ["writing-boards"] });
+    } catch (error) {
+      setWikiContentStatus(error instanceof Error ? error.message : "Evidence Wiki 修订恢复失败。");
+    } finally {
+      setWikiContentRestoringRevisionId("");
     }
   }
 
@@ -9549,6 +9586,34 @@ function EvidenceBriefLibrary({
                   </button>
                 </div>
               </form>
+              {wikiContentRevisions.length ? (
+                <div className="writing-brief-wiki-revisions" data-testid="writing-brief-wiki-revisions" aria-label="Evidence Wiki 内容修订">
+                  <div className="writing-brief-wiki-revisions-head">
+                    <strong>内容修订</strong>
+                    <small>{wikiPage.content_revision_count || wikiContentRevisions.length} 个</small>
+                  </div>
+                  {wikiContentRevisions.slice(0, 5).map((revision) => (
+                    <div className="writing-brief-wiki-revision" key={revision.revision_id || `revision-${revision.revision}`} data-testid="writing-brief-wiki-revision">
+                      <div>
+                        <span>修订 {revision.revision || "-"}</span>
+                        <small>
+                          {[revision.edited_at ? formatReviewDate(revision.edited_at) : "", revision.restored_from_revision_id ? "由恢复生成" : ""].filter(Boolean).join(" · ")}
+                        </small>
+                        <p>{trimText(revision.body_markdown || revision.summary || "", 96)}</p>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={!revision.revision_id || wikiContentRestoringRevisionId === revision.revision_id}
+                        onClick={() => void handleRestoreWikiContent(revision)}
+                        data-testid="writing-brief-wiki-revision-restore"
+                      >
+                        <RotateCcw size={12} />
+                        {wikiContentRestoringRevisionId === revision.revision_id ? "恢复中" : "恢复"}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
               {evidenceWikiTaxonomySummary(wikiPage.taxonomy) ? (
                 <div className="writing-brief-wiki-taxonomy-chips" data-testid="writing-brief-wiki-taxonomy">
                   {EVIDENCE_WIKI_TAXONOMY_FIELDS.flatMap((field) =>

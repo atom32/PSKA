@@ -2987,6 +2987,28 @@ def test_evidence_brief_creates_writing_draft_with_lineage_and_refs() -> None:
     assert content_update["content_node"]["source_refs"][0]["source_item_id"] == source.source_item_id
     assert content_update["page"]["summary"] == "Edited citation governance summary."
     assert "Edited Evidence Wiki page copy" in content_update["page"]["body_markdown"]
+    assert content_update["page"]["content_revisions"][0]["revision"] == 1
+    second_content_update = api.workspace_evidence_wiki_update_content(
+        board["board_id"],
+        {
+            "body_markdown": "Second Evidence Wiki page copy before restore.",
+            "summary": "Second citation governance summary.",
+        },
+        context=context,
+    )
+    assert second_content_update["ok"] is True
+    assert second_content_update["page"]["wiki_content_revision"] == 2
+    assert "Second Evidence Wiki page copy" in second_content_update["page"]["body_markdown"]
+    restored_content = api.workspace_evidence_wiki_restore_content(
+        board["board_id"],
+        {"revision": 1},
+        context=context,
+    )
+    assert restored_content["ok"] is True
+    assert restored_content["page"]["wiki_content_revision"] == 3
+    assert restored_content["page"]["content_revision_count"] == 3
+    assert restored_content["page"]["content_revisions"][0]["restored_from_revision_id"] == content_update["page"]["content_revisions"][0]["revision_id"]
+    assert "Edited Evidence Wiki page copy" in restored_content["page"]["body_markdown"]
     search = api.workspace_evidence_wiki_search(
         {
             "query": "Edited Evidence Wiki page copy",

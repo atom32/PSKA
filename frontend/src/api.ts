@@ -1295,6 +1295,25 @@ export async function updateEvidenceWikiContent(
   return (await response.json()) as EvidenceWikiContentUpdateResponse;
 }
 
+export async function restoreEvidenceWikiContent(
+  serviceToken: PSKAAuth,
+  boardId: string,
+  payload: {
+    revision_id?: string;
+    revision?: number;
+  }
+): Promise<EvidenceWikiContentUpdateResponse> {
+  const response = await fetch(`/workspace/evidence-wiki/pages/${encodeURIComponent(boardId)}/content/restore`, {
+    method: "POST",
+    headers: headers(serviceToken),
+    body: JSON.stringify({ ...payload, ...requestUserPayload(serviceToken) })
+  });
+  if (!response.ok) {
+    throw new Error(await responseError(response, "Evidence Wiki 修订恢复失败"));
+  }
+  return (await response.json()) as EvidenceWikiContentUpdateResponse;
+}
+
 export async function publishEvidenceWikiBrief(
   serviceToken: PSKAAuth,
   payload: {

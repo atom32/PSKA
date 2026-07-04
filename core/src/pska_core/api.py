@@ -4855,11 +4855,12 @@ class PSKAApi:
         body_markdown = str(payload.get("body_markdown") if "body_markdown" in payload else payload.get("body", "")).strip()
         if "body_markdown" not in payload and "body" not in payload:
             body_markdown = str(getattr(existing_content_node, "body_markdown", "") or _evidence_wiki_page_body(board, nodes)).strip()
+        next_revision = int(metadata.get("wiki_content_revision") or 0) + 1
         next_metadata = {
             **metadata,
             "wiki_content_updated_at": now,
             "wiki_content_editor_user_id": owner,
-            "wiki_content_revision": int(metadata.get("wiki_content_revision") or 0) + 1,
+            "wiki_content_revision": next_revision,
         }
         if summary is not None:
             next_metadata["wiki_summary"] = summary
@@ -4868,6 +4869,18 @@ class PSKAApi:
             or f"wnode_{uuid5(NAMESPACE_URL, f'pska.evidence_wiki.page_content:{tenant_id}:{owner}:{board_id}').hex}"
         )
         next_metadata["wiki_content_node_id"] = content_node_id
+        revision = _evidence_wiki_content_revision_payload(
+            board_id=board_id,
+            revision=next_revision,
+            title=title if title is not None else str(getattr(board, "title", "") or ""),
+            summary=summary if summary is not None else str(metadata.get("wiki_summary") or ""),
+            body_markdown=body_markdown,
+            content_node_id=content_node_id,
+            edited_at=now,
+            editor_user_id=owner,
+            restored_from_revision_id=str(payload.get("restored_from_revision_id") or ""),
+        )
+        next_metadata["wiki_content_revisions"] = _evidence_wiki_next_content_revisions(metadata, revision)
         updated_board = self.store.update_writing_board(
             board_id,
             tenant_id=tenant_id,
@@ -4921,6 +4934,52 @@ class PSKAApi:
                     ),
                 )
         return response
+
+    def workspace_evidence_wiki_restore_content(
+        self,
+        board_id: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        context: RequestContext | None = None,
+    ) -> dict[str, Any]:
+        payload, tenant_id, owner = _writing_request_scope(context, payload or {})
+        board_id = str(board_id or payload.get("board_id") or "").strip()
+        if not board_id:
+            return {"ok": False, "reason": "missing_board_id", "error": "Evidence Wiki content restore needs a board_id."}
+        board = self.store.get_writing_board(board_id, tenant_id=tenant_id, owner_user_id=owner)
+        metadata = dict(getattr(board, "metadata", {}) or {})
+        if metadata.get("kind") != "evidence_wiki_brief":
+            return {
+                "ok": False,
+                "reason": "not_evidence_wiki_brief",
+                "error": "Only Evidence Brief pages can restore Evidence Wiki content revisions.",
+                "board": _writing_board_payload(board),
+            }
+        requested_revision_id = str(payload.get("revision_id") or "").strip()
+        requested_revision = str(payload.get("revision") or "").strip()
+        revision = _evidence_wiki_find_content_revision(
+            metadata,
+            revision_id=requested_revision_id,
+            revision=requested_revision,
+        )
+        if not revision:
+            return {
+                "ok": False,
+                "reason": "missing_revision",
+                "error": "Requested Evidence Wiki content revision was not found.",
+                "board": _writing_board_payload(board),
+                "content_revisions": _evidence_wiki_content_revisions(metadata),
+            }
+        return self.workspace_evidence_wiki_update_content(
+            board_id,
+            {
+                "title": revision.get("title") or str(getattr(board, "title", "") or ""),
+                "summary": revision.get("summary") or metadata.get("wiki_summary") or "",
+                "body_markdown": revision.get("body_markdown") or "",
+                "restored_from_revision_id": revision.get("revision_id") or "",
+            },
+            context=context,
+        )
 
     def workspace_evidence_wiki_publish(self, payload: dict[str, Any] | None = None, context: RequestContext | None = None) -> dict[str, Any]:
         payload, tenant_id, owner = _writing_request_scope(context, payload or {})
@@ -6128,6 +6187,8 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
                 return self._json(200, self.api.workspace_evidence_brief_create(payload, context=context))
             if path.startswith("/workspace/evidence-wiki/pages/"):
                 parts = _evidence_wiki_page_path_parts(path)
+                if len(parts) == 3 and parts[1] == "content" and parts[2] == "restore":
+                    return self._json(200, self.api.workspace_evidence_wiki_restore_content(unquote(parts[0]), payload, context=context))
                 if len(parts) == 2 and parts[1] == "taxonomy":
                     return self._json(200, self.api.workspace_evidence_wiki_update_taxonomy(unquote(parts[0]), payload, context=context))
                 if len(parts) == 2 and parts[1] == "content":
@@ -14774,6 +14835,8 @@ def _evidence_wiki_page_payload(
         "content_node_id": str(metadata.get("wiki_content_node_id") or ""),
         "wiki_content_updated_at": metadata.get("wiki_content_updated_at"),
         "wiki_content_revision": metadata.get("wiki_content_revision") or 0,
+        "content_revision_count": len(_evidence_wiki_content_revisions(metadata)),
+        "content_revisions": _evidence_wiki_content_revisions(metadata),
         "published_at": metadata.get("published_at") or metadata.get("publish_updated_at"),
         "publish_updated_at": metadata.get("publish_updated_at"),
         "status": metadata.get("status") or metadata.get("publish_status"),
@@ -15035,6 +15098,89 @@ def _evidence_wiki_page_content_node(nodes: list[Any]) -> Any | None:
         artifact_type = str(metadata.get("artifact_type") or metadata.get("kind") or "").strip()
         if artifact_type == "evidence_wiki_page_body" or metadata.get("wiki_editor_managed") is True:
             return node
+    return None
+
+
+def _evidence_wiki_content_revision_payload(
+    *,
+    board_id: str,
+    revision: int,
+    title: str,
+    summary: str,
+    body_markdown: str,
+    content_node_id: str,
+    edited_at: str,
+    editor_user_id: str,
+    restored_from_revision_id: str = "",
+) -> dict[str, Any]:
+    body_key = _normalize_search_text(body_markdown)[:240]
+    revision_id = f"ewrev_{uuid5(NAMESPACE_URL, f'pska.evidence_wiki.content_revision:{board_id}:{revision}:{edited_at}:{body_key}').hex}"
+    payload: dict[str, Any] = {
+        "revision_id": revision_id,
+        "revision": revision,
+        "title": title,
+        "summary": summary,
+        "body_markdown": body_markdown,
+        "content_node_id": content_node_id,
+        "edited_at": edited_at,
+        "editor_user_id": editor_user_id,
+    }
+    if restored_from_revision_id:
+        payload["restored_from_revision_id"] = restored_from_revision_id
+    return payload
+
+
+def _evidence_wiki_next_content_revisions(metadata: dict[str, Any], revision: dict[str, Any], limit: int = 12) -> list[dict[str, Any]]:
+    revisions = [revision, *_evidence_wiki_content_revisions(metadata)]
+    seen: set[str] = set()
+    result: list[dict[str, Any]] = []
+    for item in revisions:
+        revision_id = str(item.get("revision_id") or "")
+        if not revision_id or revision_id in seen:
+            continue
+        seen.add(revision_id)
+        result.append(item)
+        if len(result) >= limit:
+            break
+    return result
+
+
+def _evidence_wiki_content_revisions(metadata: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_revisions = _list_of_dicts(metadata.get("wiki_content_revisions"))
+    revisions: list[dict[str, Any]] = []
+    for item in raw_revisions:
+        revision_id = str(item.get("revision_id") or "").strip()
+        body_markdown = str(item.get("body_markdown") or "")
+        if not revision_id or not body_markdown:
+            continue
+        revisions.append(
+            {
+                "revision_id": revision_id,
+                "revision": int(item.get("revision") or 0),
+                "title": str(item.get("title") or ""),
+                "summary": str(item.get("summary") or ""),
+                "body_markdown": body_markdown,
+                "content_node_id": str(item.get("content_node_id") or ""),
+                "edited_at": item.get("edited_at"),
+                "editor_user_id": str(item.get("editor_user_id") or ""),
+                **({"restored_from_revision_id": str(item.get("restored_from_revision_id") or "")} if item.get("restored_from_revision_id") else {}),
+            }
+        )
+    revisions.sort(key=lambda item: (int(item.get("revision") or 0), str(item.get("edited_at") or "")), reverse=True)
+    return revisions
+
+
+def _evidence_wiki_find_content_revision(
+    metadata: dict[str, Any],
+    *,
+    revision_id: str = "",
+    revision: str = "",
+) -> dict[str, Any] | None:
+    for item in _evidence_wiki_content_revisions(metadata):
+        if revision_id and item.get("revision_id") == revision_id:
+            return item
+        if revision and str(item.get("revision") or "") == revision:
+            return item
     return None
 
 
