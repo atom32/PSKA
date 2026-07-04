@@ -58,7 +58,8 @@ test("browser session scoped Ask does not leak citations across knowledge bases"
   try {
     const alpha = await createKnowledgeBase(page, `Scoped Ask Alpha ${marker}`);
     const beta = await createKnowledgeBase(page, `Scoped Ask Beta ${marker}`);
-    createdKnowledgeBaseIds.push(alpha.knowledge_base_id, beta.knowledge_base_id);
+    const empty = await createKnowledgeBase(page, `Scoped Ask Empty ${marker}`);
+    createdKnowledgeBaseIds.push(alpha.knowledge_base_id, beta.knowledge_base_id, empty.knowledge_base_id);
 
     const alphaSource = await createTextSource(page, alpha.knowledge_base_id, {
       title: `Scoped Ask Alpha source ${marker}`,
@@ -77,8 +78,11 @@ test("browser session scoped Ask does not leak citations across knowledge bases"
 
     await page.goto(frontendUrl, { waitUntil: "domcontentloaded" });
     await openWorkspace(page, "Today");
+    await selectCurrentKnowledgeBase(page, empty.knowledge_base_id);
+    await expectKnowledgeBaseAskPreflight(page, empty, "empty");
     await selectCurrentKnowledgeBase(page, alpha.knowledge_base_id);
     await expectKnowledgeBaseScopeMenuSearch(page, alpha, beta);
+    await openWorkspace(page, "Today");
     await expectTodayReviewHealth(page, reviewFixture);
     await expectKnowledgeBaseReadinessPanel(page, alpha.name);
     await expectKnowledgeBaseDetailTabs(page);
@@ -274,6 +278,29 @@ async function expectKnowledgeBaseReadinessPanel(page: Page, knowledgeBaseName: 
   await expect(panel.getByTestId("knowledge-base-readiness-reason")).toContainText(/检索|处理|索引|资料/);
 }
 
+async function expectKnowledgeBaseAskPreflight(page: Page, knowledgeBase: KnowledgeBase, expected: "empty" | "ready") {
+  await openWorkspace(page, "资料库");
+  await page.getByTestId("knowledge-base-tab-ask").click();
+  const panel = page.getByTestId("knowledge-base-inline-ask-panel");
+  const preflight = panel.getByTestId("knowledge-base-ask-preflight");
+  await expect(preflight).toBeVisible({ timeout: 45_000 });
+  await expect(preflight).toContainText(knowledgeBase.name);
+  await expect(preflight).toContainText("hard scope");
+  await expect(preflight).toContainText("chunks");
+  if (expected === "empty") {
+    await expect(preflight).toContainText("还没有可问的资料");
+    await expect(preflight.getByTestId("knowledge-base-ask-open-sources")).toBeVisible();
+    await preflight.getByTestId("knowledge-base-ask-open-sources").click();
+    await expect(page.getByTestId("corpus-search-input")).toBeVisible({ timeout: 45_000 });
+    await page.getByTestId("knowledge-base-tab-ask").click();
+    await panel.getByTestId("knowledge-base-ask-preflight").getByTestId("knowledge-base-ask-open-today").click();
+    await expect(page.getByTestId("today-ask-form")).toBeVisible({ timeout: 45_000 });
+  } else {
+    await expect(preflight).toContainText("当前 KB 可直接 Ask");
+    await expect(preflight.getByTestId("knowledge-base-ask-open-processing")).toBeVisible();
+  }
+}
+
 async function expectKnowledgeBaseDetailTabs(page: Page) {
   await openWorkspace(page, "资料库");
   const tabs = page.getByTestId("knowledge-base-detail-tabs");
@@ -290,6 +317,7 @@ async function expectKnowledgeBaseDetailTabs(page: Page) {
   await expect(page.getByTestId("knowledge-base-ask-input")).toBeVisible();
   await expect(page.getByTestId("knowledge-base-search-input")).toBeVisible();
   await expect(page.getByTestId("knowledge-base-inline-ask-panel")).toContainText("询问当前知识库");
+  await expect(page.getByTestId("knowledge-base-ask-preflight")).toContainText("hard scope");
   await expect(page.locator(".kb-search-panel")).toContainText("证据搜索");
   await expect(page.getByTestId("knowledge-base-ask-history-panel")).toBeVisible();
   await expect(page.getByTestId("knowledge-base-create-ask-conversation")).toBeVisible();

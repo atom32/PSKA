@@ -7029,6 +7029,7 @@ function CorpusWorkspace({
           status={knowledgeBaseAskStatus}
           error={knowledgeBaseAskError}
           result={knowledgeBaseAskResult}
+          currentKnowledgeBase={currentKnowledgeBase}
           currentKnowledgeBaseName={currentKnowledgeBase?.name || "当前知识库"}
           currentKnowledgeBaseReadyLabel={readinessPill.label}
           disabled={!currentKnowledgeBaseId}
@@ -7037,6 +7038,9 @@ function CorpusWorkspace({
           onQueryChange={setKnowledgeBaseAskQuery}
           onSubmit={handleKnowledgeBaseAsk}
           onOpenWriting={onOpenWriting || (() => onOpenWorkspace("writing"))}
+          onOpenSources={() => setKnowledgeBaseTab("sources")}
+          onOpenProcessing={() => setKnowledgeBaseTab("processing")}
+          onOpenToday={() => openAskConversationFromCorpus()}
         />
         <KnowledgeBaseSearchPanel
           query={knowledgeBaseSearchQuery}
@@ -7299,6 +7303,7 @@ function KnowledgeBaseAskPanel({
   status,
   error,
   result,
+  currentKnowledgeBase,
   currentKnowledgeBaseName,
   currentKnowledgeBaseReadyLabel,
   disabled,
@@ -7306,12 +7311,16 @@ function KnowledgeBaseAskPanel({
   knowledgeBases,
   onQueryChange,
   onSubmit,
-  onOpenWriting
+  onOpenWriting,
+  onOpenSources,
+  onOpenProcessing,
+  onOpenToday
 }: {
   query: string;
   status: "idle" | "loading" | "success" | "error";
   error: string;
   result: WorkspaceAskResponse | null;
+  currentKnowledgeBase?: KnowledgeBase;
   currentKnowledgeBaseName: string;
   currentKnowledgeBaseReadyLabel: string;
   disabled: boolean;
@@ -7320,11 +7329,21 @@ function KnowledgeBaseAskPanel({
   onQueryChange: (value: string) => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onOpenWriting: (boardId?: string) => void;
+  onOpenSources: () => void;
+  onOpenProcessing: () => void;
+  onOpenToday: () => void;
 }) {
   const pending = status === "loading";
   return (
     <section className="today-section kb-ask-panel" data-testid="knowledge-base-inline-ask-panel">
       <SectionTitle icon={<MessageCircle size={18} />} title="询问当前知识库" subtitle={currentKnowledgeBaseName} />
+      <KnowledgeBaseAskPreflight
+        knowledgeBase={currentKnowledgeBase}
+        readinessLabel={currentKnowledgeBaseReadyLabel}
+        onOpenSources={onOpenSources}
+        onOpenProcessing={onOpenProcessing}
+        onOpenToday={onOpenToday}
+      />
       <form className="kb-ask-form" onSubmit={onSubmit}>
         <textarea
           value={query}
@@ -7354,6 +7373,55 @@ function KnowledgeBaseAskPanel({
         <div className="review-empty compact">本次回答会强限定到当前知识库，并保留 citations、ReaderPane 和 Brief 入口。</div>
       ) : null}
     </section>
+  );
+}
+
+type KnowledgeBaseAskPreflightTone = "ready" | "warning" | "empty" | "error";
+type KnowledgeBaseAskPreflightActionId = "sources" | "processing" | "today";
+
+function KnowledgeBaseAskPreflight({
+  knowledgeBase,
+  readinessLabel,
+  onOpenSources,
+  onOpenProcessing,
+  onOpenToday
+}: {
+  knowledgeBase?: KnowledgeBase;
+  readinessLabel: string;
+  onOpenSources: () => void;
+  onOpenProcessing: () => void;
+  onOpenToday: () => void;
+}) {
+  const view = knowledgeBaseAskPreflightView(knowledgeBase, readinessLabel);
+  const handlers: Record<KnowledgeBaseAskPreflightActionId, () => void> = {
+    sources: onOpenSources,
+    processing: onOpenProcessing,
+    today: onOpenToday
+  };
+  return (
+    <div className={`kb-ask-preflight ${view.tone}`} data-testid="knowledge-base-ask-preflight" aria-label="当前知识库 Ask preflight">
+      <div className="kb-ask-preflight-main">
+        <span className="eyebrow">Ask preflight</span>
+        <strong>{view.title}</strong>
+        <p>{view.detail}</p>
+      </div>
+      <div className="kb-ask-preflight-metrics" aria-label="当前知识库 Ask 指标">
+        {view.metrics.map((metric) => (
+          <span key={metric.label}>
+            <strong>{metric.value}</strong>
+            {metric.label}
+          </span>
+        ))}
+      </div>
+      <div className="kb-ask-preflight-actions">
+        {view.actions.map((action) => (
+          <button type="button" key={action.id} onClick={handlers[action.id]} data-testid={`knowledge-base-ask-open-${action.id}`}>
+            {action.id === "sources" ? <UploadCloud size={15} /> : action.id === "processing" ? <TextCursorInput size={15} /> : <MessageCircle size={15} />}
+            <span>{action.label}</span>
+          </button>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -9233,6 +9301,112 @@ function knowledgeBaseReadinessReason(knowledgeBase?: KnowledgeBase) {
     return "Ask 会在这个知识库的 active corpus 中检索，并继续执行权限过滤。";
   }
   return "等待同步、解析或切片完成后可进入稳定检索。";
+}
+
+function knowledgeBaseAskPreflightView(knowledgeBase: KnowledgeBase | undefined, readinessLabel: string): {
+  tone: KnowledgeBaseAskPreflightTone;
+  title: string;
+  detail: string;
+  metrics: Array<{ label: string; value: string }>;
+  actions: Array<{ id: KnowledgeBaseAskPreflightActionId; label: string }>;
+} {
+  if (!knowledgeBase) {
+    return {
+      tone: "empty",
+      title: "请选择知识库",
+      detail: "Ask 会在选中的知识库内执行 hard scope 检索。",
+      metrics: [
+        { label: "资料", value: "0" },
+        { label: "chunks", value: "0" },
+        { label: "向量", value: "-" },
+        { label: "模式", value: "hard scope" }
+      ],
+      actions: [{ id: "today", label: "打开 Today" }]
+    };
+  }
+  const readiness = knowledgeBase.readiness || {};
+  const counts = knowledgeBase.counts || {};
+  const sourceItems = firstFiniteNumber(readiness.source_item_count, counts.source_items) || 0;
+  const chunks = firstFiniteNumber(readiness.active_chunk_count, readiness.chunk_count, counts.active_chunks, counts.chunks) || 0;
+  const embeddedChunks = firstFiniteNumber(readiness.embedded_chunk_count, counts.embedded_chunks);
+  const failed = knowledgeBaseMetricNumber(readiness.failed_processing_count ?? counts.failed_processing_spans);
+  const processing = knowledgeBaseMetricNumber(readiness.processing_count ?? counts.processing_spans);
+  const dirty = knowledgeBaseMetricNumber(readiness.offline_index_dirty_count ?? counts.offline_index_dirty);
+  const embeddingStatus = displayText(readiness.embedding_status, "").toLowerCase();
+  const coverage = firstFiniteNumber(readiness.embedding_coverage);
+  const coverageLabel = coverage !== undefined
+    ? `${Math.round(Math.max(0, Math.min(1, coverage)) * 100)}%`
+    : embeddedChunks !== undefined && chunks > 0
+      ? `${Math.round(Math.max(0, Math.min(1, embeddedChunks / chunks)) * 100)}%`
+      : "-";
+  const metrics = [
+    { label: "资料", value: knowledgeBaseMetricLabel(sourceItems) },
+    { label: "chunks", value: knowledgeBaseMetricLabel(chunks) },
+    { label: "向量", value: coverageLabel },
+    { label: "模式", value: "hard scope" }
+  ];
+
+  if (sourceItems <= 0 && !readiness.has_source_items) {
+    return {
+      tone: "empty",
+      title: "还没有可问的资料",
+      detail: `${knowledgeBase.name || "当前知识库"} 目前没有资料条目。先添加文件、文本或 URL，再让 Ask 只检索这个知识库。`,
+      metrics,
+      actions: [
+        { id: "sources", label: "添加资料" },
+        { id: "today", label: "去 Today" }
+      ]
+    };
+  }
+  if (failed > 0 || displayText(readiness.processing_status, "").toLowerCase() === "failed") {
+    return {
+      tone: "error",
+      title: "处理异常会影响 Ask",
+      detail: "已有资料，但处理链路存在失败记录。仍可提问，结果会暴露 no-answer diagnostics 和 citations 状态。",
+      metrics,
+      actions: [
+        { id: "processing", label: "查看处理" },
+        { id: "sources", label: "资料列表" }
+      ]
+    };
+  }
+  if (chunks <= 0 && !readiness.has_chunks) {
+    return {
+      tone: "warning",
+      title: processing > 0 ? "资料正在处理" : "等待切片后再稳定 Ask",
+      detail: processing > 0
+        ? "资料已进入处理链路，但还没有形成可检索片段。Ask 可以运行，命中不足时会给出诊断。"
+        : "资料已归入知识库，但当前还没有 active chunks。先检查处理和切片状态更稳。",
+      metrics,
+      actions: [
+        { id: "processing", label: "查看处理" },
+        { id: "sources", label: "资料列表" }
+      ]
+    };
+  }
+  if (dirty > 0 || readiness.offline_index_fresh === false || embeddingStatus === "partial" || embeddingStatus === "missing") {
+    return {
+      tone: "warning",
+      title: "当前 KB 可 Ask，索引需复核",
+      detail: `已检测到可检索片段；${readinessLabel}。向量或离线索引不完整时，系统会继续使用可用的 hybrid/lexical 检索。`,
+      metrics,
+      actions: [
+        { id: "processing", label: "查看处理" },
+        { id: "today", label: "去 Today" }
+      ]
+    };
+  }
+  return {
+    tone: "ready",
+    title: "当前 KB 可直接 Ask",
+    detail: `已检测到 ${knowledgeBaseMetricLabel(chunks)} 个可检索片段；回答会以 hard scope 限定在 ${knowledgeBase.name || "当前知识库"}。`,
+    metrics,
+    actions: [
+      { id: "sources", label: "查看资料" },
+      { id: "processing", label: "查看处理" },
+      { id: "today", label: "去 Today" }
+    ]
+  };
 }
 
 function writingKnowledgeScopeMetadata(
