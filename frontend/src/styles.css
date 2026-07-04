@@ -2321,6 +2321,42 @@ button.context-item-main {
   margin-top: 10px;
 }
 
+.review-evidence-health {
+  max-width: 180px;
+  min-height: 24px;
+  border: 1px solid rgba(39, 37, 31, 0.12);
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 9px;
+  overflow: hidden;
+  background: #f7f5ed;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.review-evidence-health.good {
+  border-color: rgba(35, 90, 77, 0.22);
+  background: #edf8f1;
+  color: #235a4d;
+}
+
+.review-evidence-health.warning {
+  border-color: rgba(184, 112, 29, 0.28);
+  background: #fff5df;
+  color: #8c520e;
+}
+
+.review-evidence-health.error {
+  border-color: rgba(176, 64, 54, 0.3);
+  background: #fff1ef;
+  color: #9d342b;
+}
+
 .source-ref-row span {
   border: 1px solid var(--line);
   border-radius: 7px;

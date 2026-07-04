@@ -36,6 +36,7 @@
 - `ProcessingTimeline` 已从原始事件日志升级为五阶段摘要，合并 `progress`、`agent_steps`、agentic trace 和 `quality_signals`，展示理解、检索、读取、生成、证据校验的状态、证据数、引用数和质量状态；原始过程仍保留为可展开明细。
 - Writing 节点和 Composer 的 Ask timeline 已复用同一套阶段摘要，运行中的 preview 与持久化的 `last_ask` 都会携带 `progress`、`evidence_check` 和 `quality_signals`。
 - Writing answer/evidence/draft 节点顶部已增加 Ask 健康指示，把 `quality_signals`、`evidence_check`、节点状态和引用数提炼成“有引用 / 证据不足 / 需复核 / 失败 / 无需证据”等短标签，展开后仍可查看完整阶段和原文引用。
+- Review Center 列表已复用同一类证据健康摘要，把 `source_ref_status`、`quality_tier`、`review_eligible` 和 apply readiness 提炼成“可审核 / 缺证据 / 仅诊断 / 需检查”等短标签。
 - `frontend/e2e/multi-kb-scoped-ask.spec.ts` 已扩展真实浏览器验收：UI Ask 展示 alpha citation inspector，点击“查看原文”后 ReaderPane 包含 alpha 原文且不包含 beta secret；点击“追问这段”后输入框包含 alpha `source_item_id`。
 
 ## 验收证据
@@ -61,4 +62,4 @@ PSKA_E2E_PASSWORD="<local AuthNode password>" \
 
 ## 下一步
 
-- 继续收紧 Ask/Reader/Writing 的细节验收：补充 ProcessingTimeline 与 Writing 健康指示的真实运行截图核对，并评估是否把同样的健康摘要带到 Graph Path / Review 列表。
+- 继续收紧 Ask/Reader/Writing 的细节验收：补充 ProcessingTimeline、Writing 健康指示和 Review 健康摘要的真实运行截图核对，并评估是否把同样的健康摘要带到 Graph Path。

@@ -1571,6 +1571,7 @@ function ReviewCenter({
             const supportBasis = reviewSupportBasis(item);
             const proposalSummary = reviewProposalSummary(item);
             const knowledgeBaseLabel = knowledgeBaseLineageLabel(item);
+            const evidenceHealth = reviewItemEvidenceHealth(item);
             return (
             <article className="review-center-item" key={item.review_item_id}>
               <div className="review-item-main">
@@ -1591,6 +1592,15 @@ function ReviewCenter({
                   {item.review_eligible === false ? <span className="pill warning">仅诊断，不入库</span> : null}
                   {!item.apply_supported && <span className="pill muted">不可应用</span>}
                   {item.apply_supported && !item.apply_ready && <span className="pill warning">需检查后应用</span>}
+                  {evidenceHealth ? (
+                    <span
+                      className={`review-evidence-health ${evidenceHealth.tone}`}
+                      data-testid="review-evidence-health"
+                      title={evidenceHealth.detail}
+                    >
+                      {trimText([evidenceHealth.label, evidenceHealth.meta].filter(Boolean).join(" · "), 28)}
+                    </span>
+                  ) : null}
                 </div>
                 <dl className="review-meta-grid">
                   <div>
@@ -4419,6 +4429,64 @@ function reviewProposalSummary(item: ReviewCenterItem) {
     proposal.reason,
     proposal.promotion_reason
   ), 260);
+}
+
+function reviewItemEvidenceHealth(item: ReviewCenterItem): AskHealthView | null {
+  const sourceRefCount = Array.isArray(item.source_refs) ? item.source_refs.length : 0;
+  const sourceRefsPresent = item.source_ref_status === "present" || sourceRefCount > 0;
+  const qualityTier = displayText(item.quality_tier, "");
+  const reviewEligible = item.review_eligible !== false;
+  const qualityBand = sourceRefsPresent && qualityTier === "strong"
+    ? "grounded"
+    : sourceRefsPresent
+      ? "needs_review"
+      : "needs_citation_review";
+  const evidenceStatus = sourceRefsPresent ? "grounded" : "no_evidence";
+  const base = askHealthFromSignals({
+    qualitySignals: {
+      quality_band: qualityBand,
+      evidence_status: evidenceStatus,
+      report_readiness: reviewEligible && sourceRefsPresent ? "ready_with_citations" : "needs_human_review",
+      citation_count: sourceRefCount,
+      gap_count: sourceRefsPresent ? 0 : 1
+    },
+    citationCount: sourceRefCount,
+    status: item.status
+  });
+  if (!base) {
+    return null;
+  }
+  if (!sourceRefsPresent) {
+    return {
+      ...base,
+      label: "缺证据",
+      detail: "这个 Review 候选没有可检查 source_refs，批准前需要补证据或拒绝。"
+    };
+  }
+  if (!reviewEligible) {
+    return {
+      ...base,
+      tone: "warning",
+      label: "仅诊断",
+      detail: "这条候选有证据线索，但质量门没有允许直接写入长期知识。"
+    };
+  }
+  if (item.apply_supported && !item.apply_ready) {
+    return {
+      ...base,
+      tone: "warning",
+      label: "需检查",
+      detail: "这条候选支持应用，但当前状态还需要人工检查后再应用。"
+    };
+  }
+  if (qualityTier === "strong") {
+    return {
+      ...base,
+      label: "可审核",
+      detail: "这条候选有强支撑和可检查引用，可进入批准或应用判断。"
+    };
+  }
+  return base;
 }
 
 function displayText(value: unknown, fallback = ""): string {
