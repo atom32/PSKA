@@ -434,6 +434,7 @@ for the KB corpus object. `KnowledgeSource`, `source_item`, `document`, and
 | `POST /workspace/sources/upload` | Multipart or JSON upload; creates an upload source item, document, chunks, sync report, optional digest job |
 | `POST /workspace/sources/text` | Paste long text or Markdown into the private document library |
 | `GET /workspace/documents/data` | List source items/documents with lifecycle state, chunk counts, impact counts, and delete metadata |
+| `GET /workspace/reader/source` | Load one active source item's readable source/document/chunk context for Citation Inspector / ReaderPane |
 | `POST /workspace/documents/delete` | Preview or execute soft delete, restore, or admin/dev hard purge |
 | `POST /workspace/documents/link` | Add existing source items to a target KB without re-ingesting. |
 | `POST /workspace/documents/move` | Move source item membership from one KB to another. |
@@ -444,6 +445,12 @@ for the KB corpus object. `KnowledgeSource`, `source_item`, `document`, and
 `digest_mode=after_upload` schedules `digest_via_fastreact`; `manual` only
 ingests and indexes. Upload/text sources are private by default and inherit the
 request tenant/user from AuthNode/Gateway context.
+
+`/workspace/reader/source` requires `source_item_id`. Optional
+`knowledge_base_id` / `knowledge_base_ids` hard-scope the read: if the selected
+source is not an active member of the selected KB scope, the endpoint fails
+closed. Responses include the source item, KB lineage, documents, ordered
+chunks, passage windows, and `scope_applied`.
 
 Document delete defaults to dry-run preview. Soft delete removes documents from
 active retrieval and tombstones index state. Reviewed knowledge derived from

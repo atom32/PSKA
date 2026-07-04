@@ -93,6 +93,7 @@ import {
   loadReviewCenter,
   loadAskConversations,
   loadPromptProfiles,
+  loadReaderSource,
   loadWorkspaceDocuments,
   loadSourcesConsole,
   loadToday,
@@ -150,6 +151,7 @@ import type {
   WorkspaceGraphNode,
   WorkspaceGraphPathResponse,
   WorkspaceGraphResponse,
+  WorkspaceReaderSourceResponse,
   WorkspaceSearchResponse,
   WorkspaceMode,
   WritingBoard,
@@ -1298,6 +1300,7 @@ function TodayWorkspace({
       <div className={`today-grid ${rightRailCollapsed ? "right-rail-collapsed" : ""}`}>
         <section className="today-section today-search">
           <AskConversationPanel
+            serviceToken={serviceToken}
             messages={conversationMessages}
             runs={conversationRuns}
             isLoading={askConversationsQuery.isLoading || askConversationQuery.isLoading}
@@ -1692,11 +1695,13 @@ function AskResult({
   result,
   pending = false,
   knowledgeBases = [],
+  serviceToken,
   onAskFromEvidence
 }: {
   result: WorkspaceAskResponse | WorkspaceSearchResponse;
   pending?: boolean;
   knowledgeBases?: KnowledgeBase[];
+  serviceToken?: PSKAAuth;
   onAskFromEvidence?: (refItem: SearchEvidenceRef) => void;
 }) {
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "failed">("idle");
@@ -1813,7 +1818,7 @@ function AskResult({
             );
           })}
           </div>
-          <EvidenceWindow refItem={selectedRef} onAskFromEvidence={onAskFromEvidence} />
+          <EvidenceWindow refItem={selectedRef} result={result} serviceToken={serviceToken} onAskFromEvidence={onAskFromEvidence} />
         </div>
       ) : null}
       {qualitySignals ? <AskQualitySignals signals={qualitySignals} /> : null}
@@ -2322,7 +2327,25 @@ type AskNoAnswerDiagnostic = {
   dimensions: Array<{ dimension: string; status: string; detail: string }>;
 };
 
-function EvidenceWindow({ refItem, onAskFromEvidence }: { refItem?: SearchEvidenceRef; onAskFromEvidence?: (refItem: SearchEvidenceRef) => void }) {
+function EvidenceWindow({
+  refItem,
+  result,
+  serviceToken,
+  onAskFromEvidence
+}: {
+  refItem?: SearchEvidenceRef;
+  result: WorkspaceAskResponse | WorkspaceSearchResponse;
+  serviceToken?: PSKAAuth;
+  onAskFromEvidence?: (refItem: SearchEvidenceRef) => void;
+}) {
+  const [reader, setReader] = useState<WorkspaceReaderSourceResponse | null>(null);
+  const [readerStatus, setReaderStatus] = useState<"idle" | "loading" | "error">("idle");
+  const [readerError, setReaderError] = useState("");
+  useEffect(() => {
+    setReader(null);
+    setReaderStatus("idle");
+    setReaderError("");
+  }, [refItem?.source_item_id, refItem?.chunk_id, refItem?.passage_window_id]);
   if (!refItem) {
     return null;
   }
@@ -2335,6 +2358,28 @@ function EvidenceWindow({ refItem, onAskFromEvidence }: { refItem?: SearchEviden
     refItem.chunk_id ? `chunk ${refItem.chunk_id}` : "",
     refItem.passage_window_id ? `passage ${refItem.passage_window_id}` : ""
   ].filter(Boolean);
+  const canLoadReader = Boolean(serviceToken && refItem.source_item_id);
+
+  async function openReader() {
+    const activeRef = refItem as SearchEvidenceRef;
+    const sourceItemId = activeRef.source_item_id;
+    if (!serviceToken || !sourceItemId) {
+      return;
+    }
+    setReaderStatus("loading");
+    setReaderError("");
+    try {
+      const knowledgeBaseIds = refItemKnowledgeBaseIds(activeRef, result);
+      const payload = await loadReaderSource(serviceToken, sourceItemId, { knowledgeBaseIds });
+      setReader(payload);
+      setReaderStatus("idle");
+    } catch (error) {
+      setReader(null);
+      setReaderStatus("error");
+      setReaderError(error instanceof Error ? error.message : "原文加载失败。");
+    }
+  }
+
   return (
     <aside className="evidence-window" aria-label="证据窗口" data-testid="ask-evidence-inspector">
       <div className="card-row">
@@ -2355,14 +2400,75 @@ function EvidenceWindow({ refItem, onAskFromEvidence }: { refItem?: SearchEviden
       <blockquote>{displayText(evidenceText, "该引用没有返回可预览文本。")}</blockquote>
       {onAskFromEvidence ? (
         <div className="evidence-actions">
+          <button type="button" onClick={() => void openReader()} disabled={!canLoadReader || readerStatus === "loading"} data-testid="open-reader-pane">
+            <BookOpen size={14} />
+            <span>{readerStatus === "loading" ? "加载原文" : "查看原文"}</span>
+          </button>
           <button type="button" onClick={() => onAskFromEvidence(refItem)} disabled={!evidenceText && !refItem.source_item_id} data-testid="ask-from-evidence">
             <MessageCircle size={14} />
             <span>追问这段</span>
           </button>
         </div>
       ) : null}
+      {readerStatus === "error" ? <div className="reader-pane-error">{readerError}</div> : null}
+      {reader ? <ReaderPane reader={reader} focusRef={refItem} /> : null}
     </aside>
   );
+}
+
+function ReaderPane({ reader, focusRef }: { reader: WorkspaceReaderSourceResponse; focusRef: SearchEvidenceRef }) {
+  const documents = reader.documents || [];
+  const chunks = reader.chunks || [];
+  const focusChunkId = focusRef.chunk_id || "";
+  const focusDocumentId = focusRef.document_id || chunks.find((chunk) => chunk.chunk_id === focusChunkId)?.document_id || documents[0]?.document_id || "";
+  const focusDocument = documents.find((document) => document.document_id === focusDocumentId) || documents[0];
+  const documentChunks = chunks.filter((chunk) => !focusDocument?.document_id || chunk.document_id === focusDocument.document_id);
+  const sourceTitle = reader.source_item?.title || focusRef.title || reader.source_item?.source_item_id || "原文";
+  return (
+    <section className="reader-pane" aria-label="原文阅读" data-testid="reader-pane">
+      <div className="reader-pane-header">
+        <span className="pill">Reader</span>
+        <strong>{displayText(sourceTitle, "原文")}</strong>
+        <small>{reader.counts?.documents || 0} docs · {reader.counts?.chunks || 0} chunks</small>
+      </div>
+      {focusDocument ? (
+        <article className="reader-document">
+          <div className="reader-document-title">
+            <FileText size={15} />
+            <span>{displayText(focusDocument.title || focusDocument.document_id, "文档")}</span>
+            {focusDocument.body_truncated ? <small>已截断</small> : null}
+          </div>
+          {focusDocument.body ? <p>{trimText(focusDocument.body, 1800)}</p> : null}
+        </article>
+      ) : null}
+      {documentChunks.length ? (
+        <ol className="reader-chunk-list">
+          {documentChunks.slice(0, 8).map((chunk) => (
+            <li key={chunk.chunk_id || `${chunk.document_id}-${chunk.ordinal}`} className={chunk.chunk_id === focusChunkId ? "active" : ""}>
+              <span>#{typeof chunk.ordinal === "number" ? chunk.ordinal + 1 : "?"}</span>
+              <p>{displayText(chunk.text, "这个 chunk 没有可展示文本。")}</p>
+            </li>
+          ))}
+        </ol>
+      ) : (
+        <div className="reader-pane-empty">没有可展示的 chunk。</div>
+      )}
+    </section>
+  );
+}
+
+function refItemKnowledgeBaseIds(refItem: SearchEvidenceRef, result: WorkspaceAskResponse | WorkspaceSearchResponse) {
+  const direct = refItem.knowledge_base_ids?.length
+    ? refItem.knowledge_base_ids
+    : refItem.knowledge_base_id
+      ? [refItem.knowledge_base_id]
+      : [];
+  if (direct.length) {
+    return direct;
+  }
+  const scope = ((result as WorkspaceAskResponse).route?.scope_applied || (result as WorkspaceAskResponse).scope_applied || (result as WorkspaceSearchResponse).scope_applied || {}) as Record<string, unknown>;
+  const ids = Array.isArray(scope.knowledge_base_ids) ? scope.knowledge_base_ids : [];
+  return ids.filter((item): item is string => typeof item === "string" && item.length > 0);
 }
 
 function evidencePreviewText(refItem: SearchEvidenceRef) {
@@ -4992,6 +5098,7 @@ function PromptProfilePanel({
 }
 
 function AskConversationPanel({
+  serviceToken,
   messages,
   runs,
   isLoading,
@@ -5002,6 +5109,7 @@ function AskConversationPanel({
   onAskFromEvidence,
   composer
 }: {
+  serviceToken: PSKAAuth;
   messages: AskMessage[];
   runs: AskRun[];
   isLoading: boolean;
@@ -5068,7 +5176,7 @@ function AskConversationPanel({
                   <span>{message.role === "assistant" ? "PSKA" : "你"}</span>
                   {message.role === "assistant" ? (
                     runById.get(messageRunId) ? (
-                      <AskResult result={runById.get(messageRunId) as WorkspaceAskResponse} knowledgeBases={knowledgeBases} onAskFromEvidence={onAskFromEvidence} />
+                      <AskResult result={runById.get(messageRunId) as WorkspaceAskResponse} knowledgeBases={knowledgeBases} serviceToken={serviceToken} onAskFromEvidence={onAskFromEvidence} />
                     ) : (
                       <p>{trimText(message.content || "", 800)}</p>
                     )
@@ -5079,7 +5187,7 @@ function AskConversationPanel({
                 {orphanRunResult ? (
                   <article className="ask-message assistant orphan-run">
                     <span>PSKA</span>
-                    <AskResult result={orphanRunResult} pending={orphanRunResult.status === "running"} knowledgeBases={knowledgeBases} onAskFromEvidence={onAskFromEvidence} />
+                    <AskResult result={orphanRunResult} pending={orphanRunResult.status === "running"} knowledgeBases={knowledgeBases} serviceToken={serviceToken} onAskFromEvidence={onAskFromEvidence} />
                   </article>
                 ) : null}
               </div>
@@ -5095,7 +5203,7 @@ function AskConversationPanel({
               ) : null}
               <article className="ask-message assistant live">
                 <span>PSKA</span>
-                <AskResult result={liveResult as WorkspaceAskResponse} pending={livePending} knowledgeBases={knowledgeBases} onAskFromEvidence={onAskFromEvidence} />
+                <AskResult result={liveResult as WorkspaceAskResponse} pending={livePending} knowledgeBases={knowledgeBases} serviceToken={serviceToken} onAskFromEvidence={onAskFromEvidence} />
               </article>
             </>
           ) : null}

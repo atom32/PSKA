@@ -203,6 +203,9 @@ async function askViaBrowserComposer(
   await expect(result).toContainText(expected.alphaSecret, { timeout: 120_000 });
   await expect(result).not.toContainText(expected.betaSecret);
   await expect(page.getByTestId("ask-evidence-inspector").last()).toContainText(expected.alphaSecret);
+  await page.getByTestId("open-reader-pane").last().click();
+  await expect(page.getByTestId("reader-pane").last()).toContainText(expected.alphaSecret);
+  await expect(page.getByTestId("reader-pane").last()).not.toContainText(expected.betaSecret);
   await page.getByTestId("ask-from-evidence").last().click();
   await expect(page.getByTestId("reader-focus-chip")).toBeVisible();
   await expect(page.getByTestId("today-ask-input")).toHaveValue(new RegExp(escapeRegExp(expected.alphaSourceItemId)));

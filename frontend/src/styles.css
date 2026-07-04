@@ -1479,6 +1479,123 @@ button.context-item-main {
   opacity: 0.55;
 }
 
+.reader-pane {
+  margin-top: 11px;
+  border: 1px solid rgba(35, 90, 77, 0.16);
+  border-radius: 8px;
+  background: #fffefa;
+  padding: 10px;
+  min-width: 0;
+}
+
+.reader-pane-header {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.reader-pane-header strong {
+  margin: 0;
+  min-width: 0;
+  flex: 1 1 140px;
+  font-size: 13px;
+}
+
+.reader-pane-header small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.reader-document {
+  border-top: 1px solid rgba(35, 90, 77, 0.12);
+  padding-top: 8px;
+}
+
+.reader-document-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #235a4d;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.reader-document-title span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reader-document-title small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.reader-document p {
+  margin: 7px 0 0;
+  max-height: 180px;
+  overflow: auto;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.reader-chunk-list {
+  display: grid;
+  gap: 7px;
+  margin: 9px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.reader-chunk-list li {
+  border: 1px solid rgba(35, 90, 77, 0.12);
+  border-radius: 7px;
+  background: #fbfaf5;
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
+  gap: 8px;
+  padding: 8px;
+}
+
+.reader-chunk-list li.active {
+  border-color: rgba(35, 90, 77, 0.35);
+  background: #f4faf6;
+}
+
+.reader-chunk-list li span {
+  color: #235a4d;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.reader-chunk-list li p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.reader-pane-empty,
+.reader-pane-error {
+  margin-top: 9px;
+  border: 1px solid rgba(158, 64, 56, 0.16);
+  border-radius: 7px;
+  background: #fff7f3;
+  color: #8f332b;
+  padding: 8px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .ask-diagnostics-panel {
   margin-top: 10px;
   background: #fff8f2;

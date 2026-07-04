@@ -1245,6 +1245,106 @@ def test_writing_board_records_default_knowledge_base_scope() -> None:
     assert board["metadata"]["knowledge_base_scope"]["knowledge_base_ids"] == [created_kb["knowledge_base_id"]]
 
 
+def test_workspace_reader_source_returns_scoped_original_context() -> None:
+    api = _api()
+    context = RequestContext()
+    alpha = api.create_workspace_knowledge_base({"name": "Reader Alpha"}, context=context)["knowledge_base"]
+    beta = api.create_workspace_knowledge_base({"name": "Reader Beta"}, context=context)["knowledge_base"]
+    item = _source_item("reader_alpha")
+    item.content_text = "Alpha reader source content."
+    api.store.upsert_source_item(item)
+    api.store.add_document(
+        Document(
+            document_id="reader_doc",
+            source_item_id=item.source_item_id,
+            owner_user_id=item.owner_user_id,
+            space_id=item.space_id,
+            visibility=item.visibility,
+            visible_team_ids=[],
+            title="Reader document",
+            body="Heading\n\nAlpha paragraph one.\n\nAlpha paragraph two.",
+            tenant_id=item.tenant_id,
+        )
+    )
+    api.store.add_chunk(
+        Chunk(
+            chunk_id="reader_chunk_1",
+            document_id="reader_doc",
+            source_item_id=item.source_item_id,
+            owner_user_id=item.owner_user_id,
+            space_id=item.space_id,
+            visibility=item.visibility,
+            visible_team_ids=[],
+            text="Alpha paragraph one.",
+            ordinal=1,
+            tenant_id=item.tenant_id,
+        )
+    )
+    api.store.add_knowledge_base_source_item(
+        KnowledgeBaseSourceItem(
+            knowledge_base_id=alpha["knowledge_base_id"],
+            source_item_id=item.source_item_id,
+            owner_user_id=item.owner_user_id,
+            added_by_user_id=item.owner_user_id,
+            tenant_id=item.tenant_id,
+        )
+    )
+
+    reader = api.workspace_reader_source(
+        {"source_item_id": item.source_item_id, "knowledge_base_id": alpha["knowledge_base_id"]},
+        context=context,
+    )
+
+    assert reader["source_item"]["source_item_id"] == item.source_item_id
+    assert reader["source_item"]["knowledge_base_ids"] == [alpha["knowledge_base_id"]]
+    assert reader["scope_applied"]["knowledge_base_ids"] == [alpha["knowledge_base_id"]]
+    assert reader["documents"][0]["body"] == "Heading\n\nAlpha paragraph one.\n\nAlpha paragraph two."
+    assert reader["chunks"][0]["chunk_id"] == "reader_chunk_1"
+    assert reader["passage_windows"][0]["text"].startswith("Heading")
+    assert reader["counts"] == {"documents": 1, "chunks": 1, "passage_windows": 1}
+
+    with pytest.raises(PermissionError):
+        api.workspace_reader_source(
+            {"source_item_id": item.source_item_id, "knowledge_base_id": beta["knowledge_base_id"]},
+            context=context,
+        )
+
+
+def test_workspace_reader_source_enforces_tenant_and_owner_acl() -> None:
+    api = _api()
+    context = RequestContext(tenant_id=TENANT_A, user_id="user_a", represented_user_id="user_a")
+    other_context = RequestContext(tenant_id=TENANT_B, user_id="user_b", represented_user_id="user_b")
+    kb = api.create_workspace_knowledge_base({"name": "Tenant Reader"}, context=context)["knowledge_base"]
+    item = _source_item("tenant_reader", tenant_id=TENANT_A, owner_user_id="user_a")
+    api.store.upsert_source_item(item)
+    api.store.add_document(
+        Document(
+            document_id="tenant_reader_doc",
+            source_item_id=item.source_item_id,
+            owner_user_id=item.owner_user_id,
+            space_id=item.space_id,
+            visibility=item.visibility,
+            visible_team_ids=[],
+            title="Tenant reader document",
+            body="Tenant A only.",
+            tenant_id=item.tenant_id,
+        )
+    )
+    api.store.add_knowledge_base_source_item(
+        KnowledgeBaseSourceItem(
+            knowledge_base_id=kb["knowledge_base_id"],
+            source_item_id=item.source_item_id,
+            owner_user_id=item.owner_user_id,
+            added_by_user_id=item.owner_user_id,
+            tenant_id=item.tenant_id,
+        )
+    )
+
+    assert api.workspace_reader_source({"source_item_id": item.source_item_id}, context=context)["documents"][0]["body"] == "Tenant A only."
+    with pytest.raises(PermissionError):
+        api.workspace_reader_source({"source_item_id": item.source_item_id}, context=other_context)
+
+
 def _api() -> PSKAApi:
     api = object.__new__(PSKAApi)
     api.config = PSKAConfig(service=ServiceConfig(), auth=AuthConfig())

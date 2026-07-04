@@ -20,6 +20,7 @@ import type {
   WorkspaceDocumentLinkResponse,
   WorkspaceDocumentMoveResponse,
   WorkspaceDocumentsResponse,
+  WorkspaceReaderSourceResponse,
   WorkspaceSourceIngestResponse,
   SourceSyncResponse,
   TodayResponse,
@@ -613,6 +614,24 @@ export async function loadWorkspaceDocuments(serviceToken: PSKAAuth, includeDele
     throw new Error(await responseError(response, "资料列表加载失败"));
   }
   return (await response.json()) as WorkspaceDocumentsResponse;
+}
+
+export async function loadReaderSource(
+  serviceToken: PSKAAuth,
+  sourceItemId: string,
+  options: KnowledgeBaseScopedOptions & { maxDocumentChars?: number } = {}
+): Promise<WorkspaceReaderSourceResponse> {
+  const params = new URLSearchParams({
+    owner_user_id: ownerUserId(serviceToken),
+    source_item_id: sourceItemId,
+    max_document_chars: String(options.maxDocumentChars || 60000)
+  });
+  appendKnowledgeBaseParams(params, options);
+  const response = await fetch(`/workspace/reader/source?${params.toString()}`, { headers: headers(serviceToken) });
+  if (!response.ok) {
+    throw new Error(await responseError(response, "原文加载失败"));
+  }
+  return (await response.json()) as WorkspaceReaderSourceResponse;
 }
 
 export async function deleteWorkspaceDocuments(

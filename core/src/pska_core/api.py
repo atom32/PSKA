@@ -3368,6 +3368,84 @@ class PSKAApi:
             },
         }
 
+    def workspace_reader_source(
+        self,
+        payload: dict[str, Any] | None = None,
+        *,
+        context: RequestContext | None = None,
+    ) -> dict[str, Any]:
+        payload = context.apply_to_payload(payload or {}) if context else dict(payload or {})
+        owner_user_id = _workspace_owner_user_id(context, payload.get("owner_user_id") or payload.get("represented_user_id"))
+        tenant_id = _tenant_id_for_request(context, str(payload.get("tenant_id")) if payload.get("tenant_id") else None)
+        source_item_id = str(payload.get("source_item_id") or "").strip()
+        if not source_item_id:
+            raise ValueError("source_item_id is required")
+        knowledge_base_ids = _knowledge_base_ids_from_payload(payload)
+        source_item = next(
+            (
+                item
+                for item in self.store.list_source_items(tenant_id=tenant_id)
+                if item.source_item_id == source_item_id
+                and item.owner_user_id == owner_user_id
+                and _is_active_lifecycle(item)
+            ),
+            None,
+        )
+        if source_item is None:
+            raise PermissionError("source item not found or not accessible")
+        if knowledge_base_ids:
+            scoped_ids = self.store.list_knowledge_base_source_item_ids(
+                set(knowledge_base_ids),
+                tenant_id=tenant_id,
+                owner_user_id=owner_user_id,
+                active_only=True,
+            )
+            if source_item_id not in scoped_ids:
+                raise PermissionError("source item is outside the selected knowledge base scope")
+        documents = [
+            document
+            for document in self.store.list_documents_for_sources({source_item_id})
+            if getattr(document, "owner_user_id", "") == owner_user_id and _is_active_lifecycle(document)
+        ]
+        chunks = [
+            chunk
+            for chunk in self.store.list_chunks_for_sources({source_item_id})
+            if getattr(chunk, "owner_user_id", "") == owner_user_id and _is_active_lifecycle(chunk)
+        ]
+        documents.sort(key=lambda document: str(getattr(document, "document_id", "") or ""))
+        chunks.sort(key=lambda chunk: (str(getattr(chunk, "document_id", "") or ""), int(getattr(chunk, "ordinal", 0) or 0)))
+        passage_windows = _passage_windows_for_documents(documents, chunks, target_tokens=12000)
+        max_document_chars = max(1000, min(int(payload.get("max_document_chars") or 60000), 200000))
+        return {
+            "ok": True,
+            "tenant_id": tenant_id,
+            "owner_user_id": owner_user_id,
+            "source_item": {
+                **_workspace_source(source_item, chunks),
+                **_source_item_knowledge_base_lineage(
+                    self.store,
+                    source_item_id,
+                    tenant_id=tenant_id,
+                    owner_user_id=owner_user_id,
+                    active_only=True,
+                ),
+                "lifecycle_status": _lifecycle_status(source_item),
+            },
+            "documents": [_reader_document_payload(document, max_chars=max_document_chars) for document in documents],
+            "chunks": [_reader_chunk_payload(chunk) for chunk in chunks],
+            "passage_windows": [_reader_passage_window_payload(window) for window in passage_windows],
+            "scope_applied": {
+                "knowledge_base_ids": knowledge_base_ids,
+                "source_item_ids": [source_item_id],
+                "scope_mode": "hard" if knowledge_base_ids else "source",
+            },
+            "counts": {
+                "documents": len(documents),
+                "chunks": len(chunks),
+                "passage_windows": len(passage_windows),
+            },
+        }
+
     def workspace_documents_delete(self, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
         payload = context.apply_to_payload(payload) if context else payload
         tenant_id = _tenant_id_for_request(context, str(payload.get("tenant_id")) if payload.get("tenant_id") else None)
@@ -5368,6 +5446,19 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
                         "knowledge_base_ids": _query_string_list(query, "knowledge_base_ids") or _query_string_list(query, "knowledge_base_id"),
                         "include_deleted": (_first(query.get("include_deleted")) or "true").lower() != "false",
                         "limit": _int_first(query.get("limit")) or 100,
+                    },
+                    context=context,
+                ),
+            )
+        if path == "/workspace/reader/source":
+            return self._json(
+                200,
+                self.api.workspace_reader_source(
+                    {
+                        "owner_user_id": _first(query.get("owner_user_id")),
+                        "source_item_id": _first(query.get("source_item_id")),
+                        "knowledge_base_ids": _query_string_list(query, "knowledge_base_ids") or _query_string_list(query, "knowledge_base_id"),
+                        "max_document_chars": _int_first(query.get("max_document_chars")) or 60000,
                     },
                     context=context,
                 ),
@@ -11140,6 +11231,49 @@ def _workspace_documents(chunks: list[Any]) -> list[dict[str, Any]]:
         )
         current["chunk_count"] += 1
     return list(grouped.values())
+
+
+def _reader_document_payload(document: Any, *, max_chars: int) -> dict[str, Any]:
+    body = str(getattr(document, "body", "") or "")
+    truncated = len(body) > max_chars
+    return {
+        "document_id": getattr(document, "document_id", ""),
+        "source_item_id": getattr(document, "source_item_id", ""),
+        "title": getattr(document, "title", "") or getattr(document, "document_id", ""),
+        "body": body[:max_chars],
+        "body_truncated": truncated,
+        "body_chars": len(body),
+        "metadata": to_jsonable(getattr(document, "metadata", {}) or {}),
+        "lifecycle_status": _lifecycle_status(document),
+    }
+
+
+def _reader_chunk_payload(chunk: Any) -> dict[str, Any]:
+    return {
+        "chunk_id": getattr(chunk, "chunk_id", ""),
+        "document_id": getattr(chunk, "document_id", ""),
+        "source_item_id": getattr(chunk, "source_item_id", ""),
+        "ordinal": int(getattr(chunk, "ordinal", 0) or 0),
+        "text": str(getattr(chunk, "text", "") or ""),
+        "text_chars": len(str(getattr(chunk, "text", "") or "")),
+        "metadata": to_jsonable(getattr(chunk, "metadata", {}) or {}),
+        "lifecycle_status": _lifecycle_status(chunk),
+    }
+
+
+def _reader_passage_window_payload(window: PassageWindow) -> dict[str, Any]:
+    return {
+        "passage_window_id": window.passage_window_id,
+        "source_item_id": window.source_item_id,
+        "document_id": window.document_id,
+        "ordinal": window.ordinal,
+        "title": window.title,
+        "text": window.text,
+        "start_char": window.start_char,
+        "end_char": window.end_char,
+        "token_estimate": window.token_estimate,
+        "metadata": to_jsonable(window.metadata),
+    }
 
 
 def _passage_windows_for_documents(documents: list[Any], chunks: list[Any], *, target_tokens: int = 24000) -> list[PassageWindow]:

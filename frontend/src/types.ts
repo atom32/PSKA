@@ -312,6 +312,48 @@ export type WorkspaceDocumentsResponse = {
   error?: string;
 };
 
+export type WorkspaceReaderSourceResponse = {
+  ok?: boolean;
+  tenant_id?: string;
+  owner_user_id?: string;
+  source_item?: WorkspaceDocumentEntry;
+  documents?: Array<{
+    document_id?: string;
+    source_item_id?: string;
+    title?: string;
+    body?: string;
+    body_truncated?: boolean;
+    body_chars?: number;
+    metadata?: Record<string, unknown>;
+    lifecycle_status?: string;
+  }>;
+  chunks?: Array<{
+    chunk_id?: string;
+    document_id?: string;
+    source_item_id?: string;
+    ordinal?: number;
+    text?: string;
+    text_chars?: number;
+    metadata?: Record<string, unknown>;
+    lifecycle_status?: string;
+  }>;
+  passage_windows?: Array<{
+    passage_window_id?: string;
+    source_item_id?: string;
+    document_id?: string;
+    ordinal?: number;
+    title?: string;
+    text?: string;
+    start_char?: number;
+    end_char?: number;
+    token_estimate?: number;
+    metadata?: Record<string, unknown>;
+  }>;
+  scope_applied?: Record<string, unknown>;
+  counts?: Record<string, number>;
+  error?: string;
+};
+
 export type WorkspaceDocumentDeleteResponse = {
   ok?: boolean;
   dry_run?: boolean;
