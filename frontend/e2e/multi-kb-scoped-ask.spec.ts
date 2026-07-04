@@ -329,6 +329,7 @@ async function askViaGraphWorkspace(
   await expect(result.getByTestId("graph-path-evidence-health")).toBeVisible();
   await expect(result.getByTestId("ask-processing-timeline")).toContainText("证据校验");
   await saveGraphAskResultToWriting(page, expected);
+  await saveSelectedGraphNodeToWriting(page, expected);
 }
 
 async function saveGraphAskResultToWriting(page: Page, expected: { alphaSecret: string; betaSecret: string }) {
@@ -345,6 +346,35 @@ async function saveGraphAskResultToWriting(page: Page, expected: { alphaSecret: 
   await expect(graphAnswerNode).toBeVisible({ timeout: 45_000 });
   await expect(graphAnswerNode).not.toContainText(expected.betaSecret);
   await expect(page.getByTestId("writing-citation-inspector").first()).toBeVisible();
+}
+
+async function saveSelectedGraphNodeToWriting(page: Page, expected: { alphaSecret: string; betaSecret: string }) {
+  await openWorkspace(page, "Graph");
+  await ensureGraphControlsOpen(page);
+  await page.getByTestId("graph-local-search-input").fill(expected.alphaSecret);
+  await page.getByTestId("graph-local-search-subgraph").click();
+  const inspector = page.locator(".graph-inspector").filter({ hasText: expected.alphaSecret }).first();
+  await expect(inspector).toBeVisible({ timeout: 60_000 });
+  const saveToWriting = inspector.getByTestId("graph-node-save-writing");
+  await expect(saveToWriting).toBeEnabled({ timeout: 45_000 });
+  await saveToWriting.click();
+  await expect(page.getByTestId("writing-toolbar")).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByTestId("writing-board-title-input")).toHaveValue(/Graph Node:/);
+  const graphEvidenceNode = page
+    .locator('[data-testid="writing-node"][data-node-type="evidence"]')
+    .filter({ hasText: expected.alphaSecret })
+    .first();
+  await expect(graphEvidenceNode).toBeVisible({ timeout: 45_000 });
+  await expect(graphEvidenceNode).not.toContainText(expected.betaSecret);
+  await expect(page.getByTestId("writing-citation-inspector").first()).toBeVisible();
+}
+
+async function ensureGraphControlsOpen(page: Page) {
+  const localSearch = page.getByTestId("graph-local-search-input");
+  if (!(await localSearch.isVisible().catch(() => false))) {
+    await page.getByRole("button", { name: /Controls/ }).click();
+  }
+  await expect(localSearch).toBeVisible({ timeout: 45_000 });
 }
 
 async function cleanupFixtures(page: Page, sourceItemIds: string[], knowledgeBaseIds: string[]) {

@@ -8824,6 +8824,7 @@ function GraphWorkspace({
             <div className="graph-local-search" aria-label="Graph 本地搜索">
               <Search size={15} />
               <input
+                data-testid="graph-local-search-input"
                 value={graphSearch}
                 onChange={(event) => setGraphSearch(event.target.value)}
                 placeholder="搜索节点、摘要、证据"
@@ -8838,6 +8839,7 @@ function GraphWorkspace({
                 邻域
               </button>
               <button
+                data-testid="graph-local-search-subgraph"
                 type="button"
                 disabled={!graphSearch.trim() || expandStatus === "loading"}
                 onClick={() => void handleSearchSubgraph()}
@@ -8916,6 +8918,7 @@ function GraphWorkspace({
                   <button type="button" onClick={() => setNeighborhoodOnly((value) => !value)}>
                     {neighborhoodOnly ? "显示全图" : "只看邻域"}
                   </button>
+                  <GraphNodeWritingAction node={selectedNode} serviceToken={serviceToken} onOpenWriting={onOpenWriting} />
                 </div>
                 {expandError ? <p className="graph-path-warning">{expandError}</p> : null}
                 {selectedNode.source_refs?.length ? (
@@ -9179,6 +9182,118 @@ function GraphAskWritingAction({
   );
 }
 
+function GraphNodeWritingAction({
+  node,
+  serviceToken,
+  onOpenWriting
+}: {
+  node: WorkspaceGraphNode;
+  serviceToken?: PSKAAuth;
+  onOpenWriting?: (boardId?: string) => void;
+}) {
+  const [status, setStatus] = useState<"idle" | "saving" | "saved" | "failed">("idle");
+  const [message, setMessage] = useState("");
+  const refs = useMemo(() => normalizeSearchRefs(node.source_refs || []), [node.source_refs]);
+  const canSave = Boolean(serviceToken && refs.length);
+
+  useEffect(() => {
+    setStatus("idle");
+    setMessage("");
+  }, [node.id]);
+
+  async function saveNodeToWriting() {
+    if (!serviceToken || !canSave) {
+      return;
+    }
+    setStatus("saving");
+    setMessage("");
+    try {
+      const label = node.label || node.object_id || node.id || "Graph node";
+      const board = await createWritingBoard(serviceToken, {
+        title: `Graph Node: ${trimText(label, 72)}`,
+        goal: "Selected Graph node evidence draft with citations.",
+        metadata: {
+          kind: "graph_node_evidence",
+          source_surface: "graph",
+          graph_node_id: node.id,
+          graph_node_type: node.type,
+          object_type: node.object_type,
+          object_id: node.object_id,
+          quality_tier: node.quality_tier,
+          support_kinds: node.support_kinds || []
+        }
+      });
+      const boardId = board.board?.board_id;
+      if (!boardId) {
+        throw new Error("Writing board was not created.");
+      }
+      const evidence = await createWritingNode(serviceToken, boardId, {
+        node_type: "evidence",
+        title: trimText(label, 80),
+        body_markdown: graphNodeWritingMarkdown(node, refs),
+        position: { x: 120, y: 120 },
+        status: node.review_eligible === false ? "needs_review" : "draft",
+        source_refs: refs,
+        citations: refs,
+        metadata: {
+          expanded: true,
+          kind: "graph_node_evidence",
+          source_surface: "graph",
+          graph_node_id: node.id,
+          graph_node_type: node.type,
+          object_type: node.object_type,
+          object_id: node.object_id
+        }
+      });
+      if (evidence.node?.node_id) {
+        const section = await createWritingNode(serviceToken, boardId, {
+          node_type: "section",
+          title: "Evidence use",
+          body_markdown: "Decide how this graph evidence should support the draft before publishing.",
+          position: { x: 540, y: 120 },
+          source_refs: refs,
+          citations: refs,
+          metadata: {
+            expanded: false,
+            kind: "graph_node_evidence_section",
+            source_node_id: evidence.node.node_id
+          }
+        });
+        if (section.node?.node_id) {
+          await createWritingEdge(serviceToken, boardId, {
+            source_node_id: evidence.node.node_id,
+            target_node_id: section.node.node_id,
+            edge_type: "included_in",
+            label: "Graph node evidence"
+          });
+        }
+      }
+      setStatus("saved");
+      setMessage(board.board?.title || "已保存到 Writing");
+      onOpenWriting?.(boardId);
+    } catch (error) {
+      setStatus("failed");
+      setMessage(error instanceof Error ? error.message : "保存到 Writing 失败。");
+    }
+  }
+
+  return (
+    <span className="graph-node-writing-action">
+      <button
+        data-testid="graph-node-save-writing"
+        type="button"
+        disabled={!canSave || status === "saving"}
+        onClick={() => void saveNodeToWriting()}
+        title={canSave ? "把当前 Graph 节点及其引用保存为 Writing evidence" : "当前 Graph 节点没有可检查引用"}
+      >
+        <FileText size={14} />
+        {status === "saving" ? "保存中" : "保存证据"}
+      </button>
+      {message ? <small data-testid="graph-node-save-writing-status">{message}</small> : null}
+    </span>
+  );
+}
+
 function GraphAskEvidenceHealth({
   result,
   pending,
@@ -9286,6 +9401,31 @@ function graphAskEvidenceMarkdown(refs: SearchEvidenceRef[]) {
       return `${index + 1}. ${ref.title || ref.source_item_id || "Citation"}${coordinates ? `\n   ${coordinates}` : ""}`;
     })
     .join("\n");
+}
+
+function graphNodeWritingMarkdown(node: WorkspaceGraphNode, refs: SearchEvidenceRef[]) {
+  const title = node.label || node.object_id || node.id || "Graph node";
+  const lines = [`# ${title}`, "", `Type: ${graphTypeLabel(node.type)}`, ""];
+  if (node.summary) {
+    lines.push(node.summary, "");
+  }
+  if (node.quality_tier || node.promotion_reason || node.support_kinds?.length) {
+    lines.push("## Evidence Health", "");
+    if (node.quality_tier) {
+      lines.push(`- Quality: ${reviewQualityTierLabel(node.quality_tier)}`);
+    }
+    if (node.promotion_reason) {
+      lines.push(`- Promotion: ${reviewPromotionReasonLabel(node.promotion_reason)}`);
+    }
+    if (node.support_kinds?.length) {
+      lines.push(`- Support: ${node.support_kinds.map((kind) => reviewSupportKindLabel(kind)).filter(Boolean).join(", ")}`);
+    }
+    lines.push("");
+  }
+  if (refs.length) {
+    lines.push("## Citations", "", graphAskEvidenceMarkdown(refs));
+  }
+  return lines.join("\n");
 }
 
 function GraphPathPanel({

@@ -44,7 +44,7 @@ marketplace yet.
 | PSKA Brain search | Real | Real | Partial | Uses workspace search and corpus context; recall quality depends on indexing/embeddings. |
 | Corpus browser | Real | Partial | Partial | Backend corpus endpoint exists; frontend uses it in selected panels. |
 | Graph browser | Real | Partial | Partial | Graph data exists; visual exploration is still early. |
-| Evidence Brief / Writing draft | Real | Real | Partial | Digest/review artifacts, supported Ask runs, and Graph Ask citations can generate citation-backed Writing board drafts; formal Wiki publish/revert UX is still evolving. |
+| Evidence Brief / Writing draft | Real | Real | Partial | Digest/review artifacts, supported Ask runs, Graph Ask citations, and selected Graph nodes can generate citation-backed Writing board drafts; formal Wiki publish/revert UX is still evolving. |
 | Document editor | Planned | Mock | Mock | Tiptap editor exists, but document persistence is not wired as a source editor. |
 | Canvas | Planned | Mock | Mock | React Flow canvas is local/sample state. |
 | Project/tag navigation | Planned | Mock | Mock | Sidebar labels exist without a durable project/tag model. |
