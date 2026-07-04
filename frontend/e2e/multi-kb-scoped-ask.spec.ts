@@ -341,6 +341,7 @@ async function saveAskResultToWriting(page: Page, expected: { alphaSecret: strin
   await createBrief.click();
   await expect(page.getByTestId("writing-toolbar")).toBeVisible({ timeout: 60_000 });
   await expect(page.getByTestId("writing-board-title-input")).toHaveValue(/Brief:/);
+  const briefTitle = await page.getByTestId("writing-board-title-input").inputValue();
   const briefNode = page
     .locator('[data-testid="writing-node"][data-node-type="draft"], [data-testid="writing-node"][data-node-type="answer"]')
     .filter({ hasText: expected.alphaSecret })
@@ -348,6 +349,40 @@ async function saveAskResultToWriting(page: Page, expected: { alphaSecret: strin
   await expect(briefNode).toBeVisible({ timeout: 45_000 });
   await expect(briefNode).not.toContainText(expected.betaSecret);
   await expect(page.getByTestId("writing-citation-inspector").first()).toBeVisible();
+  await expectEvidenceBriefLibrary(page, briefTitle, expected);
+}
+
+async function expectEvidenceBriefLibrary(page: Page, briefTitle: string, expected: { alphaSecret: string; betaSecret: string }) {
+  await page.getByTestId("writing-close-board").click();
+  const library = page.getByTestId("writing-brief-library");
+  await expect(library).toBeVisible({ timeout: 45_000 });
+  const briefCard = library.getByTestId("writing-brief-card").filter({ hasText: briefTitle }).first();
+  await expect(briefCard).toBeVisible({ timeout: 45_000 });
+  await briefCard.click();
+  const detail = library.getByTestId("writing-brief-detail");
+  await expect(detail).toContainText(briefTitle);
+  await expect(detail.getByTestId("writing-brief-status")).toContainText("有效");
+  await expect(detail.getByTestId("writing-brief-regenerate")).toBeEnabled();
+
+  await library.getByTestId("writing-brief-show-inactive").check();
+  await detail.getByTestId("writing-brief-expire").click();
+  await expect(detail.getByTestId("writing-brief-status")).toContainText("已过期", { timeout: 45_000 });
+  await detail.getByTestId("writing-brief-restore").click();
+  await expect(detail.getByTestId("writing-brief-status")).toContainText("有效", { timeout: 45_000 });
+  await detail.getByTestId("writing-brief-rollback").click();
+  await expect(detail.getByTestId("writing-brief-status")).toContainText("已回滚", { timeout: 45_000 });
+  await detail.getByTestId("writing-brief-restore").click();
+  await expect(detail.getByTestId("writing-brief-status")).toContainText("有效", { timeout: 45_000 });
+
+  await detail.getByTestId("writing-brief-regenerate").click();
+  await expect(page.getByTestId("writing-toolbar")).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByTestId("writing-board-title-input")).toHaveValue(/Brief:/);
+  const regeneratedBriefNode = page
+    .locator('[data-testid="writing-node"][data-node-type="draft"], [data-testid="writing-node"][data-node-type="answer"]')
+    .filter({ hasText: expected.alphaSecret })
+    .first();
+  await expect(regeneratedBriefNode).toBeVisible({ timeout: 45_000 });
+  await expect(regeneratedBriefNode).not.toContainText(expected.betaSecret);
 }
 
 async function askViaGraphWorkspace(

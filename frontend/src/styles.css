@@ -4391,6 +4391,13 @@ button.context-item-main {
   overflow: auto;
 }
 
+.writing-library-column {
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: 12px;
+}
+
 .writing-start-panel {
   width: 100%;
   border: 1px solid var(--line);
@@ -4526,6 +4533,204 @@ button.context-item-main {
   color: #86462c;
 }
 
+.writing-brief-library {
+  min-width: 0;
+  border: 1px solid rgba(39, 37, 31, 0.12);
+  border-radius: 8px;
+  background: rgba(255, 254, 249, 0.95);
+  box-shadow: 0 10px 20px rgba(38, 34, 24, 0.08);
+  padding: 14px;
+  display: grid;
+  gap: 12px;
+}
+
+.writing-brief-library-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.writing-brief-library h2 {
+  margin: 4px 0 0;
+  font-size: 18px;
+  line-height: 1.25;
+}
+
+.writing-brief-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.writing-brief-layout {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(230px, 0.92fr) minmax(300px, 1.08fr);
+  gap: 10px;
+}
+
+.writing-brief-list {
+  min-width: 0;
+  max-height: 340px;
+  overflow: auto;
+  display: grid;
+  align-content: start;
+  gap: 8px;
+}
+
+.writing-brief-card {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid rgba(39, 37, 31, 0.12);
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--ink);
+  padding: 10px;
+  display: grid;
+  gap: 5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.writing-brief-card:hover,
+.writing-brief-card.active {
+  border-color: rgba(46, 117, 100, 0.42);
+  background: rgba(236, 246, 241, 0.78);
+}
+
+.writing-brief-card.current {
+  box-shadow: inset 3px 0 0 #2e7564;
+}
+
+.writing-brief-card.inactive {
+  opacity: 0.78;
+}
+
+.writing-brief-card strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+}
+
+.writing-brief-card small,
+.writing-brief-count,
+.writing-brief-detail small,
+.writing-brief-sources small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.writing-brief-status {
+  width: fit-content;
+  border: 1px solid rgba(46, 117, 100, 0.3);
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: #235a4d;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.45;
+}
+
+.writing-brief-status.expired {
+  border-color: #e0b6a2;
+  background: #fff7f3;
+  color: #86462c;
+}
+
+.writing-brief-status.rolled-back {
+  border-color: #d5c79a;
+  background: #fff9dd;
+  color: #6d5b12;
+}
+
+.writing-brief-detail {
+  min-width: 0;
+  border: 1px solid rgba(39, 37, 31, 0.1);
+  border-radius: 8px;
+  background: rgba(250, 249, 243, 0.82);
+  padding: 12px;
+  display: grid;
+  align-content: start;
+  gap: 10px;
+}
+
+.writing-brief-detail-head {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.writing-brief-detail-head strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.writing-brief-lineage {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+}
+
+.writing-brief-lineage span {
+  min-width: 0;
+  border: 1px solid rgba(39, 37, 31, 0.1);
+  border-radius: 8px;
+  background: var(--paper);
+  padding: 8px;
+  display: grid;
+  gap: 2px;
+}
+
+.writing-brief-lineage strong {
+  font-size: 12px;
+}
+
+.writing-brief-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.writing-brief-sources {
+  display: grid;
+  gap: 7px;
+}
+
+.writing-brief-sources article {
+  min-width: 0;
+  border: 1px solid rgba(39, 37, 31, 0.1);
+  border-radius: 8px;
+  background: var(--paper);
+  padding: 8px;
+  display: grid;
+  gap: 3px;
+}
+
+.writing-brief-sources span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.writing-brief-sources p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .writing-toolbar {
   grid-column: 1 / 2;
   display: flex;
@@ -4557,7 +4762,8 @@ button.context-item-main {
 .writing-toolbar button,
 .writing-composer button,
 .writing-node-actions button,
-.writing-suggestions button {
+.writing-suggestions button,
+.writing-brief-actions button {
   min-height: 30px;
   border: 1px solid var(--line);
   border-radius: 7px;
@@ -4576,8 +4782,14 @@ button.context-item-main {
 .writing-toolbar button:hover,
 .writing-composer button:hover,
 .writing-node-actions button:hover,
-.writing-suggestions button:hover {
+.writing-suggestions button:hover,
+.writing-brief-actions button:hover {
   background: var(--accent-soft);
+}
+
+.writing-brief-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .writing-board-title {
@@ -5999,6 +6211,10 @@ button.context-item-main {
   .product-flow-grid {
     grid-template-columns: minmax(0, 1fr);
   }
+
+  .writing-brief-layout {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 860px) {
@@ -6052,6 +6268,19 @@ button.context-item-main {
 
   .review-surface {
     padding: 16px 12px 28px;
+  }
+
+  .writing-project-manager {
+    grid-template-columns: 1fr;
+  }
+
+  .writing-brief-library-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .writing-brief-list {
+    max-height: none;
   }
 
   .corpus-surface {

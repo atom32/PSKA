@@ -7574,6 +7574,127 @@ function writingBoardKnowledgeScopeLabel(scope: Record<string, unknown>, knowled
   return `${ids.length} 个资料库`;
 }
 
+type EvidenceBriefLifecycleStatus = "active" | "expired" | "rolled_back";
+
+type EvidenceBriefCreatePayload = {
+  job_id?: string;
+  digest_note_ids?: string[];
+  knowledge_claim_ids?: string[];
+  review_item_ids?: string[];
+  ask_run_ids?: string[];
+  title?: string;
+  limit?: number;
+};
+
+function evidenceBriefMetadata(board: WritingBoard): Record<string, unknown> {
+  return isPlainObject(board.metadata) ? board.metadata : {};
+}
+
+function evidenceBriefLineage(board: WritingBoard): Record<string, unknown> {
+  const metadata = evidenceBriefMetadata(board);
+  return isPlainObject(metadata.lineage) ? metadata.lineage : {};
+}
+
+function isEvidenceBriefBoard(board: WritingBoard) {
+  return evidenceBriefMetadata(board).kind === "evidence_wiki_brief";
+}
+
+function evidenceBriefLifecycleStatus(board: WritingBoard): EvidenceBriefLifecycleStatus {
+  const metadata = evidenceBriefMetadata(board);
+  const lifecycle = displayText(metadata.lifecycle_status, "").toLowerCase();
+  if (lifecycle === "expired") {
+    return "expired";
+  }
+  if (lifecycle === "rolled_back") {
+    return "rolled_back";
+  }
+  const status = displayText(metadata.status, "").toLowerCase();
+  if (status === "expired") {
+    return "expired";
+  }
+  if (status === "rolled_back") {
+    return "rolled_back";
+  }
+  return "active";
+}
+
+function evidenceBriefLifecycleLabel(status: EvidenceBriefLifecycleStatus) {
+  if (status === "expired") {
+    return "已过期";
+  }
+  if (status === "rolled_back") {
+    return "已回滚";
+  }
+  return "有效";
+}
+
+function evidenceBriefStringList(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.filter((item): item is string => typeof item === "string" && item.length > 0);
+  }
+  if (typeof value === "string" && value.trim()) {
+    return [value.trim()];
+  }
+  return [];
+}
+
+function evidenceBriefSourceRefs(board: WritingBoard) {
+  const metadata = evidenceBriefMetadata(board);
+  const lineage = evidenceBriefLineage(board);
+  return normalizeSearchRefs([
+    ...(Array.isArray(lineage.source_refs) ? lineage.source_refs : []),
+    ...(Array.isArray(metadata.source_refs) ? metadata.source_refs : [])
+  ]);
+}
+
+function evidenceBriefLineageSummary(board: WritingBoard) {
+  const lineage = evidenceBriefLineage(board);
+  const parts = [
+    displayText(lineage.job_id, "") ? "Digest job" : "",
+    evidenceBriefStringList(lineage.ask_run_ids).length ? `Ask ${evidenceBriefStringList(lineage.ask_run_ids).length}` : "",
+    evidenceBriefStringList(lineage.digest_note_ids).length ? `Digest ${evidenceBriefStringList(lineage.digest_note_ids).length}` : "",
+    evidenceBriefStringList(lineage.knowledge_claim_ids).length ? `Claim ${evidenceBriefStringList(lineage.knowledge_claim_ids).length}` : "",
+    evidenceBriefStringList(lineage.review_item_ids).length ? `Review ${evidenceBriefStringList(lineage.review_item_ids).length}` : ""
+  ].filter(Boolean);
+  return parts.length ? parts.join(" · ") : "未记录 lineage";
+}
+
+function evidenceBriefReviewStatus(board: WritingBoard) {
+  const metadata = evidenceBriefMetadata(board);
+  const lineage = evidenceBriefLineage(board);
+  return displayText(metadata.review_status || lineage.review_status || metadata.status, "draft");
+}
+
+function evidenceBriefRegeneratePayload(board: WritingBoard): EvidenceBriefCreatePayload | null {
+  const lineage = evidenceBriefLineage(board);
+  const payload: EvidenceBriefCreatePayload = {};
+  const jobId = displayText(lineage.job_id, "").trim();
+  if (jobId) {
+    payload.job_id = jobId;
+  }
+  const digestNoteIds = evidenceBriefStringList(lineage.digest_note_ids);
+  const knowledgeClaimIds = evidenceBriefStringList(lineage.knowledge_claim_ids);
+  const reviewItemIds = evidenceBriefStringList(lineage.review_item_ids);
+  const askRunIds = evidenceBriefStringList(lineage.ask_run_ids);
+  if (digestNoteIds.length) {
+    payload.digest_note_ids = digestNoteIds;
+  }
+  if (knowledgeClaimIds.length) {
+    payload.knowledge_claim_ids = knowledgeClaimIds;
+  }
+  if (reviewItemIds.length) {
+    payload.review_item_ids = reviewItemIds;
+  }
+  if (askRunIds.length) {
+    payload.ask_run_ids = askRunIds;
+  }
+  if (!payload.job_id && !payload.digest_note_ids?.length && !payload.knowledge_claim_ids?.length && !payload.review_item_ids?.length && !payload.ask_run_ids?.length) {
+    return null;
+  }
+  payload.title = `Brief: ${trimText(board.title.replace(/^Brief:\s*/i, ""), 56)}`;
+  return payload;
+}
+
 function channelCount(value: ConsoleSourceChannelStats) {
   if (typeof value === "number") {
     return value;
@@ -7712,6 +7833,7 @@ function WritingWorkspace({
   const [workspaceMessage, setWorkspaceMessage] = useState("");
   const [editingNodeId, setEditingNodeId] = useState("");
   const [editorMaximized, setEditorMaximized] = useState(false);
+  const [briefActionBoardId, setBriefActionBoardId] = useState("");
   const didAutoSelectBoard = useRef(false);
 
   const boardsQuery = useQuery({
@@ -7720,6 +7842,7 @@ function WritingWorkspace({
     retry: 1
   });
   const boards = boardsQuery.data?.boards || [];
+  const evidenceBriefBoards = useMemo(() => boards.filter(isEvidenceBriefBoard), [boards]);
 
   useEffect(() => {
     if (!activeBoardId && boards.length && !projectManagerOpen && !didAutoSelectBoard.current) {
@@ -7886,6 +8009,72 @@ function WritingWorkspace({
     await patchWritingBoard(serviceToken, activeBoardId, patch);
     await boardsQuery.refetch();
     await boardQuery.refetch();
+  }
+
+  async function regenerateEvidenceBrief(boardToRegenerate: WritingBoard) {
+    if (briefActionBoardId) {
+      return;
+    }
+    const payload = evidenceBriefRegeneratePayload(boardToRegenerate);
+    if (!payload) {
+      setWorkspaceMessage("这个 Brief 缺少可复用的 lineage，不能重新生成。");
+      return;
+    }
+    setBriefActionBoardId(boardToRegenerate.board_id);
+    setWorkspaceMessage("正在按原始 lineage 重新生成 Evidence Brief...");
+    try {
+      const created = await createEvidenceBrief(serviceToken, payload);
+      if (created.ok === false) {
+        throw new Error(evidenceBriefUnavailableMessage(created));
+      }
+      const nextBoardId = created.board?.board_id || created.brief?.board_id;
+      if (nextBoardId) {
+        setActiveBoardId(nextBoardId);
+        setProjectManagerOpen(false);
+        didAutoSelectBoard.current = true;
+      }
+      setWorkspaceMessage(`Evidence Brief 已重新生成：${created.board?.title || created.brief?.title || "Brief 草稿"}。`);
+      await boardsQuery.refetch();
+    } catch (error) {
+      setWorkspaceMessage(error instanceof Error ? error.message : "重新生成 Evidence Brief 失败。");
+    } finally {
+      setBriefActionBoardId("");
+    }
+  }
+
+  async function markEvidenceBriefLifecycle(boardToUpdate: WritingBoard, lifecycleStatus: EvidenceBriefLifecycleStatus) {
+    if (briefActionBoardId) {
+      return;
+    }
+    const now = new Date().toISOString();
+    const metadata = evidenceBriefMetadata(boardToUpdate);
+    const nextMetadata: Record<string, unknown> = {
+      ...metadata,
+      lifecycle_status: lifecycleStatus,
+      lifecycle_updated_at: now
+    };
+    if (lifecycleStatus === "expired") {
+      nextMetadata.expired_at = now;
+      nextMetadata.expiry_reason = "manual";
+    } else if (lifecycleStatus === "rolled_back") {
+      nextMetadata.rolled_back_at = now;
+      nextMetadata.rollback_reason = "manual";
+    } else {
+      nextMetadata.restored_at = now;
+    }
+    setBriefActionBoardId(boardToUpdate.board_id);
+    try {
+      await patchWritingBoard(serviceToken, boardToUpdate.board_id, { metadata: nextMetadata });
+      setWorkspaceMessage(`Evidence Brief 已标记为${evidenceBriefLifecycleLabel(lifecycleStatus)}。`);
+      await boardsQuery.refetch();
+      if (activeBoardId === boardToUpdate.board_id) {
+        await boardQuery.refetch();
+      }
+    } catch (error) {
+      setWorkspaceMessage(error instanceof Error ? error.message : "更新 Evidence Brief 状态失败。");
+    } finally {
+      setBriefActionBoardId("");
+    }
   }
 
   async function removeNode(node: WritingNode) {
@@ -8241,20 +8430,33 @@ function WritingWorkspace({
           {boardsQuery.isError ? <small>写作工作区暂时无法加载，请检查后端或登录状态。</small> : null}
           {workspaceMessage ? <small>{workspaceMessage}</small> : null}
         </div>
-        <div className="writing-project-list" aria-label="写作项目列表" data-testid="writing-project-list">
-          {boards.length ? boards.map((item) => (
-            <article key={item.board_id} className={item.board_id === activeBoardId ? "active" : ""} data-testid="writing-project" data-board-id={item.board_id}>
-              <button className="writing-project-card-main" type="button" onClick={() => openBoard(item.board_id)} data-testid="writing-open-board">
-                <strong>{item.title || "未命名写作项目"}</strong>
-                <p>{item.goal || "没有填写目标。"}</p>
-                <small>{writingBoardKnowledgeScopeLabel(writingBoardKnowledgeScope(item, newBoardKnowledgeScope).scope, knowledgeBases, currentKnowledgeBase)}</small>
-                <small>{item.updated_at ? `更新于 ${formatReviewDate(item.updated_at)}` : item.board_id}</small>
-              </button>
-              <div className="writing-project-actions">
-                <button type="button" className="danger" onClick={() => void removeBoard(item.board_id)} data-testid="writing-delete-board">删除</button>
-              </div>
-            </article>
-          )) : <div className="review-empty compact">还没有写作项目。创建后会得到一块空白 Inquiry Graph 画布。</div>}
+        <div className="writing-library-column">
+          <EvidenceBriefLibrary
+            boards={evidenceBriefBoards}
+            activeBoardId={activeBoardId}
+            busyBoardId={briefActionBoardId}
+            knowledgeBases={knowledgeBases}
+            currentKnowledgeBase={currentKnowledgeBase}
+            fallbackScope={newBoardKnowledgeScope}
+            onOpenBoard={openBoard}
+            onRegenerate={(item) => void regenerateEvidenceBrief(item)}
+            onSetLifecycle={(item, lifecycleStatus) => void markEvidenceBriefLifecycle(item, lifecycleStatus)}
+          />
+          <div className="writing-project-list" aria-label="写作项目列表" data-testid="writing-project-list">
+            {boards.length ? boards.map((item) => (
+              <article key={item.board_id} className={item.board_id === activeBoardId ? "active" : ""} data-testid="writing-project" data-board-id={item.board_id}>
+                <button className="writing-project-card-main" type="button" onClick={() => openBoard(item.board_id)} data-testid="writing-open-board">
+                  <strong>{item.title || "未命名写作项目"}</strong>
+                  <p>{item.goal || "没有填写目标。"}</p>
+                  <small>{writingBoardKnowledgeScopeLabel(writingBoardKnowledgeScope(item, newBoardKnowledgeScope).scope, knowledgeBases, currentKnowledgeBase)}</small>
+                  <small>{item.updated_at ? `更新于 ${formatReviewDate(item.updated_at)}` : item.board_id}</small>
+                </button>
+                <div className="writing-project-actions">
+                  <button type="button" className="danger" onClick={() => void removeBoard(item.board_id)} data-testid="writing-delete-board">删除</button>
+                </div>
+              </article>
+            )) : <div className="review-empty compact">还没有写作项目。创建后会得到一块空白 Inquiry Graph 画布。</div>}
+          </div>
         </div>
       </section>
     );
@@ -8318,6 +8520,168 @@ function WritingWorkspace({
           onCloseSave={(nodeId, patch) => void saveAndCloseEditor(nodeId, patch)}
         />
       ) : null}
+    </section>
+  );
+}
+
+function EvidenceBriefLibrary({
+  boards,
+  activeBoardId,
+  busyBoardId,
+  knowledgeBases,
+  currentKnowledgeBase,
+  fallbackScope,
+  onOpenBoard,
+  onRegenerate,
+  onSetLifecycle
+}: {
+  boards: WritingBoard[];
+  activeBoardId: string;
+  busyBoardId: string;
+  knowledgeBases: KnowledgeBase[];
+  currentKnowledgeBase?: KnowledgeBase;
+  fallbackScope: { scope: Record<string, unknown>; metadata: Record<string, unknown> };
+  onOpenBoard: (boardId: string) => void;
+  onRegenerate: (board: WritingBoard) => void;
+  onSetLifecycle: (board: WritingBoard, lifecycleStatus: EvidenceBriefLifecycleStatus) => void;
+}) {
+  const [selectedBriefId, setSelectedBriefId] = useState("");
+  const [showInactive, setShowInactive] = useState(false);
+  const sortedBoards = useMemo(
+    () => [...boards].sort((a, b) => displayText(b.updated_at || b.created_at, "").localeCompare(displayText(a.updated_at || a.created_at, ""))),
+    [boards]
+  );
+  const visibleBoards = showInactive ? sortedBoards : sortedBoards.filter((item) => evidenceBriefLifecycleStatus(item) === "active");
+  const selectedBrief = visibleBoards.find((item) => item.board_id === selectedBriefId) || visibleBoards[0];
+  const inactiveCount = sortedBoards.length - sortedBoards.filter((item) => evidenceBriefLifecycleStatus(item) === "active").length;
+  const selectedStatus = selectedBrief ? evidenceBriefLifecycleStatus(selectedBrief) : "active";
+  const selectedRefs = selectedBrief ? evidenceBriefSourceRefs(selectedBrief) : [];
+  const selectedLineage = selectedBrief ? evidenceBriefLineage(selectedBrief) : {};
+  const selectedWarnings = Array.isArray(selectedLineage.warnings) ? selectedLineage.warnings : [];
+  const regeneratePayload = selectedBrief ? evidenceBriefRegeneratePayload(selectedBrief) : null;
+  const selectedScopeLabel = selectedBrief
+    ? writingBoardKnowledgeScopeLabel(writingBoardKnowledgeScope(selectedBrief, fallbackScope).scope, knowledgeBases, currentKnowledgeBase)
+    : "";
+  const selectedBusy = Boolean(selectedBrief && busyBoardId === selectedBrief.board_id);
+
+  function handleLifecycleChange(board: WritingBoard, lifecycleStatus: EvidenceBriefLifecycleStatus) {
+    if (lifecycleStatus !== "active") {
+      setShowInactive(true);
+    }
+    setSelectedBriefId(board.board_id);
+    onSetLifecycle(board, lifecycleStatus);
+  }
+
+  return (
+    <section className="writing-brief-library" aria-label="Evidence Brief Library" data-testid="writing-brief-library">
+      <div className="writing-brief-library-header">
+        <div>
+          <span className="eyebrow">Evidence Briefs</span>
+          <h2>Evidence Brief Library</h2>
+        </div>
+        <label className="writing-brief-toggle">
+          <input
+            type="checkbox"
+            checked={showInactive}
+            onChange={(event) => setShowInactive(event.target.checked)}
+            data-testid="writing-brief-show-inactive"
+          />
+          <span>显示已过期/回滚</span>
+        </label>
+      </div>
+      {sortedBoards.length ? (
+        <div className="writing-brief-layout">
+          <div className="writing-brief-list" aria-label="Evidence Brief 列表">
+            {visibleBoards.map((item) => {
+              const status = evidenceBriefLifecycleStatus(item);
+              const scopeLabel = writingBoardKnowledgeScopeLabel(writingBoardKnowledgeScope(item, fallbackScope).scope, knowledgeBases, currentKnowledgeBase);
+              return (
+                <button
+                  key={item.board_id}
+                  className={`writing-brief-card ${item.board_id === selectedBrief?.board_id ? "active" : ""} ${item.board_id === activeBoardId ? "current" : ""} ${status !== "active" ? "inactive" : ""}`}
+                  type="button"
+                  onClick={() => setSelectedBriefId(item.board_id)}
+                  data-testid="writing-brief-card"
+                  data-board-id={item.board_id}
+                >
+                  <span className={`writing-brief-status ${status.replace("_", "-")}`}>{evidenceBriefLifecycleLabel(status)}</span>
+                  <strong>{item.title || "未命名 Brief"}</strong>
+                  <small>{evidenceBriefLineageSummary(item)}</small>
+                  <small>{scopeLabel} · {evidenceBriefSourceRefs(item).length} 引用 · {item.updated_at ? formatReviewDate(item.updated_at) : item.board_id}</small>
+                </button>
+              );
+            })}
+            {!visibleBoards.length ? (
+              <div className="review-empty compact">当前只剩已过期或已回滚 Brief。打开开关后可以查看。</div>
+            ) : null}
+          </div>
+          {selectedBrief ? (
+            <section className="writing-brief-detail" aria-label="Evidence Brief 详情" data-testid="writing-brief-detail">
+              <div className="writing-brief-detail-head">
+                <span className={`writing-brief-status ${selectedStatus.replace("_", "-")}`} data-testid="writing-brief-status">
+                  {evidenceBriefLifecycleLabel(selectedStatus)}
+                </span>
+                <strong>{selectedBrief.title || "未命名 Brief"}</strong>
+                <small>{selectedScopeLabel} · Review {evidenceBriefReviewStatus(selectedBrief)} · {selectedRefs.length} 引用</small>
+              </div>
+              <div className="writing-brief-lineage">
+                <span>
+                  <strong>Lineage</strong>
+                  <small>{evidenceBriefLineageSummary(selectedBrief)}</small>
+                </span>
+                <span>
+                  <strong>Warnings</strong>
+                  <small>{selectedWarnings.length}</small>
+                </span>
+              </div>
+              <div className="writing-brief-actions">
+                <button type="button" onClick={() => onOpenBoard(selectedBrief.board_id)} data-testid="writing-brief-open">
+                  <FileText size={14} />
+                  打开
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onRegenerate(selectedBrief)}
+                  disabled={!regeneratePayload || selectedBusy}
+                  title={regeneratePayload ? "按原始 lineage 重新生成 Brief" : "缺少可复用 lineage"}
+                  data-testid="writing-brief-regenerate"
+                >
+                  <RefreshCw size={14} />
+                  {selectedBusy ? "处理中" : "重新生成"}
+                </button>
+                {selectedStatus === "active" ? (
+                  <>
+                    <button type="button" onClick={() => handleLifecycleChange(selectedBrief, "expired")} disabled={selectedBusy} data-testid="writing-brief-expire">
+                      <AlertTriangle size={14} />
+                      过期
+                    </button>
+                    <button type="button" onClick={() => handleLifecycleChange(selectedBrief, "rolled_back")} disabled={selectedBusy} data-testid="writing-brief-rollback">
+                      <RotateCcw size={14} />
+                      回滚
+                    </button>
+                  </>
+                ) : (
+                  <button type="button" onClick={() => handleLifecycleChange(selectedBrief, "active")} disabled={selectedBusy} data-testid="writing-brief-restore">
+                    <CheckCircle2 size={14} />
+                    恢复
+                  </button>
+                )}
+              </div>
+              <div className="writing-brief-sources">
+                {selectedRefs.length ? selectedRefs.slice(0, 4).map((ref, index) => (
+                  <article key={`${searchRefKey(ref)}-${index}`}>
+                    <span>{ref.title || ref.source_item_id || `引用 ${index + 1}`}</span>
+                    <small>{trimText(ref.snippet || ref.source_window?.text || ref.source_item_id, 120)}</small>
+                  </article>
+                )) : <p>这个 Brief 没有可展示的 source refs。</p>}
+              </div>
+            </section>
+          ) : null}
+        </div>
+      ) : (
+        <div className="review-empty compact">从 Ask 或 Digest 生成 Brief 后，会在这里按 lineage 和生命周期管理。</div>
+      )}
+      {inactiveCount ? <small className="writing-brief-count">{inactiveCount} 个 Brief 已过期或已回滚。</small> : null}
     </section>
   );
 }
