@@ -2565,6 +2565,80 @@ button.context-item-main {
   max-height: 180px;
 }
 
+.review-application-lineage {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+  border: 1px solid rgba(35, 90, 77, 0.16);
+  border-radius: 8px;
+  background: #f6fbf7;
+  padding: 10px;
+}
+
+.review-application-lineage-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.review-application-lineage-header strong {
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.review-application-lineage-header small,
+.review-application-lineage > small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.review-application-lineage dl {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.review-application-lineage dl div {
+  min-width: 0;
+  border: 1px solid rgba(35, 90, 77, 0.12);
+  border-radius: 7px;
+  background: #fffefa;
+  padding: 7px;
+}
+
+.review-application-lineage dt {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.review-application-lineage dd {
+  margin: 3px 0 0;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
+.review-application-targets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.review-application-targets code {
+  border-radius: 6px;
+  background: rgba(35, 90, 77, 0.08);
+  color: #235a4d;
+  padding: 5px 7px;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
 .review-basis {
   display: grid;
   gap: 8px;
@@ -6464,6 +6538,10 @@ button.context-item-main {
 
   .review-evidence-comparison .citation-inspector-heading {
     grid-column: auto;
+  }
+
+  .review-application-lineage dl {
+    grid-template-columns: 1fr;
   }
 
   .review-summary {

@@ -248,6 +248,13 @@ async function expectReviewCenterHealth(page: Page, fixture: ReviewHealthFixture
   await expect(appliedCard).toBeVisible({ timeout: 45_000 });
   await expect(appliedCard).toContainText(fixture.topic);
   await expect(appliedCard).toContainText(/Created graph relationship|已批准并应用|已应用|applied/);
+  const lineage = appliedCard.getByTestId("review-application-lineage");
+  await expect(lineage).toBeVisible();
+  await expect(lineage).toContainText("应用 lineage");
+  await expect(lineage).toContainText("写入目标");
+  await expect(lineage).toContainText("Graph relationship");
+  await expect(lineage).toContainText("hyperedge:");
+  await expect(lineage).toContainText("证据");
   const openGraph = appliedCard.getByTestId("review-action-open-graph");
   await expect(openGraph).toBeVisible();
   await openGraph.click();

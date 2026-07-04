@@ -136,6 +136,7 @@ import type {
   AskConversation,
   AskMessage,
   AskRun,
+  ReviewApplicationResult,
   ReviewCenterItem,
   SourcePreviewResponse,
   SourceSyncResponse,
@@ -1875,6 +1876,7 @@ function ReviewCenter({
                     </details>
                   </>
                 ) : null}
+                <ReviewApplicationLineage item={item} />
               </div>
               <div className="review-center-actions">
                 <small>{actionSummary}</small>
@@ -1943,6 +1945,50 @@ function reviewActionStatusLabel(action: ReviewAction) {
   return "已批准";
 }
 
+function ReviewApplicationLineage({ item }: { item: ReviewCenterItem }) {
+  const result = item.application_result;
+  if (!result || result.applied !== true) {
+    return null;
+  }
+  const targetIds = result.target_ids || {};
+  const targetEntries = Object.entries(targetIds).filter(([, value]) => Boolean(value));
+  const evidenceRefs = result.source_refs?.length ? result.source_refs : item.source_refs || [];
+  return (
+    <div className="review-application-lineage" data-testid="review-application-lineage">
+      <div className="review-application-lineage-header">
+        <strong>应用 lineage</strong>
+        <small>{reviewApplicationTargetLabel(result)}</small>
+      </div>
+      <dl>
+        <div>
+          <dt>写入目标</dt>
+          <dd>{reviewApplicationTargetLabel(result)}</dd>
+        </div>
+        <div>
+          <dt>动作</dt>
+          <dd>{reviewApplicationActionLabel(result.action)}</dd>
+        </div>
+        <div>
+          <dt>状态</dt>
+          <dd>{statusLabel(result.status || item.status || "applied")}</dd>
+        </div>
+        <div>
+          <dt>证据</dt>
+          <dd>{evidenceRefs.length ? `${evidenceRefs.length} 条证据引用` : "未记录"}</dd>
+        </div>
+      </dl>
+      {targetEntries.length ? (
+        <div className="review-application-targets">
+          {targetEntries.map(([key, value]) => (
+            <code key={`${item.review_item_id}-${key}`}>{reviewApplicationTargetKeyLabel(key)}: {value}</code>
+          ))}
+        </div>
+      ) : null}
+      {evidenceRefs.length ? <small>应用时保留了可回查证据，可在上方“证据对比”检查原文。</small> : null}
+    </div>
+  );
+}
+
 function reviewActionSummary(item: ReviewCenterItem) {
   const result = item.application_result;
   const status = displayText(result?.status || item.status, "pending");
@@ -1962,6 +2008,56 @@ function reviewActionSummary(item: ReviewCenterItem) {
     }
   }
   return statusLabel(status);
+}
+
+function reviewApplicationTargetLabel(result: ReviewApplicationResult) {
+  const promotionType = displayText(result.promotion_type, "");
+  if (promotionType === "hyperedge") {
+    return "Graph relationship";
+  }
+  if (promotionType === "agent_memory") {
+    return "Agent memory";
+  }
+  if (promotionType === "profile_card") {
+    return "Profile card";
+  }
+  const targetIds = result.target_ids || {};
+  if (targetIds.created_hyperedge_id) {
+    return "Graph relationship";
+  }
+  if (targetIds.agent_memory_id) {
+    return "Agent memory";
+  }
+  if (targetIds.profile_card_id) {
+    return "Profile card";
+  }
+  return "长期知识";
+}
+
+function reviewApplicationTargetKeyLabel(key: string) {
+  if (key === "created_hyperedge_id") {
+    return "hyperedge";
+  }
+  if (key === "agent_memory_id") {
+    return "memory";
+  }
+  if (key === "profile_card_id") {
+    return "profile";
+  }
+  return key;
+}
+
+function reviewApplicationActionLabel(action?: string | null) {
+  if (action === "review.apply") {
+    return "已写入";
+  }
+  if (action === "review.approve") {
+    return "已批准";
+  }
+  if (action === "review.reject") {
+    return "已拒绝";
+  }
+  return displayText(action, "已应用");
 }
 
 function reviewEvidenceResult(item: ReviewCenterItem): WorkspaceSearchResponse {
