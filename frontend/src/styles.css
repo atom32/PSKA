@@ -3570,6 +3570,106 @@ button.context-item-main {
   opacity: 0.55;
 }
 
+.kb-readiness-panel {
+  max-width: 1180px;
+  margin: 0 auto 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 254, 249, 0.88);
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.kb-readiness-panel.warning {
+  border-color: rgba(185, 122, 42, 0.28);
+  background: #fffaf0;
+}
+
+.kb-readiness-head {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 0.9fr);
+  gap: 12px;
+  align-items: center;
+}
+
+.kb-readiness-head > div {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.kb-readiness-head strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+}
+
+.kb-readiness-head p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.kb-readiness-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.kb-readiness-metric {
+  min-width: 0;
+  border: 1px solid rgba(39, 37, 31, 0.08);
+  border-radius: 8px;
+  background: var(--paper);
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  padding: 9px;
+}
+
+.kb-readiness-metric svg {
+  color: var(--accent);
+  margin-top: 2px;
+}
+
+.kb-readiness-metric div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.kb-readiness-metric strong,
+.kb-readiness-metric small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kb-readiness-metric strong {
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.kb-readiness-metric span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.kb-readiness-metric small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
 .corpus-operation {
   max-width: 1180px;
   margin: 0 auto 12px;
@@ -7431,6 +7531,8 @@ button.context-item-main {
   .corpus-header,
   .corpus-workspace-grid,
   .kb-search-results,
+  .kb-readiness-head,
+  .kb-readiness-grid,
   .understanding-summary {
     grid-template-columns: 1fr;
   }

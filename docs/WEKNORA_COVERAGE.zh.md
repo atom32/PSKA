@@ -102,7 +102,7 @@ cd "$PSKA_REPO"
 | WeKnora 核心问题 | PSKA 验收项 | 当前证明路径 |
 | --- | --- | --- |
 | 能不能接数据？ | folder、RSS/Atom、URL source preview/create/sync | `source_adapters` |
-| 能不能看处理进度？ | sync report、processing spans、source cards | `processing_transparency` |
+| 能不能看处理进度？ | sync report、processing spans、source cards、KB readiness 健康面板 | `processing_transparency` |
 | 能不能调 chunk？ | 输入文本 + processing config 返回 chunks/stats/diagnostics | `chunk_preview` |
 | 能不能问答？ | Ask quick 返回 answer、citations、source_refs | `ask_rag` |
 | Agent/RAG 有没有进度？ | SSE `progress` 事件覆盖 understand/search/read/generate 等阶段 | `ask_progress` |

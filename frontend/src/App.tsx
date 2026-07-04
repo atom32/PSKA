@@ -5583,6 +5583,7 @@ function CorpusWorkspace({
   const currentKnowledgeBaseReadiness = currentKnowledgeBase?.readiness;
   const readinessPill = knowledgeBaseReadinessPill(currentKnowledgeBaseReadiness);
   const embeddingCoverageLabel = knowledgeBaseEmbeddingCoverageLabel(currentKnowledgeBaseReadiness);
+  const readinessReason = knowledgeBaseReadinessReason(currentKnowledgeBase);
   const documentLinkTargets = useMemo(
     () => knowledgeBases.filter((knowledgeBase) => knowledgeBase.status !== "archived" && knowledgeBase.knowledge_base_id !== currentKnowledgeBaseId),
     [knowledgeBases, currentKnowledgeBaseId]
@@ -6413,6 +6414,14 @@ function CorpusWorkspace({
         </details>
       ) : null}
 
+      <KnowledgeBaseReadinessPanel
+        knowledgeBase={currentKnowledgeBase}
+        readinessLabel={readinessPill.label}
+        readinessClassName={readinessPill.className}
+        embeddingCoverageLabel={embeddingCoverageLabel}
+        readinessReason={readinessReason}
+      />
+
       <div className={`corpus-operation ${operationStatus}`} role="status" data-testid="corpus-operation">
         <div>
           <strong>{operationTitle(operationStatus)}</strong>
@@ -6750,6 +6759,88 @@ function KnowledgeBaseSearchCard({ refItem, index }: { refItem: SearchEvidenceRe
       {identity || scoreLabel ? <span>{[identity, scoreLabel].filter(Boolean).join(" / ")}</span> : null}
       <p>{trimText(refItem.snippet || refItem.source_window?.text, 280) || "暂无摘要。"}</p>
     </article>
+  );
+}
+
+function KnowledgeBaseReadinessPanel({
+  knowledgeBase,
+  readinessLabel,
+  readinessClassName,
+  embeddingCoverageLabel,
+  readinessReason
+}: {
+  knowledgeBase?: KnowledgeBase;
+  readinessLabel: string;
+  readinessClassName: string;
+  embeddingCoverageLabel: string;
+  readinessReason: string;
+}) {
+  if (!knowledgeBase) {
+    return null;
+  }
+  const readiness = knowledgeBase.readiness;
+  const counts = knowledgeBase.counts || {};
+  const sourceItemCount = knowledgeBaseMetricNumber(readiness?.source_item_count ?? counts.source_items);
+  const documentCount = knowledgeBaseMetricNumber(readiness?.document_count ?? counts.documents);
+  const chunkCount = knowledgeBaseMetricNumber(readiness?.chunk_count ?? counts.chunks);
+  const failedProcessingCount = knowledgeBaseMetricNumber(readiness?.failed_processing_count ?? counts.failed_processing_spans);
+  const processingCount = knowledgeBaseMetricNumber(readiness?.processing_count ?? counts.processing_spans);
+  const offlineDirtyCount = knowledgeBaseMetricNumber(readiness?.offline_index_dirty_count ?? counts.offline_index_dirty);
+  const embeddingModels = knowledgeBaseEmbeddingModelsLabel(readiness);
+  const processingLabel = knowledgeBaseProcessingLabel(readiness);
+  const indexLabel = knowledgeBaseIndexLabel(readiness);
+  return (
+    <section className={`kb-readiness-panel ${readinessClassName}`} data-testid="knowledge-base-readiness-panel" aria-label="知识库健康">
+      <div className="kb-readiness-head">
+        <div>
+          <span className={`pill ${readinessClassName}`} data-testid="knowledge-base-readiness-status">{readinessLabel}</span>
+          <strong>{knowledgeBase.name || knowledgeBase.slug || "知识库"}</strong>
+        </div>
+        <p data-testid="knowledge-base-readiness-reason">{readinessReason}</p>
+      </div>
+      <div className="kb-readiness-grid">
+        <div className="kb-readiness-metric">
+          <Hash size={15} />
+          <div>
+            <strong>{knowledgeBaseMetricLabel(sourceItemCount)}</strong>
+            <span>资料条目</span>
+            <small>{knowledgeBaseMetricLabel(documentCount)} 原文 / {knowledgeBaseMetricLabel(chunkCount)} 片段</small>
+          </div>
+        </div>
+        <div className="kb-readiness-metric">
+          <RefreshCw size={15} />
+          <div>
+            <strong>{processingLabel}</strong>
+            <span>处理</span>
+            <small>{failedProcessingCount ? `${failedProcessingCount} 个失败` : processingCount ? `${processingCount} 个记录` : knowledgeBaseDateLabel(readiness?.last_processing_at)}</small>
+          </div>
+        </div>
+        <div className="kb-readiness-metric">
+          <SlidersHorizontal size={15} />
+          <div>
+            <strong>{embeddingCoverageLabel}</strong>
+            <span>向量覆盖</span>
+            <small>{embeddingModels}</small>
+          </div>
+        </div>
+        <div className="kb-readiness-metric">
+          {offlineDirtyCount ? <AlertTriangle size={15} /> : <CheckCircle2 size={15} />}
+          <div>
+            <strong>{indexLabel}</strong>
+            <span>索引</span>
+            <small>{offlineDirtyCount ? `${offlineDirtyCount} 个待刷新` : `${knowledgeBaseMetricLabel(readiness?.offline_index_state_count ?? counts.offline_index_states)} 个状态`}</small>
+          </div>
+        </div>
+        <div className="kb-readiness-metric">
+          <CalendarDays size={15} />
+          <div>
+            <strong>{knowledgeBaseDateLabel(readiness?.last_sync_at)}</strong>
+            <span>最近同步</span>
+            <small>最近整理 {knowledgeBaseDateLabel(readiness?.last_digest_at)}</small>
+          </div>
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -8063,6 +8154,88 @@ function knowledgeBaseEmbeddingCoverageLabel(readiness?: KnowledgeBase["readines
     return "-";
   }
   return `${Math.round(Math.max(0, Math.min(1, value)) * 100)}%`;
+}
+
+function knowledgeBaseMetricNumber(value: unknown) {
+  const number = Number(value ?? 0);
+  return Number.isFinite(number) ? number : 0;
+}
+
+function knowledgeBaseMetricLabel(value: unknown) {
+  return knowledgeBaseMetricNumber(value).toLocaleString();
+}
+
+function knowledgeBaseDateLabel(value?: string | null) {
+  return value ? formatReviewDate(value) : "无记录";
+}
+
+function knowledgeBaseProcessingLabel(readiness?: KnowledgeBase["readiness"]) {
+  const status = displayText(readiness?.processing_status, "").toLowerCase();
+  const failed = knowledgeBaseMetricNumber(readiness?.failed_processing_count);
+  const processing = knowledgeBaseMetricNumber(readiness?.processing_count);
+  if (status === "failed" || failed > 0) {
+    return "有异常";
+  }
+  if (status === "processing" || processing > 0) {
+    return "处理中";
+  }
+  if (status === "pending") {
+    return "待处理";
+  }
+  if (status === "succeeded" || readiness?.has_chunks) {
+    return "已完成";
+  }
+  return "未开始";
+}
+
+function knowledgeBaseIndexLabel(readiness?: KnowledgeBase["readiness"]) {
+  const dirty = knowledgeBaseMetricNumber(readiness?.offline_index_dirty_count);
+  if (readiness?.offline_index_fresh === false || dirty > 0) {
+    return "待刷新";
+  }
+  if (readiness?.offline_index_fresh === true) {
+    return "新鲜";
+  }
+  return "未记录";
+}
+
+function knowledgeBaseEmbeddingModelsLabel(readiness?: KnowledgeBase["readiness"]) {
+  const models = Array.isArray(readiness?.embedding_models)
+    ? readiness.embedding_models.filter((item): item is string => typeof item === "string" && item.length > 0)
+    : [];
+  return models.length ? models.slice(0, 2).join(" / ") : "未记录模型";
+}
+
+function knowledgeBaseReadinessReason(knowledgeBase?: KnowledgeBase) {
+  if (!knowledgeBase) {
+    return "还没有选择知识库。";
+  }
+  const readiness = knowledgeBase.readiness;
+  const counts = knowledgeBase.counts || {};
+  const sourceItems = knowledgeBaseMetricNumber(readiness?.source_item_count ?? counts.source_items);
+  const chunks = knowledgeBaseMetricNumber(readiness?.chunk_count ?? counts.chunks);
+  const failed = knowledgeBaseMetricNumber(readiness?.failed_processing_count ?? counts.failed_processing_spans);
+  const dirty = knowledgeBaseMetricNumber(readiness?.offline_index_dirty_count ?? counts.offline_index_dirty);
+  const embeddingStatus = displayText(readiness?.embedding_status, "").toLowerCase();
+  if (!readiness?.has_source_items && sourceItems === 0) {
+    return "还没有资料条目；添加文件、文本或 URL 后才能检索。";
+  }
+  if (failed > 0 || displayText(readiness?.processing_status, "").toLowerCase() === "failed") {
+    return "处理链路有失败记录；检查同步/解析错误后再追问更稳。";
+  }
+  if (!readiness?.has_chunks && chunks === 0) {
+    return "资料已归入知识库，但还没有可检索片段。";
+  }
+  if (dirty > 0 || readiness?.offline_index_fresh === false) {
+    return "索引有待刷新；检索会优先使用已可用的 active 片段。";
+  }
+  if (embeddingStatus === "partial" || embeddingStatus === "missing") {
+    return "向量覆盖不完整；系统仍可退回 lexical/hybrid 检索。";
+  }
+  if (readiness?.retrieval_ready) {
+    return "Ask 会在这个知识库的 active corpus 中检索，并继续执行权限过滤。";
+  }
+  return "等待同步、解析或切片完成后可进入稳定检索。";
 }
 
 function writingKnowledgeScopeMetadata(

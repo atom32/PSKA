@@ -77,6 +77,8 @@ test("browser session scoped Ask does not leak citations across knowledge bases"
     await openWorkspace(page, "Today");
     await selectCurrentKnowledgeBase(page, alpha.knowledge_base_id);
     await expectTodayReviewHealth(page, reviewFixture);
+    await expectKnowledgeBaseReadinessPanel(page, alpha.name);
+    await openWorkspace(page, "Today");
 
     const snoozeReviewFixture = await createReviewHealthFixture(page, alpha.knowledge_base_id, marker, createdSourceItemIds);
     bulkReviewFixtures.push(
@@ -228,6 +230,19 @@ async function expectTodayReviewHealth(page: Page, fixture: ReviewHealthFixture)
   await expect(reviewCard).toBeVisible({ timeout: 45_000 });
   await expect(reviewCard.getByTestId("today-review-evidence-health")).toBeVisible();
   await expect(reviewCard.getByTestId("today-review-evidence-health")).toContainText("需复核");
+}
+
+async function expectKnowledgeBaseReadinessPanel(page: Page, knowledgeBaseName: string) {
+  await openWorkspace(page, "资料库");
+  const panel = page.getByTestId("knowledge-base-readiness-panel");
+  await expect(panel).toBeVisible({ timeout: 45_000 });
+  await expect(panel).toContainText(knowledgeBaseName);
+  await expect(panel.getByTestId("knowledge-base-readiness-status")).toBeVisible();
+  await expect(panel).toContainText("资料条目");
+  await expect(panel).toContainText("向量覆盖");
+  await expect(panel).toContainText("索引");
+  await expect(panel).toContainText("最近同步");
+  await expect(panel.getByTestId("knowledge-base-readiness-reason")).toContainText(/检索|处理|索引|资料/);
 }
 
 async function expectReviewCenterHealth(page: Page, fixture: ReviewHealthFixture) {
