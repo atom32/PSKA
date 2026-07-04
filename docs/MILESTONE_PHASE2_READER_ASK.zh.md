@@ -37,7 +37,8 @@
 - `npm run build` 通过。
 - `PYTHONPATH=..:.:src pytest -q tests/test_knowledge_bases.py -k reader` 通过。
 - `npm run e2e:multi-kb-ask -- --list` 通过，确认真实浏览器 e2e spec 可发现且不会在 discovery 阶段要求本地密码。
-- `./scripts/pska-phase1-multikb-release-gate` 通过，覆盖 PSKA core `492 passed`、frontend build、FastReAct contracts `75 passed`、PSKA/FastReAct `git diff --check`。
+- `./scripts/pska-phase1-multikb-release-gate` 通过，覆盖 PSKA core `494 passed`、frontend build、FastReAct contracts `75 passed`、PSKA/FastReAct `git diff --check`。
+- `./scripts/pska-fastreact-kb-scope-smoke --timeout-seconds 240` 通过，使用真实 PSKA service、真实 FastReAct daemon、DeepSeek `deepseek-v4-flash` 和 PSKA HTTP MCP；FastReAct 实际调用 `pska_pska_search` / `pska_pska_read_evidence_context` 并保留 hard KB/source scope，临时 alpha/beta 数据清理后 residue 全 0。
 
 真实浏览器验收仍需在集成系统启动后显式运行：
 

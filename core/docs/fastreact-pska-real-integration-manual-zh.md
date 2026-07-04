@@ -174,12 +174,12 @@ curl -sS \
 
 ## 真实 E2E Smoke
 
-PSKA repo 提供确定性 E2E smoke，验证真实 HTTP/SSE service、service auth、真实 PSKA MCP JSON-RPC 子进程和 SSE event contract：
+PSKA repo 提供真实 E2E smoke，验证 PSKA service、FastReAct daemon、LLM API、
+HTTP MCP、service auth、SSE event contract 和 scoped evidence 返回：
 
 ```bash
-cd "$PSKA_REPO/core"
-python3 scripts/fastreact_http_sse_e2e.py \
-  --python ../.pska/venvs/pska-py312/bin/python
+cd "$PSKA_REPO"
+./scripts/pska-fastreact-kb-scope-smoke
 ```
 
 成功时输出包含：
@@ -190,7 +190,8 @@ python3 scripts/fastreact_http_sse_e2e.py \
 }
 ```
 
-smoke 不依赖真实外部 LLM；它用于验证服务边界和 PSKA MCP 真实链路。
+旧的 `core/scripts/fastreact_http_sse_e2e.py` 只保留为兼容入口，会转发到同一
+真实 smoke；它不再使用 deterministic FastReAct test agent。
 
 ## PSKA 报告走 FastReAct API
 
