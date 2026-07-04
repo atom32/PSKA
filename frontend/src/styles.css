@@ -5489,6 +5489,10 @@ button.context-item-main {
   gap: 6px;
 }
 
+.graph-ask-health-row {
+  margin-top: 8px;
+}
+
 .graph-path-run span {
   border: 1px solid var(--line);
   border-radius: 999px;

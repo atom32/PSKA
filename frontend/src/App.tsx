@@ -8791,7 +8791,14 @@ function GraphWorkspace({
                 <p>点击 digest、claim、hyperedge 或 passage，查看它如何追溯到原文证据。</p>
               </>
             )}
-            {graphAskResult ? <AskResult result={graphAskResult} pending={pathStatus === "loading"} serviceToken={serviceToken} /> : <GraphPathPanel result={pathResult} status={pathStatus} error={pathError} serviceToken={serviceToken} />}
+            {graphAskResult ? (
+              <>
+                <GraphAskEvidenceHealth result={graphAskResult} pending={pathStatus === "loading"} error={pathError} />
+                <AskResult result={graphAskResult} pending={pathStatus === "loading"} serviceToken={serviceToken} />
+              </>
+            ) : (
+              <GraphPathPanel result={pathResult} status={pathStatus} error={pathError} serviceToken={serviceToken} />
+            )}
           </aside>
         </div>
       )}
@@ -8887,6 +8894,77 @@ function GraphInsightsPanel({
       ) : null}
     </section>
   );
+}
+
+function GraphAskEvidenceHealth({
+  result,
+  pending,
+  error = ""
+}: {
+  result: WorkspaceAskResponse;
+  pending?: boolean;
+  error?: string;
+}) {
+  const health = graphAskEvidenceHealth(result, pending, error);
+  if (!health) {
+    return null;
+  }
+  return (
+    <div className="graph-path-run graph-ask-health-row" aria-label="Graph Ask evidence health">
+      <span
+        className={`graph-path-health ${health.tone}`}
+        data-testid="graph-path-evidence-health"
+        title={health.detail}
+      >
+        {trimText([health.label, health.meta].filter(Boolean).join(" · "), 34)}
+      </span>
+    </div>
+  );
+}
+
+function graphAskEvidenceHealth(result: WorkspaceAskResponse, pending = false, error = ""): AskHealthView | null {
+  const evidence = result.evidence || {};
+  const refs = normalizeSearchRefs([
+    ...(result.source_refs || []),
+    ...(result.citations || []),
+    ...(result.source_windows || []),
+    ...(evidence.citations || []),
+    ...(evidence.source_refs || []),
+    ...(evidence.results || []),
+    ...(evidence.source_windows || [])
+  ]);
+  const health = askHealthFromSignals({
+    qualitySignals: result.quality_signals,
+    evidenceCheck: result.evidence_check,
+    status: error || result.error || result.ok === false ? "error" : result.status,
+    citationCount: refs.length,
+    running: pending
+  });
+  if (!health) {
+    return null;
+  }
+  if (pending) {
+    return {
+      ...health,
+      label: "查询中",
+      detail: "Graph Ask 正在检索证据，阶段过程会继续更新。"
+    };
+  }
+  if (error || result.error || result.ok === false) {
+    return {
+      ...health,
+      label: "失败",
+      detail: "Graph Ask 没有返回可采信结果，请查看错误或重试。"
+    };
+  }
+  if (!refs.length) {
+    return {
+      ...health,
+      label: "缺引用",
+      detail: "Graph Ask 没有返回可检查引用，不能直接采信为证据回答。"
+    };
+  }
+  return health;
 }
 
 function GraphPathPanel({

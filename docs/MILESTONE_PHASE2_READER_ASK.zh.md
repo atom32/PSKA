@@ -37,7 +37,7 @@
 - Writing 节点和 Composer 的 Ask timeline 已复用同一套阶段摘要，运行中的 preview 与持久化的 `last_ask` 都会携带 `progress`、`evidence_check` 和 `quality_signals`。
 - Writing answer/evidence/draft 节点顶部已增加 Ask 健康指示，把 `quality_signals`、`evidence_check`、节点状态和引用数提炼成“有引用 / 证据不足 / 需复核 / 失败 / 无需证据”等短标签，展开后仍可查看完整阶段和原文引用。
 - Review Center 列表已复用同一类证据健康摘要，把 `source_ref_status`、`quality_tier`、`review_eligible` 和 apply readiness 提炼成“可审核 / 缺证据 / 仅诊断 / 需检查”等短标签。
-- Graph Path 面板已增加证据健康摘要，把 citations、agentic repair 和错误状态提炼成“有引用 / 缺引用 / 已重写 / 需复核 / 失败”等短标签。
+- Graph Ask 主路径和 legacy Graph Path 面板都已增加证据健康摘要，把 citations、agentic repair 和错误状态提炼成“有引用 / 缺引用 / 已重写 / 需复核 / 失败”等短标签。
 - `frontend/e2e/multi-kb-scoped-ask.spec.ts` 已扩展真实浏览器验收：UI Ask 展示 alpha citation inspector，点击“查看原文”后 ReaderPane 包含 alpha 原文且不包含 beta secret；点击“追问这段”后输入框包含 alpha `source_item_id`。
 - `frontend/e2e/writing-workspace.spec.ts` 已扩展真实浏览器验收：Writing answer/question 运行后应出现 `writing-node-ask-health`，并且持久化节点/`last_ask` 保留可支撑健康摘要的 `quality_signals`。
 
