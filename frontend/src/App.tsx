@@ -2659,6 +2659,14 @@ function AskResult({
   const scopeReadinessHint = askScopeReadinessHint(result);
   const askRunId = displayText((result as WorkspaceAskResponse).run_id, "");
   const canCreateBrief = Boolean(serviceToken && askRunId && answer && refs.length > 0 && !pending && !result.error);
+  const askHealth = askResultHealth(result, {
+    pending,
+    citationCount: refs.length,
+    answer,
+    gaps,
+    conflicts,
+    noAnswerReasons
+  });
 
   async function handleCopyMarkdown() {
     try {
@@ -2737,6 +2745,7 @@ function AskResult({
         </div>
       </div>
       {briefMessage ? <small className={`search-note ask-brief-status ${briefStatus}`} data-testid="ask-create-brief-status">{briefMessage}</small> : null}
+      {askHealth ? <AskResultHealth health={askHealth} /> : null}
       {scopeStatus ? (
         <div className="ask-scope-status" data-testid="ask-scope-status" aria-label="Ask 知识库范围">
           <div className="ask-scope-copy">
@@ -4313,12 +4322,78 @@ function AskQualitySignals({ signals }: { signals: Record<string, unknown> }) {
   );
 }
 
+function AskResultHealth({ health }: { health: AskHealthView }) {
+  return (
+    <div className={`ask-result-health ${health.tone}`} data-testid="ask-result-health" aria-label="Ask result health" title={health.detail}>
+      <div>
+        <span>{health.label}</span>
+        {health.meta ? <small>{health.meta}</small> : null}
+      </div>
+      <p>{health.detail}</p>
+    </div>
+  );
+}
+
 type AskHealthView = {
   tone: "good" | "warning" | "error" | "neutral";
   label: string;
   detail: string;
   meta: string;
 };
+
+function askResultHealth(
+  result: WorkspaceAskResponse | WorkspaceSearchResponse,
+  context: {
+    pending: boolean;
+    citationCount: number;
+    answer: string;
+    gaps: string[];
+    conflicts: string[];
+    noAnswerReasons: string[];
+  }
+): AskHealthView | null {
+  const askResult = result as WorkspaceAskResponse;
+  const searchResult = result as WorkspaceSearchResponse;
+  const hasError = Boolean(askResult.error || searchResult.error || result.ok === false);
+  const status = hasError ? "error" : displayText(askResult.status, "");
+  const health = askHealthFromSignals({
+    qualitySignals: askResult.quality_signals,
+    evidenceCheck: askResult.evidence_check,
+    status,
+    citationCount: context.citationCount,
+    running: context.pending
+  });
+
+  if (context.pending) {
+    return {
+      ...(health || { tone: "neutral", label: "处理中", detail: "", meta: "" }),
+      tone: "neutral",
+      label: "处理中",
+      detail: "Ask PSKA 正在检索、读取和校验证据，阶段过程会继续更新。"
+    };
+  }
+  if (hasError) {
+    return {
+      ...(health || { tone: "error", label: "失败", detail: "", meta: "" }),
+      tone: "error",
+      label: "失败",
+      detail: "Ask PSKA 未能产生可采信结果，请查看错误、过程时间线或重试。"
+    };
+  }
+  if (context.citationCount <= 0 && (context.answer || context.gaps.length || context.conflicts.length || context.noAnswerReasons.length)) {
+    return {
+      tone: "warning",
+      label: context.noAnswerReasons.length || context.gaps.length ? "证据不足" : "缺引用",
+      detail: "本次回答没有可检查引用，不能直接沉淀为证据结论。",
+      meta: [
+        context.noAnswerReasons.length ? `原因 ${context.noAnswerReasons.length}` : "",
+        context.gaps.length ? `缺口 ${context.gaps.length}` : "",
+        context.conflicts.length ? `冲突 ${context.conflicts.length}` : ""
+      ].filter(Boolean).join(" · ")
+    };
+  }
+  return health;
+}
 
 function askHealthFromSignals({
   qualitySignals,

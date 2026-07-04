@@ -136,6 +136,7 @@ test("browser session scoped Ask does not leak citations across knowledge bases"
       alphaSecret,
       betaSecret
     });
+    await expectKnowledgeBaseAskMobileLayout(page, { alphaSecret });
     await askViaGraphWorkspace(page, query, {
       knowledgeBaseName: alpha.name,
       alphaSecret,
@@ -383,9 +384,22 @@ async function askViaKnowledgeBaseTab(
   const result = panel.getByTestId("ask-result").filter({ hasText: expected.alphaSecret }).last();
   await expect(result).toContainText(expected.alphaSecret, { timeout: 120_000 });
   await expect(result).not.toContainText(expected.betaSecret);
+  await expect(result.getByTestId("ask-result-health")).toContainText("有引用");
   const scopeStatus = result.getByTestId("ask-scope-status");
   await expect(scopeStatus).toContainText(expected.knowledgeBaseName);
   await expect(scopeStatus).toContainText("强限定");
+}
+
+async function expectKnowledgeBaseAskMobileLayout(page: Page, expected: { alphaSecret: string }) {
+  await page.setViewportSize({ width: 390, height: 820 });
+  const panel = page.getByTestId("knowledge-base-inline-ask-panel");
+  await expect(panel).toBeVisible({ timeout: 45_000 });
+  await expect(panel.getByTestId("knowledge-base-ask-preflight")).toContainText("hard scope");
+  const result = panel.getByTestId("ask-result").filter({ hasText: expected.alphaSecret }).last();
+  await expect(result).toBeVisible({ timeout: 45_000 });
+  await expect(result.getByTestId("ask-result-health")).toContainText("有引用");
+  await expect(result.getByTestId("ask-processing-timeline")).toContainText("证据校验");
+  await page.setViewportSize({ width: 1365, height: 900 });
 }
 
 async function expectReviewCenterHealth(page: Page, fixture: ReviewHealthFixture, hiddenFixture: ReviewHealthFixture, knowledgeBaseName: string) {
@@ -597,6 +611,7 @@ async function askViaBrowserComposer(
 
   const stableResult = page.getByTestId("ask-result").filter({ hasText: expected.alphaSecret }).last();
   await expect(stableResult).toContainText(expected.alphaSecret);
+  await expect(stableResult.getByTestId("ask-result-health")).toContainText("有引用");
   const scopeStatus = stableResult.getByTestId("ask-scope-status");
   await expect(scopeStatus).toBeVisible();
   await expect(scopeStatus).toContainText(expected.knowledgeBaseName);
@@ -758,6 +773,7 @@ async function askViaGraphWorkspace(
   await expect(result).toContainText(expected.alphaSecret, { timeout: 120_000 });
   await expect(result).not.toContainText(expected.betaSecret);
   await expect(result.getByTestId("graph-path-evidence-health")).toBeVisible();
+  await expect(result.getByTestId("ask-result-health")).toContainText("有引用");
   await expect(result.getByTestId("ask-processing-timeline")).toContainText("证据校验");
   await saveGraphAskResultToWriting(page, expected);
   await saveSelectedGraphNodeToWriting(page, expected);
