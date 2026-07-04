@@ -1500,6 +1500,7 @@ function TodayWorkspace({
   );
 }
 
+type ReviewAction = "approve" | "approve_apply" | "reject" | "apply";
 type ReviewActionState = string;
 
 function ReviewCenter({
@@ -1521,6 +1522,8 @@ function ReviewCenter({
 }) {
   const [status, setStatus] = useState("pending");
   const [actions, setActions] = useState<Record<string, ReviewActionState>>({});
+  const [selectedReviewIds, setSelectedReviewIds] = useState<Set<string>>(() => new Set());
+  const [bulkMessage, setBulkMessage] = useState("");
   const kbScopedOptions = useMemo(
     () => knowledgeBaseScopedOptions(scopeMode, currentKnowledgeBase, selectedKnowledgeBaseIds),
     [currentKnowledgeBase?.knowledge_base_id, scopeMode, selectedKnowledgeBaseIds]
@@ -1534,27 +1537,98 @@ function ReviewCenter({
   const items = reviewQuery.data?.review_items || [];
   const total = reviewQuery.data?.total_matching ?? reviewQuery.data?.count ?? items.length;
   const scopeLabel = knowledgeBaseScopeLabel(scopeMode, currentKnowledgeBase, selectedKnowledgeBaseIds);
+  const selectableItems = useMemo(() => items.filter((item) => reviewBulkSelectable(item, status)), [items, status]);
+  const selectedItems = useMemo(() => items.filter((item) => selectedReviewIds.has(item.review_item_id)), [items, selectedReviewIds]);
+  const allSelectableSelected = selectableItems.length > 0 && selectableItems.every((item) => selectedReviewIds.has(item.review_item_id));
+
+  useEffect(() => {
+    setSelectedReviewIds(new Set());
+    setBulkMessage("");
+  }, [status, kbScopeKey]);
 
   function mark(reviewItemId: string, value: ReviewActionState) {
     setActions((current) => ({ ...current, [reviewItemId]: value }));
   }
 
-  async function runReviewAction(item: ReviewCenterItem, action: "approve" | "approve_apply" | "reject" | "apply") {
+  async function executeReviewAction(item: ReviewCenterItem, action: ReviewAction) {
+    if (action === "reject") {
+      return rejectReviewItem(serviceToken, item.review_item_id);
+    }
+    if (action === "apply") {
+      return applyReviewItem(serviceToken, item.review_item_id);
+    }
+    return approveReviewItem(serviceToken, item.review_item_id, action === "approve_apply");
+  }
+
+  async function runReviewAction(item: ReviewCenterItem, action: ReviewAction) {
     mark(item.review_item_id, "处理中");
     try {
-      let result;
-      if (action === "reject") {
-        result = await rejectReviewItem(serviceToken, item.review_item_id);
-      } else if (action === "apply") {
-        result = await applyReviewItem(serviceToken, item.review_item_id);
-      } else {
-        result = await approveReviewItem(serviceToken, item.review_item_id, action === "approve_apply");
-      }
+      const result = await executeReviewAction(item, action);
       mark(item.review_item_id, reviewActionStatusLabel(action, result?.application_result?.summary));
+      setSelectedReviewIds((current) => {
+        const next = new Set(current);
+        next.delete(item.review_item_id);
+        return next;
+      });
       await reviewQuery.refetch();
     } catch {
       mark(item.review_item_id, "操作失败");
     }
+  }
+
+  function toggleReviewSelection(reviewItemId: string, checked: boolean) {
+    setSelectedReviewIds((current) => {
+      const next = new Set(current);
+      if (checked) {
+        next.add(reviewItemId);
+      } else {
+        next.delete(reviewItemId);
+      }
+      return next;
+    });
+  }
+
+  function toggleSelectableItems(checked: boolean) {
+    setSelectedReviewIds((current) => {
+      const next = new Set(current);
+      for (const item of selectableItems) {
+        if (checked) {
+          next.add(item.review_item_id);
+        } else {
+          next.delete(item.review_item_id);
+        }
+      }
+      return next;
+    });
+  }
+
+  async function runBulkReviewAction(action: ReviewAction) {
+    const targets = selectedItems.filter((item) => reviewCanRunBulkAction(item, action));
+    if (!targets.length) {
+      setBulkMessage("当前选择没有可执行的批量动作。");
+      return;
+    }
+    setBulkMessage(`正在处理 ${targets.length} 条...`);
+    let succeeded = 0;
+    for (const item of targets) {
+      mark(item.review_item_id, "处理中");
+      try {
+        const result = await executeReviewAction(item, action);
+        succeeded += 1;
+        mark(item.review_item_id, reviewActionStatusLabel(action, result?.application_result?.summary));
+      } catch {
+        mark(item.review_item_id, "操作失败");
+      }
+    }
+    setSelectedReviewIds((current) => {
+      const next = new Set(current);
+      for (const item of targets) {
+        next.delete(item.review_item_id);
+      }
+      return next;
+    });
+    setBulkMessage(`已处理 ${succeeded}/${targets.length} 条。`);
+    await reviewQuery.refetch();
   }
 
   return (
@@ -1602,6 +1676,62 @@ function ReviewCenter({
         ))}
       </div>
 
+      {!reviewQuery.isLoading && !reviewQuery.isError && selectableItems.length ? (
+        <div className="review-bulkbar" data-testid="review-bulkbar">
+          <label className="review-select-all">
+            <input
+              data-testid="review-select-all"
+              type="checkbox"
+              checked={allSelectableSelected}
+              onChange={(event) => toggleSelectableItems(event.target.checked)}
+            />
+            <span>选择当前页</span>
+          </label>
+          <span data-testid="review-bulk-selection">{selectedItems.length} 已选择</span>
+          <div className="review-bulk-actions">
+            {status === "pending" ? (
+              <>
+                <button
+                  data-testid="review-bulk-approve"
+                  type="button"
+                  disabled={!selectedItems.some((item) => reviewCanRunBulkAction(item, "approve"))}
+                  onClick={() => void runBulkReviewAction("approve")}
+                >
+                  <CheckCircle2 size={14} />
+                  批量批准
+                </button>
+                <button
+                  className="danger"
+                  data-testid="review-bulk-reject"
+                  type="button"
+                  disabled={!selectedItems.some((item) => reviewCanRunBulkAction(item, "reject"))}
+                  onClick={() => void runBulkReviewAction("reject")}
+                >
+                  <X size={14} />
+                  批量拒绝
+                </button>
+              </>
+            ) : null}
+            {status === "approved" ? (
+              <button
+                className="primary"
+                data-testid="review-bulk-apply"
+                type="button"
+                disabled={!selectedItems.some((item) => reviewCanRunBulkAction(item, "apply"))}
+                onClick={() => void runBulkReviewAction("apply")}
+              >
+                <CheckCircle2 size={14} />
+                批量应用
+              </button>
+            ) : null}
+            <button data-testid="review-bulk-clear" type="button" disabled={!selectedItems.length} onClick={() => setSelectedReviewIds(new Set())}>
+              清除
+            </button>
+          </div>
+          {bulkMessage ? <small data-testid="review-bulk-message">{bulkMessage}</small> : null}
+        </div>
+      ) : null}
+
       {reviewQuery.isError ? (
         <div className="review-empty error-state">Review Center 暂时无法加载。请检查服务令牌或后端服务。</div>
       ) : reviewQuery.isLoading ? (
@@ -1617,10 +1747,21 @@ function ReviewCenter({
             const evidenceHealth = reviewItemEvidenceHealth(item);
             const graphTargetNodeId = reviewAppliedGraphNodeId(item);
             const actionSummary = actions[item.review_item_id] || item.application_result?.summary || item.status || "pending";
+            const selectable = reviewBulkSelectable(item, status);
             return (
             <article className="review-center-item" key={item.review_item_id}>
               <div className="review-item-main">
                 <div className="review-item-title">
+                  {selectable ? (
+                    <label className="review-select-item" title="选择 Review 候选">
+                      <input
+                        data-testid="review-select-item"
+                        type="checkbox"
+                        checked={selectedReviewIds.has(item.review_item_id)}
+                        onChange={(event) => toggleReviewSelection(item.review_item_id, event.target.checked)}
+                      />
+                    </label>
+                  ) : null}
                   <GitPullRequest size={17} />
                   <h2>{displayText(item.title, item.review_item_id)}</h2>
                 </div>
@@ -1731,7 +1872,7 @@ function ReviewCenter({
   );
 }
 
-function reviewActionStatusLabel(action: "approve" | "approve_apply" | "reject" | "apply", summary?: string) {
+function reviewActionStatusLabel(action: ReviewAction, summary?: string) {
   if (summary) {
     return summary;
   }
@@ -1742,6 +1883,29 @@ function reviewActionStatusLabel(action: "approve" | "approve_apply" | "reject" 
     return "已应用";
   }
   return action === "approve_apply" ? "已批准并应用" : "已批准";
+}
+
+function reviewBulkSelectable(item: ReviewCenterItem, status: string) {
+  if (status === "pending") {
+    return item.status === "pending";
+  }
+  if (status === "approved") {
+    return Boolean(item.can_apply_now);
+  }
+  return false;
+}
+
+function reviewCanRunBulkAction(item: ReviewCenterItem, action: ReviewAction) {
+  if (action === "reject" || action === "approve") {
+    return item.status === "pending";
+  }
+  if (action === "approve_apply") {
+    return item.status === "pending" && Boolean(item.recommended_actions?.includes("approve_apply"));
+  }
+  if (action === "apply") {
+    return Boolean(item.can_apply_now);
+  }
+  return false;
 }
 
 function reviewAppliedGraphNodeId(item: ReviewCenterItem) {

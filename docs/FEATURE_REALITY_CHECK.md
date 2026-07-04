@@ -39,7 +39,7 @@ marketplace yet.
 | Today aggregation | Real | Real | Partial | Uses real `/workspace/today/data`; empty real sections should render empty states. |
 | Discovery feed | Real | Real | Partial | Persistent discoveries and score filtering exist; quality still depends on producers and corpus. |
 | Needs Review | Real | Real | Partial | Review APIs and fallback digest review exist; full Review workspace is still evolving. |
-| Review approve/reject/apply | Real | Partial | Partial | Backend supports review actions; Review Center can approve/reject/apply, persist application targets, and jump applied relationship candidates into Graph inspection. Broader review ergonomics are still incomplete. |
+| Review approve/reject/apply | Real | Partial | Partial | Backend supports review actions; Review Center can approve/reject/apply, bulk handle visible pending/approved candidates, persist application targets, and jump applied relationship candidates into Graph inspection. Broader review ergonomics are still incomplete. |
 | Ask PSKA with evidence | Real | Real | Partial | Quick and FastReAct-backed Ask expose citations, source refs, progress, evidence preview, and no-answer diagnostics; answer quality still depends on retrieval/model readiness. |
 | PSKA Brain search | Real | Real | Partial | Uses workspace search and corpus context; recall quality depends on indexing/embeddings. |
 | Corpus browser | Real | Partial | Partial | Backend corpus endpoint exists; frontend uses it in selected panels. |
@@ -63,8 +63,8 @@ empty review queue.
 
 ## Highest Priority Product Gaps
 
-1. Complete remaining Review workspace ergonomics such as snooze, bulk handling,
-   and clearer post-apply lineage across review types.
+1. Complete remaining Review workspace ergonomics such as snooze, richer evidence
+   comparison, and clearer post-apply lineage across review types.
 2. Add a formal Evidence Wiki/Brief list/detail/re-digest/expire/rollback UX.
 3. Expand SourceAdapter coverage beyond folder/RSS/URL when enterprise
    connectors become product priority.

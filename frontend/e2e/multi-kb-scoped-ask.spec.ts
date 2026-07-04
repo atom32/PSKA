@@ -48,6 +48,7 @@ test("browser session scoped Ask does not leak citations across knowledge bases"
   const createdKnowledgeBaseIds: string[] = [];
   const createdSourceItemIds: string[] = [];
   let reviewFixture: ReviewHealthFixture | null = null;
+  const bulkReviewFixtures: ReviewHealthFixture[] = [];
 
   await page.goto(await authnodeCallbackUrl(request));
   await expect(page.getByTestId("gateway-session")).toContainText(userId);
@@ -71,6 +72,10 @@ test("browser session scoped Ask does not leak citations across knowledge bases"
     createdSourceItemIds.push(alphaSourceItemId, betaSourceItemId);
 
     reviewFixture = await createReviewHealthFixture(page, alpha.knowledge_base_id, marker, createdSourceItemIds);
+    bulkReviewFixtures.push(
+      await createReviewHealthFixture(page, alpha.knowledge_base_id, marker, createdSourceItemIds),
+      await createReviewHealthFixture(page, alpha.knowledge_base_id, marker, createdSourceItemIds)
+    );
 
     await page.goto(frontendUrl, { waitUntil: "domcontentloaded" });
     await openWorkspace(page, "Today");
@@ -107,6 +112,7 @@ test("browser session scoped Ask does not leak citations across knowledge bases"
       alphaSecret,
       betaSecret
     });
+    await expectReviewBulkReject(page, bulkReviewFixtures);
     await expectReviewCenterHealth(page, reviewFixture);
   } finally {
     await cleanupFixtures(page, createdSourceItemIds, createdKnowledgeBaseIds);
@@ -245,6 +251,29 @@ async function expectReviewCenterHealth(page: Page, fixture: ReviewHealthFixture
   await expect(graphInspector).toBeVisible({ timeout: 60_000 });
   await expect(graphInspector).toContainText(fixture.topic);
   await expect(graphInspector.getByTestId("graph-citation-inspector")).toBeVisible();
+}
+
+async function expectReviewBulkReject(page: Page, fixtures: ReviewHealthFixture[]) {
+  await openWorkspace(page, "Review");
+  await page.getByTestId("review-filter-pending").click();
+  for (const fixture of fixtures) {
+    const reviewCard = page.locator(".review-center-item").filter({ hasText: fixture.reviewItemId }).first();
+    await expect(reviewCard).toBeVisible({ timeout: 45_000 });
+    await reviewCard.getByTestId("review-select-item").check();
+  }
+  await expect(page.getByTestId("review-bulk-selection")).toContainText(`${fixtures.length} 已选择`);
+  await expect(page.getByTestId("review-bulk-reject")).toBeEnabled();
+  await page.getByTestId("review-bulk-reject").click();
+  await expect(page.getByTestId("review-bulk-message")).toContainText(`已处理 ${fixtures.length}/${fixtures.length} 条`, { timeout: 60_000 });
+  for (const fixture of fixtures) {
+    await expect(page.locator(".review-center-item").filter({ hasText: fixture.reviewItemId })).toHaveCount(0, { timeout: 45_000 });
+  }
+  await page.getByTestId("review-filter-rejected").click();
+  for (const fixture of fixtures) {
+    const rejectedCard = page.locator(".review-center-item").filter({ hasText: fixture.reviewItemId }).first();
+    await expect(rejectedCard).toBeVisible({ timeout: 45_000 });
+    await expect(rejectedCard).toContainText(fixture.topic);
+  }
 }
 
 async function openWorkspace(page: Page, label: string) {
