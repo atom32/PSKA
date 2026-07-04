@@ -4697,6 +4697,10 @@ button.context-item-main {
   margin-bottom: 3px;
 }
 
+.kb-ask-history-panel .kb-linked-metrics {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
 .kb-linked-list {
   display: grid;
   gap: 8px;

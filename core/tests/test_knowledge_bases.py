@@ -1034,6 +1034,7 @@ def test_workspace_ask_conversation_persists_knowledge_base_scope() -> None:
     assert events[-1][0] == "done"
     assert detail["conversation"]["scope_applied"]["knowledge_base_ids"] == [alpha_kb["knowledge_base_id"]]
     assert detail["conversation"]["metadata"]["ask_scope"]["source_item_ids"] == alpha["source_item_ids"]
+    assert detail["conversation"]["metadata"]["last_query"] == "persistedscope"
     assert user_message["scope_applied"]["knowledge_base_ids"] == [alpha_kb["knowledge_base_id"]]
     assert assistant_message["scope_applied"]["knowledge_base_ids"] == [alpha_kb["knowledge_base_id"]]
     assert run["scope_applied"]["knowledge_base_ids"] == [alpha_kb["knowledge_base_id"]]

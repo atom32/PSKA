@@ -2633,9 +2633,14 @@ class PSKAApi:
             )
         prompt_lineage = _prompt_profile_lineage(self.store, tenant_id=tenant_id, owner_user_id=owner_user_id, profile_type="ask")
         initial_scope_applied = _ask_scope_applied_from_payload(self.store, payload, tenant_id=tenant_id, owner_user_id=owner_user_id)
-        if initial_scope_applied:
-            conversation.metadata = _ask_conversation_metadata_with_scope(conversation.metadata, initial_scope_applied)
-            conversation = self.store.create_ask_conversation(conversation)
+        conversation_metadata = dict(conversation.metadata or {})
+        conversation_metadata["last_query"] = query
+        conversation.metadata = (
+            _ask_conversation_metadata_with_scope(conversation_metadata, initial_scope_applied)
+            if initial_scope_applied
+            else conversation_metadata
+        )
+        conversation = self.store.create_ask_conversation(conversation)
         initial_route = {
             "intent": str(payload.get("intent") or "auto"),
             "requested_intent": str(payload.get("intent") or "auto"),

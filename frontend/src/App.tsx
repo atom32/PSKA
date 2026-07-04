@@ -438,6 +438,13 @@ export default function App() {
     setMode("writing");
   }
 
+  function openAskConversation(conversationId?: string) {
+    if (conversationId) {
+      setActiveAskConversationId(conversationId);
+    }
+    setMode("today");
+  }
+
   function openGraphNode(nodeId: string) {
     setGraphFocusNodeId(nodeId);
     setMode("graph");
@@ -534,6 +541,7 @@ export default function App() {
             onKnowledgeBasesRefresh={() => knowledgeBasesQuery.refetch()}
             onOpenWorkspace={setMode}
             onOpenWriting={openWritingBoard}
+            onOpenAskConversation={openAskConversation}
             setBrain={setBrain}
           />
         ) : activeMode === "writing" ? (
@@ -5808,6 +5816,7 @@ function CorpusWorkspace({
   onKnowledgeBasesRefresh,
   onOpenWorkspace,
   onOpenWriting,
+  onOpenAskConversation,
   setBrain
 }: {
   serviceToken: PSKAAuth;
@@ -5819,6 +5828,7 @@ function CorpusWorkspace({
   onKnowledgeBasesRefresh: () => Promise<unknown> | void;
   onOpenWorkspace: (mode: WorkspaceMode) => void;
   onOpenWriting?: (boardId?: string) => void;
+  onOpenAskConversation?: (conversationId?: string) => void;
   setBrain: (brain: Partial<BrainState>) => void;
 }) {
   const [query, setQuery] = useState("");
@@ -5917,6 +5927,12 @@ function CorpusWorkspace({
     enabled: Boolean(currentKnowledgeBaseId),
     retry: 1
   });
+  const askConversationsQuery = useQuery({
+    queryKey: ["corpus-ask-conversations", serviceToken],
+    queryFn: () => loadAskConversations(serviceToken),
+    enabled: knowledgeBaseTab === "ask",
+    retry: 1
+  });
   const writingBoardsQuery = useQuery({
     queryKey: ["corpus-writing-boards", serviceToken],
     queryFn: () => listWritingBoards(serviceToken),
@@ -5938,6 +5954,7 @@ function CorpusWorkspace({
   const digestLogs = digestLogsQuery.data;
   const graphPreview = graphPreviewQuery.data;
   const documentsData = documentsQuery.data;
+  const askConversations = askConversationsQuery.data?.conversations || [];
   const promptProfiles = promptProfilesQuery.data;
   const writingBoards = writingBoardsQuery.data?.boards || [];
   const archivedKnowledgeBases = (archivedKnowledgeBasesQuery.data?.knowledge_bases || []).filter(
@@ -5971,6 +5988,10 @@ function CorpusWorkspace({
   const writingBoardsForCurrentKnowledgeBase = useMemo(
     () => writingBoards.filter((board) => writingBoardExplicitKnowledgeBaseIds(board).includes(currentKnowledgeBaseId)),
     [currentKnowledgeBaseId, writingBoards]
+  );
+  const askConversationsForCurrentKnowledgeBase = useMemo(
+    () => askConversations.filter((conversation) => askConversationKnowledgeBaseIds(conversation).includes(currentKnowledgeBaseId)).slice(0, 6),
+    [askConversations, currentKnowledgeBaseId]
   );
   const actionRunning = operationStatus === "syncing" || operationStatus === "digesting" || operationStatus === "cleaning" || operationStatus === "briefing";
   const statusMessage = operationMessage || latestSyncMessage(sourceSummary);
@@ -6682,6 +6703,14 @@ function CorpusWorkspace({
     }
   }
 
+  function openAskConversationFromCorpus(conversationId?: string) {
+    if (onOpenAskConversation) {
+      onOpenAskConversation(conversationId);
+      return;
+    }
+    onOpenWorkspace("today");
+  }
+
   return (
     <section className="main-workspace corpus-surface" aria-label="资料库">
       <div className="corpus-header">
@@ -6906,6 +6935,7 @@ function CorpusWorkspace({
       {knowledgeBaseTab === "digest" ? <UnderstandingSummary payload={digestLogs} /> : null}
 
       {knowledgeBaseTab === "ask" ? (
+      <>
         <KnowledgeBaseSearchPanel
           query={knowledgeBaseSearchQuery}
           status={knowledgeBaseSearchStatus}
@@ -6917,6 +6947,17 @@ function CorpusWorkspace({
           onQueryChange={setKnowledgeBaseSearchQuery}
           onSubmit={handleKnowledgeBaseSearch}
         />
+        <KnowledgeBaseAskHistoryPanel
+          conversations={askConversationsForCurrentKnowledgeBase}
+          isLoading={askConversationsQuery.isLoading}
+          isError={askConversationsQuery.isError}
+          currentKnowledgeBaseId={currentKnowledgeBaseId}
+          currentKnowledgeBaseName={currentKnowledgeBase?.name || "当前知识库"}
+          knowledgeBases={knowledgeBases}
+          onOpenConversation={openAskConversationFromCorpus}
+          onOpenToday={() => openAskConversationFromCorpus()}
+        />
+      </>
       ) : null}
 
       {knowledgeBaseTab === "graph" ? (
@@ -7263,6 +7304,74 @@ function KnowledgeBaseSearchCard({ refItem, index }: { refItem: SearchEvidenceRe
       {identity || scoreLabel ? <span>{[identity, scoreLabel].filter(Boolean).join(" / ")}</span> : null}
       <p>{trimText(refItem.snippet || refItem.source_window?.text, 280) || "暂无摘要。"}</p>
     </article>
+  );
+}
+
+function KnowledgeBaseAskHistoryPanel({
+  conversations,
+  isLoading,
+  isError,
+  currentKnowledgeBaseId,
+  currentKnowledgeBaseName,
+  knowledgeBases,
+  onOpenConversation,
+  onOpenToday
+}: {
+  conversations: AskConversation[];
+  isLoading: boolean;
+  isError: boolean;
+  currentKnowledgeBaseId: string;
+  currentKnowledgeBaseName: string;
+  knowledgeBases: KnowledgeBase[];
+  onOpenConversation: (conversationId: string) => void;
+  onOpenToday: () => void;
+}) {
+  const latest = conversations[0];
+  const hardScopedCount = conversations.filter((conversation) => askConversationScopeModeLabel(conversation) === "强限定").length;
+  return (
+    <section className="today-section kb-linked-panel kb-ask-history-panel" data-testid="knowledge-base-ask-history-panel">
+      <SectionTitle icon={<MessageCircle size={18} />} title="Ask 历史" subtitle={currentKnowledgeBaseName} />
+      <div className="kb-linked-actions">
+        <button type="button" onClick={onOpenToday} data-testid="knowledge-base-open-today-ask">
+          <MessageCircle size={15} />
+          在 Today 提问
+        </button>
+      </div>
+      {isError ? <div className="review-empty error-state compact">Ask 对话无法加载。</div> : null}
+      {isLoading ? <div className="review-empty compact">正在读取当前知识库的 Ask 对话...</div> : null}
+      <div className="kb-linked-metrics" aria-label="当前知识库 Ask 摘要">
+        <span><strong>{conversations.length}</strong> 对话</span>
+        <span><strong>{hardScopedCount}</strong> 强限定</span>
+        <span><strong>{latest?.updated_at ? formatReviewDate(latest.updated_at) : "暂无"}</strong> 最近提问</span>
+        <span><strong>{currentKnowledgeBaseId ? "当前 KB" : "未选择"}</strong> 范围</span>
+      </div>
+      {conversations.length ? (
+        <div className="kb-linked-list" data-testid="knowledge-base-ask-history-list">
+          {conversations.map((conversation) => {
+            const conversationId = conversation.conversation_id || "";
+            const scopeLabel = askConversationScopeLabel(conversation, knowledgeBases);
+            const modeLabel = askConversationScopeModeLabel(conversation);
+            const summary = displayText(conversation.summary || conversation.metadata?.last_query, "这个对话保留了当前知识库的 Ask 范围，可回到 Today 继续追问。");
+            return (
+              <article key={conversationId || conversation.title} data-testid="knowledge-base-ask-history-card">
+                <button
+                  type="button"
+                  onClick={() => conversationId && onOpenConversation(conversationId)}
+                  disabled={!conversationId}
+                  data-testid="knowledge-base-open-ask-conversation"
+                >
+                  <strong>{displayText(conversation.title, "Ask PSKA")}</strong>
+                  <p>{trimText(summary, 180)}</p>
+                  <small>{[scopeLabel || currentKnowledgeBaseName, modeLabel, conversation.updated_at ? formatReviewDate(conversation.updated_at) : ""].filter(Boolean).join(" · ")}</small>
+                </button>
+              </article>
+            );
+          })}
+        </div>
+      ) : !isLoading ? (
+        <div className="review-empty compact">当前知识库还没有绑定范围的 Ask 对话。从 Today 以当前 KB 提问后会出现在这里。</div>
+      ) : null}
+    </section>
   );
 }
 
@@ -8722,21 +8831,49 @@ function knowledgeBaseAskScope(
   return ids.length ? { mode: "hard", knowledge_base_ids: ids } : {};
 }
 
-function askConversationScopeLabel(conversation: AskConversation, knowledgeBases: KnowledgeBase[]) {
+function askConversationScope(conversation: AskConversation): Record<string, unknown> {
   const metadata = isPlainObject(conversation.metadata) ? conversation.metadata : {};
-  const scope = isPlainObject(conversation.scope_applied)
+  return isPlainObject(conversation.scope_applied)
     ? conversation.scope_applied
     : isPlainObject(metadata.ask_scope)
       ? metadata.ask_scope
       : isPlainObject(metadata.knowledge_base_scope)
         ? metadata.knowledge_base_scope
         : {};
+}
+
+function stringArrayFromUnknown(value: unknown) {
+  if (Array.isArray(value)) {
+    return value.filter((item): item is string => typeof item === "string" && item.length > 0);
+  }
+  if (typeof value === "string" && value.trim()) {
+    return [value.trim()];
+  }
+  return [];
+}
+
+function askConversationKnowledgeBaseIds(conversation: AskConversation) {
+  const metadata = isPlainObject(conversation.metadata) ? conversation.metadata : {};
+  const scope = askConversationScope(conversation);
+  return Array.from(new Set([
+    ...stringArrayFromUnknown(conversation.knowledge_base_ids),
+    ...stringArrayFromUnknown(scope.knowledge_base_ids),
+    ...stringArrayFromUnknown(metadata.knowledge_base_ids)
+  ]));
+}
+
+function askConversationScopeModeLabel(conversation: AskConversation) {
+  const scope = askConversationScope(conversation);
+  const mode = String(scope.mode || scope.scope_mode || "");
+  return mode === "hard" ? "强限定" : "全部资料库";
+}
+
+function askConversationScopeLabel(conversation: AskConversation, knowledgeBases: KnowledgeBase[]) {
+  const scope = askConversationScope(conversation);
   if (Object.keys(scope).length === 0) {
     return "";
   }
-  const ids = Array.isArray(scope.knowledge_base_ids)
-    ? scope.knowledge_base_ids.filter((item): item is string => typeof item === "string" && item.length > 0)
-    : [];
+  const ids = askConversationKnowledgeBaseIds(conversation);
   if (ids.length === 0) {
     return String(scope.mode || "") === "hard" ? "未选择资料库" : "全部资料库";
   }

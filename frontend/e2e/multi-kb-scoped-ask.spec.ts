@@ -126,6 +126,7 @@ test("browser session scoped Ask does not leak citations across knowledge bases"
       betaSecret,
       alphaSourceItemId
     });
+    await expectKnowledgeBaseAskHistory(page, alpha, query);
     await askViaGraphWorkspace(page, query, {
       knowledgeBaseName: alpha.name,
       alphaSecret,
@@ -283,6 +284,7 @@ async function expectKnowledgeBaseDetailTabs(page: Page) {
   await page.getByTestId("knowledge-base-tab-ask").click();
   await expect(page.getByTestId("knowledge-base-search-input")).toBeVisible();
   await expect(page.locator(".kb-search-panel")).toContainText("证据搜索");
+  await expect(page.getByTestId("knowledge-base-ask-history-panel")).toBeVisible();
 
   await page.getByTestId("knowledge-base-tab-processing").click();
   await expect(page.locator(".chunk-preview-surface")).toBeVisible();
@@ -306,6 +308,21 @@ async function expectKnowledgeBaseDetailTabs(page: Page) {
 
   await page.getByTestId("knowledge-base-tab-sources").click();
   await expect(page.getByTestId("corpus-search-input")).toBeVisible();
+}
+
+async function expectKnowledgeBaseAskHistory(page: Page, knowledgeBase: KnowledgeBase, query: string) {
+  await openWorkspace(page, "资料库");
+  await page.getByTestId("knowledge-base-tab-ask").click();
+  const history = page.getByTestId("knowledge-base-ask-history-panel");
+  await expect(history).toBeVisible({ timeout: 45_000 });
+  await expect(history).toContainText(knowledgeBase.name);
+  await expect(history).toContainText("强限定");
+  const card = history.getByTestId("knowledge-base-ask-history-card").filter({ hasText: query.slice(0, 60) }).first();
+  await expect(card).toBeVisible({ timeout: 45_000 });
+  await expect(card).toContainText(knowledgeBase.name);
+  await card.getByTestId("knowledge-base-open-ask-conversation").click();
+  await expect(page.getByTestId("today-ask-form")).toBeVisible({ timeout: 45_000 });
+  await expect(page.getByTestId("today-scope-picker")).toContainText(knowledgeBase.name);
 }
 
 async function expectReviewCenterHealth(page: Page, fixture: ReviewHealthFixture, hiddenFixture: ReviewHealthFixture, knowledgeBaseName: string) {
