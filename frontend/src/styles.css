@@ -1760,6 +1760,105 @@ button.context-item-main {
   padding-top: 10px;
 }
 
+.ask-stage-rail {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.ask-stage {
+  min-width: 0;
+  min-height: 96px;
+  border: 1px solid rgba(35, 90, 77, 0.14);
+  border-radius: 8px;
+  background: #fffefa;
+  padding: 8px;
+}
+
+.ask-stage[data-status="complete"] {
+  border-color: rgba(35, 90, 77, 0.2);
+  background: #fbfdfb;
+}
+
+.ask-stage[data-status="running"] {
+  border-color: rgba(35, 98, 150, 0.24);
+  background: #f6fbff;
+}
+
+.ask-stage[data-status="warning"] {
+  border-color: rgba(184, 112, 29, 0.28);
+  background: #fff9ef;
+}
+
+.ask-stage[data-status="error"] {
+  border-color: rgba(176, 64, 54, 0.3);
+  background: #fff5f3;
+}
+
+.ask-stage-heading {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.ask-stage-dot {
+  width: 21px;
+  height: 21px;
+  border-radius: 50%;
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  background: #e9eee9;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.ask-stage[data-status="complete"] .ask-stage-dot {
+  background: #235a4d;
+  color: #fff;
+}
+
+.ask-stage[data-status="running"] .ask-stage-dot {
+  background: #2f6f9f;
+  color: #fff;
+}
+
+.ask-stage[data-status="warning"] .ask-stage-dot {
+  background: #b8701d;
+  color: #fff;
+}
+
+.ask-stage[data-status="error"] .ask-stage-dot {
+  background: #b04036;
+  color: #fff;
+}
+
+.ask-stage-heading strong {
+  min-width: 0;
+  color: var(--ink);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.ask-stage p {
+  margin: 7px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.ask-stage small {
+  display: block;
+  margin-top: 6px;
+  color: #235a4d;
+  font-size: 11px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
 .ask-process details {
   border: 1px solid rgba(35, 90, 77, 0.14);
   border-radius: 8px;
@@ -5715,6 +5814,14 @@ button.context-item-main {
 
   .ask-evidence-layout {
     grid-template-columns: 1fr;
+  }
+
+  .ask-stage-rail {
+    grid-template-columns: 1fr;
+  }
+
+  .ask-stage {
+    min-height: 0;
   }
 
   .corpus-header,

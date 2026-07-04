@@ -202,6 +202,8 @@ async function askViaBrowserComposer(
   const result = page.getByTestId("ask-result").last();
   await expect(result).toContainText(expected.alphaSecret, { timeout: 120_000 });
   await expect(result).not.toContainText(expected.betaSecret);
+  await expect(result.getByTestId("ask-processing-timeline")).toContainText("检索");
+  await expect(result.getByTestId("ask-processing-timeline")).toContainText("证据校验");
   await expect(page.getByTestId("ask-evidence-inspector").last()).toContainText(expected.alphaSecret);
   await page.getByTestId("open-reader-pane").last().click();
   await expect(page.getByTestId("reader-pane").last()).toContainText(expected.alphaSecret);

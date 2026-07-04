@@ -1784,7 +1784,21 @@ function AskResult({
         </button>
       </div>
       {progressEvents.length ? <AskProgressStrip progress={progressEvents} /> : null}
-      {displaySteps.length || rawEvents.length ? <AskProcessTimeline steps={displaySteps} rawEvents={rawEvents} defaultOpen={pending} /> : null}
+      {displaySteps.length || rawEvents.length || evidenceCheck || qualitySignals ? (
+        <AskProcessTimeline
+          steps={displaySteps}
+          progress={progressEvents}
+          rawEvents={rawEvents}
+          evidenceCheck={evidenceCheck}
+          qualitySignals={qualitySignals}
+          pending={pending}
+          citationCount={refs.length}
+          droppedCitationCount={droppedCitations.length}
+          answerChars={answer.length}
+          noAnswerReasons={noAnswerReasons}
+          defaultOpen={pending}
+        />
+      ) : null}
       {!answer && pending ? <div className="ask-pending-state">正在等待 Ask PSKA 的第一个可见回答字符，检索过程会实时更新。</div> : null}
       {result.error ? (
         <div className="ask-error-state" role="status">
@@ -2173,6 +2187,10 @@ type AskAgentStepView = {
   title: string;
   detail: string;
   meta: string;
+  toolName?: string;
+  evidenceCount?: number;
+  sourceRefCount?: number;
+  elapsedMs?: number;
 };
 
 type AskProgressView = {
@@ -2180,8 +2198,43 @@ type AskProgressView = {
   stage: string;
   status: string;
   title: string;
+  detail: string;
+  meta: string;
+  toolName?: string;
+  evidenceCount?: number;
+  sourceRefCount?: number;
+  elapsedMs?: number;
+};
+
+type AskProcessingStageKey = "understand" | "search" | "read" | "generate" | "evidence_check";
+type AskProcessingStageStatus = "idle" | "running" | "complete" | "warning" | "error";
+
+type AskProcessingSignal = {
+  stage: AskProcessingStageKey;
+  status: AskProcessingStageStatus;
+  title: string;
+  detail: string;
+  meta: string;
+  evidenceCount?: number;
+  sourceRefCount?: number;
+  elapsedMs?: number;
+};
+
+type AskProcessingStageView = {
+  id: AskProcessingStageKey;
+  label: string;
+  status: AskProcessingStageStatus;
+  detail: string;
   meta: string;
 };
+
+const ASK_PROCESSING_STAGE_ORDER: Array<{ id: AskProcessingStageKey; label: string }> = [
+  { id: "understand", label: "理解" },
+  { id: "search", label: "检索" },
+  { id: "read", label: "读取" },
+  { id: "generate", label: "生成" },
+  { id: "evidence_check", label: "证据校验" }
+];
 
 function pendingAskResult(query: string): WorkspaceAskResponse {
   return {
@@ -2231,24 +2284,59 @@ function progressToAgentSteps(progress: AskProgressView[]): AskAgentStepView[] {
     phase: item.stage || "progress",
     status: item.status || "complete",
     title: item.title || askProgressStageLabel(item.stage),
-    detail: askProgressStageDetail(item.stage, item.status),
-    meta: item.meta
+    detail: item.detail || askProgressStageDetail(item.stage, item.status),
+    meta: item.meta,
+    toolName: item.toolName,
+    evidenceCount: item.evidenceCount,
+    sourceRefCount: item.sourceRefCount,
+    elapsedMs: item.elapsedMs
   }));
 }
 
 function AskProcessTimeline({
   steps,
+  progress = [],
   rawEvents,
+  evidenceCheck,
+  qualitySignals,
+  pending = false,
+  citationCount,
+  evidenceResultCount,
+  droppedCitationCount,
+  answerChars,
+  noAnswerReasons = [],
   defaultOpen = false
 }: {
   steps: AskAgentStepView[];
+  progress?: AskProgressView[];
   rawEvents: Array<Record<string, unknown>>;
+  evidenceCheck?: Record<string, unknown>;
+  qualitySignals?: Record<string, unknown>;
+  pending?: boolean;
+  citationCount?: number;
+  evidenceResultCount?: number;
+  droppedCitationCount?: number;
+  answerChars?: number;
+  noAnswerReasons?: string[];
   defaultOpen?: boolean;
 }) {
   const [open, setOpen] = useState(defaultOpen);
   useEffect(() => {
     setOpen(defaultOpen);
   }, [defaultOpen]);
+  const stageSummary = buildAskProcessingStages({
+    steps,
+    progress,
+    rawEvents,
+    evidenceCheck,
+    qualitySignals,
+    pending,
+    citationCount,
+    evidenceResultCount,
+    droppedCitationCount,
+    answerChars,
+    noAnswerReasons
+  });
   const visibleHead = steps.slice(0, 6);
   const visibleTail = steps.length > 12 ? steps.slice(-6) : steps.slice(6, 12);
   const omittedCount = Math.max(0, steps.length - visibleHead.length - visibleTail.length);
@@ -2258,6 +2346,24 @@ function AskProcessTimeline({
     .filter((event): event is AgenticEventSummary => Boolean(event));
   return (
     <div className="ask-process">
+      <div className="ask-stage-rail" data-testid="ask-processing-timeline" aria-label="Ask processing timeline">
+        {stageSummary.map((stage, index) => (
+          <div
+            className="ask-stage"
+            data-testid="ask-processing-stage"
+            data-stage={stage.id}
+            data-status={stage.status}
+            key={stage.id}
+          >
+            <div className="ask-stage-heading">
+              <span className="ask-stage-dot" aria-hidden="true">{index + 1}</span>
+              <strong>{stage.label}</strong>
+            </div>
+            <p>{stage.detail}</p>
+            {stage.meta ? <small>{stage.meta}</small> : null}
+          </div>
+        ))}
+      </div>
       {steps.length ? (
         <details open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
           <summary>
@@ -2306,6 +2412,372 @@ function AskProcessTimeline({
       ) : null}
     </div>
   );
+}
+
+function buildAskProcessingStages({
+  steps,
+  progress,
+  rawEvents,
+  evidenceCheck,
+  qualitySignals,
+  pending,
+  citationCount,
+  evidenceResultCount,
+  droppedCitationCount,
+  answerChars,
+  noAnswerReasons
+}: {
+  steps: AskAgentStepView[];
+  progress: AskProgressView[];
+  rawEvents: Array<Record<string, unknown>>;
+  evidenceCheck?: Record<string, unknown>;
+  qualitySignals?: Record<string, unknown>;
+  pending?: boolean;
+  citationCount?: number;
+  evidenceResultCount?: number;
+  droppedCitationCount?: number;
+  answerChars?: number;
+  noAnswerReasons: string[];
+}): AskProcessingStageView[] {
+  const signals: AskProcessingSignal[] = [
+    ...steps.map((step) => ({
+      stage: askProcessingStageKey(step.phase, step.toolName),
+      status: normalizeAskProcessingStatus(step.status),
+      title: step.title,
+      detail: step.detail,
+      meta: step.meta,
+      evidenceCount: step.evidenceCount,
+      sourceRefCount: step.sourceRefCount,
+      elapsedMs: step.elapsedMs
+    })),
+    ...progress.map((item) => ({
+      stage: askProcessingStageKey(item.stage, item.toolName),
+      status: normalizeAskProcessingStatus(item.status),
+      title: item.title,
+      detail: item.detail,
+      meta: item.meta,
+      evidenceCount: item.evidenceCount,
+      sourceRefCount: item.sourceRefCount,
+      elapsedMs: item.elapsedMs
+    })),
+    ...rawEvents.map(rawEventToAskProcessingSignal).filter((signal): signal is AskProcessingSignal => Boolean(signal))
+  ];
+  const qualityBand = displayText(qualitySignals?.quality_band, "");
+  const evidenceStatus = displayText(evidenceCheck?.status || qualitySignals?.evidence_status, "");
+  const directAnswer = evidenceStatus === "not_applicable" || displayText(qualitySignals?.retrieval_owner, "") === "none";
+  const context = {
+    pending: Boolean(pending),
+    directAnswer,
+    qualityBand,
+    evidenceStatus,
+    citationCount: firstFiniteNumber(citationCount, qualitySignals?.citation_count, qualitySignals?.source_ref_count, maxFiniteNumber(signals.map((signal) => signal.sourceRefCount))),
+    evidenceResultCount: firstFiniteNumber(evidenceResultCount, qualitySignals?.evidence_result_count, maxFiniteNumber(signals.map((signal) => signal.evidenceCount))),
+    droppedCitationCount: firstFiniteNumber(droppedCitationCount, evidenceCheck?.dropped_citation_count),
+    answerChars: firstFiniteNumber(answerChars, qualitySignals?.answer_chars),
+    noAnswerReasons
+  };
+
+  return ASK_PROCESSING_STAGE_ORDER.map((definition, index) => {
+    const stageSignals = signals.filter((signal) => signal.stage === definition.id);
+    const latest = stageSignals[stageSignals.length - 1];
+    const hasLaterSignal = signals.some((signal) => askProcessingStageIndex(signal.stage) > index);
+    const status = askProcessingStageStatus(definition.id, latest, hasLaterSignal, context);
+    return {
+      id: definition.id,
+      label: definition.label,
+      status,
+      detail: askProcessingStageDetail(definition.id, status, latest, context),
+      meta: askProcessingStageMeta(definition.id, latest, context)
+    };
+  });
+}
+
+function rawEventToAskProcessingSignal(event: Record<string, unknown>): AskProcessingSignal | null {
+  const type = displayText(asString(event.type || event.event_type), "event").toLowerCase();
+  const toolName = displayText(asString(event.tool_name), "");
+  const summary = summarizeAgenticEvent(event);
+  if (type === "session_start" || type === "think") {
+    return {
+      stage: "understand",
+      status: "complete",
+      title: summary?.type || "理解问题",
+      detail: summary?.message || "",
+      meta: ""
+    };
+  }
+  if (type === "tool_call") {
+    return {
+      stage: askProcessingStageKey("tool", toolName),
+      status: "running",
+      title: summary?.type || "调用工具",
+      detail: summary?.message || "",
+      meta: toolName
+    };
+  }
+  if (type === "tool_result") {
+    return {
+      stage: askProcessingStageKey("read", toolName),
+      status: "complete",
+      title: summary?.type || "读取结果",
+      detail: summary?.message || "",
+      meta: toolName
+    };
+  }
+  if (type === "session_end") {
+    return {
+      stage: "generate",
+      status: "complete",
+      title: "形成回答",
+      detail: summary?.message || "",
+      meta: ""
+    };
+  }
+  if (type === "error") {
+    return {
+      stage: "evidence_check",
+      status: "error",
+      title: "分析失败",
+      detail: summary?.message || "",
+      meta: ""
+    };
+  }
+  return null;
+}
+
+function askProcessingStageKey(phaseOrStage: string, toolName = ""): AskProcessingStageKey {
+  const value = phaseOrStage.trim().toLowerCase();
+  const tool = toolName.trim().toLowerCase();
+  if (["route", "understand", "query_understand", "think", "inspect"].includes(value)) {
+    return "understand";
+  }
+  if (["read", "digest"].includes(value) || tool.includes("read") || tool.includes("digest")) {
+    return "read";
+  }
+  if (["search", "rerank", "graph", "tool"].includes(value) || tool.includes("search") || tool.includes("graph")) {
+    return "search";
+  }
+  if (["evidence_check", "check", "error"].includes(value)) {
+    return "evidence_check";
+  }
+  return "generate";
+}
+
+function askProcessingStageStatus(
+  stage: AskProcessingStageKey,
+  latest: AskProcessingSignal | undefined,
+  hasLaterSignal: boolean,
+  context: {
+    pending: boolean;
+    directAnswer: boolean;
+    qualityBand: string;
+    evidenceStatus: string;
+    citationCount?: number;
+    evidenceResultCount?: number;
+    droppedCitationCount?: number;
+    answerChars?: number;
+    noAnswerReasons: string[];
+  }
+): AskProcessingStageStatus {
+  if (stage === "evidence_check") {
+    return evidenceCheckProcessingStatus(latest, context);
+  }
+  if (context.directAnswer && (stage === "search" || stage === "read")) {
+    return "idle";
+  }
+  if (latest?.status === "error") {
+    return "error";
+  }
+  if (latest?.status === "warning") {
+    return "warning";
+  }
+  if (latest?.status === "running") {
+    return context.pending && !hasLaterSignal ? "running" : "complete";
+  }
+  if (latest) {
+    return latest.status === "idle" ? "idle" : "complete";
+  }
+  if (stage === "understand" && context.pending) {
+    return "running";
+  }
+  if (stage === "search" && context.evidenceStatus && context.evidenceStatus !== "not_applicable") {
+    return "complete";
+  }
+  if (stage === "read" && ((context.citationCount || 0) > 0 || (context.evidenceResultCount || 0) > 0)) {
+    return "complete";
+  }
+  if (stage === "generate" && (context.answerChars || 0) > 0) {
+    return "complete";
+  }
+  return "idle";
+}
+
+function evidenceCheckProcessingStatus(
+  latest: AskProcessingSignal | undefined,
+  context: {
+    pending: boolean;
+    directAnswer: boolean;
+    qualityBand: string;
+    evidenceStatus: string;
+    noAnswerReasons: string[];
+  }
+): AskProcessingStageStatus {
+  if (context.directAnswer || context.evidenceStatus === "not_applicable") {
+    return "idle";
+  }
+  if (latest?.status === "error" || context.qualityBand === "failed") {
+    return "error";
+  }
+  if (
+    latest?.status === "warning" ||
+    ["no_answerable_evidence", "needs_review", "needs_citation_review"].includes(context.qualityBand) ||
+    ["insufficient", "insufficient_evidence", "no_evidence"].includes(context.evidenceStatus) ||
+    context.noAnswerReasons.length > 0
+  ) {
+    return "warning";
+  }
+  if (latest?.status === "running") {
+    return context.pending ? "running" : "complete";
+  }
+  if (latest || context.qualityBand || context.evidenceStatus) {
+    return "complete";
+  }
+  return "idle";
+}
+
+function normalizeAskProcessingStatus(status: string): AskProcessingStageStatus {
+  const value = status.trim().toLowerCase();
+  if (["error", "failed", "failure"].includes(value)) {
+    return "error";
+  }
+  if (["warning", "insufficient", "needs_review", "needs_citation_review"].includes(value)) {
+    return "warning";
+  }
+  if (["running", "pending", "started", "in_progress"].includes(value)) {
+    return "running";
+  }
+  if (["idle", "skipped", "not_applicable"].includes(value)) {
+    return "idle";
+  }
+  return "complete";
+}
+
+function askProcessingStageDetail(
+  stage: AskProcessingStageKey,
+  status: AskProcessingStageStatus,
+  latest: AskProcessingSignal | undefined,
+  context: {
+    directAnswer: boolean;
+    evidenceStatus: string;
+    citationCount?: number;
+    evidenceResultCount?: number;
+    answerChars?: number;
+  }
+) {
+  if (status === "running") {
+    const running: Record<AskProcessingStageKey, string> = {
+      understand: "正在识别问题意图和当前资料范围。",
+      search: "正在当前范围内检索候选证据。",
+      read: "正在读取 source window 和上下文。",
+      generate: "正在组织回答。",
+      evidence_check: "正在校验引用和可回答性。"
+    };
+    return running[stage];
+  }
+  if (latest?.detail && status !== "idle") {
+    return trimText(latest.detail, 150);
+  }
+  if (stage === "understand") {
+    return status === "idle" ? "等待识别问题与范围。" : "已识别问题意图和当前资料范围。";
+  }
+  if (stage === "search") {
+    if (context.directAnswer) {
+      return "本次回答没有进入知识库检索。";
+    }
+    if (status === "idle") {
+      return "等待检索当前资料范围。";
+    }
+    if (context.evidenceResultCount !== undefined) {
+      return context.evidenceResultCount > 0 ? `命中 ${context.evidenceResultCount} 条候选证据。` : "检索完成，当前范围未命中候选证据。";
+    }
+    return "已完成当前范围的资料检索。";
+  }
+  if (stage === "read") {
+    if (context.directAnswer) {
+      return "本次回答不需要读取引用窗口。";
+    }
+    if (status === "idle") {
+      return "等待读取候选证据上下文。";
+    }
+    if ((context.citationCount || 0) > 0) {
+      return `已读取并保留 ${context.citationCount} 条可引用窗口。`;
+    }
+    return "已读取候选证据，等待引用校验。";
+  }
+  if (stage === "generate") {
+    if (status === "idle") {
+      return "等待生成最终回答。";
+    }
+    if ((context.answerChars || 0) > 0) {
+      return `已生成 ${context.answerChars} 字符回答。`;
+    }
+    return "已完成回答组织。";
+  }
+  if (context.directAnswer || context.evidenceStatus === "not_applicable") {
+    return "本次回答不需要引用校验。";
+  }
+  if (status === "warning") {
+    return "引用或证据支撑需要复核。";
+  }
+  if (status === "error") {
+    return "证据校验未能完成。";
+  }
+  if ((context.citationCount || 0) > 0) {
+    return `校验后保留 ${context.citationCount} 条引用支撑。`;
+  }
+  return "已检查引用、证据数量和可回答性。";
+}
+
+function askProcessingStageMeta(
+  stage: AskProcessingStageKey,
+  latest: AskProcessingSignal | undefined,
+  context: {
+    qualityBand: string;
+    evidenceStatus: string;
+    citationCount?: number;
+    evidenceResultCount?: number;
+    droppedCitationCount?: number;
+    answerChars?: number;
+  }
+) {
+  const pieces: string[] = [];
+  if (stage === "search" && context.evidenceResultCount !== undefined) {
+    pieces.push(`证据 ${context.evidenceResultCount}`);
+  }
+  if ((stage === "read" || stage === "evidence_check") && context.citationCount !== undefined) {
+    pieces.push(`引用 ${context.citationCount}`);
+  }
+  if (stage === "generate" && context.answerChars !== undefined) {
+    pieces.push(`${context.answerChars} 字符`);
+  }
+  if (stage === "evidence_check") {
+    if (context.qualityBand) {
+      pieces.push(askQualityBandLabel(context.qualityBand));
+    }
+    if (context.evidenceStatus) {
+      pieces.push(askEvidenceStatusLabel(context.evidenceStatus));
+    }
+    if ((context.droppedCitationCount || 0) > 0) {
+      pieces.push(`丢弃 ${context.droppedCitationCount}`);
+    }
+  }
+  if (!pieces.length && latest?.meta) {
+    pieces.push(latest.meta);
+  }
+  return trimText(pieces.join(" · "), 120);
+}
+
+function askProcessingStageIndex(stage: AskProcessingStageKey) {
+  return ASK_PROCESSING_STAGE_ORDER.findIndex((item) => item.id === stage);
 }
 
 function EvidenceNoteList({ title, values }: { title: string; values: string[] }) {
@@ -2872,6 +3344,27 @@ function numberSignal(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
+function finiteNumber(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function firstFiniteNumber(...values: unknown[]) {
+  for (const value of values) {
+    const resolved = finiteNumber(value);
+    if (resolved !== undefined) {
+      return resolved;
+    }
+  }
+  return undefined;
+}
+
+function maxFiniteNumber(values: unknown[]) {
+  const numbers = values
+    .map((value) => finiteNumber(value))
+    .filter((value): value is number => value !== undefined);
+  return numbers.length ? Math.max(...numbers) : undefined;
+}
+
 function askQualityBandLabel(value: string) {
   const labels: Record<string, string> = {
     direct_answer: "直接回答",
@@ -3123,18 +3616,21 @@ function normalizeAskAgentSteps(values: unknown): AskAgentStepView[] {
     return [];
   }
   return values
-    .map((value, index) => {
+    .map((value, index): AskAgentStepView | null => {
       if (!isRecord(value)) {
         return null;
       }
-      const elapsed = typeof value.elapsed_ms === "number" && Number.isFinite(value.elapsed_ms)
-        ? `${Math.round(value.elapsed_ms)} ms`
+      const elapsedMs = finiteNumber(value.elapsed_ms);
+      const evidenceCount = finiteNumber(value.evidence_count);
+      const sourceRefCount = finiteNumber(value.source_ref_count);
+      const elapsed = elapsedMs !== undefined
+        ? `${Math.round(elapsedMs)} ms`
         : "";
-      const evidence = typeof value.evidence_count === "number" && value.evidence_count > 0
-        ? `证据 ${value.evidence_count}`
+      const evidence = evidenceCount !== undefined && evidenceCount > 0
+        ? `证据 ${evidenceCount}`
         : "";
-      const refs = typeof value.source_ref_count === "number" && value.source_ref_count > 0
-        ? `引用 ${value.source_ref_count}`
+      const refs = sourceRefCount !== undefined && sourceRefCount > 0
+        ? `引用 ${sourceRefCount}`
         : "";
       const tool = displayText(value.tool_name, "");
       return {
@@ -3143,7 +3639,11 @@ function normalizeAskAgentSteps(values: unknown): AskAgentStepView[] {
         status: displayText(value.status, "complete"),
         title: displayText(value.title, "处理中"),
         detail: trimText(displayText(value.detail, ""), 180),
-        meta: [tool, evidence, refs, elapsed].filter(Boolean).join(" · ")
+        meta: [tool, evidence, refs, elapsed].filter(Boolean).join(" · "),
+        toolName: tool,
+        evidenceCount,
+        sourceRefCount,
+        elapsedMs
       };
     })
     .filter((step): step is AskAgentStepView => Boolean(step));
@@ -3154,25 +3654,34 @@ function normalizeAskProgress(values: unknown): AskProgressView[] {
     return [];
   }
   return values
-    .map((value, index) => {
+    .map((value, index): AskProgressView | null => {
       if (!isRecord(value)) {
         return null;
       }
-      const elapsed = typeof value.elapsed_ms === "number" && Number.isFinite(value.elapsed_ms)
-        ? `${Math.round(value.elapsed_ms)} ms`
+      const elapsedMs = finiteNumber(value.elapsed_ms);
+      const evidenceCount = finiteNumber(value.evidence_count);
+      const sourceRefCount = finiteNumber(value.source_ref_count);
+      const elapsed = elapsedMs !== undefined
+        ? `${Math.round(elapsedMs)} ms`
         : "";
-      const evidence = typeof value.evidence_count === "number" && value.evidence_count > 0
-        ? `证据 ${value.evidence_count}`
+      const evidence = evidenceCount !== undefined && evidenceCount > 0
+        ? `证据 ${evidenceCount}`
         : "";
-      const refs = typeof value.source_ref_count === "number" && value.source_ref_count > 0
-        ? `引用 ${value.source_ref_count}`
+      const refs = sourceRefCount !== undefined && sourceRefCount > 0
+        ? `引用 ${sourceRefCount}`
         : "";
+      const tool = displayText(value.tool_name, "");
       return {
         id: displayText(value.step_id, `progress-${index}`),
         stage: displayText(value.stage, "generate"),
         status: displayText(value.status, "complete"),
         title: displayText(value.title, "处理中"),
-        meta: [evidence, refs, elapsed].filter(Boolean).join(" · ")
+        detail: trimText(displayText(value.detail, ""), 180),
+        meta: [evidence, refs, elapsed].filter(Boolean).join(" · "),
+        toolName: tool,
+        evidenceCount,
+        sourceRefCount,
+        elapsedMs
       };
     })
     .filter((item): item is AskProgressView => Boolean(item));
