@@ -1,4 +1,4 @@
-import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
+import { expect, test, type APIRequestContext, type Locator, type Page } from "@playwright/test";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 
@@ -238,6 +238,7 @@ async function expectReviewCenterHealth(page: Page, fixture: ReviewHealthFixture
   await expect(reviewCard).toContainText(fixture.topic);
   await expect(reviewCard.getByTestId("review-evidence-health")).toBeVisible();
   await expect(reviewCard.getByTestId("review-evidence-health")).toContainText("可审核");
+  await expectReviewEvidenceComparison(reviewCard, fixture);
   await expect(reviewCard.getByTestId("review-action-approve-apply")).toBeVisible();
   await reviewCard.getByTestId("review-action-approve-apply").click();
   await expect(page.locator(".review-center-item").filter({ hasText: fixture.reviewItemId })).toHaveCount(0, { timeout: 45_000 });
@@ -254,6 +255,23 @@ async function expectReviewCenterHealth(page: Page, fixture: ReviewHealthFixture
   await expect(graphInspector).toBeVisible({ timeout: 60_000 });
   await expect(graphInspector).toContainText(fixture.topic);
   await expect(graphInspector.getByTestId("graph-citation-inspector")).toBeVisible();
+}
+
+async function expectReviewEvidenceComparison(reviewCard: Locator, fixture: ReviewHealthFixture) {
+  const comparison = reviewCard.getByTestId("review-evidence-comparison");
+  await expect(comparison).toBeVisible();
+  await expect(comparison).toContainText("证据对比");
+  await expect(comparison).toContainText("条引用");
+  await comparison.locator("summary").click();
+
+  const inspector = comparison.getByTestId("review-citation-inspector");
+  await expect(inspector).toBeVisible();
+  const fixtureRef = inspector.getByTestId("citation-inspector-ref").filter({ hasText: fixture.sourceItemIds[0] }).first();
+  await expect(fixtureRef).toBeVisible({ timeout: 45_000 });
+  await fixtureRef.click();
+  await expect(inspector.getByTestId("ask-evidence-inspector")).toContainText(fixture.sourceItemIds[0]);
+  await inspector.getByTestId("open-reader-pane").click();
+  await expect(inspector.getByTestId("reader-pane")).toContainText(fixture.topic);
 }
 
 async function expectReviewSnoozeRestore(page: Page, fixture: ReviewHealthFixture) {

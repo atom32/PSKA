@@ -1848,17 +1848,32 @@ function ReviewCenter({
                   </div>
                 ) : null}
                 {item.source_refs?.length ? (
-                  <div className="source-ref-row">
-                    {item.source_refs.slice(0, 3).map((ref, index) => {
-                      const refKnowledgeBaseLabel = knowledgeBaseLineageLabel(ref);
-                      return (
-                        <span key={`${item.review_item_id}-${index}`}>
-                          {displayText(ref.title || ref.source_item_id || ref.chunk_id, "source ref")}
-                          {refKnowledgeBaseLabel ? <small>{refKnowledgeBaseLabel}</small> : null}
-                        </span>
-                      );
-                    })}
-                  </div>
+                  <>
+                    <div className="source-ref-row">
+                      {item.source_refs.slice(0, 3).map((ref, index) => {
+                        const refKnowledgeBaseLabel = knowledgeBaseLineageLabel(ref);
+                        return (
+                          <span key={`${item.review_item_id}-${index}`}>
+                            {displayText(ref.title || ref.source_item_id || ref.chunk_id, "source ref")}
+                            {refKnowledgeBaseLabel ? <small>{refKnowledgeBaseLabel}</small> : null}
+                          </span>
+                        );
+                      })}
+                    </div>
+                    <details className="review-evidence-comparison" data-testid="review-evidence-comparison">
+                      <summary>
+                        <span>证据对比</span>
+                        <small>{item.source_refs.length} 条引用</small>
+                      </summary>
+                      <CitationInspectorPanel
+                        refs={item.source_refs}
+                        result={reviewEvidenceResult(item)}
+                        serviceToken={serviceToken}
+                        title="Review 证据"
+                        testId="review-citation-inspector"
+                      />
+                    </details>
+                  </>
                 ) : null}
               </div>
               <div className="review-center-actions">
@@ -1947,6 +1962,18 @@ function reviewActionSummary(item: ReviewCenterItem) {
     }
   }
   return statusLabel(status);
+}
+
+function reviewEvidenceResult(item: ReviewCenterItem): WorkspaceSearchResponse {
+  const refs = item.source_refs || [];
+  const knowledgeBaseIds = item.knowledge_base_ids?.length ? item.knowledge_base_ids : item.knowledge_base_id ? [item.knowledge_base_id] : [];
+  return {
+    citations: refs,
+    source_refs: refs,
+    scope_applied: {
+      knowledge_base_ids: knowledgeBaseIds
+    }
+  };
 }
 
 function reviewBulkSelectable(item: ReviewCenterItem, status: string) {

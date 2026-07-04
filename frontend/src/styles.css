@@ -2499,6 +2499,72 @@ button.context-item-main {
   font-weight: 800;
 }
 
+.review-evidence-comparison {
+  margin-top: 12px;
+  border: 1px solid rgba(35, 90, 77, 0.14);
+  border-radius: 8px;
+  background: #fbfaf5;
+  overflow: hidden;
+}
+
+.review-evidence-comparison summary {
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.review-evidence-comparison summary::-webkit-details-marker {
+  display: none;
+}
+
+.review-evidence-comparison summary span::before {
+  content: ">";
+  color: #235a4d;
+  font-size: 11px;
+  transform: translateY(-1px);
+}
+
+.review-evidence-comparison[open] summary span::before {
+  content: "v";
+}
+
+.review-evidence-comparison summary span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.review-evidence-comparison summary small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.review-evidence-comparison .citation-inspector-panel {
+  border-top: 1px solid rgba(35, 90, 77, 0.12);
+  display: grid;
+  grid-template-columns: minmax(170px, 0.75fr) minmax(0, 1.15fr);
+  gap: 10px;
+  padding: 10px;
+}
+
+.review-evidence-comparison .citation-inspector-heading {
+  grid-column: 1 / -1;
+}
+
+.review-evidence-comparison .evidence-window blockquote {
+  max-height: 180px;
+}
+
 .review-basis {
   display: grid;
   gap: 8px;
@@ -6390,6 +6456,14 @@ button.context-item-main {
   .review-center-header,
   .review-center-item {
     grid-template-columns: 1fr;
+  }
+
+  .review-evidence-comparison .citation-inspector-panel {
+    grid-template-columns: 1fr;
+  }
+
+  .review-evidence-comparison .citation-inspector-heading {
+    grid-column: auto;
   }
 
   .review-summary {
