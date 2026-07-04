@@ -317,6 +317,18 @@ async function expectKnowledgeBaseLinkedEmptyStates(page: Page, knowledgeBase: K
   await page.getByTestId("knowledge-base-tab-digest").click();
   await digestPanel.getByTestId("knowledge-base-empty-open-processing").click();
   await expect(page.locator(".chunk-preview-surface")).toBeVisible({ timeout: 45_000 });
+  const processingPanel = page.getByTestId("knowledge-base-processing-panel");
+  await expect(processingPanel).toContainText(knowledgeBase.name, { timeout: 45_000 });
+  await expect(processingPanel.getByTestId("knowledge-base-processing-run-sync")).toBeVisible();
+  await expect(processingPanel.getByTestId("knowledge-base-processing-open-sources")).toBeVisible();
+  await expect(processingPanel.getByTestId("knowledge-base-processing-open-ask")).toBeVisible();
+  await expect(processingPanel.getByTestId("knowledge-base-processing-open-digest")).toBeVisible();
+  await expect(processingPanel.getByTestId("knowledge-base-processing-footnote")).toContainText("最近同步");
+  await processingPanel.getByTestId("knowledge-base-processing-open-sources").click();
+  await expect(page.getByTestId("corpus-upload-form")).toBeVisible({ timeout: 45_000 });
+  await page.getByTestId("knowledge-base-tab-processing").click();
+  await processingPanel.getByTestId("knowledge-base-processing-open-ask").click();
+  await expect(page.getByTestId("knowledge-base-ask-input")).toBeVisible({ timeout: 45_000 });
 
   await page.getByTestId("knowledge-base-tab-graph").click();
   const graphPanel = page.getByTestId("knowledge-base-graph-panel");

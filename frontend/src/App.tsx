@@ -7272,6 +7272,21 @@ function CorpusWorkspace({
       ) : null}
 
       {knowledgeBaseTab === "processing" ? (
+        <KnowledgeBaseProcessingPanel
+          currentKnowledgeBase={currentKnowledgeBase}
+          currentKnowledgeBaseName={currentKnowledgeBase?.name || "当前知识库"}
+          readinessLabel={readinessPill.label}
+          embeddingCoverageLabel={embeddingCoverageLabel}
+          actionRunning={actionRunning}
+          onSync={() => void handleFileSync()}
+          onOpenSources={() => setKnowledgeBaseTab("sources")}
+          onOpenAsk={() => setKnowledgeBaseTab("ask")}
+          onOpenDigest={() => setKnowledgeBaseTab("digest")}
+          onRefresh={() => void refetchAll()}
+        />
+      ) : null}
+
+      {knowledgeBaseTab === "processing" ? (
       <section className="today-section chunk-preview-surface">
         <SectionTitle icon={<TextCursorInput size={18} />} title="Chunk Preview" subtitle="处理配置调试" />
         <form className="chunk-preview-form" onSubmit={handleChunkPreview}>
@@ -7940,6 +7955,115 @@ function KnowledgeBaseLinkedEmptyState({
         ))}
       </div>
     </div>
+  );
+}
+
+function KnowledgeBaseProcessingPanel({
+  currentKnowledgeBase,
+  currentKnowledgeBaseName,
+  readinessLabel,
+  embeddingCoverageLabel,
+  actionRunning,
+  onSync,
+  onOpenSources,
+  onOpenAsk,
+  onOpenDigest,
+  onRefresh
+}: {
+  currentKnowledgeBase?: KnowledgeBase;
+  currentKnowledgeBaseName: string;
+  readinessLabel: string;
+  embeddingCoverageLabel: string;
+  actionRunning: boolean;
+  onSync: () => void;
+  onOpenSources: () => void;
+  onOpenAsk: () => void;
+  onOpenDigest: () => void;
+  onRefresh: () => void;
+}) {
+  if (!currentKnowledgeBase) {
+    return null;
+  }
+  const readiness = currentKnowledgeBase.readiness || {};
+  const counts = currentKnowledgeBase.counts || {};
+  const sourceItemCount = firstFiniteNumber(readiness.source_item_count, counts.source_items) || 0;
+  const documentCount = firstFiniteNumber(readiness.document_count, counts.documents) || 0;
+  const chunkCount = firstFiniteNumber(readiness.active_chunk_count, readiness.chunk_count, counts.active_chunks, counts.chunks) || 0;
+  const failedCount = firstFiniteNumber(readiness.failed_processing_count, counts.failed_processing_spans) || 0;
+  const processingCount = firstFiniteNumber(readiness.processing_count, counts.processing_spans) || 0;
+  const offlineDirtyCount = firstFiniteNumber(readiness.offline_index_dirty_count, counts.offline_index_dirty) || 0;
+  const processingLabel = knowledgeBaseProcessingLabel(readiness);
+  const indexLabel = knowledgeBaseIndexLabel(readiness);
+  const title = failedCount
+    ? "处理链路需要检查"
+    : processingCount
+      ? "资料正在处理"
+      : sourceItemCount <= 0
+        ? "还没有资料进入处理链路"
+        : chunkCount <= 0
+          ? "等待切片后再稳定 Ask"
+          : offlineDirtyCount
+            ? "索引待刷新"
+            : "当前 KB 处理链路可检索";
+  const detail = failedCount
+    ? "处理失败会降低 RAG 命中和 citation 质量。先查看高级同步、解析或切片状态，再回到 Ask。"
+    : processingCount
+      ? "已有资料正在进入解析、切片或索引流程；完成后 Ask、Digest 和 Graph 会使用新的证据。"
+      : sourceItemCount <= 0
+        ? "先加入上传、文本、URL/RSS 或文件夹资料，处理状态会在这里汇总。"
+        : chunkCount <= 0
+          ? "资料已经归入当前知识库，但还没有 active chunks。检查切片配置或重新同步会更稳。"
+          : offlineDirtyCount
+            ? "可检索片段已经存在；离线索引仍有待刷新时，系统会优先使用可用的 hybrid/lexical 检索。"
+            : "当前知识库已有可检索片段，可以进入 Ask 或运行 Digest，把证据沉淀到 Review/Writing。";
+  return (
+    <section className="today-section kb-processing-panel" data-testid="knowledge-base-processing-panel">
+      <SectionTitle icon={<RefreshCw size={18} />} title="Processing Cockpit" subtitle={currentKnowledgeBaseName} />
+      <div className="kb-processing-hero">
+        <div>
+          <span className="eyebrow">当前 KB 处理状态</span>
+          <h2>{title}</h2>
+          <p>{detail}</p>
+        </div>
+        <div className="kb-processing-actions">
+          <button type="button" className="primary" onClick={onSync} disabled={actionRunning} data-testid="knowledge-base-processing-run-sync">
+            <RefreshCw size={15} />
+            同步高级源
+          </button>
+          <button type="button" onClick={onOpenSources} data-testid="knowledge-base-processing-open-sources">
+            <UploadCloud size={15} />
+            加入资料
+          </button>
+          <button type="button" onClick={onOpenAsk} data-testid="knowledge-base-processing-open-ask">
+            <MessageCircle size={15} />
+            去 Ask
+          </button>
+          <button type="button" onClick={onOpenDigest} data-testid="knowledge-base-processing-open-digest">
+            <Sparkles size={15} />
+            去 Digest
+          </button>
+          <button type="button" onClick={onRefresh} disabled={actionRunning} data-testid="knowledge-base-processing-refresh">
+            <RefreshCw size={15} />
+            刷新
+          </button>
+        </div>
+      </div>
+      <div className="kb-linked-metrics kb-processing-metrics" aria-label="当前知识库处理摘要">
+        <span><strong>{sourceItemCount}</strong> 资料</span>
+        <span><strong>{documentCount}</strong> 原文</span>
+        <span><strong>{chunkCount}</strong> chunks</span>
+        <span><strong>{processingLabel}</strong> 处理</span>
+        <span><strong>{failedCount}</strong> 失败</span>
+        <span><strong>{indexLabel}</strong> 索引</span>
+        <span><strong>{embeddingCoverageLabel}</strong> 向量</span>
+        <span><strong>{readinessLabel}</strong> readiness</span>
+      </div>
+      <div className="kb-processing-footnote" data-testid="knowledge-base-processing-footnote">
+        <span>最近同步 {knowledgeBaseDateLabel(readiness.last_sync_at)}</span>
+        <span>最近处理 {knowledgeBaseDateLabel(readiness.last_processing_at)}</span>
+        <span>最近整理 {knowledgeBaseDateLabel(readiness.last_digest_at)}</span>
+      </div>
+    </section>
   );
 }
 
