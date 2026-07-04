@@ -4437,6 +4437,120 @@ button.context-item-main {
   margin: 0 auto 12px;
 }
 
+.kb-linked-panel {
+  max-width: 1180px;
+  margin: 0 auto 12px;
+}
+
+.kb-linked-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin: -2px 0 10px;
+}
+
+.kb-linked-actions button,
+.kb-linked-list button {
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #fffefa;
+  color: var(--ink);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 32px;
+  padding: 0 11px;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.kb-linked-actions button:hover,
+.kb-linked-list button:hover {
+  border-color: rgba(46, 117, 100, 0.32);
+  background: var(--accent-soft);
+  color: #235a4d;
+}
+
+.kb-linked-metrics {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.kb-linked-metrics span {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 254, 250, 0.78);
+  padding: 9px 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.kb-linked-metrics strong {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+  font-size: 15px;
+  margin-bottom: 3px;
+}
+
+.kb-linked-list {
+  display: grid;
+  gap: 8px;
+}
+
+.kb-linked-list article {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 254, 250, 0.84);
+  padding: 10px;
+}
+
+.kb-linked-list button {
+  width: 100%;
+  height: auto;
+  min-height: 0;
+  justify-content: flex-start;
+  align-items: flex-start;
+  display: grid;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+}
+
+.kb-linked-list strong,
+.kb-linked-list p,
+.kb-linked-list small {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.kb-linked-list strong {
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.kb-linked-list p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.kb-linked-list small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 750;
+}
+
 .kb-search-form {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

@@ -263,6 +263,8 @@ async function expectKnowledgeBaseDetailTabs(page: Page) {
   await expect(tabs).toContainText("Ask");
   await expect(tabs).toContainText("处理");
   await expect(tabs).toContainText("Digest");
+  await expect(tabs).toContainText("Graph");
+  await expect(tabs).toContainText("Writing");
   await expect(tabs).toContainText("设置");
   await expect(page.getByTestId("corpus-search-input")).toBeVisible();
 
@@ -276,6 +278,14 @@ async function expectKnowledgeBaseDetailTabs(page: Page) {
 
   await page.getByTestId("knowledge-base-tab-digest").click();
   await expect(page.locator(".digest-log-panel")).toBeVisible();
+
+  await page.getByTestId("knowledge-base-tab-graph").click();
+  await expect(page.getByTestId("knowledge-base-graph-panel")).toBeVisible();
+  await expect(page.getByTestId("knowledge-base-open-graph")).toBeVisible();
+
+  await page.getByTestId("knowledge-base-tab-writing").click();
+  await expect(page.getByTestId("knowledge-base-writing-panel")).toBeVisible();
+  await expect(page.getByTestId("knowledge-base-open-writing")).toBeVisible();
 
   await page.getByTestId("knowledge-base-tab-settings").click();
   await expect(page.locator(".kb-manage-strip")).toBeVisible();

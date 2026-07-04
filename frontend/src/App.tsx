@@ -529,6 +529,7 @@ export default function App() {
             onKnowledgeBaseChange={setCurrentKnowledgeBaseId}
             onKnowledgeBasesRefresh={() => knowledgeBasesQuery.refetch()}
             onOpenWorkspace={setMode}
+            onOpenWriting={openWritingBoard}
             setBrain={setBrain}
           />
         ) : activeMode === "writing" ? (
@@ -5645,13 +5646,15 @@ function SectionTitle({ icon, title, subtitle }: { icon: JSX.Element; title: str
   );
 }
 
-type KnowledgeBaseDetailTab = "sources" | "ask" | "processing" | "digest" | "settings";
+type KnowledgeBaseDetailTab = "sources" | "ask" | "processing" | "digest" | "graph" | "writing" | "settings";
 
 const KNOWLEDGE_BASE_DETAIL_TABS: Array<{ id: KnowledgeBaseDetailTab; label: string }> = [
   { id: "sources", label: "资料" },
   { id: "ask", label: "Ask" },
   { id: "processing", label: "处理" },
   { id: "digest", label: "Digest" },
+  { id: "graph", label: "Graph" },
+  { id: "writing", label: "Writing" },
   { id: "settings", label: "设置" }
 ];
 
@@ -5664,6 +5667,7 @@ function CorpusWorkspace({
   onKnowledgeBaseChange,
   onKnowledgeBasesRefresh,
   onOpenWorkspace,
+  onOpenWriting,
   setBrain
 }: {
   serviceToken: PSKAAuth;
@@ -5674,6 +5678,7 @@ function CorpusWorkspace({
   onKnowledgeBaseChange: (knowledgeBaseId: string) => void;
   onKnowledgeBasesRefresh: () => Promise<unknown> | void;
   onOpenWorkspace: (mode: WorkspaceMode) => void;
+  onOpenWriting?: (boardId?: string) => void;
   setBrain: (brain: Partial<BrainState>) => void;
 }) {
   const [query, setQuery] = useState("");
@@ -5757,10 +5762,22 @@ function CorpusWorkspace({
     refetchInterval: operationStatus === "queued" || operationStatus === "digesting" ? 3000 : false,
     retry: 1
   });
+  const graphPreviewQuery = useQuery({
+    queryKey: ["corpus-graph-preview", serviceToken, currentKnowledgeBaseId],
+    queryFn: () => loadGraphData(serviceToken, 24, [], { knowledgeBaseId: currentKnowledgeBaseId }),
+    enabled: knowledgeBaseTab === "graph" && Boolean(currentKnowledgeBaseId),
+    retry: 1
+  });
   const documentsQuery = useQuery({
     queryKey: ["workspace-documents", serviceToken, currentKnowledgeBaseId],
     queryFn: () => loadWorkspaceDocuments(serviceToken, true, { knowledgeBaseId: currentKnowledgeBaseId }),
     enabled: Boolean(currentKnowledgeBaseId),
+    retry: 1
+  });
+  const writingBoardsQuery = useQuery({
+    queryKey: ["corpus-writing-boards", serviceToken],
+    queryFn: () => listWritingBoards(serviceToken),
+    enabled: knowledgeBaseTab === "writing",
     retry: 1
   });
   const promptProfilesQuery = useQuery({
@@ -5776,8 +5793,10 @@ function CorpusWorkspace({
   const corpus = corpusQuery.data;
   const sourceSummary = sourcesQuery.data;
   const digestLogs = digestLogsQuery.data;
+  const graphPreview = graphPreviewQuery.data;
   const documentsData = documentsQuery.data;
   const promptProfiles = promptProfilesQuery.data;
+  const writingBoards = writingBoardsQuery.data?.boards || [];
   const archivedKnowledgeBases = (archivedKnowledgeBasesQuery.data?.knowledge_bases || []).filter(
     (knowledgeBase) => knowledgeBase.status === "archived" || Boolean(knowledgeBase.deleted_at)
   );
@@ -5800,6 +5819,10 @@ function CorpusWorkspace({
     chunks: currentKnowledgeBaseCounts.chunks ?? corpus?.counts?.chunks_matching ?? corpus?.chunks?.length ?? 0,
     inputSources: sourceSummary?.input_sources?.length ?? sourceSummary?.knowledge_sources?.source_count ?? sourceSummary?.connector_state?.state_count ?? 0
   };
+  const writingBoardsForCurrentKnowledgeBase = useMemo(
+    () => writingBoards.filter((board) => writingBoardExplicitKnowledgeBaseIds(board).includes(currentKnowledgeBaseId)),
+    [currentKnowledgeBaseId, writingBoards]
+  );
   const actionRunning = operationStatus === "syncing" || operationStatus === "digesting" || operationStatus === "cleaning" || operationStatus === "briefing";
   const statusMessage = operationMessage || latestSyncMessage(sourceSummary);
   const showCorpusDataPanels = knowledgeBaseTab === "sources" || knowledgeBaseTab === "processing" || knowledgeBaseTab === "digest";
@@ -6684,6 +6707,28 @@ function CorpusWorkspace({
         />
       ) : null}
 
+      {knowledgeBaseTab === "graph" ? (
+        <KnowledgeBaseGraphPanel
+          graph={graphPreview}
+          isLoading={graphPreviewQuery.isLoading}
+          isError={graphPreviewQuery.isError}
+          currentKnowledgeBaseName={currentKnowledgeBase?.name || "当前知识库"}
+          onOpenGraph={() => onOpenWorkspace("graph")}
+        />
+      ) : null}
+
+      {knowledgeBaseTab === "writing" ? (
+        <KnowledgeBaseWritingPanel
+          boards={writingBoardsForCurrentKnowledgeBase}
+          isLoading={writingBoardsQuery.isLoading}
+          isError={writingBoardsQuery.isError}
+          currentKnowledgeBaseName={currentKnowledgeBase?.name || "当前知识库"}
+          knowledgeBases={knowledgeBases}
+          currentKnowledgeBase={currentKnowledgeBase}
+          onOpenWriting={onOpenWriting || (() => onOpenWorkspace("writing"))}
+        />
+      ) : null}
+
       {knowledgeBaseTab === "sources" ? (
       <div className="product-flow-grid">
         <SourceIngestPanel
@@ -7003,6 +7048,119 @@ function KnowledgeBaseSearchCard({ refItem, index }: { refItem: SearchEvidenceRe
       {identity || scoreLabel ? <span>{[identity, scoreLabel].filter(Boolean).join(" / ")}</span> : null}
       <p>{trimText(refItem.snippet || refItem.source_window?.text, 280) || "暂无摘要。"}</p>
     </article>
+  );
+}
+
+function KnowledgeBaseGraphPanel({
+  graph,
+  isLoading,
+  isError,
+  currentKnowledgeBaseName,
+  onOpenGraph
+}: {
+  graph?: WorkspaceGraphResponse;
+  isLoading: boolean;
+  isError: boolean;
+  currentKnowledgeBaseName: string;
+  onOpenGraph: () => void;
+}) {
+  const projection = graph?.projection || {};
+  const counts = graph?.counts || {};
+  const evidenceHealth = graph?.insights?.evidence_health || {};
+  const nodeCount = firstFiniteNumber(projection.nodes, graph?.nodes?.length) || 0;
+  const edgeCount = firstFiniteNumber(projection.edges, graph?.edges?.length) || 0;
+  const groundedRatio = firstFiniteNumber(evidenceHealth.grounded_ratio);
+  const centralNodes = graph?.insights?.central_nodes || [];
+  return (
+    <section className="today-section kb-linked-panel" data-testid="knowledge-base-graph-panel">
+      <SectionTitle icon={<Hash size={18} />} title="Graph / Memory" subtitle={currentKnowledgeBaseName} />
+      <div className="kb-linked-actions">
+        <button type="button" onClick={onOpenGraph} data-testid="knowledge-base-open-graph">
+          <Hash size={15} />
+          打开 Graph 工作区
+        </button>
+      </div>
+      {isError ? <div className="review-empty error-state compact">Graph 摘要无法加载。</div> : null}
+      {isLoading ? <div className="review-empty compact">正在读取当前知识库的 Graph 摘要...</div> : null}
+      <div className="kb-linked-metrics" aria-label="当前知识库 Graph 摘要">
+        <span><strong>{nodeCount}</strong> nodes</span>
+        <span><strong>{edgeCount}</strong> edges</span>
+        <span><strong>{counts.claims ?? 0}</strong> claims</span>
+        <span><strong>{counts.digest_notes ?? 0}</strong> digest</span>
+        <span><strong>{counts.memories ?? 0}</strong> memory</span>
+        <span><strong>{groundedRatio !== undefined ? `${Math.round(groundedRatio * 100)}%` : "待检查"}</strong> grounded</span>
+      </div>
+      {centralNodes.length ? (
+        <div className="kb-linked-list" data-testid="knowledge-base-graph-nodes">
+          {centralNodes.slice(0, 5).map((node, index) => (
+            <article key={node.id || `central-${index}`}>
+              <strong>{displayText(node.label || node.id, "Graph node")}</strong>
+              <p>{trimText(displayText(node.summary || node.type, "当前知识库中的图谱节点。"), 180)}</p>
+              <small>{[node.type, typeof node.degree === "number" ? `degree ${node.degree}` : ""].filter(Boolean).join(" · ")}</small>
+            </article>
+          ))}
+        </div>
+      ) : !isLoading ? (
+        <div className="review-empty compact">当前知识库还没有可展示的 Graph 中心节点。</div>
+      ) : null}
+    </section>
+  );
+}
+
+function KnowledgeBaseWritingPanel({
+  boards,
+  isLoading,
+  isError,
+  currentKnowledgeBaseName,
+  knowledgeBases,
+  currentKnowledgeBase,
+  onOpenWriting
+}: {
+  boards: WritingBoard[];
+  isLoading: boolean;
+  isError: boolean;
+  currentKnowledgeBaseName: string;
+  knowledgeBases: KnowledgeBase[];
+  currentKnowledgeBase?: KnowledgeBase;
+  onOpenWriting: (boardId?: string) => void;
+}) {
+  const briefCount = boards.filter((board) => writingBoardLooksLikeBrief(board)).length;
+  const latest = boards[0];
+  return (
+    <section className="today-section kb-linked-panel" data-testid="knowledge-base-writing-panel">
+      <SectionTitle icon={<TextCursorInput size={18} />} title="Writing" subtitle={currentKnowledgeBaseName} />
+      <div className="kb-linked-actions">
+        <button type="button" onClick={() => onOpenWriting()} data-testid="knowledge-base-open-writing">
+          <TextCursorInput size={15} />
+          打开 Writing 工作区
+        </button>
+      </div>
+      {isError ? <div className="review-empty error-state compact">Writing 项目无法加载。</div> : null}
+      {isLoading ? <div className="review-empty compact">正在读取当前知识库的 Writing 资产...</div> : null}
+      <div className="kb-linked-metrics" aria-label="当前知识库 Writing 摘要">
+        <span><strong>{boards.length}</strong> boards</span>
+        <span><strong>{briefCount}</strong> briefs</span>
+        <span><strong>{latest?.updated_at ? formatReviewDate(latest.updated_at) : "暂无"}</strong> 最近更新</span>
+      </div>
+      {boards.length ? (
+        <div className="kb-linked-list" data-testid="knowledge-base-writing-boards">
+          {boards.slice(0, 6).map((board) => {
+            const scope = writingBoardKnowledgeScope(board, { scope: { mode: "all", knowledge_base_ids: [] }, metadata: {} }).scope;
+            return (
+              <article key={board.board_id}>
+                <button type="button" onClick={() => onOpenWriting(board.board_id)} data-testid="knowledge-base-open-writing-board">
+                  <strong>{displayText(board.title, "未命名写作项目")}</strong>
+                  <p>{trimText(displayText(board.goal, "这个 Writing board 保留了当前知识库的证据 lineage。"), 180)}</p>
+                  <small>{writingBoardKnowledgeScopeLabel(scope, knowledgeBases, currentKnowledgeBase)} · {board.updated_at ? formatReviewDate(board.updated_at) : board.board_id}</small>
+                </button>
+              </article>
+            );
+          })}
+        </div>
+      ) : !isLoading ? (
+        <div className="review-empty compact">当前知识库还没有绑定的 Writing board。可从 Ask、Digest 或 Graph 保存证据后出现在这里。</div>
+      ) : null}
+    </section>
   );
 }
 
@@ -8540,6 +8698,21 @@ function writingBoardKnowledgeScope(
     return { scope, metadata: { ...metadata, knowledge_base_scope: scope } };
   }
   return fallback;
+}
+
+function writingBoardExplicitKnowledgeBaseIds(board: WritingBoard | undefined) {
+  const metadata = isPlainObject(board?.metadata) ? board.metadata : {};
+  const rawScope = isPlainObject(metadata.knowledge_base_scope) ? metadata.knowledge_base_scope : {};
+  const scopeIds = Array.isArray(rawScope.knowledge_base_ids) ? rawScope.knowledge_base_ids.filter((item): item is string => typeof item === "string" && item.length > 0) : [];
+  const metadataIds = Array.isArray(metadata.knowledge_base_ids) ? metadata.knowledge_base_ids.filter((item): item is string => typeof item === "string" && item.length > 0) : [];
+  return Array.from(new Set([...scopeIds, ...metadataIds]));
+}
+
+function writingBoardLooksLikeBrief(board: WritingBoard) {
+  const metadata = isPlainObject(board.metadata) ? board.metadata : {};
+  const kind = displayText(metadata.kind, "").toLowerCase();
+  const title = displayText(board.title, "").toLowerCase();
+  return kind.includes("brief") || title.includes("brief");
 }
 
 function writingBoardKnowledgeScopeLabel(scope: Record<string, unknown>, knowledgeBases: KnowledgeBase[], currentKnowledgeBase?: KnowledgeBase) {
