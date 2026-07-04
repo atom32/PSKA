@@ -1592,6 +1592,18 @@ function ReviewCenter({
   const total = reviewQuery.data?.total_matching ?? reviewQuery.data?.count ?? items.length;
   const analytics = reviewQuery.data?.analytics;
   const scopeLabel = knowledgeBaseScopeLabel(scopeMode, currentKnowledgeBase, selectedKnowledgeBaseIds);
+  const reviewScopeModeLabel =
+    scopeMode === "all"
+      ? "全部资料库"
+      : scopeMode === "selected"
+        ? "多知识库"
+        : scopeMode === "attachments"
+          ? "附件范围"
+          : "当前知识库";
+  const reviewScopeKnowledgeBaseCount = kbScopedOptions.knowledgeBaseIds?.length ?? (kbScopedOptions.knowledgeBaseId ? 1 : 0);
+  const reviewScopeHint = scopeMode === "all" ? "未限制 KB" : reviewScopeKnowledgeBaseCount > 0 ? `${reviewScopeKnowledgeBaseCount} 个 KB` : "等待选择 KB";
+  const reviewEvidenceCount = items.filter((item) => item.source_ref_status === "present").length;
+  const reviewTypeCount = new Set(items.map((item) => item.review_type || "review")).size;
   const selectableItems = useMemo(() => items.filter((item) => reviewBulkSelectable(item, status)), [items, status]);
   const selectedItems = useMemo(() => items.filter((item) => selectedReviewIds.has(item.review_item_id)), [items, selectedReviewIds]);
   const allSelectableSelected = selectableItems.length > 0 && selectableItems.every((item) => selectedReviewIds.has(item.review_item_id));
@@ -1710,7 +1722,7 @@ function ReviewCenter({
             {statusLabel(status)}
           </span>
           <span>
-            <strong>{items.filter((item) => item.source_ref_status === "present").length}</strong>
+            <strong>{reviewEvidenceCount}</strong>
             有证据
           </span>
           <button className="icon-button" type="button" onClick={() => reviewQuery.refetch()} title="刷新 Review">
@@ -1721,6 +1733,20 @@ function ReviewCenter({
           <Pin size={16} />
           {pinStatus === "saved" ? "已置顶" : pinStatus === "failed" ? "置顶失败" : "置顶 Review"}
         </button>
+      </div>
+
+      <div className="review-scope-status" data-testid="review-scope-status" aria-label="Review 知识库过滤">
+        <div className="review-scope-copy">
+          <span className="eyebrow">Review scope</span>
+          <strong>{scopeLabel}</strong>
+          <small>{reviewScopeModeLabel} / {reviewScopeHint}</small>
+        </div>
+        <div className="review-scope-metrics" aria-label="Review 范围计数">
+          <span><strong>{total}</strong> {statusLabel(status)}</span>
+          <span><strong>{reviewEvidenceCount}</strong> 有证据</span>
+          <span><strong>{reviewTypeCount}</strong> 类型</span>
+          <span><strong>{selectedItems.length}</strong> 已选择</span>
+        </div>
       </div>
 
       <div className="review-filter" role="tablist" aria-label="Review 状态">

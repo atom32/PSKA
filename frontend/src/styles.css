@@ -2399,6 +2399,65 @@ button.context-item-main {
   background: var(--accent-soft);
 }
 
+.review-scope-status {
+  max-width: 1120px;
+  margin: 0 auto 12px;
+  border: 1px solid rgba(49, 95, 124, 0.24);
+  border-radius: 8px;
+  background: rgba(230, 241, 245, 0.64);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 12px;
+}
+
+.review-scope-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.review-scope-copy strong {
+  color: var(--ink);
+  font-size: 18px;
+  line-height: 1.1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.review-scope-copy small {
+  color: #315f7c;
+  font-size: 12px;
+}
+
+.review-scope-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(66px, auto));
+  gap: 6px;
+}
+
+.review-scope-metrics span {
+  border: 1px solid rgba(49, 95, 124, 0.18);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.72);
+  color: #315f7c;
+  font-size: 12px;
+  min-width: 66px;
+  padding: 7px 8px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.review-scope-metrics strong {
+  color: var(--ink);
+  display: block;
+  font-size: 17px;
+  line-height: 1;
+  margin-bottom: 2px;
+}
+
 .review-filter {
   max-width: 1120px;
   margin: 0 auto 12px;
@@ -7980,6 +8039,14 @@ button.context-item-main {
 
   .review-summary {
     grid-template-columns: 1fr 1fr 38px;
+  }
+
+  .review-scope-status {
+    grid-template-columns: 1fr;
+  }
+
+  .review-scope-metrics {
+    grid-template-columns: repeat(2, minmax(92px, 1fr));
   }
 
   .review-filter {

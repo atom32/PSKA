@@ -48,6 +48,7 @@ test("browser session scoped Ask does not leak citations across knowledge bases"
   const createdKnowledgeBaseIds: string[] = [];
   const createdSourceItemIds: string[] = [];
   let reviewFixture: ReviewHealthFixture | null = null;
+  let betaReviewFixture: ReviewHealthFixture | null = null;
   const bulkReviewFixtures: ReviewHealthFixture[] = [];
 
   await page.goto(await authnodeCallbackUrl(request));
@@ -72,6 +73,7 @@ test("browser session scoped Ask does not leak citations across knowledge bases"
     createdSourceItemIds.push(alphaSourceItemId, betaSourceItemId);
 
     reviewFixture = await createReviewHealthFixture(page, alpha.knowledge_base_id, marker, createdSourceItemIds);
+    betaReviewFixture = await createReviewHealthFixture(page, beta.knowledge_base_id, marker, createdSourceItemIds);
 
     await page.goto(frontendUrl, { waitUntil: "domcontentloaded" });
     await openWorkspace(page, "Today");
@@ -130,7 +132,7 @@ test("browser session scoped Ask does not leak citations across knowledge bases"
     });
     await expectReviewSnoozeRestore(page, snoozeReviewFixture);
     await expectReviewBulkReject(page, bulkReviewFixtures);
-    await expectReviewCenterHealth(page, reviewFixture);
+    await expectReviewCenterHealth(page, reviewFixture, betaReviewFixture, alpha.name);
   } finally {
     await cleanupFixtures(page, createdSourceItemIds, createdKnowledgeBaseIds);
     cleanupDatabaseResidue(marker, reviewFixture?.topic);
@@ -297,9 +299,15 @@ async function expectKnowledgeBaseDetailTabs(page: Page) {
   await expect(page.getByTestId("corpus-search-input")).toBeVisible();
 }
 
-async function expectReviewCenterHealth(page: Page, fixture: ReviewHealthFixture) {
+async function expectReviewCenterHealth(page: Page, fixture: ReviewHealthFixture, hiddenFixture: ReviewHealthFixture, knowledgeBaseName: string) {
   await openWorkspace(page, "Review");
   await page.getByTestId("review-filter-pending").click();
+  const scopeStatus = page.getByTestId("review-scope-status");
+  await expect(scopeStatus).toBeVisible({ timeout: 45_000 });
+  await expect(scopeStatus).toContainText(knowledgeBaseName);
+  await expect(scopeStatus).toContainText("当前知识库");
+  await expect(scopeStatus).toContainText("待审");
+  await expect(scopeStatus).toContainText("有证据");
   const analytics = page.getByTestId("review-analytics");
   await expect(analytics).toBeVisible({ timeout: 45_000 });
   await expect(analytics).toContainText("队列态势");
@@ -308,6 +316,7 @@ async function expectReviewCenterHealth(page: Page, fixture: ReviewHealthFixture
   await expect(analytics.getByTestId("review-analytics-type").first()).toBeVisible();
   const reviewCard = page.locator(".review-center-item").filter({ hasText: fixture.reviewItemId }).first();
   await expect(reviewCard).toBeVisible({ timeout: 45_000 });
+  await expect(page.locator(".review-center-item").filter({ hasText: hiddenFixture.reviewItemId })).toHaveCount(0);
   await expect(reviewCard).toContainText(fixture.topic);
   await expect(reviewCard.getByTestId("review-evidence-health")).toBeVisible();
   await expect(reviewCard.getByTestId("review-evidence-health")).toContainText("可审核");
