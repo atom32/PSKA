@@ -323,13 +323,14 @@ X-FastReAct-Service-Token: <token>
 真实 E2E 验收命令：
 
 ```bash
-cd core
-python3 scripts/fastreact_http_sse_e2e.py --python ../.pska/venvs/pska-py312/bin/python
+cd "$PSKA_REPO"
+./scripts/pska-fastreact-kb-scope-smoke
 ```
 
-该脚本启动真实 FastReAct localhost HTTP/SSE service、真实 PSKA MCP JSON-RPC
-子进程，验证 `/ready`、service auth、SSE `tool_call/tool_result/session_end/done`
-和 PSKA MCP evidence 返回。
+该脚本要求 PSKA 已通过 `./start.sh` 启动、FastReAct daemon 已在线、LLM API
+可用，并通过真实 HTTP MCP 验证 deep Ask、service auth、FastReAct PSKA tool
+call scope 和 evidence 返回。旧的 `core/scripts/fastreact_http_sse_e2e.py`
+仅作为兼容入口转发到此 smoke，不再注入 fake FastReAct agent。
 
 ## Versioning
 

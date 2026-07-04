@@ -295,12 +295,11 @@ mcp.ready = true
 mcp.tools 包含 pska_pska_search
 ```
 
-真实 HTTP/SSE smoke：
+真实 FastReAct + PSKA HTTP MCP + LLM smoke：
 
 ```bash
-cd "$PSKA_REPO/core"
-python3 scripts/fastreact_http_sse_e2e.py \
-  --python ../.pska/venvs/pska-py312/bin/python
+cd "$PSKA_REPO"
+./scripts/pska-fastreact-kb-scope-smoke
 ```
 
 成功时输出包含：
@@ -308,6 +307,9 @@ python3 scripts/fastreact_http_sse_e2e.py \
 ```json
 {"ok": true}
 ```
+
+旧的 `core/scripts/fastreact_http_sse_e2e.py` 只保留为兼容入口，并会转发到
+同一个真实 smoke；它不再注入 fake FastReAct agent。
 
 ## 8. 常见问题
 
