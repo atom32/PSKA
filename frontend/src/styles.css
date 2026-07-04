@@ -5498,6 +5498,32 @@ button.context-item-main {
   font-size: 11px;
 }
 
+.graph-path-run .graph-path-health {
+  max-width: 190px;
+  overflow: hidden;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.graph-path-run .graph-path-health.good {
+  border-color: rgba(35, 90, 77, 0.22);
+  background: #edf8f1;
+  color: #235a4d;
+}
+
+.graph-path-run .graph-path-health.warning {
+  border-color: rgba(184, 112, 29, 0.28);
+  background: #fff5df;
+  color: #8c520e;
+}
+
+.graph-path-run .graph-path-health.error {
+  border-color: rgba(176, 64, 54, 0.3);
+  background: #fff1ef;
+  color: #9d342b;
+}
+
 .graph-path-metrics {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));

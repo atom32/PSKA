@@ -8932,6 +8932,7 @@ function GraphPathPanel({
   const citations = result?.citations || [];
   const graphPaths = result?.graph_paths || [];
   const expansionDecisions = result?.agentic_trace?.expansion_decisions || [];
+  const evidenceHealth = graphPathEvidenceHealth(result, error);
   return (
     <div className="graph-path-panel">
       <span className="eyebrow">证据详情</span>
@@ -8942,6 +8943,15 @@ function GraphPathPanel({
         <div className="graph-path-run">
           <span>{result.requires_agentic_service_online ? "深入分析" : "快速证据"}</span>
           {result.display_mode ? <span>{displayText(result.display_mode)}</span> : null}
+          {evidenceHealth ? (
+            <span
+              className={`graph-path-health ${evidenceHealth.tone}`}
+              data-testid="graph-path-evidence-health"
+              title={evidenceHealth.detail}
+            >
+              {trimText([evidenceHealth.label, evidenceHealth.meta].filter(Boolean).join(" · "), 32)}
+            </span>
+          ) : null}
         </div>
       ) : null}
       <div className="graph-path-metrics">
@@ -9044,6 +9054,67 @@ function GraphPathPanel({
       ) : null}
     </div>
   );
+}
+
+function graphPathEvidenceHealth(result: WorkspaceGraphPathResponse | null, error = ""): AskHealthView | null {
+  if (!result) {
+    return null;
+  }
+  const citations = Array.isArray(result.citations) ? result.citations.length : 0;
+  const hasError = Boolean(error || result.error || result.ok === false || result.agentic_repair?.error);
+  const repairAttempted = result.agentic_repair?.attempted === true;
+  const repairAccepted = result.agentic_repair?.accepted === true;
+  const qualityBand = hasError
+    ? "failed"
+    : citations > 0
+      ? repairAttempted && !repairAccepted
+        ? "needs_review"
+        : "grounded"
+      : "needs_citation_review";
+  const base = askHealthFromSignals({
+    qualitySignals: {
+      quality_band: qualityBand,
+      evidence_status: citations > 0 ? "grounded" : "no_evidence",
+      report_readiness: citations > 0 && !hasError ? "ready_with_citations" : "needs_citation_review",
+      citation_count: citations,
+      gap_count: citations > 0 ? 0 : 1
+    },
+    citationCount: citations,
+    status: hasError ? "error" : "complete"
+  });
+  if (!base) {
+    return null;
+  }
+  if (hasError) {
+    return {
+      ...base,
+      label: "失败",
+      detail: "Graph Path 查询或答案修复返回错误，需要重试或查看错误信息。"
+    };
+  }
+  if (citations === 0) {
+    return {
+      ...base,
+      label: "缺引用",
+      detail: "Graph Path 没有返回可检查 citations，不能直接采信为证据回答。"
+    };
+  }
+  if (repairAttempted && !repairAccepted) {
+    return {
+      ...base,
+      tone: "warning",
+      label: "需复核",
+      detail: "Graph Path 尝试重写答案但未采用，请检查引用与路径摘要。"
+    };
+  }
+  if (repairAccepted) {
+    return {
+      ...base,
+      label: "已重写",
+      detail: "Graph Path 已采用证据约束后的重写答案，并保留可检查引用。"
+    };
+  }
+  return base;
 }
 
 function GraphNeighborhoodPanel({
