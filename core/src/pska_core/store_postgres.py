@@ -29,6 +29,9 @@ from pska_core.models import (
     Job,
     JobEvent,
     AuditEvent,
+    KnowledgeBase,
+    KnowledgeBaseSource,
+    KnowledgeBaseSourceItem,
     KnowledgeClaim,
     KnowledgeSource,
     KnowledgeTopic,
@@ -300,6 +303,7 @@ class PostgresKnowledgeStore:
                 ),
             }
             if hard_delete:
+                conn.execute("delete from knowledge_base_source_items where tenant_id = %s and source_item_id = any(%s)", (tenant, ids))
                 conn.execute(
                     """
                     delete from offline_index_states
@@ -329,6 +333,14 @@ class PostgresKnowledgeStore:
                     """,  # noqa: S608 - fixed table allowlist.
                     (lifecycle_status, deleted_at, deleted_by, delete_reason, tenant, ids),
                 )
+            conn.execute(
+                """
+                update knowledge_base_source_items
+                set membership_status = %s
+                where tenant_id = %s and source_item_id = any(%s)
+                """,
+                ("active" if lifecycle_status == "active" else "archived", tenant, ids),
+            )
             if lifecycle_status != "active":
                 conn.execute(
                     """
@@ -469,6 +481,551 @@ class PostgresKnowledgeStore:
                 params,
             ).fetchall()
         return [self._knowledge_source_from_row(row) for row in rows]
+
+    def upsert_knowledge_base(self, knowledge_base: KnowledgeBase) -> KnowledgeBase:
+        if not knowledge_base.slug:
+            knowledge_base.slug = _knowledge_base_slug(knowledge_base.name)
+        if not knowledge_base.created_by_user_id:
+            knowledge_base.created_by_user_id = knowledge_base.owner_user_id
+        with self.connect() as conn:
+            if knowledge_base.is_default:
+                conn.execute(
+                    """
+                    update knowledge_bases
+                    set is_default = false,
+                        updated_at = now()
+                    where tenant_id = %s
+                      and owner_user_id = %s
+                      and knowledge_base_id <> %s
+                      and is_default = true
+                    """,
+                    (knowledge_base.tenant_id, knowledge_base.owner_user_id, knowledge_base.knowledge_base_id),
+                )
+            row = conn.execute(
+                """
+                insert into knowledge_bases(
+                    knowledge_base_id, tenant_id, owner_user_id, created_by_user_id,
+                    slug, name, description, kb_type, status, visibility, visible_team_ids,
+                    default_space_id, is_default, pinned_at, config, readiness, deleted_at
+                )
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                on conflict (knowledge_base_id) do update
+                set owner_user_id = excluded.owner_user_id,
+                    created_by_user_id = excluded.created_by_user_id,
+                    slug = excluded.slug,
+                    name = excluded.name,
+                    description = excluded.description,
+                    kb_type = excluded.kb_type,
+                    status = excluded.status,
+                    visibility = excluded.visibility,
+                    visible_team_ids = excluded.visible_team_ids,
+                    default_space_id = excluded.default_space_id,
+                    is_default = excluded.is_default,
+                    pinned_at = excluded.pinned_at,
+                    config = excluded.config,
+                    readiness = excluded.readiness,
+                    deleted_at = excluded.deleted_at,
+                    tenant_id = excluded.tenant_id,
+                    updated_at = now()
+                returning *
+                """,
+                (
+                    knowledge_base.knowledge_base_id,
+                    knowledge_base.tenant_id,
+                    knowledge_base.owner_user_id,
+                    knowledge_base.created_by_user_id,
+                    knowledge_base.slug,
+                    knowledge_base.name,
+                    knowledge_base.description,
+                    knowledge_base.kb_type,
+                    knowledge_base.status,
+                    knowledge_base.visibility.value,
+                    knowledge_base.visible_team_ids,
+                    knowledge_base.default_space_id,
+                    knowledge_base.is_default,
+                    knowledge_base.pinned_at,
+                    Jsonb(to_jsonable(knowledge_base.config)),
+                    Jsonb(to_jsonable(knowledge_base.readiness)),
+                    knowledge_base.deleted_at,
+                ),
+            ).fetchone()
+        return self._knowledge_base_from_row(row)
+
+    def ensure_default_knowledge_base(
+        self,
+        *,
+        tenant_id: str,
+        owner_user_id: str,
+        created_by_user_id: str | None = None,
+        default_space_id: str | None = None,
+    ) -> KnowledgeBase:
+        tenant_id = tenant_id or DEFAULT_TENANT_ID
+        knowledge_base_id = _default_knowledge_base_id(tenant_id, owner_user_id)
+        with self.connect() as conn:
+            existing = conn.execute(
+                """
+                select *
+                from knowledge_bases
+                where tenant_id = %s
+                  and owner_user_id = %s
+                  and (knowledge_base_id = %s or slug = 'default')
+                order by is_default desc, created_at
+                limit 1
+                """,
+                (tenant_id, owner_user_id, knowledge_base_id),
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    """
+                    update knowledge_bases
+                    set is_default = false,
+                        updated_at = now()
+                    where tenant_id = %s
+                      and owner_user_id = %s
+                      and knowledge_base_id <> %s
+                      and is_default = true
+                    """,
+                    (tenant_id, owner_user_id, existing["knowledge_base_id"]),
+                )
+                row = conn.execute(
+                    """
+                    update knowledge_bases
+                    set is_default = true,
+                        status = 'active',
+                        deleted_at = null,
+                        default_space_id = coalesce(%s, default_space_id),
+                        updated_at = now()
+                    where knowledge_base_id = %s
+                      and tenant_id = %s
+                      and owner_user_id = %s
+                    returning *
+                    """,
+                    (default_space_id, existing["knowledge_base_id"], tenant_id, owner_user_id),
+                ).fetchone()
+                return self._knowledge_base_from_row(row)
+
+            conn.execute(
+                """
+                update knowledge_bases
+                set is_default = false,
+                    updated_at = now()
+                where tenant_id = %s
+                  and owner_user_id = %s
+                  and is_default = true
+                """,
+                (tenant_id, owner_user_id),
+            )
+            row = conn.execute(
+                """
+                insert into knowledge_bases(
+                    knowledge_base_id, tenant_id, owner_user_id, created_by_user_id,
+                    slug, name, description, kb_type, status, visibility, default_space_id,
+                    is_default, config, readiness
+                )
+                values (%s, %s, %s, %s, 'default', 'Default Knowledge Base',
+                        'System-created default knowledge base.', 'document', 'active',
+                        'private', %s, true, '{}'::jsonb, '{}'::jsonb)
+                returning *
+                """,
+                (
+                    knowledge_base_id,
+                    tenant_id,
+                    owner_user_id,
+                    created_by_user_id or owner_user_id,
+                    default_space_id,
+                ),
+            ).fetchone()
+        return self._knowledge_base_from_row(row)
+
+    def get_knowledge_base(
+        self,
+        knowledge_base_id: str,
+        *,
+        tenant_id: str | None = None,
+        owner_user_id: str | None = None,
+        include_deleted: bool = False,
+    ) -> KnowledgeBase:
+        clauses = ["knowledge_base_id = %s"]
+        params: list[Any] = [knowledge_base_id]
+        if tenant_id:
+            clauses.append("tenant_id = %s")
+            params.append(tenant_id)
+        if owner_user_id:
+            clauses.append("owner_user_id = %s")
+            params.append(owner_user_id)
+        if not include_deleted:
+            clauses.append("deleted_at is null")
+        with self.connect() as conn:
+            row = conn.execute(f"select * from knowledge_bases where {' and '.join(clauses)}", params).fetchone()
+        if not row:
+            raise KeyError(knowledge_base_id)
+        return self._knowledge_base_from_row(row)
+
+    def list_knowledge_bases(
+        self,
+        *,
+        tenant_id: str | None = None,
+        owner_user_id: str | None = None,
+        include_deleted: bool = False,
+    ) -> list[KnowledgeBase]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if tenant_id:
+            clauses.append("tenant_id = %s")
+            params.append(tenant_id)
+        if owner_user_id:
+            clauses.append("owner_user_id = %s")
+            params.append(owner_user_id)
+        if not include_deleted:
+            clauses.append("deleted_at is null")
+        where = " where " + " and ".join(clauses) if clauses else ""
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                select *
+                from knowledge_bases
+                {where}
+                order by (pinned_at is not null) desc,
+                         coalesce(pinned_at, updated_at) desc,
+                         updated_at desc,
+                         name
+                """,  # noqa: S608 - fixed clauses only.
+                params,
+            ).fetchall()
+        return [self._knowledge_base_from_row(row) for row in rows]
+
+    def archive_knowledge_base(self, knowledge_base_id: str, *, tenant_id: str, owner_user_id: str) -> KnowledgeBase:
+        knowledge_base = self.get_knowledge_base(knowledge_base_id, tenant_id=tenant_id, owner_user_id=owner_user_id)
+        if knowledge_base.is_default:
+            raise ValueError("Default knowledge base cannot be archived")
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                update knowledge_bases
+                set status = 'archived',
+                    deleted_at = now(),
+                    updated_at = now()
+                where knowledge_base_id = %s
+                  and tenant_id = %s
+                  and owner_user_id = %s
+                  and is_default = false
+                returning *
+                """,
+                (knowledge_base_id, tenant_id, owner_user_id),
+            ).fetchone()
+            conn.execute(
+                """
+                update knowledge_base_sources
+                set membership_status = 'archived',
+                    metadata = coalesce(metadata, '{}'::jsonb) || %s
+                where knowledge_base_id = %s
+                  and tenant_id = %s
+                  and membership_status = 'active'
+                """,
+                (Jsonb({"archived_by_knowledge_base": knowledge_base_id}), knowledge_base_id, tenant_id),
+            )
+            conn.execute(
+                """
+                update knowledge_base_source_items
+                set membership_status = 'archived',
+                    metadata = coalesce(metadata, '{}'::jsonb) || %s
+                where knowledge_base_id = %s
+                  and tenant_id = %s
+                  and membership_status = 'active'
+                """,
+                (Jsonb({"archived_by_knowledge_base": knowledge_base_id}), knowledge_base_id, tenant_id),
+            )
+        if not row:
+            raise KeyError(knowledge_base_id)
+        return self._knowledge_base_from_row(row)
+
+    def restore_knowledge_base(self, knowledge_base_id: str, *, tenant_id: str, owner_user_id: str) -> KnowledgeBase:
+        self.get_knowledge_base(
+            knowledge_base_id,
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            include_deleted=True,
+        )
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                update knowledge_bases
+                set status = 'active',
+                    deleted_at = null,
+                    updated_at = now()
+                where knowledge_base_id = %s
+                  and tenant_id = %s
+                  and owner_user_id = %s
+                returning *
+                """,
+                (knowledge_base_id, tenant_id, owner_user_id),
+            ).fetchone()
+            conn.execute(
+                """
+                update knowledge_base_sources
+                set membership_status = 'active',
+                    metadata = metadata - 'archived_by_knowledge_base'
+                where knowledge_base_id = %s
+                  and tenant_id = %s
+                  and metadata ->> 'archived_by_knowledge_base' = %s
+                """,
+                (knowledge_base_id, tenant_id, knowledge_base_id),
+            )
+            conn.execute(
+                """
+                update knowledge_base_source_items
+                set membership_status = 'active',
+                    metadata = metadata - 'archived_by_knowledge_base'
+                where knowledge_base_id = %s
+                  and tenant_id = %s
+                  and metadata ->> 'archived_by_knowledge_base' = %s
+                """,
+                (knowledge_base_id, tenant_id, knowledge_base_id),
+            )
+        if not row:
+            raise KeyError(knowledge_base_id)
+        return self._knowledge_base_from_row(row)
+
+    def add_knowledge_base_source(self, membership: KnowledgeBaseSource) -> KnowledgeBaseSource:
+        with self.connect() as conn:
+            exists = conn.execute(
+                """
+                select 1
+                from knowledge_bases kb
+                join knowledge_sources ks
+                  on ks.tenant_id = kb.tenant_id
+                 and ks.owner_user_id = kb.owner_user_id
+                 and ks.knowledge_source_id = %s
+                where kb.knowledge_base_id = %s
+                  and kb.tenant_id = %s
+                  and kb.owner_user_id = %s
+                  and kb.deleted_at is null
+                """,
+                (
+                    membership.knowledge_source_id,
+                    membership.knowledge_base_id,
+                    membership.tenant_id,
+                    membership.owner_user_id,
+                ),
+            ).fetchone()
+            if not exists:
+                raise KeyError(membership.knowledge_source_id)
+            row = conn.execute(
+                """
+                insert into knowledge_base_sources(
+                    knowledge_base_id, knowledge_source_id, tenant_id, owner_user_id,
+                    membership_status, added_by_user_id, added_at, metadata
+                )
+                values (%s, %s, %s, %s, %s, %s, %s, %s)
+                on conflict (knowledge_base_id, knowledge_source_id) do update
+                set tenant_id = excluded.tenant_id,
+                    owner_user_id = excluded.owner_user_id,
+                    membership_status = excluded.membership_status,
+                    added_by_user_id = excluded.added_by_user_id,
+                    metadata = excluded.metadata
+                returning *
+                """,
+                (
+                    membership.knowledge_base_id,
+                    membership.knowledge_source_id,
+                    membership.tenant_id,
+                    membership.owner_user_id,
+                    membership.membership_status,
+                    membership.added_by_user_id,
+                    membership.added_at,
+                    Jsonb(to_jsonable(membership.metadata)),
+                ),
+            ).fetchone()
+        return self._knowledge_base_source_from_row(row)
+
+    def list_knowledge_base_ids_for_source(
+        self,
+        knowledge_source_id: str,
+        *,
+        tenant_id: str,
+        owner_user_id: str | None = None,
+        active_only: bool = True,
+    ) -> set[str]:
+        clauses = ["kbs.tenant_id = %s", "kbs.knowledge_source_id = %s"]
+        params: list[Any] = [tenant_id, knowledge_source_id]
+        if owner_user_id:
+            clauses.append("kbs.owner_user_id = %s")
+            params.append(owner_user_id)
+        if active_only:
+            clauses.append("kbs.membership_status = 'active'")
+            clauses.append("kb.deleted_at is null")
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                select distinct kbs.knowledge_base_id
+                from knowledge_base_sources kbs
+                join knowledge_bases kb
+                  on kb.knowledge_base_id = kbs.knowledge_base_id
+                 and kb.tenant_id = kbs.tenant_id
+                where {' and '.join(clauses)}
+                """,  # noqa: S608 - fixed clauses only.
+                params,
+            ).fetchall()
+        return {str(row["knowledge_base_id"]) for row in rows}
+
+    def add_knowledge_base_source_item(self, membership: KnowledgeBaseSourceItem) -> KnowledgeBaseSourceItem:
+        with self.connect() as conn:
+            exists = conn.execute(
+                """
+                select 1
+                from knowledge_bases kb
+                join source_items si
+                  on si.tenant_id = kb.tenant_id
+                 and si.owner_user_id = kb.owner_user_id
+                 and si.source_item_id = %s
+                where kb.knowledge_base_id = %s
+                  and kb.tenant_id = %s
+                  and kb.owner_user_id = %s
+                  and kb.deleted_at is null
+                """,
+                (
+                    membership.source_item_id,
+                    membership.knowledge_base_id,
+                    membership.tenant_id,
+                    membership.owner_user_id,
+                ),
+            ).fetchone()
+            if not exists:
+                raise KeyError(membership.source_item_id)
+            row = conn.execute(
+                """
+                insert into knowledge_base_source_items(
+                    knowledge_base_id, source_item_id, tenant_id, owner_user_id,
+                    membership_type, membership_status, added_by_user_id, added_at, metadata
+                )
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                on conflict (knowledge_base_id, source_item_id) do update
+                set tenant_id = excluded.tenant_id,
+                    owner_user_id = excluded.owner_user_id,
+                    membership_type = excluded.membership_type,
+                    membership_status = excluded.membership_status,
+                    added_by_user_id = excluded.added_by_user_id,
+                    metadata = excluded.metadata
+                returning *
+                """,
+                (
+                    membership.knowledge_base_id,
+                    membership.source_item_id,
+                    membership.tenant_id,
+                    membership.owner_user_id,
+                    membership.membership_type,
+                    membership.membership_status,
+                    membership.added_by_user_id,
+                    membership.added_at,
+                    Jsonb(to_jsonable(membership.metadata)),
+                ),
+            ).fetchone()
+        return self._knowledge_base_source_item_from_row(row)
+
+    def archive_knowledge_base_source_items(
+        self,
+        knowledge_base_id: str,
+        source_item_ids: list[str],
+        *,
+        tenant_id: str,
+        owner_user_id: str,
+        actor_user_id: str,
+        reason: str,
+    ) -> dict[str, int]:
+        self.get_knowledge_base(knowledge_base_id, tenant_id=tenant_id, owner_user_id=owner_user_id)
+        if not source_item_ids:
+            return {"knowledge_base_source_items": 0}
+        metadata = {
+            "archived_by_user_id": actor_user_id,
+            "archive_reason": reason,
+            "archived_at": utc_now().isoformat(),
+        }
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                update knowledge_base_source_items
+                set membership_status = 'archived',
+                    metadata = coalesce(metadata, '{}'::jsonb) || %s
+                where knowledge_base_id = %s
+                  and tenant_id = %s
+                  and owner_user_id = %s
+                  and source_item_id = any(%s)
+                  and membership_status = 'active'
+                returning source_item_id
+                """,
+                (Jsonb(metadata), knowledge_base_id, tenant_id, owner_user_id, source_item_ids),
+            ).fetchall()
+        return {"knowledge_base_source_items": len(rows)}
+
+    def list_knowledge_base_ids_for_source_item(
+        self,
+        source_item_id: str,
+        *,
+        tenant_id: str,
+        owner_user_id: str | None = None,
+        active_only: bool = True,
+    ) -> set[str]:
+        clauses = ["kbsi.tenant_id = %s", "kbsi.source_item_id = %s"]
+        params: list[Any] = [tenant_id, source_item_id]
+        if owner_user_id:
+            clauses.append("kbsi.owner_user_id = %s")
+            params.append(owner_user_id)
+        if active_only:
+            clauses.append("kbsi.membership_status = 'active'")
+            clauses.append("kb.deleted_at is null")
+            clauses.append("si.lifecycle_status = 'active'")
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                select distinct kbsi.knowledge_base_id
+                from knowledge_base_source_items kbsi
+                join knowledge_bases kb
+                  on kb.knowledge_base_id = kbsi.knowledge_base_id
+                 and kb.tenant_id = kbsi.tenant_id
+                join source_items si
+                  on si.source_item_id = kbsi.source_item_id
+                 and si.tenant_id = kbsi.tenant_id
+                where {' and '.join(clauses)}
+                """,  # noqa: S608 - fixed clauses only.
+                params,
+            ).fetchall()
+        return {str(row["knowledge_base_id"]) for row in rows}
+
+    def list_knowledge_base_source_item_ids(
+        self,
+        knowledge_base_ids: set[str],
+        *,
+        tenant_id: str,
+        owner_user_id: str | None = None,
+        active_only: bool = True,
+    ) -> set[str]:
+        if not knowledge_base_ids:
+            return set()
+        clauses = ["kbsi.tenant_id = %s", "kbsi.knowledge_base_id = any(%s)"]
+        params: list[Any] = [tenant_id, list(knowledge_base_ids)]
+        if owner_user_id:
+            clauses.append("kbsi.owner_user_id = %s")
+            params.append(owner_user_id)
+        if active_only:
+            clauses.append("kbsi.membership_status = 'active'")
+            clauses.append("si.lifecycle_status = 'active'")
+            clauses.append("kb.deleted_at is null")
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                select distinct kbsi.source_item_id
+                from knowledge_base_source_items kbsi
+                join knowledge_bases kb
+                  on kb.knowledge_base_id = kbsi.knowledge_base_id
+                 and kb.tenant_id = kbsi.tenant_id
+                join source_items si
+                  on si.source_item_id = kbsi.source_item_id
+                 and si.tenant_id = kbsi.tenant_id
+                where {' and '.join(clauses)}
+                """,  # noqa: S608 - fixed clauses only.
+                params,
+            ).fetchall()
+        return {str(row["source_item_id"]) for row in rows}
 
     def add_sync_run(self, run: SyncRun) -> SyncRun:
         with self.connect() as conn:
@@ -3046,6 +3603,9 @@ class PostgresKnowledgeStore:
             "jobs",
             "job_events",
             "knowledge_sources",
+            "knowledge_bases",
+            "knowledge_base_sources",
+            "knowledge_base_source_items",
             "sync_runs",
             "processing_spans",
             "connector_states",
@@ -3239,6 +3799,54 @@ class PostgresKnowledgeStore:
             last_error=row.get("last_error"),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+            tenant_id=row.get("tenant_id") or DEFAULT_TENANT_ID,
+        )
+
+    def _knowledge_base_from_row(self, row: dict[str, Any]) -> KnowledgeBase:
+        return KnowledgeBase(
+            knowledge_base_id=row["knowledge_base_id"],
+            owner_user_id=row["owner_user_id"],
+            name=row["name"],
+            created_by_user_id=row.get("created_by_user_id") or row["owner_user_id"],
+            slug=row.get("slug") or "",
+            description=row.get("description") or "",
+            kb_type=row.get("kb_type") or "document",
+            status=row.get("status") or "active",
+            visibility=Visibility(row.get("visibility") or "private"),
+            visible_team_ids=list(row.get("visible_team_ids") or []),
+            default_space_id=row.get("default_space_id"),
+            is_default=bool(row.get("is_default")),
+            pinned_at=row.get("pinned_at"),
+            config=dict(row.get("config") or {}),
+            readiness=dict(row.get("readiness") or {}),
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+            deleted_at=row.get("deleted_at"),
+            tenant_id=row.get("tenant_id") or DEFAULT_TENANT_ID,
+        )
+
+    def _knowledge_base_source_from_row(self, row: dict[str, Any]) -> KnowledgeBaseSource:
+        return KnowledgeBaseSource(
+            knowledge_base_id=row["knowledge_base_id"],
+            knowledge_source_id=row["knowledge_source_id"],
+            owner_user_id=row["owner_user_id"],
+            added_by_user_id=row["added_by_user_id"],
+            membership_status=row.get("membership_status") or "active",
+            metadata=dict(row.get("metadata") or {}),
+            added_at=row["added_at"],
+            tenant_id=row.get("tenant_id") or DEFAULT_TENANT_ID,
+        )
+
+    def _knowledge_base_source_item_from_row(self, row: dict[str, Any]) -> KnowledgeBaseSourceItem:
+        return KnowledgeBaseSourceItem(
+            knowledge_base_id=row["knowledge_base_id"],
+            source_item_id=row["source_item_id"],
+            owner_user_id=row["owner_user_id"],
+            added_by_user_id=row["added_by_user_id"],
+            membership_type=row.get("membership_type") or "manual",
+            membership_status=row.get("membership_status") or "active",
+            metadata=dict(row.get("metadata") or {}),
+            added_at=row["added_at"],
             tenant_id=row.get("tenant_id") or DEFAULT_TENANT_ID,
         )
 
@@ -3588,6 +4196,16 @@ def _identity_handle(value: str, *, max_length: int = 80) -> str:
         return cleaned
     digest = hashlib.sha1(value.encode("utf-8")).hexdigest()[:10]
     return f"{cleaned[: max(1, max_length - 11)]}_{digest}"
+
+
+def _default_knowledge_base_id(tenant_id: str, owner_user_id: str) -> str:
+    digest = hashlib.md5(f"{tenant_id}:{owner_user_id}".encode("utf-8")).hexdigest()[:24]  # noqa: S324 - stable local id, not security.
+    return f"kb_default_{digest}"
+
+
+def _knowledge_base_slug(name: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "-", str(name or "").strip().casefold()).strip("-")
+    return normalized[:80] or "knowledge-base"
 
 
 def _retry_delay_seconds(payload: dict[str, Any], attempts: int) -> int:

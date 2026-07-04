@@ -65,6 +65,7 @@ import {
   applyReviewItem,
   approveReviewItem,
   cleanupKnowledgeSource,
+  createKnowledgeBase,
   composeWritingDraft,
   createAskConversation,
   createEvidenceBrief,
@@ -74,10 +75,13 @@ import {
   createWritingEdge,
   createWritingNode,
   deleteAskConversation,
+  deleteKnowledgeBase,
+  deleteWorkspaceDocuments,
   deleteWritingBoard,
   deleteWritingNode,
   ignoreDiscovery,
-  deleteWorkspaceDocuments,
+  listKnowledgeBases,
+  linkWorkspaceDocuments,
   loadCorpusContext,
   loadCorpusData,
   loadDigestLogs,
@@ -94,17 +98,23 @@ import {
   loadToday,
   loadWritingBoard,
   listWritingBoards,
+  moveWorkspaceDocuments,
+  patchKnowledgeBase,
   patchWritingBoard,
   patchWritingNode,
+  pinKnowledgeBase,
   previewChunking,
   previewKnowledgeSource,
   recordWorkspaceActivity,
   rejectReviewItem,
+  restoreKnowledgeBase,
   retryDigestJob,
   runDigestNow,
   snoozeDiscovery,
+  searchKnowledgeBases,
   syncKnowledgeSources,
   suggestWritingQuestions,
+  unpinKnowledgeBase,
   updatePromptProfiles,
   uploadWorkspaceSource
 } from "./api";
@@ -117,6 +127,8 @@ import type {
   ConsoleSourcesResponse,
   DigestNowResponse,
   DigestLogsResponse,
+  KnowledgeBase,
+  KnowledgeBaseSearchResponse,
   KnowledgeSourceCleanupResponse,
   AskConversation,
   AskMessage,
@@ -170,6 +182,9 @@ export default function App() {
     tenantId,
     userId,
     representedUserId,
+    currentKnowledgeBaseId,
+    selectedKnowledgeBaseIds,
+    knowledgeBaseScopeMode,
     brain,
     setMode,
     toggleLeft,
@@ -179,6 +194,9 @@ export default function App() {
     setTenantId,
     setUserId,
     setRepresentedUserId,
+    setCurrentKnowledgeBaseId,
+    setSelectedKnowledgeBaseIds,
+    setKnowledgeBaseScopeMode,
     setBrain,
     clearIdentity
   } = useWorkspaceStore();
@@ -191,12 +209,34 @@ export default function App() {
     }),
     [serviceToken, tenantId, userId, representedUserId]
   );
+  const knowledgeBasesQuery = useQuery({
+    queryKey: ["knowledge-bases", pskaIdentity],
+    queryFn: () => listKnowledgeBases(pskaIdentity),
+    retry: 1
+  });
+  const knowledgeBases = knowledgeBasesQuery.data?.knowledge_bases || [];
+  const defaultKnowledgeBaseId = knowledgeBasesQuery.data?.default_knowledge_base_id || knowledgeBases.find((kb) => kb.is_default)?.knowledge_base_id || "";
+  const currentKnowledgeBase = knowledgeBases.find((kb) => kb.knowledge_base_id === currentKnowledgeBaseId) || knowledgeBases.find((kb) => kb.knowledge_base_id === defaultKnowledgeBaseId) || knowledgeBases[0];
   const lastAnalyzedText = useRef(documentText);
   const lastEditedActivityAt = useRef(0);
   const [pinStatus, setPinStatus] = useState<"idle" | "saved" | "failed">("idle");
   const [gatewayAuthenticated, setGatewayAuthenticated] = useState<boolean | null>(null);
   const [activeAskConversationId, setActiveAskConversationId] = useState("");
   const activeMode: WorkspaceMode = mode === "document" || mode === "canvas" ? "writing" : mode;
+
+  useEffect(() => {
+    if (knowledgeBases.length === 0) {
+      return;
+    }
+    const currentExists = knowledgeBases.some((kb) => kb.knowledge_base_id === currentKnowledgeBaseId);
+    const nextId = currentExists ? currentKnowledgeBaseId : defaultKnowledgeBaseId || knowledgeBases[0]?.knowledge_base_id || "";
+    if (nextId && nextId !== currentKnowledgeBaseId) {
+      setCurrentKnowledgeBaseId(nextId);
+    }
+    if (knowledgeBaseScopeMode === "current" && nextId && selectedKnowledgeBaseIds[0] !== nextId) {
+      setSelectedKnowledgeBaseIds([nextId]);
+    }
+  }, [currentKnowledgeBaseId, defaultKnowledgeBaseId, knowledgeBaseScopeMode, knowledgeBases, selectedKnowledgeBaseIds, setCurrentKnowledgeBaseId, setSelectedKnowledgeBaseIds]);
 
   useEffect(() => {
     let cancelled = false;
@@ -379,8 +419,16 @@ export default function App() {
         collapsed={leftCollapsed}
         mode={activeMode}
         serviceToken={pskaIdentity}
+        knowledgeBases={knowledgeBases}
+        currentKnowledgeBaseId={currentKnowledgeBase?.knowledge_base_id || currentKnowledgeBaseId}
+        knowledgeBasesLoading={knowledgeBasesQuery.isLoading}
         activeAskConversationId={activeAskConversationId}
         onAskConversationChange={setActiveAskConversationId}
+        onKnowledgeBaseChange={(knowledgeBaseId) => {
+          setCurrentKnowledgeBaseId(knowledgeBaseId);
+          setKnowledgeBaseScopeMode("current");
+          setMode("corpus");
+        }}
         onModeChange={setMode}
         onToggle={toggleLeft}
       />
@@ -392,7 +440,14 @@ export default function App() {
           userId={userId}
           representedUserId={representedUserId}
           gatewayAuthenticated={gatewayAuthenticated}
+          knowledgeBases={knowledgeBases}
+          currentKnowledgeBaseId={currentKnowledgeBase?.knowledge_base_id || currentKnowledgeBaseId}
+          scopeMode={knowledgeBaseScopeMode}
+          selectedKnowledgeBaseIds={selectedKnowledgeBaseIds}
           onModeChange={setMode}
+          onKnowledgeBaseChange={setCurrentKnowledgeBaseId}
+          onSelectedKnowledgeBaseIdsChange={setSelectedKnowledgeBaseIds}
+          onScopeModeChange={setKnowledgeBaseScopeMode}
           onTokenChange={setServiceToken}
           onTenantChange={setTenantId}
           onUserChange={setUserId}
@@ -403,19 +458,55 @@ export default function App() {
         {activeMode === "today" ? (
           <TodayWorkspace
             serviceToken={pskaIdentity}
+            knowledgeBases={knowledgeBases}
+            currentKnowledgeBase={currentKnowledgeBase}
+            scopeMode={knowledgeBaseScopeMode}
+            selectedKnowledgeBaseIds={selectedKnowledgeBaseIds}
             activeConversationId={activeAskConversationId}
             onActiveConversationChange={setActiveAskConversationId}
             onOpenWorkspace={setMode}
             setBrain={setBrain}
           />
         ) : activeMode === "review" ? (
-          <ReviewCenter serviceToken={pskaIdentity} onPinCurrent={pinCurrentWorkspace} pinStatus={pinStatus} />
+          <ReviewCenter
+            serviceToken={pskaIdentity}
+            currentKnowledgeBase={currentKnowledgeBase}
+            scopeMode={knowledgeBaseScopeMode}
+            selectedKnowledgeBaseIds={selectedKnowledgeBaseIds}
+            onPinCurrent={pinCurrentWorkspace}
+            pinStatus={pinStatus}
+          />
         ) : activeMode === "graph" ? (
-          <GraphWorkspace serviceToken={pskaIdentity} onPinCurrent={pinCurrentWorkspace} pinStatus={pinStatus} />
+          <GraphWorkspace
+            serviceToken={pskaIdentity}
+            currentKnowledgeBase={currentKnowledgeBase}
+            scopeMode={knowledgeBaseScopeMode}
+            selectedKnowledgeBaseIds={selectedKnowledgeBaseIds}
+            onPinCurrent={pinCurrentWorkspace}
+            pinStatus={pinStatus}
+          />
         ) : activeMode === "corpus" ? (
-          <CorpusWorkspace serviceToken={pskaIdentity} onOpenWorkspace={setMode} onPinCurrent={pinCurrentWorkspace} pinStatus={pinStatus} setBrain={setBrain} />
+          <CorpusWorkspace
+            serviceToken={pskaIdentity}
+            knowledgeBases={knowledgeBases}
+            currentKnowledgeBase={currentKnowledgeBase}
+            currentKnowledgeBaseId={currentKnowledgeBase?.knowledge_base_id || currentKnowledgeBaseId}
+            knowledgeBasesLoading={knowledgeBasesQuery.isLoading}
+            onKnowledgeBaseChange={setCurrentKnowledgeBaseId}
+            onKnowledgeBasesRefresh={() => knowledgeBasesQuery.refetch()}
+            onOpenWorkspace={setMode}
+            setBrain={setBrain}
+          />
         ) : activeMode === "writing" ? (
-          <WritingWorkspace serviceToken={pskaIdentity} onPinCurrent={pinCurrentWorkspace} pinStatus={pinStatus} />
+          <WritingWorkspace
+            serviceToken={pskaIdentity}
+            knowledgeBases={knowledgeBases}
+            currentKnowledgeBase={currentKnowledgeBase}
+            scopeMode={knowledgeBaseScopeMode}
+            selectedKnowledgeBaseIds={selectedKnowledgeBaseIds}
+            onPinCurrent={pinCurrentWorkspace}
+            pinStatus={pinStatus}
+          />
         ) : (
           <CanvasWorkspace brain={brain} onPinCurrent={pinCurrentWorkspace} pinStatus={pinStatus} />
         )}
@@ -429,16 +520,24 @@ function LeftSidebar({
   collapsed,
   mode,
   serviceToken,
+  knowledgeBases,
+  currentKnowledgeBaseId,
+  knowledgeBasesLoading,
   activeAskConversationId,
   onAskConversationChange,
+  onKnowledgeBaseChange,
   onModeChange,
   onToggle
 }: {
   collapsed: boolean;
   mode: WorkspaceMode;
   serviceToken: PSKAAuth;
+  knowledgeBases: KnowledgeBase[];
+  currentKnowledgeBaseId: string;
+  knowledgeBasesLoading: boolean;
   activeAskConversationId: string;
   onAskConversationChange: (conversationId: string) => void;
+  onKnowledgeBaseChange: (knowledgeBaseId: string) => void;
   onModeChange: (mode: WorkspaceMode) => void;
   onToggle: () => void;
 }) {
@@ -454,7 +553,8 @@ function LeftSidebar({
   async function createSidebarConversation() {
     setContextMessage("");
     try {
-      const payload = await createAskConversation(serviceToken, "Ask PSKA");
+      const scope = currentKnowledgeBaseId ? { mode: "hard", knowledge_base_ids: [currentKnowledgeBaseId] } : undefined;
+      const payload = await createAskConversation(serviceToken, "Ask PSKA", { scope });
       const conversationId = payload.conversation?.conversation_id || "";
       if (conversationId) {
         onAskConversationChange(conversationId);
@@ -503,11 +603,15 @@ function LeftSidebar({
       {!collapsed && (
         <SidebarContextTree
           mode={mode}
+          knowledgeBases={knowledgeBases}
+          currentKnowledgeBaseId={currentKnowledgeBaseId}
+          knowledgeBasesLoading={knowledgeBasesLoading}
           conversations={conversations}
           activeAskConversationId={activeAskConversationId}
           loading={askConversationsQuery.isLoading}
           message={contextMessage}
           onNewConversation={() => void createSidebarConversation()}
+          onSelectKnowledgeBase={onKnowledgeBaseChange}
           onSelectConversation={(conversationId) => {
             onAskConversationChange(conversationId);
             onModeChange("today");
@@ -522,21 +626,29 @@ function LeftSidebar({
 
 function SidebarContextTree({
   mode,
+  knowledgeBases,
+  currentKnowledgeBaseId,
+  knowledgeBasesLoading,
   conversations,
   activeAskConversationId,
   loading,
   message,
   onNewConversation,
+  onSelectKnowledgeBase,
   onSelectConversation,
   onDeleteConversation,
   onModeChange
 }: {
   mode: WorkspaceMode;
+  knowledgeBases: KnowledgeBase[];
+  currentKnowledgeBaseId: string;
+  knowledgeBasesLoading: boolean;
   conversations: AskConversation[];
   activeAskConversationId: string;
   loading: boolean;
   message: string;
   onNewConversation: () => void;
+  onSelectKnowledgeBase: (knowledgeBaseId: string) => void;
   onSelectConversation: (conversationId: string) => void;
   onDeleteConversation: (conversationId: string) => void;
   onModeChange: (mode: WorkspaceMode) => void;
@@ -553,31 +665,37 @@ function SidebarContextTree({
         {loading ? <span>正在加载对话...</span> : null}
         {!loading && conversations.length === 0 ? <span>还没有 Ask PSKA 对话。</span> : null}
         <div className="context-thread-list">
-          {conversations.slice(0, 10).map((conversation) => (
-            <div
-              className={`context-item ${conversation.conversation_id === activeAskConversationId ? "active" : ""}`}
-              key={conversation.conversation_id}
-            >
-              <button
-                className="context-item-main"
-                type="button"
-                onClick={() => conversation.conversation_id && onSelectConversation(conversation.conversation_id)}
-                title={conversation.title || conversation.conversation_id || "Ask PSKA"}
+          {conversations.slice(0, 10).map((conversation) => {
+            const scopeLabel = askConversationScopeLabel(conversation, knowledgeBases);
+            return (
+              <div
+                className={`context-item ${conversation.conversation_id === activeAskConversationId ? "active" : ""}`}
+                key={conversation.conversation_id}
               >
-                <MessageCircle size={14} />
-                <span>{trimText(conversation.title || conversation.conversation_id || "Ask PSKA", 30)}</span>
-              </button>
-              <button
-                className="context-item-delete"
-                type="button"
-                onClick={() => conversation.conversation_id && onDeleteConversation(conversation.conversation_id)}
-                title="删除对话"
-                aria-label="删除对话"
-              >
-                <Trash2 size={13} />
-              </button>
-            </div>
-          ))}
+                <button
+                  className="context-item-main"
+                  type="button"
+                  onClick={() => conversation.conversation_id && onSelectConversation(conversation.conversation_id)}
+                  title={conversation.title || conversation.conversation_id || "Ask PSKA"}
+                >
+                  <MessageCircle size={14} />
+                  <span className="context-item-text">
+                    <span>{trimText(conversation.title || conversation.conversation_id || "Ask PSKA", 30)}</span>
+                    {scopeLabel ? <small>{scopeLabel}</small> : null}
+                  </span>
+                </button>
+                <button
+                  className="context-item-delete"
+                  type="button"
+                  onClick={() => conversation.conversation_id && onDeleteConversation(conversation.conversation_id)}
+                  title="删除对话"
+                  aria-label="删除对话"
+                >
+                  <Trash2 size={13} />
+                </button>
+              </div>
+            );
+          })}
         </div>
         {message ? <small>{message}</small> : null}
       </div>
@@ -598,8 +716,32 @@ function SidebarContextTree({
   if (mode === "corpus") {
     return (
       <div className="tree context-tree">
-        <p>资料库</p>
-        <span>上传、粘贴、URL/RSS 和资料删除影响都在主区管理。</span>
+        <div className="context-tree-head">
+          <p>资料库</p>
+          <button className="context-action" type="button" onClick={() => onModeChange("corpus")} title="新建知识库在主区完成">
+            <Folder size={14} />
+          </button>
+        </div>
+        {knowledgeBasesLoading ? <span>正在加载知识库...</span> : null}
+        {!knowledgeBasesLoading && knowledgeBases.length === 0 ? <span>还没有知识库。</span> : null}
+        <div className="context-thread-list">
+          {knowledgeBases.slice(0, 12).map((knowledgeBase) => {
+            const badges = [knowledgeBase.pinned_at ? "置顶" : "", knowledgeBase.is_default ? "默认" : ""].filter(Boolean).join(" · ");
+            return (
+              <button
+                className={`context-item context-item-main ${knowledgeBase.knowledge_base_id === currentKnowledgeBaseId ? "active" : ""}`}
+                key={knowledgeBase.knowledge_base_id}
+                type="button"
+                onClick={() => onSelectKnowledgeBase(knowledgeBase.knowledge_base_id)}
+                title={knowledgeBase.name}
+              >
+                <BookOpen size={14} />
+                <span>{trimText(knowledgeBase.name || knowledgeBase.slug || "知识库", 28)}</span>
+                {badges ? <small>{badges}</small> : null}
+              </button>
+            );
+          })}
+        </div>
       </div>
     );
   }
@@ -647,7 +789,14 @@ function TopBar({
   userId,
   representedUserId,
   gatewayAuthenticated,
+  knowledgeBases,
+  currentKnowledgeBaseId,
+  scopeMode,
+  selectedKnowledgeBaseIds,
   onModeChange,
+  onKnowledgeBaseChange,
+  onSelectedKnowledgeBaseIdsChange,
+  onScopeModeChange,
   onTokenChange,
   onTenantChange,
   onUserChange,
@@ -661,7 +810,14 @@ function TopBar({
   userId: string;
   representedUserId: string;
   gatewayAuthenticated: boolean | null;
+  knowledgeBases: KnowledgeBase[];
+  currentKnowledgeBaseId: string;
+  scopeMode: "current" | "all" | "selected" | "attachments";
+  selectedKnowledgeBaseIds: string[];
   onModeChange: (mode: WorkspaceMode) => void;
+  onKnowledgeBaseChange: (knowledgeBaseId: string) => void;
+  onSelectedKnowledgeBaseIdsChange: (knowledgeBaseIds: string[]) => void;
+  onScopeModeChange: (mode: "current" | "all" | "selected" | "attachments") => void;
   onTokenChange: (serviceToken: string) => void;
   onTenantChange: (tenantId: string) => void;
   onUserChange: (userId: string) => void;
@@ -693,6 +849,15 @@ function TopBar({
           Review
         </button>
       </div>
+      <KnowledgeBaseScopeChip
+        knowledgeBases={knowledgeBases}
+        currentKnowledgeBaseId={currentKnowledgeBaseId}
+        scopeMode={scopeMode}
+        selectedKnowledgeBaseIds={selectedKnowledgeBaseIds}
+        onKnowledgeBaseChange={onKnowledgeBaseChange}
+        onSelectedKnowledgeBaseIdsChange={onSelectedKnowledgeBaseIdsChange}
+        onScopeModeChange={onScopeModeChange}
+      />
       {gatewayAuthenticated === false ? (
         <div className="identity-fields" aria-label="PSKA 身份上下文">
           <label className="token-field compact">
@@ -733,16 +898,120 @@ function TopBar({
   );
 }
 
+function KnowledgeBaseScopeChip({
+  knowledgeBases,
+  currentKnowledgeBaseId,
+  scopeMode,
+  selectedKnowledgeBaseIds,
+  onKnowledgeBaseChange,
+  onSelectedKnowledgeBaseIdsChange,
+  onScopeModeChange
+}: {
+  knowledgeBases: KnowledgeBase[];
+  currentKnowledgeBaseId: string;
+  scopeMode: "current" | "all" | "selected" | "attachments";
+  selectedKnowledgeBaseIds: string[];
+  onKnowledgeBaseChange: (knowledgeBaseId: string) => void;
+  onSelectedKnowledgeBaseIdsChange: (knowledgeBaseIds: string[]) => void;
+  onScopeModeChange: (mode: "current" | "all" | "selected" | "attachments") => void;
+}) {
+  const current = knowledgeBases.find((kb) => kb.knowledge_base_id === currentKnowledgeBaseId);
+  const selectedIds = selectedKnowledgeBaseIds.length ? selectedKnowledgeBaseIds : current?.knowledge_base_id ? [current.knowledge_base_id] : [];
+  const selectedIdSet = new Set(selectedIds);
+  const selectedLabel = scopeMode === "selected" && selectedIds.length > 0 ? `${selectedIds.length} 个` : "多选";
+
+  function updateSelectedKnowledgeBases(nextIds: string[]) {
+    const activeIds = Array.from(new Set(nextIds.filter((id) => knowledgeBases.some((kb) => kb.knowledge_base_id === id))));
+    onSelectedKnowledgeBaseIdsChange(activeIds);
+    if (activeIds.length === 0) {
+      onScopeModeChange("current");
+      return;
+    }
+    if (activeIds.length === 1) {
+      onKnowledgeBaseChange(activeIds[0]);
+    }
+    onScopeModeChange("selected");
+  }
+
+  function toggleSelectedKnowledgeBase(knowledgeBaseId: string, checked: boolean) {
+    const nextIds = checked ? [...selectedIds, knowledgeBaseId] : selectedIds.filter((id) => id !== knowledgeBaseId);
+    updateSelectedKnowledgeBases(nextIds);
+  }
+
+  return (
+    <div className="kb-scope-chip" aria-label="知识库范围">
+      <BookOpen size={15} />
+      <select
+        value={current?.knowledge_base_id || currentKnowledgeBaseId || ""}
+        onChange={(event) => {
+          onKnowledgeBaseChange(event.target.value);
+          onScopeModeChange("current");
+        }}
+        title="当前知识库"
+      >
+        {knowledgeBases.length === 0 ? <option value="">默认资料库</option> : null}
+        {knowledgeBases.map((knowledgeBase) => (
+          <option key={knowledgeBase.knowledge_base_id} value={knowledgeBase.knowledge_base_id}>
+            {knowledgeBase.name || knowledgeBase.slug || "知识库"}
+          </option>
+        ))}
+      </select>
+      <button
+        className={scopeMode === "all" ? "active" : ""}
+        type="button"
+        onClick={() => onScopeModeChange(scopeMode === "all" ? "current" : "all")}
+        title={scopeMode === "all" ? "切回当前知识库" : "查询全部资料库"}
+      >
+        {scopeMode === "all" ? "全部" : "当前"}
+      </button>
+      <details className="kb-scope-menu">
+        <summary className={scopeMode === "selected" ? "active" : ""} title="选择多个知识库">
+          <SlidersHorizontal size={14} />
+          {selectedLabel}
+        </summary>
+        <div className="kb-scope-menu-panel">
+          {knowledgeBases.map((knowledgeBase) => (
+            <label key={knowledgeBase.knowledge_base_id}>
+              <input
+                type="checkbox"
+                checked={selectedIdSet.has(knowledgeBase.knowledge_base_id)}
+                onChange={(event) => toggleSelectedKnowledgeBase(knowledgeBase.knowledge_base_id, event.target.checked)}
+              />
+              <span>{knowledgeBase.name || knowledgeBase.slug || "知识库"}</span>
+            </label>
+          ))}
+          <div className="kb-scope-menu-actions">
+            <button type="button" onClick={() => updateSelectedKnowledgeBases(knowledgeBases.map((knowledgeBase) => knowledgeBase.knowledge_base_id))}>
+              全选
+            </button>
+            <button type="button" onClick={() => updateSelectedKnowledgeBases([])}>
+              清空
+            </button>
+          </div>
+        </div>
+      </details>
+    </div>
+  );
+}
+
 type TodayAction = "待处理" | "处理中" | "已接受" | "已忽略" | "稍后" | "已批准" | "已批准并应用" | "已拒绝" | "操作失败";
 
 function TodayWorkspace({
   serviceToken,
+  knowledgeBases,
+  currentKnowledgeBase,
+  scopeMode,
+  selectedKnowledgeBaseIds,
   activeConversationId,
   onActiveConversationChange,
   onOpenWorkspace,
   setBrain
 }: {
   serviceToken: PSKAAuth;
+  knowledgeBases: KnowledgeBase[];
+  currentKnowledgeBase?: KnowledgeBase;
+  scopeMode: "current" | "all" | "selected" | "attachments";
+  selectedKnowledgeBaseIds: string[];
   activeConversationId: string;
   onActiveConversationChange: (conversationId: string) => void;
   onOpenWorkspace: (mode: WorkspaceMode) => void;
@@ -807,6 +1076,11 @@ function TodayWorkspace({
     }
     return Boolean(liveSearchResult.query) && displayText(message.content, "").trim() === displayText(liveSearchResult.answer, "").trim();
   }) : false;
+  const askScopeLabel = scopeMode === "all"
+    ? "全部资料库"
+    : scopeMode === "selected"
+      ? selectedKnowledgeBaseIds.length > 0 ? `${selectedKnowledgeBaseIds.length} 个资料库` : "未选择资料库"
+      : currentKnowledgeBase?.name || "当前资料库";
 
   useEffect(() => {
     if (!activeConversationId && conversations[0]?.conversation_id) {
@@ -866,8 +1140,10 @@ function TodayWorkspace({
     let conversationId = activeConversationId;
     setSearchResult(latestAskResult);
     try {
+      const askIntent = forceDeepThinking ? "deep" : "auto";
+      const askScope = knowledgeBaseAskScope(scopeMode, currentKnowledgeBase, selectedKnowledgeBaseIds);
       if (!conversationId) {
-        const created = await createAskConversation(serviceToken, query.slice(0, 60));
+        const created = await createAskConversation(serviceToken, query.slice(0, 60), { scope: askScope });
         conversationId = created.conversation?.conversation_id || "";
         if (conversationId) {
           onActiveConversationChange(conversationId);
@@ -875,14 +1151,17 @@ function TodayWorkspace({
       }
       setLiveConversationId(conversationId);
       setSearchQuery("");
-      const askIntent = forceDeepThinking ? "deep" : "auto";
       if (attachmentFile) {
         setAttachmentStatus(`正在把 ${attachmentFile.name} 加入资料库`);
-        const upload = await uploadWorkspaceSource(serviceToken, attachmentFile, { digest_mode: "after_upload" });
+        const upload = await uploadWorkspaceSource(serviceToken, attachmentFile, { digest_mode: "after_upload", knowledge_base_id: currentKnowledgeBase?.knowledge_base_id });
         const sourceItemIds = upload.source_item_ids || [];
         setAttachmentStatus(`${attachmentFile.name} 已加入资料库，并用于本次提问`);
         setAttachmentFile(null);
-        const result = conversationId ? await askConversationStream(conversationId, query, serviceToken, updateLiveResult, { surface: "today", intent: askIntent, skipIntentClassifier: forceDeepThinking, topK: askTopK, temperature: askTemperature, maxTokens: askMaxTokens, sourceItemIds }) : await askWorkspaceStream(query, serviceToken, askIntent, "today", updateLiveResult, { topK: askTopK, scope: sourceItemIds.length ? { source_item_ids: sourceItemIds } : undefined, skipIntentClassifier: forceDeepThinking });
+        const attachmentScope = {
+          ...askScope,
+          ...(sourceItemIds.length ? { source_item_ids: sourceItemIds } : {})
+        };
+        const result = conversationId ? await askConversationStream(conversationId, query, serviceToken, updateLiveResult, { surface: "today", intent: askIntent, skipIntentClassifier: forceDeepThinking, topK: askTopK, temperature: askTemperature, maxTokens: askMaxTokens, sourceItemIds, scope: attachmentScope }) : await askWorkspaceStream(query, serviceToken, askIntent, "today", updateLiveResult, { topK: askTopK, scope: attachmentScope, skipIntentClassifier: forceDeepThinking });
         latestAskResult = result;
         setSearchResult(result);
         setBrain(searchToBrain(result, query));
@@ -892,7 +1171,7 @@ function TodayWorkspace({
         refreshAskConversationData(conversationId);
         return;
       }
-      const result = conversationId ? await askConversationStream(conversationId, query, serviceToken, updateLiveResult, { surface: "today", intent: askIntent, skipIntentClassifier: forceDeepThinking, topK: askTopK, temperature: askTemperature, maxTokens: askMaxTokens }) : await askWorkspaceStream(query, serviceToken, askIntent, "today", updateLiveResult, { skipIntentClassifier: forceDeepThinking });
+      const result = conversationId ? await askConversationStream(conversationId, query, serviceToken, updateLiveResult, { surface: "today", intent: askIntent, skipIntentClassifier: forceDeepThinking, topK: askTopK, temperature: askTemperature, maxTokens: askMaxTokens, scope: askScope }) : await askWorkspaceStream(query, serviceToken, askIntent, "today", updateLiveResult, { topK: askTopK, scope: askScope, skipIntentClassifier: forceDeepThinking });
       latestAskResult = result;
       setSearchResult(result);
       setBrain(searchToBrain(result, query));
@@ -1009,6 +1288,7 @@ function TodayWorkspace({
             messages={conversationMessages}
             runs={conversationRuns}
             isLoading={askConversationsQuery.isLoading || askConversationQuery.isLoading}
+            knowledgeBases={knowledgeBases}
             liveQuery={submittedSearchQuery}
             liveResult={liveResultMatchesActive && (searching || !liveResultPersisted) ? searchResult : null}
             livePending={searching}
@@ -1028,6 +1308,10 @@ function TodayWorkspace({
                       <input type="file" onChange={(event) => setAttachmentFile(event.target.files?.[0] || null)} data-testid="today-attachment-input" />
                       <span>{attachmentFile ? trimText(attachmentFile.name, 24) : "附件"}</span>
                     </label>
+                    <span className="kb-inline-scope" title="Ask 范围">
+                      <BookOpen size={14} />
+                      {trimText(askScopeLabel, 18)}
+                    </span>
                     <details className="ask-settings">
                       <summary title="Ask 参数">
                         <SlidersHorizontal size={16} />
@@ -1158,22 +1442,34 @@ type ReviewActionState = string;
 
 function ReviewCenter({
   serviceToken,
+  currentKnowledgeBase,
+  scopeMode,
+  selectedKnowledgeBaseIds,
   onPinCurrent,
   pinStatus
 }: {
   serviceToken: PSKAAuth;
+  currentKnowledgeBase?: KnowledgeBase;
+  scopeMode: "current" | "all" | "selected" | "attachments";
+  selectedKnowledgeBaseIds: string[];
   onPinCurrent: () => void;
   pinStatus: "idle" | "saved" | "failed";
 }) {
   const [status, setStatus] = useState("pending");
   const [actions, setActions] = useState<Record<string, ReviewActionState>>({});
+  const kbScopedOptions = useMemo(
+    () => knowledgeBaseScopedOptions(scopeMode, currentKnowledgeBase, selectedKnowledgeBaseIds),
+    [currentKnowledgeBase?.knowledge_base_id, scopeMode, selectedKnowledgeBaseIds]
+  );
+  const kbScopeKey = kbScopedOptions.knowledgeBaseIds?.join(",") || kbScopedOptions.knowledgeBaseId || "all";
   const reviewQuery = useQuery({
-    queryKey: ["review-center", serviceToken, status],
-    queryFn: () => loadReviewCenter(serviceToken, status),
+    queryKey: ["review-center", serviceToken, status, kbScopeKey],
+    queryFn: () => loadReviewCenter(serviceToken, status, kbScopedOptions),
     retry: 1
   });
   const items = reviewQuery.data?.review_items || [];
   const total = reviewQuery.data?.total_matching ?? reviewQuery.data?.count ?? items.length;
+  const scopeLabel = knowledgeBaseScopeLabel(scopeMode, currentKnowledgeBase, selectedKnowledgeBaseIds);
 
   function mark(reviewItemId: string, value: ReviewActionState) {
     setActions((current) => ({ ...current, [reviewItemId]: value }));
@@ -1206,6 +1502,10 @@ function ReviewCenter({
           <p>数据来自真实 Review API：/console/reviews/data。</p>
         </div>
         <div className="review-summary" aria-label="Review 摘要">
+          <span>
+            <strong>{scopeLabel}</strong>
+            范围
+          </span>
           <span>
             <strong>{total}</strong>
             {statusLabel(status)}
@@ -1243,6 +1543,7 @@ function ReviewCenter({
           {items.map((item) => {
             const supportBasis = reviewSupportBasis(item);
             const proposalSummary = reviewProposalSummary(item);
+            const knowledgeBaseLabel = knowledgeBaseLineageLabel(item);
             return (
             <article className="review-center-item" key={item.review_item_id}>
               <div className="review-item-main">
@@ -1255,6 +1556,7 @@ function ReviewCenter({
                   <span className={`pill ${item.source_ref_status === "present" ? "" : "warning"}`}>
                     {item.source_ref_status === "present" ? "证据已连接" : "缺少证据"}
                   </span>
+                  {knowledgeBaseLabel ? <span className="pill muted">{knowledgeBaseLabel}</span> : null}
                   {item.quality_tier ? (
                     <span className={`pill ${item.quality_tier === "strong" ? "" : "muted"}`}>{reviewQualityTierLabel(item.quality_tier)}</span>
                   ) : null}
@@ -1294,11 +1596,15 @@ function ReviewCenter({
                 ) : null}
                 {item.source_refs?.length ? (
                   <div className="source-ref-row">
-                    {item.source_refs.slice(0, 3).map((ref, index) => (
-                      <span key={`${item.review_item_id}-${index}`}>
-                        {displayText(ref.title || ref.source_item_id || ref.chunk_id, "source ref")}
-                      </span>
-                    ))}
+                    {item.source_refs.slice(0, 3).map((ref, index) => {
+                      const refKnowledgeBaseLabel = knowledgeBaseLineageLabel(ref);
+                      return (
+                        <span key={`${item.review_item_id}-${index}`}>
+                          {displayText(ref.title || ref.source_item_id || ref.chunk_id, "source ref")}
+                          {refKnowledgeBaseLabel ? <small>{refKnowledgeBaseLabel}</small> : null}
+                        </span>
+                      );
+                    })}
                   </div>
                 ) : null}
               </div>
@@ -1358,7 +1664,15 @@ function normalizeContinueItems(data?: TodayResponse): TodayContinueItem[] {
     }));
 }
 
-function AskResult({ result, pending = false }: { result: WorkspaceAskResponse | WorkspaceSearchResponse; pending?: boolean }) {
+function AskResult({
+  result,
+  pending = false,
+  knowledgeBases = []
+}: {
+  result: WorkspaceAskResponse | WorkspaceSearchResponse;
+  pending?: boolean;
+  knowledgeBases?: KnowledgeBase[];
+}) {
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "failed">("idle");
   const [selectedRefIndex, setSelectedRefIndex] = useState(0);
   const askEvidence = (result as WorkspaceAskResponse).evidence;
@@ -1401,6 +1715,7 @@ function AskResult({ result, pending = false }: { result: WorkspaceAskResponse |
   const askError = displaySearchError((result as WorkspaceAskResponse).error || (result as WorkspaceSearchResponse).error);
   const markdown = buildAskMarkdown((result as WorkspaceAskResponse).query || "", answer, refs, gaps, conflicts);
   const canCopy = Boolean(answer || refs.length || gaps.length || conflicts.length);
+  const scopeLabel = askResultScopeLabel(result, knowledgeBases);
 
   async function handleCopyMarkdown() {
     try {
@@ -1416,15 +1731,23 @@ function AskResult({ result, pending = false }: { result: WorkspaceAskResponse |
   }
 
   return (
-    <article className="today-search-result">
+    <article className="today-search-result" data-testid="ask-result">
       <div className="ask-result-header">
-        <small className="search-note">
-          {route ? askRouteLabel(route) : pending ? "Ask PSKA · 查询中" : "Ask PSKA"}
-          {(result as WorkspaceAskResponse).answer_type ? ` · ${askAnswerTypeLabel((result as WorkspaceAskResponse).answer_type || "")}` : ""}
-          {timing?.time_to_first_agent_event_ms !== undefined ? ` · 首过程 ${Math.round(timing.time_to_first_agent_event_ms)} ms` : ""}
-          {timing?.time_to_first_answer_ms !== undefined ? ` · 首字 ${Math.round(timing.time_to_first_answer_ms)} ms` : ""}
-          {timing?.total_ms !== undefined ? ` · 总耗时 ${Math.round(timing.total_ms)} ms` : ""}
-        </small>
+        <div className="ask-result-meta">
+          <small className="search-note">
+            {route ? askRouteLabel(route) : pending ? "Ask PSKA · 查询中" : "Ask PSKA"}
+            {(result as WorkspaceAskResponse).answer_type ? ` · ${askAnswerTypeLabel((result as WorkspaceAskResponse).answer_type || "")}` : ""}
+            {timing?.time_to_first_agent_event_ms !== undefined ? ` · 首过程 ${Math.round(timing.time_to_first_agent_event_ms)} ms` : ""}
+            {timing?.time_to_first_answer_ms !== undefined ? ` · 首字 ${Math.round(timing.time_to_first_answer_ms)} ms` : ""}
+            {timing?.total_ms !== undefined ? ` · 总耗时 ${Math.round(timing.total_ms)} ms` : ""}
+          </small>
+          {scopeLabel ? (
+            <span className="kb-inline-scope ask-result-scope" title="本次 Ask 范围">
+              <BookOpen size={13} />
+              {trimText(scopeLabel, 24)}
+            </span>
+          ) : null}
+        </div>
         <button type="button" onClick={() => void handleCopyMarkdown()} disabled={!canCopy}>
           {copyStatus === "copied" ? "已复制" : copyStatus === "failed" ? "复制失败" : "复制 Markdown"}
         </button>
@@ -1445,16 +1768,19 @@ function AskResult({ result, pending = false }: { result: WorkspaceAskResponse |
           <div className="source-ref-list" aria-label="引用列表">
             {refs.slice(0, 6).map((ref, index) => {
             const snippet = trimText(cleanEvidenceSnippet(ref.snippet), 180);
+            const knowledgeBaseLabel = sourceRefKnowledgeBaseLabel(ref);
             return (
               <button
                 type="button"
                 className={`source-ref ${index === Math.min(selectedRefIndex, refs.length - 1) ? "active" : ""}`}
+                data-testid="ask-source-ref"
                 key={`${ref.source_item_id || ref.chunk_id || ref.title || "ref"}-${index}`}
                 onMouseEnter={() => setSelectedRefIndex(index)}
                 onFocus={() => setSelectedRefIndex(index)}
                 onClick={() => setSelectedRefIndex(index)}
               >
                 <strong>{displayText(ref.title || ref.source_item_id, "来源")}</strong>
+                {knowledgeBaseLabel ? <span className="source-ref-kb">{knowledgeBaseLabel}</span> : null}
                 <span>{[ref.source_item_id, ref.chunk_id].filter(Boolean).join(" / ")}</span>
                 {snippet ? <p>{snippet}</p> : null}
               </button>
@@ -1974,6 +2300,7 @@ function EvidenceWindow({ refItem }: { refItem?: SearchEvidenceRef }) {
   if (!refItem) {
     return null;
   }
+  const knowledgeBaseLabel = sourceRefKnowledgeBaseLabel(refItem);
   const coordinates = [
     refItem.source_item_id ? `source ${refItem.source_item_id}` : "",
     refItem.document_id ? `doc ${refItem.document_id}` : "",
@@ -1984,6 +2311,7 @@ function EvidenceWindow({ refItem }: { refItem?: SearchEvidenceRef }) {
     <aside className="evidence-window" aria-label="证据窗口">
       <div className="card-row">
         <span className="pill">Evidence</span>
+        {knowledgeBaseLabel ? <span className="pill">{knowledgeBaseLabel}</span> : null}
         {typeof refItem.score === "number" ? <small>score {Math.round(refItem.score * 100)}</small> : null}
       </div>
       <strong>{displayText(refItem.title || refItem.source_item_id, "来源")}</strong>
@@ -2080,6 +2408,7 @@ function askDiagnosticDimensionLabel(value: string) {
     evidence: "证据",
     retrieval: "检索",
     evidence_check: "证据校验",
+    knowledge_base_scope: "知识库范围",
     fastreact: "FastReAct",
     mcp: "MCP",
     permissions: "权限/可见性",
@@ -2092,6 +2421,9 @@ function askDiagnosticLabel(value: string) {
   const labels: Record<string, string> = {
     no_visible_evidence: "没有可见证据",
     no_relevant_chunks: "没有相关片段",
+    selected_knowledge_base_empty: "选中知识库为空",
+    selected_scope_empty: "当前范围为空",
+    selected_knowledge_base_no_relevant_chunks: "知识库内没有相关片段",
     insufficient_evidence: "证据不足",
     conflicts_detected: "存在冲突",
     not_enough_signal: "信号不足",
@@ -2159,6 +2491,10 @@ type SearchEvidenceRef = {
   passage_window_id?: string;
   url?: string;
   score?: number;
+  knowledge_base_id?: string;
+  knowledge_base_name?: string;
+  knowledge_base_ids?: string[];
+  knowledge_base_names?: string[];
 };
 
 function normalizeSearchRefs(values: unknown[]): SearchEvidenceRef[] {
@@ -2184,7 +2520,15 @@ function normalizeSearchRefs(values: unknown[]): SearchEvidenceRef[] {
         chunk_id: displayText(ref.chunk_id || ref.result_id, "") || undefined,
         passage_window_id: displayText(ref.passage_window_id, "") || undefined,
         url: displayText(ref.url, "") || undefined,
-        score: typeof ref.score === "number" ? ref.score : undefined
+        score: typeof ref.score === "number" ? ref.score : undefined,
+        knowledge_base_id: displayText(ref.knowledge_base_id, "") || undefined,
+        knowledge_base_name: displayText(ref.knowledge_base_name, "") || undefined,
+        knowledge_base_ids: Array.isArray(ref.knowledge_base_ids)
+          ? ref.knowledge_base_ids.filter((item): item is string => typeof item === "string" && item.length > 0)
+          : undefined,
+        knowledge_base_names: Array.isArray(ref.knowledge_base_names)
+          ? ref.knowledge_base_names.filter((item): item is string => typeof item === "string" && item.length > 0)
+          : undefined
       };
     })
     .filter((ref) => ref.title || ref.snippet || ref.source_item_id)
@@ -2226,8 +2570,64 @@ function normalizeSearchRefs(values: unknown[]): SearchEvidenceRef[] {
       if (typeof ref.score === "number" && (typeof current.score !== "number" || ref.score > current.score)) {
         current.score = ref.score;
       }
+      if (!current.knowledge_base_id && ref.knowledge_base_id) {
+        current.knowledge_base_id = ref.knowledge_base_id;
+      }
+      if (!current.knowledge_base_name && ref.knowledge_base_name) {
+        current.knowledge_base_name = ref.knowledge_base_name;
+      }
+      if ((!current.knowledge_base_ids || current.knowledge_base_ids.length === 0) && ref.knowledge_base_ids?.length) {
+        current.knowledge_base_ids = ref.knowledge_base_ids;
+      }
+      if ((!current.knowledge_base_names || current.knowledge_base_names.length === 0) && ref.knowledge_base_names?.length) {
+        current.knowledge_base_names = ref.knowledge_base_names;
+      }
     });
   return order.map((key) => merged.get(key)).filter((ref): ref is SearchEvidenceRef => Boolean(ref));
+}
+
+function knowledgeBaseLineageLabel(ref: {
+  knowledge_base_id?: string;
+  knowledge_base_name?: string;
+  knowledge_base_ids?: string[];
+  knowledge_base_names?: string[];
+}) {
+  const names = ref.knowledge_base_names?.length ? ref.knowledge_base_names : ref.knowledge_base_name ? [ref.knowledge_base_name] : [];
+  if (names.length === 1) {
+    return names[0];
+  }
+  if (names.length === 2) {
+    return names.join("、");
+  }
+  if (names.length > 2) {
+    return `${names[0]} + ${names.length - 1}`;
+  }
+  const ids = ref.knowledge_base_ids?.length ? ref.knowledge_base_ids : ref.knowledge_base_id ? [ref.knowledge_base_id] : [];
+  if (ids.length === 1) {
+    return "1 个资料库";
+  }
+  if (ids.length > 1) {
+    return `${ids.length} 个资料库`;
+  }
+  return "";
+}
+
+function sourceRefKnowledgeBaseLabel(ref: SearchEvidenceRef) {
+  return knowledgeBaseLineageLabel(ref);
+}
+
+function sourceRefsKnowledgeBaseSummary(values: Array<Record<string, unknown>> = []) {
+  const labels = Array.from(
+    new Set(
+      normalizeSearchRefs(values)
+        .map((ref) => knowledgeBaseLineageLabel(ref))
+        .filter(Boolean)
+    )
+  );
+  if (labels.length <= 2) {
+    return labels.join("、");
+  }
+  return `${labels[0]} + ${labels.length - 1}`;
 }
 
 function searchRefKey(ref: SearchEvidenceRef) {
@@ -2459,6 +2859,36 @@ function askRouteLabel(route?: WorkspaceAskResponse["route"]) {
   const taskLabel = route?.intent && !["auto", "quick", "deep"].includes(route.intent) ? `${askIntentLabel(route.intent)} · ` : "";
   const label = `${taskLabel}${depthLabel}`;
   return route?.fallback_from ? `${label} · 已降级` : label;
+}
+
+function askResultScopeLabel(result: WorkspaceAskResponse | WorkspaceSearchResponse, knowledgeBases: KnowledgeBase[]) {
+  const askResult = result as WorkspaceAskResponse;
+  const resultScope = isRecord(askResult.scope_applied) ? askResult.scope_applied : {};
+  const routeScope = isRecord(askResult.route?.scope_applied) ? askResult.route?.scope_applied || {} : {};
+  const scope = Object.keys(resultScope).length ? resultScope : routeScope;
+  if (!Object.keys(scope).length) {
+    return "";
+  }
+  const knowledgeBaseIds = Array.isArray(scope.knowledge_base_ids)
+    ? scope.knowledge_base_ids.filter((item): item is string => typeof item === "string" && item.length > 0)
+    : [];
+  if (knowledgeBaseIds.length > 0) {
+    const names = knowledgeBaseIds
+      .map((knowledgeBaseId) => knowledgeBases.find((knowledgeBase) => knowledgeBase.knowledge_base_id === knowledgeBaseId)?.name)
+      .filter((name): name is string => Boolean(name));
+    if (knowledgeBaseIds.length === 1) {
+      return names[0] || "1 个资料库";
+    }
+    if (names.length === knowledgeBaseIds.length && names.length <= 2) {
+      return names.join("、");
+    }
+    return names[0] ? `${names[0]} + ${knowledgeBaseIds.length - 1}` : `${knowledgeBaseIds.length} 个资料库`;
+  }
+  const sourceItemCount = Array.isArray(scope.source_item_ids) ? scope.source_item_ids.length : 0;
+  if (sourceItemCount > 0) {
+    return `${sourceItemCount} 个资料`;
+  }
+  return String(scope.mode || "") === "hard" ? "未选择资料库" : "全部资料库";
 }
 
 function askFallbackLabel(reason?: string) {
@@ -3031,30 +3461,50 @@ function SectionTitle({ icon, title, subtitle }: { icon: JSX.Element; title: str
 
 function CorpusWorkspace({
   serviceToken,
+  knowledgeBases,
+  currentKnowledgeBase,
+  currentKnowledgeBaseId,
+  knowledgeBasesLoading,
+  onKnowledgeBaseChange,
+  onKnowledgeBasesRefresh,
   onOpenWorkspace,
-  onPinCurrent,
-  pinStatus,
   setBrain
 }: {
   serviceToken: PSKAAuth;
+  knowledgeBases: KnowledgeBase[];
+  currentKnowledgeBase?: KnowledgeBase;
+  currentKnowledgeBaseId: string;
+  knowledgeBasesLoading: boolean;
+  onKnowledgeBaseChange: (knowledgeBaseId: string) => void;
+  onKnowledgeBasesRefresh: () => Promise<unknown> | void;
   onOpenWorkspace: (mode: WorkspaceMode) => void;
-  onPinCurrent: () => void;
-  pinStatus: "idle" | "saved" | "failed";
   setBrain: (brain: Partial<BrainState>) => void;
 }) {
   const [query, setQuery] = useState("");
   const [textSourceTitle, setTextSourceTitle] = useState("");
   const [textSourceBody, setTextSourceBody] = useState("");
+  const [newKnowledgeBaseName, setNewKnowledgeBaseName] = useState("");
+  const [newKnowledgeBaseDescription, setNewKnowledgeBaseDescription] = useState("");
+  const [editingKnowledgeBase, setEditingKnowledgeBase] = useState(false);
+  const [knowledgeBaseDraftName, setKnowledgeBaseDraftName] = useState("");
+  const [knowledgeBaseDraftDescription, setKnowledgeBaseDraftDescription] = useState("");
+  const [knowledgeBaseArchiveConfirm, setKnowledgeBaseArchiveConfirm] = useState(false);
   const [uploadDigestAfter, setUploadDigestAfter] = useState(true);
   const [uploadProgress, setUploadProgress] = useState<CorpusUploadProgress>({ phase: "idle" });
   const [documentDeletePreview, setDocumentDeletePreview] = useState<WorkspaceDocumentDeleteResponse | null>(null);
   const [documentDeleteTarget, setDocumentDeleteTarget] = useState("");
+  const [documentDeletePreviewKnowledgeBaseId, setDocumentDeletePreviewKnowledgeBaseId] = useState("");
+  const [documentLinkTargetId, setDocumentLinkTargetId] = useState("");
   const [promptAsk, setPromptAsk] = useState("");
   const [promptDigest, setPromptDigest] = useState("");
   const [promptReview, setPromptReview] = useState("");
   const [promptWriting, setPromptWriting] = useState("");
   const [promptStatus, setPromptStatus] = useState<"idle" | "saving" | "success" | "error">("idle");
   const [promptError, setPromptError] = useState("");
+  const [knowledgeBaseSearchQuery, setKnowledgeBaseSearchQuery] = useState("");
+  const [knowledgeBaseSearchResult, setKnowledgeBaseSearchResult] = useState<KnowledgeBaseSearchResponse | null>(null);
+  const [knowledgeBaseSearchStatus, setKnowledgeBaseSearchStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
+  const [knowledgeBaseSearchError, setKnowledgeBaseSearchError] = useState("");
   const [chunkPreviewText, setChunkPreviewText] = useState("");
   const [chunkPreviewStrategy, setChunkPreviewStrategy] = useState("auto");
   const [chunkPreviewSize, setChunkPreviewSize] = useState(1200);
@@ -3093,8 +3543,9 @@ function CorpusWorkspace({
     twitterSkipped?: number;
   }>();
   const corpusQuery = useQuery({
-    queryKey: ["corpus-workspace", serviceToken],
-    queryFn: () => loadCorpusData(serviceToken, 60),
+    queryKey: ["corpus-workspace", serviceToken, currentKnowledgeBaseId],
+    queryFn: () => loadCorpusData(serviceToken, 60, { knowledgeBaseId: currentKnowledgeBaseId }),
+    enabled: Boolean(currentKnowledgeBaseId),
     retry: 1
   });
   const sourcesQuery = useQuery({
@@ -3103,14 +3554,16 @@ function CorpusWorkspace({
     retry: 1
   });
   const digestLogsQuery = useQuery({
-    queryKey: ["corpus-digest-logs", serviceToken],
-    queryFn: () => loadDigestLogs(serviceToken, 8),
+    queryKey: ["corpus-digest-logs", serviceToken, currentKnowledgeBaseId],
+    queryFn: () => loadDigestLogs(serviceToken, 8, { knowledgeBaseId: currentKnowledgeBaseId }),
+    enabled: Boolean(currentKnowledgeBaseId),
     refetchInterval: operationStatus === "queued" || operationStatus === "digesting" ? 3000 : false,
     retry: 1
   });
   const documentsQuery = useQuery({
-    queryKey: ["workspace-documents", serviceToken],
-    queryFn: () => loadWorkspaceDocuments(serviceToken, true),
+    queryKey: ["workspace-documents", serviceToken, currentKnowledgeBaseId],
+    queryFn: () => loadWorkspaceDocuments(serviceToken, true, { knowledgeBaseId: currentKnowledgeBaseId }),
+    enabled: Boolean(currentKnowledgeBaseId),
     retry: 1
   });
   const promptProfilesQuery = useQuery({
@@ -3118,19 +3571,35 @@ function CorpusWorkspace({
     queryFn: () => loadPromptProfiles(serviceToken),
     retry: 1
   });
+  const archivedKnowledgeBasesQuery = useQuery({
+    queryKey: ["knowledge-bases-archived", serviceToken],
+    queryFn: () => listKnowledgeBases(serviceToken, { includeArchived: true }),
+    retry: 1
+  });
   const corpus = corpusQuery.data;
   const sourceSummary = sourcesQuery.data;
   const digestLogs = digestLogsQuery.data;
   const documentsData = documentsQuery.data;
   const promptProfiles = promptProfilesQuery.data;
+  const archivedKnowledgeBases = (archivedKnowledgeBasesQuery.data?.knowledge_bases || []).filter(
+    (knowledgeBase) => knowledgeBase.status === "archived" || Boolean(knowledgeBase.deleted_at)
+  );
+  const currentKnowledgeBaseCounts = currentKnowledgeBase?.counts || {};
+  const currentKnowledgeBaseReadiness = currentKnowledgeBase?.readiness;
+  const readinessPill = knowledgeBaseReadinessPill(currentKnowledgeBaseReadiness);
+  const embeddingCoverageLabel = knowledgeBaseEmbeddingCoverageLabel(currentKnowledgeBaseReadiness);
+  const documentLinkTargets = useMemo(
+    () => knowledgeBases.filter((knowledgeBase) => knowledgeBase.status !== "archived" && knowledgeBase.knowledge_base_id !== currentKnowledgeBaseId),
+    [knowledgeBases, currentKnowledgeBaseId]
+  );
   const normalizedQuery = query.trim().toLowerCase();
   const filteredChunks = (corpus?.chunks || []).filter((chunk) =>
     corpusText([chunk.title, chunk.source_channel, chunk.source_item_id, chunk.text, chunk.snippet]).includes(normalizedQuery)
   );
   const counts = {
-    sources: documentsData?.counts?.active ?? sourceSummary?.source_counts?.source_items ?? corpus?.counts?.sources_total ?? corpus?.sources?.length ?? 0,
-    documents: documentsData?.counts?.documents ?? sourceSummary?.source_counts?.documents ?? corpus?.counts?.documents ?? 0,
-    chunks: sourceSummary?.source_counts?.chunks ?? corpus?.counts?.chunks_matching ?? corpus?.chunks?.length ?? 0,
+    sources: documentsData?.counts?.active ?? currentKnowledgeBaseCounts.source_items ?? corpus?.counts?.sources_total ?? corpus?.sources?.length ?? 0,
+    documents: documentsData?.counts?.documents ?? currentKnowledgeBaseCounts.documents ?? corpus?.counts?.documents ?? 0,
+    chunks: currentKnowledgeBaseCounts.chunks ?? corpus?.counts?.chunks_matching ?? corpus?.chunks?.length ?? 0,
     inputSources: sourceSummary?.input_sources?.length ?? sourceSummary?.knowledge_sources?.source_count ?? sourceSummary?.connector_state?.state_count ?? 0
   };
   const actionRunning = operationStatus === "syncing" || operationStatus === "digesting" || operationStatus === "cleaning" || operationStatus === "briefing";
@@ -3141,6 +3610,43 @@ function CorpusWorkspace({
       setBrain(corpusToBrain(corpus));
     }
   }, [corpus, setBrain]);
+
+  useEffect(() => {
+    setEditingKnowledgeBase(false);
+    setKnowledgeBaseArchiveConfirm(false);
+    setKnowledgeBaseDraftName(currentKnowledgeBase?.name || "");
+    setKnowledgeBaseDraftDescription(currentKnowledgeBase?.description || "");
+    setKnowledgeBaseSearchResult(null);
+    setKnowledgeBaseSearchStatus("idle");
+    setKnowledgeBaseSearchError("");
+    setDocumentDeletePreview(null);
+    setDocumentDeleteTarget("");
+  }, [currentKnowledgeBase?.knowledge_base_id]);
+
+  useEffect(() => {
+    if (!documentDeletePreviewKnowledgeBaseId || documentDeletePreviewKnowledgeBaseId === currentKnowledgeBaseId) {
+      return;
+    }
+    setDocumentDeletePreviewKnowledgeBaseId("");
+    setOperationStatus("idle");
+    setOperationMessage("");
+    setOperationSummary(undefined);
+  }, [currentKnowledgeBaseId, documentDeletePreviewKnowledgeBaseId]);
+
+  useEffect(() => {
+    if (documentLinkTargets.some((knowledgeBase) => knowledgeBase.knowledge_base_id === documentLinkTargetId)) {
+      return;
+    }
+    setDocumentLinkTargetId(documentLinkTargets[0]?.knowledge_base_id || "");
+  }, [documentLinkTargetId, documentLinkTargets]);
+
+  useEffect(() => {
+    if (editingKnowledgeBase) {
+      return;
+    }
+    setKnowledgeBaseDraftName(currentKnowledgeBase?.name || "");
+    setKnowledgeBaseDraftDescription(currentKnowledgeBase?.description || "");
+  }, [currentKnowledgeBase?.description, currentKnowledgeBase?.name, editingKnowledgeBase]);
 
   useEffect(() => {
     const effective = promptProfiles?.effective || {};
@@ -3171,8 +3677,13 @@ function CorpusWorkspace({
     }
   }, [operationStatus, trackedDigestJobIds, digestLogsQuery.dataUpdatedAt]);
 
+  async function refetchKnowledgeBaseLists() {
+    await Promise.all([Promise.resolve(onKnowledgeBasesRefresh()), archivedKnowledgeBasesQuery.refetch()]);
+  }
+
   async function refetchAll() {
     await Promise.all([corpusQuery.refetch(), sourcesQuery.refetch(), digestLogsQuery.refetch(), documentsQuery.refetch()]);
+    await refetchKnowledgeBaseLists();
   }
 
   async function handleCreateTextSource(event: FormEvent<HTMLFormElement>) {
@@ -3188,6 +3699,7 @@ function CorpusWorkspace({
       const payload = await createTextSource(serviceToken, {
         title: textSourceTitle.trim() || undefined,
         text,
+        knowledge_base_id: currentKnowledgeBaseId,
         digest_mode: uploadDigestAfter ? "after_upload" : "manual"
       });
       const summary = sourceIngestSummary(payload);
@@ -3200,6 +3712,154 @@ function CorpusWorkspace({
     } catch (error) {
       setOperationStatus("error");
       setOperationMessage(error instanceof Error ? error.message : "添加文本资料失败。");
+    }
+  }
+
+  async function handleCreateKnowledgeBase(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const name = newKnowledgeBaseName.trim();
+    if (!name) {
+      return;
+    }
+    setOperationStatus("syncing");
+    setOperationMessage("正在创建知识库...");
+    setOperationSummary(undefined);
+    try {
+      const payload = await createKnowledgeBase(serviceToken, {
+        name,
+        description: newKnowledgeBaseDescription.trim() || undefined
+      });
+      const knowledgeBaseId = payload.knowledge_base?.knowledge_base_id || "";
+      if (knowledgeBaseId) {
+        onKnowledgeBaseChange(knowledgeBaseId);
+      }
+      setNewKnowledgeBaseName("");
+      setNewKnowledgeBaseDescription("");
+      setOperationStatus(payload.ok === false ? "error" : "success");
+      setOperationMessage(payload.ok === false ? payload.error || "创建知识库失败。" : `知识库已创建：${payload.knowledge_base?.name || name}。`);
+      await refetchKnowledgeBaseLists();
+    } catch (error) {
+      setOperationStatus("error");
+      setOperationMessage(error instanceof Error ? error.message : "创建知识库失败。");
+    }
+  }
+
+  function beginKnowledgeBaseEdit() {
+    setKnowledgeBaseArchiveConfirm(false);
+    setKnowledgeBaseDraftName(currentKnowledgeBase?.name || "");
+    setKnowledgeBaseDraftDescription(currentKnowledgeBase?.description || "");
+    setEditingKnowledgeBase(true);
+  }
+
+  function cancelKnowledgeBaseEdit() {
+    setEditingKnowledgeBase(false);
+    setKnowledgeBaseDraftName(currentKnowledgeBase?.name || "");
+    setKnowledgeBaseDraftDescription(currentKnowledgeBase?.description || "");
+  }
+
+  async function handleSaveKnowledgeBase(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const knowledgeBaseId = currentKnowledgeBase?.knowledge_base_id || currentKnowledgeBaseId;
+    const name = knowledgeBaseDraftName.trim();
+    if (!knowledgeBaseId || !name) {
+      return;
+    }
+    setOperationStatus("syncing");
+    setOperationMessage("正在保存知识库...");
+    setOperationSummary(undefined);
+    try {
+      const payload = await patchKnowledgeBase(serviceToken, knowledgeBaseId, {
+        name,
+        description: knowledgeBaseDraftDescription.trim()
+      });
+      setEditingKnowledgeBase(false);
+      setOperationStatus(payload.ok === false ? "error" : "success");
+      setOperationMessage(payload.ok === false ? payload.error || "保存知识库失败。" : `知识库已更新：${payload.knowledge_base?.name || name}。`);
+      await refetchKnowledgeBaseLists();
+    } catch (error) {
+      setOperationStatus("error");
+      setOperationMessage(error instanceof Error ? error.message : "保存知识库失败。");
+    }
+  }
+
+  async function handleArchiveKnowledgeBase() {
+    const knowledgeBaseId = currentKnowledgeBase?.knowledge_base_id || currentKnowledgeBaseId;
+    if (!knowledgeBaseId || currentKnowledgeBase?.is_default) {
+      return;
+    }
+    if (!knowledgeBaseArchiveConfirm) {
+      setKnowledgeBaseArchiveConfirm(true);
+      return;
+    }
+    setOperationStatus("cleaning");
+    setOperationMessage("正在归档知识库...");
+    setOperationSummary(undefined);
+    try {
+      const payload = await deleteKnowledgeBase(serviceToken, knowledgeBaseId);
+      const fallback = knowledgeBases.find((kb) => kb.knowledge_base_id !== knowledgeBaseId && kb.status !== "archived");
+      if (fallback?.knowledge_base_id) {
+        onKnowledgeBaseChange(fallback.knowledge_base_id);
+      }
+      setKnowledgeBaseArchiveConfirm(false);
+      setEditingKnowledgeBase(false);
+      setOperationStatus(payload.ok === false ? "error" : "success");
+      setOperationMessage(payload.ok === false ? payload.error || "归档知识库失败。" : `知识库已归档：${payload.knowledge_base?.name || currentKnowledgeBase?.name || "知识库"}。`);
+      await refetchKnowledgeBaseLists();
+    } catch (error) {
+      setOperationStatus("error");
+      setOperationMessage(error instanceof Error ? error.message : "归档知识库失败。");
+    }
+  }
+
+  async function handleToggleKnowledgeBasePin() {
+    const knowledgeBaseId = currentKnowledgeBase?.knowledge_base_id || currentKnowledgeBaseId;
+    if (!knowledgeBaseId) {
+      return;
+    }
+    const isPinned = Boolean(currentKnowledgeBase?.pinned_at);
+    setOperationStatus("syncing");
+    setOperationMessage(isPinned ? "正在取消置顶知识库..." : "正在置顶知识库...");
+    setOperationSummary(undefined);
+    try {
+      const payload = isPinned
+        ? await unpinKnowledgeBase(serviceToken, knowledgeBaseId)
+        : await pinKnowledgeBase(serviceToken, knowledgeBaseId);
+      setOperationStatus(payload.ok === false ? "error" : "success");
+      setOperationMessage(
+        payload.ok === false
+          ? payload.error || (isPinned ? "取消置顶知识库失败。" : "置顶知识库失败。")
+          : isPinned
+          ? `已取消置顶：${payload.knowledge_base?.name || currentKnowledgeBase?.name || "知识库"}。`
+          : `已置顶：${payload.knowledge_base?.name || currentKnowledgeBase?.name || "知识库"}。`
+      );
+      await refetchKnowledgeBaseLists();
+    } catch (error) {
+      setOperationStatus("error");
+      setOperationMessage(error instanceof Error ? error.message : isPinned ? "取消置顶知识库失败。" : "置顶知识库失败。");
+    }
+  }
+
+  async function handleRestoreKnowledgeBase(knowledgeBaseId: string) {
+    if (!knowledgeBaseId) {
+      return;
+    }
+    const archived = archivedKnowledgeBases.find((knowledgeBase) => knowledgeBase.knowledge_base_id === knowledgeBaseId);
+    setOperationStatus("syncing");
+    setOperationMessage(`正在恢复 ${archived?.name || "知识库"}...`);
+    setOperationSummary(undefined);
+    try {
+      const payload = await restoreKnowledgeBase(serviceToken, knowledgeBaseId);
+      const restoredId = payload.knowledge_base?.knowledge_base_id || knowledgeBaseId;
+      if (payload.ok !== false && restoredId) {
+        onKnowledgeBaseChange(restoredId);
+      }
+      setOperationStatus(payload.ok === false ? "error" : "success");
+      setOperationMessage(payload.ok === false ? payload.error || "恢复知识库失败。" : `知识库已恢复：${payload.knowledge_base?.name || archived?.name || "知识库"}。`);
+      await refetchKnowledgeBaseLists();
+      await Promise.all([corpusQuery.refetch(), documentsQuery.refetch(), digestLogsQuery.refetch()]);
+    } catch (error) {
+      setOperationStatus("error");
+      setOperationMessage(error instanceof Error ? error.message : "恢复知识库失败。");
     }
   }
 
@@ -3258,6 +3918,7 @@ function CorpusWorkspace({
     });
     try {
       const payload = await uploadWorkspaceSource(serviceToken, file, {
+        knowledge_base_id: currentKnowledgeBaseId,
         digest_mode: uploadDigestAfter ? "after_upload" : "manual"
       }, (progress) => handleWorkspaceUploadProgress(file, progress));
       const summary = sourceIngestSummary(payload);
@@ -3296,9 +3957,12 @@ function CorpusWorkspace({
         execute,
         restore,
         hardDelete,
+        knowledgeBaseId: !restore && !hardDelete ? currentKnowledgeBaseId : undefined,
+        deleteMode: hardDelete ? "hard" : !restore ? "membership" : undefined,
         reason: restore ? "frontend restore document" : "frontend document delete"
       });
-      setDocumentDeletePreview(payload);
+      setDocumentDeletePreview(execute ? null : payload);
+      setDocumentDeletePreviewKnowledgeBaseId(execute ? "" : currentKnowledgeBaseId);
       setOperationStatus(payload.ok === false ? "error" : "success");
       const counts = payload.deleted || payload.counts || {};
       setOperationMessage(execute ? documentLifecycleDoneMessage(counts, restore) : documentLifecyclePreviewMessage(counts));
@@ -3310,6 +3974,59 @@ function CorpusWorkspace({
       setOperationMessage(error instanceof Error ? error.message : "资料删除操作失败。");
     } finally {
       setDocumentDeleteTarget("");
+    }
+  }
+
+  async function handleDocumentLink(sourceItemId: string) {
+    const targetKnowledgeBaseId = documentLinkTargetId;
+    if (!sourceItemId || !targetKnowledgeBaseId) {
+      return;
+    }
+    const targetKnowledgeBase = knowledgeBases.find((knowledgeBase) => knowledgeBase.knowledge_base_id === targetKnowledgeBaseId);
+    setOperationStatus("syncing");
+    setOperationSummary(undefined);
+    setOperationMessage(`正在把资料加入 ${targetKnowledgeBase?.name || "目标知识库"}...`);
+    try {
+      const payload = await linkWorkspaceDocuments(serviceToken, [sourceItemId], {
+        targetKnowledgeBaseId,
+        execute: true,
+        membershipType: "manual",
+        metadata: { origin: "corpus_document_lifecycle_panel" }
+      });
+      const counts = payload.linked || payload.counts || {};
+      setOperationStatus(payload.ok === false ? "error" : "success");
+      setOperationMessage(payload.ok === false ? payload.error || "资料加入知识库失败。" : documentLinkDoneMessage(counts, targetKnowledgeBase?.name || "目标知识库"));
+      await refetchAll();
+    } catch (error) {
+      setOperationStatus("error");
+      setOperationMessage(error instanceof Error ? error.message : "资料加入知识库失败。");
+    }
+  }
+
+  async function handleDocumentMove(sourceItemId: string) {
+    const targetKnowledgeBaseId = documentLinkTargetId;
+    if (!sourceItemId || !currentKnowledgeBaseId || !targetKnowledgeBaseId) {
+      return;
+    }
+    const targetKnowledgeBase = knowledgeBases.find((knowledgeBase) => knowledgeBase.knowledge_base_id === targetKnowledgeBaseId);
+    setOperationStatus("syncing");
+    setOperationSummary(undefined);
+    setOperationMessage(`正在把资料移动到 ${targetKnowledgeBase?.name || "目标知识库"}...`);
+    try {
+      const payload = await moveWorkspaceDocuments(serviceToken, [sourceItemId], {
+        sourceKnowledgeBaseId: currentKnowledgeBaseId,
+        targetKnowledgeBaseId,
+        execute: true,
+        membershipType: "manual",
+        metadata: { origin: "corpus_document_lifecycle_panel" }
+      });
+      const counts = payload.moved || payload.counts || {};
+      setOperationStatus(payload.ok === false ? "error" : "success");
+      setOperationMessage(payload.ok === false ? payload.error || "资料移动失败。" : documentMoveDoneMessage(counts, targetKnowledgeBase?.name || "目标知识库"));
+      await refetchAll();
+    } catch (error) {
+      setOperationStatus("error");
+      setOperationMessage(error instanceof Error ? error.message : "资料移动失败。");
     }
   }
 
@@ -3333,12 +4050,37 @@ function CorpusWorkspace({
     }
   }
 
+  async function handleKnowledgeBaseSearch(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const text = knowledgeBaseSearchQuery.trim();
+    const knowledgeBaseId = currentKnowledgeBase?.knowledge_base_id || currentKnowledgeBaseId;
+    if (!text || !knowledgeBaseId) {
+      return;
+    }
+    setKnowledgeBaseSearchStatus("loading");
+    setKnowledgeBaseSearchError("");
+    try {
+      const payload = await searchKnowledgeBases(serviceToken, {
+        query: text,
+        knowledgeBaseIds: [knowledgeBaseId],
+        topK: 8,
+        mode: "hybrid"
+      });
+      setKnowledgeBaseSearchResult(payload);
+      setKnowledgeBaseSearchStatus(payload.ok === false ? "error" : "success");
+      setKnowledgeBaseSearchError(displayText(payload.error, ""));
+    } catch (error) {
+      setKnowledgeBaseSearchStatus("error");
+      setKnowledgeBaseSearchError(error instanceof Error ? error.message : "知识库搜索失败。");
+    }
+  }
+
   async function handleFileSync() {
     setOperationStatus("syncing");
     setOperationMessage("正在同步当前账号的高级资料源...");
     setOperationSummary(undefined);
     try {
-      const payload = await syncKnowledgeSources(serviceToken, undefined, { sourceTypes: ["upload", "text", "url", "rss", "atom", "feed", "web"] });
+      const payload = await syncKnowledgeSources(serviceToken, undefined, { sourceTypes: ["upload", "text", "url", "rss", "atom", "feed", "web"], knowledgeBaseId: currentKnowledgeBaseId });
       const summary = sourceSyncSummary(payload);
       setOperationStatus(payload.ok === false ? "error" : "success");
       setOperationSummary(summary);
@@ -3352,10 +4094,10 @@ function CorpusWorkspace({
 
   async function handleDigestNow() {
     setOperationStatus("digesting");
-    setOperationMessage("正在把当前账号的资料整理任务加入队列...");
+    setOperationMessage("正在把当前知识库的资料整理任务加入队列...");
     setOperationSummary(undefined);
     try {
-      const payload = await runDigestNow(serviceToken);
+      const payload = await runDigestNow(serviceToken, { knowledgeBaseId: currentKnowledgeBaseId });
       const summary = digestNowSummary(payload);
       const jobId = payload.job?.job_id || payload.scheduled?.job?.job_id;
       setTrackedDigestJobIds(jobId ? [jobId] : []);
@@ -3436,6 +4178,7 @@ function CorpusWorkspace({
     try {
       const payload = await createKnowledgeSource(serviceToken, {
         ...sourceFormPayload(sourceFormKind, value, sourceFormName),
+        knowledge_base_id: currentKnowledgeBaseId,
         preview: true
       });
       setSourcePreview(payload.preview ? { ok: payload.ok, preview: payload.preview, adapters: payload.adapters } : null);
@@ -3461,7 +4204,7 @@ function CorpusWorkspace({
     setOperationMessage(knowledgeSourceId ? "正在同步选中的高级资料源..." : "正在同步所有高级资料源...");
     setOperationSummary(undefined);
     try {
-      const payload = await syncKnowledgeSources(serviceToken, knowledgeSourceId);
+      const payload = await syncKnowledgeSources(serviceToken, knowledgeSourceId, { knowledgeBaseId: currentKnowledgeBaseId });
       const summary = sourceSyncSummary(payload);
       setOperationStatus(payload.ok === false ? "error" : "success");
       setOperationSummary(summary);
@@ -3534,19 +4277,40 @@ function CorpusWorkspace({
       <div className="corpus-header">
         <div>
           <span className="eyebrow">资料库</span>
-          <h1>资料库</h1>
-          <p>上传、粘贴或同步资料，管理删除影响，并把 Digest 结果沉淀成可审阅 Brief。</p>
+          <h1>{currentKnowledgeBase?.name || "资料库"}</h1>
+          <p>{currentKnowledgeBase?.description || "上传、粘贴或同步资料，管理删除影响，并把 Digest 结果沉淀成可审阅 Brief。"}</p>
+          <div className="kb-header-controls">
+            <label>
+              <BookOpen size={15} />
+              <select
+                value={currentKnowledgeBaseId}
+                onChange={(event) => onKnowledgeBaseChange(event.target.value)}
+                disabled={knowledgeBasesLoading || knowledgeBases.length === 0}
+              >
+                {knowledgeBases.length === 0 ? <option value="">默认资料库</option> : null}
+                {knowledgeBases.map((knowledgeBase) => (
+                  <option key={knowledgeBase.knowledge_base_id} value={knowledgeBase.knowledge_base_id}>
+                    {knowledgeBase.name || knowledgeBase.slug || "知识库"}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <span className={`pill ${readinessPill.className}`}>
+              {readinessPill.label}
+            </span>
+          </div>
         </div>
         <div className="corpus-summary" aria-label="资料库摘要">
           <span><strong>{counts.sources}</strong> 条目</span>
           <span><strong>{counts.documents}</strong> 原文</span>
           <span><strong>{counts.chunks}</strong> 检索片段</span>
+          <span><strong>{embeddingCoverageLabel}</strong> 向量覆盖</span>
           <span><strong>{counts.inputSources}</strong> 高级源</span>
         </div>
         <div className="corpus-actions">
-          <button type="button" onClick={onPinCurrent}>
+          <button type="button" onClick={() => void handleToggleKnowledgeBasePin()} disabled={actionRunning || !currentKnowledgeBaseId}>
             <Pin size={15} />
-            {pinStatus === "saved" ? "已置顶" : pinStatus === "failed" ? "置顶失败" : "置顶资料库"}
+            {currentKnowledgeBase?.pinned_at ? "取消置顶" : "置顶资料库"}
           </button>
           <button type="button" onClick={() => void refetchAll()} disabled={actionRunning}>
             <RefreshCw size={15} />
@@ -3562,6 +4326,97 @@ function CorpusWorkspace({
           </button>
         </div>
       </div>
+
+      <form className="kb-create-strip" onSubmit={handleCreateKnowledgeBase}>
+        <BookOpen size={16} />
+        <input value={newKnowledgeBaseName} onChange={(event) => setNewKnowledgeBaseName(event.target.value)} placeholder="新知识库名称" />
+        <input value={newKnowledgeBaseDescription} onChange={(event) => setNewKnowledgeBaseDescription(event.target.value)} placeholder="描述，可选" />
+        <button type="submit" disabled={actionRunning || !newKnowledgeBaseName.trim()}>新建</button>
+      </form>
+
+      {currentKnowledgeBase ? (
+        editingKnowledgeBase ? (
+          <form className="kb-manage-strip editing" onSubmit={handleSaveKnowledgeBase}>
+            <Settings2 size={16} />
+            <input
+              value={knowledgeBaseDraftName}
+              onChange={(event) => setKnowledgeBaseDraftName(event.target.value)}
+              placeholder="知识库名称"
+              aria-label="知识库名称"
+            />
+            <input
+              value={knowledgeBaseDraftDescription}
+              onChange={(event) => setKnowledgeBaseDraftDescription(event.target.value)}
+              placeholder="描述"
+              aria-label="知识库描述"
+            />
+            <button type="submit" disabled={actionRunning || !knowledgeBaseDraftName.trim()} title="保存知识库">
+              <CheckCircle2 size={15} />
+              保存
+            </button>
+            <button type="button" onClick={cancelKnowledgeBaseEdit} disabled={actionRunning} title="取消编辑">
+              <X size={15} />
+              取消
+            </button>
+          </form>
+        ) : (
+          <div className="kb-manage-strip">
+            <Settings2 size={16} />
+            <div className="kb-manage-current">
+              <strong>{currentKnowledgeBase.name || currentKnowledgeBase.slug || "知识库"}</strong>
+              <span>{currentKnowledgeBase.description || (currentKnowledgeBase.is_default ? "默认资料库" : "自定义资料库")}</span>
+            </div>
+            <button type="button" onClick={beginKnowledgeBaseEdit} disabled={actionRunning} title="编辑知识库">
+              <Settings2 size={15} />
+              编辑
+            </button>
+            <button
+              className={`danger ${knowledgeBaseArchiveConfirm ? "confirming" : ""}`}
+              type="button"
+              onClick={() => void handleArchiveKnowledgeBase()}
+              disabled={actionRunning || currentKnowledgeBase.is_default}
+              title={currentKnowledgeBase.is_default ? "默认知识库不能归档" : "归档知识库"}
+            >
+              <Trash2 size={15} />
+              {knowledgeBaseArchiveConfirm ? "确认归档" : "归档"}
+            </button>
+            {knowledgeBaseArchiveConfirm ? (
+              <button type="button" onClick={() => setKnowledgeBaseArchiveConfirm(false)} disabled={actionRunning} title="取消归档">
+                <X size={15} />
+                取消
+              </button>
+            ) : null}
+          </div>
+        )
+      ) : null}
+
+      {archivedKnowledgeBases.length > 0 || archivedKnowledgeBasesQuery.isLoading ? (
+        <details className="kb-archive-strip">
+          <summary>
+            <RotateCcw size={16} />
+            <span>已归档知识库</span>
+            <small>{archivedKnowledgeBasesQuery.isLoading ? "加载中" : `${archivedKnowledgeBases.length} 个可恢复`}</small>
+          </summary>
+          <div className="kb-archive-list">
+            {archivedKnowledgeBases.length === 0 ? (
+              <span>正在加载归档知识库...</span>
+            ) : (
+              archivedKnowledgeBases.map((knowledgeBase) => (
+                <article className="kb-archive-item" key={knowledgeBase.knowledge_base_id}>
+                  <div>
+                    <strong>{knowledgeBase.name || knowledgeBase.slug || "知识库"}</strong>
+                    <span>{knowledgeBase.description || "已归档"}</span>
+                  </div>
+                  <button type="button" onClick={() => void handleRestoreKnowledgeBase(knowledgeBase.knowledge_base_id)} disabled={actionRunning}>
+                    <RotateCcw size={15} />
+                    恢复
+                  </button>
+                </article>
+              ))
+            )}
+          </div>
+        </details>
+      ) : null}
 
       <div className={`corpus-operation ${operationStatus}`} role="status" data-testid="corpus-operation">
         <div>
@@ -3592,8 +4447,21 @@ function CorpusWorkspace({
 
       <UnderstandingSummary payload={digestLogs} />
 
+      <KnowledgeBaseSearchPanel
+        query={knowledgeBaseSearchQuery}
+        status={knowledgeBaseSearchStatus}
+        error={knowledgeBaseSearchError}
+        result={knowledgeBaseSearchResult}
+        currentKnowledgeBaseName={currentKnowledgeBase?.name || "当前知识库"}
+        currentKnowledgeBaseReadyLabel={readinessPill.label}
+        disabled={!currentKnowledgeBaseId}
+        onQueryChange={setKnowledgeBaseSearchQuery}
+        onSubmit={handleKnowledgeBaseSearch}
+      />
+
       <div className="product-flow-grid">
         <SourceIngestPanel
+          targetKnowledgeBaseName={currentKnowledgeBase?.name || "当前知识库"}
           textTitle={textSourceTitle}
           textBody={textSourceBody}
           digestAfter={uploadDigestAfter}
@@ -3680,6 +4548,11 @@ function CorpusWorkspace({
         deleteTarget={documentDeleteTarget}
         actionRunning={actionRunning}
         query={query}
+        knowledgeBases={documentLinkTargets}
+        linkTargetId={documentLinkTargetId}
+        onLinkTargetChange={setDocumentLinkTargetId}
+        onLink={(sourceItemId) => void handleDocumentLink(sourceItemId)}
+        onMove={(sourceItemId) => void handleDocumentMove(sourceItemId)}
         onPreview={(sourceItemId) => void handleDocumentLifecycle(sourceItemId, false)}
         onDelete={(sourceItemId) => void handleDocumentLifecycle(sourceItemId, true)}
         onRestore={(sourceItemId) => void handleDocumentLifecycle(sourceItemId, true, true)}
@@ -3767,7 +4640,126 @@ function CorpusWorkspace({
   );
 }
 
+function KnowledgeBaseSearchPanel({
+  query,
+  status,
+  error,
+  result,
+  currentKnowledgeBaseName,
+  currentKnowledgeBaseReadyLabel,
+  disabled,
+  onQueryChange,
+  onSubmit
+}: {
+  query: string;
+  status: "idle" | "loading" | "success" | "error";
+  error: string;
+  result: KnowledgeBaseSearchResponse | null;
+  currentKnowledgeBaseName: string;
+  currentKnowledgeBaseReadyLabel: string;
+  disabled: boolean;
+  onQueryChange: (value: string) => void;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+}) {
+  const results = useMemo(() => normalizeSearchRefs((result?.results || []) as unknown[]), [result]);
+  const citations = useMemo(
+    () => normalizeSearchRefs(((result?.citations?.length ? result.citations : result?.source_refs) || []) as unknown[]),
+    [result]
+  );
+  const scopeApplied = isRecord(result?.scope_applied) ? result.scope_applied : {};
+  const scopeSourceCount = typeof scopeApplied.source_item_count === "number" ? scopeApplied.source_item_count : undefined;
+  const scopeKnowledgeBaseCount = Array.isArray(scopeApplied.knowledge_base_ids)
+    ? scopeApplied.knowledge_base_ids.length
+    : result?.knowledge_base_ids?.length;
+  const hasResult = status === "success" && Boolean(result);
+
+  return (
+    <section className="today-section kb-search-panel">
+      <SectionTitle icon={<Search size={18} />} title="证据搜索" subtitle={currentKnowledgeBaseName} />
+      <form className="kb-search-form" onSubmit={onSubmit}>
+        <label>
+          <Search size={16} />
+          <input
+            value={query}
+            onChange={(event) => onQueryChange(event.target.value)}
+            placeholder="在当前知识库检索证据"
+            disabled={disabled}
+            data-testid="knowledge-base-search-input"
+          />
+        </label>
+        <button className="primary" type="submit" disabled={disabled || status === "loading" || !query.trim()}>
+          <Search size={15} />
+          {status === "loading" ? "检索中" : "检索"}
+        </button>
+      </form>
+
+      <div className="kb-search-meta" aria-label="知识库搜索状态">
+        <span>范围 {scopeKnowledgeBaseCount ?? 1} 个知识库</span>
+        {scopeSourceCount !== undefined ? <span>资料 {scopeSourceCount}</span> : null}
+        <span>状态 {currentKnowledgeBaseReadyLabel}</span>
+        {result?.search_mode || result?.mode ? <span>模式 {displayText(result.search_mode || result.mode, "hybrid")}</span> : null}
+      </div>
+
+      {error ? <div className="review-empty error-state compact">{error}</div> : null}
+      {status === "loading" ? <div className="review-empty compact">检索中...</div> : null}
+
+      {hasResult ? (
+        <div className="kb-search-results">
+          <div className="kb-search-column">
+            <div className="kb-search-column-title">
+              <strong>候选片段</strong>
+              <span>{results.length}</span>
+            </div>
+            {results.length ? (
+              <div className="kb-search-card-list">
+                {results.slice(0, 6).map((refItem, index) => (
+                  <KnowledgeBaseSearchCard refItem={refItem} index={index} key={searchRefKey(refItem) || `kb-result-${index}`} />
+                ))}
+              </div>
+            ) : (
+              <div className="review-empty compact">没有候选片段。</div>
+            )}
+          </div>
+          <div className="kb-search-column">
+            <div className="kb-search-column-title">
+              <strong>Citations</strong>
+              <span>{citations.length}</span>
+            </div>
+            {citations.length ? (
+              <div className="kb-search-card-list">
+                {citations.slice(0, 6).map((refItem, index) => (
+                  <KnowledgeBaseSearchCard refItem={refItem} index={index} key={searchRefKey(refItem) || `kb-citation-${index}`} />
+                ))}
+              </div>
+            ) : (
+              <div className="review-empty compact">没有 citations。</div>
+            )}
+          </div>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function KnowledgeBaseSearchCard({ refItem, index }: { refItem: SearchEvidenceRef; index: number }) {
+  const knowledgeBaseLabel = sourceRefKnowledgeBaseLabel(refItem);
+  const identity = [refItem.source_item_id, refItem.chunk_id].filter(Boolean).join(" / ");
+  const scoreLabel = typeof refItem.score === "number" ? `score ${refItem.score.toFixed(3)}` : "";
+  return (
+    <article className="kb-search-card">
+      <div className="card-row">
+        <span className="pill">#{index + 1}</span>
+        {knowledgeBaseLabel ? <span className="source-ref-kb">{knowledgeBaseLabel}</span> : null}
+      </div>
+      <strong>{displayText(refItem.title || refItem.source_item_id || refItem.chunk_id, "证据")}</strong>
+      {identity || scoreLabel ? <span>{[identity, scoreLabel].filter(Boolean).join(" / ")}</span> : null}
+      <p>{trimText(refItem.snippet || refItem.source_window?.text, 280) || "暂无摘要。"}</p>
+    </article>
+  );
+}
+
 function SourceIngestPanel({
+  targetKnowledgeBaseName,
   textTitle,
   textBody,
   digestAfter,
@@ -3780,6 +4772,7 @@ function SourceIngestPanel({
   onTextSubmit,
   onUploadSubmit
 }: {
+  targetKnowledgeBaseName: string;
   textTitle: string;
   textBody: string;
   digestAfter: boolean;
@@ -3794,7 +4787,7 @@ function SourceIngestPanel({
 }) {
   return (
     <section className="today-section product-ingest-panel">
-      <SectionTitle icon={<UploadCloud size={18} />} title="加入资料库" subtitle="上传文件或粘贴文本" />
+      <SectionTitle icon={<UploadCloud size={18} />} title="加入资料库" subtitle={`写入 ${targetKnowledgeBaseName}`} />
       <div className="ingest-forms">
         <form className="ingest-form" onSubmit={onUploadSubmit} data-testid="corpus-upload-form">
           <label>
@@ -3927,6 +4920,7 @@ function AskConversationPanel({
   messages,
   runs,
   isLoading,
+  knowledgeBases,
   liveQuery,
   liveResult,
   livePending,
@@ -3935,6 +4929,7 @@ function AskConversationPanel({
   messages: AskMessage[];
   runs: AskRun[];
   isLoading: boolean;
+  knowledgeBases: KnowledgeBase[];
   liveQuery?: string;
   liveResult?: WorkspaceAskResponse | null;
   livePending?: boolean;
@@ -3996,7 +4991,7 @@ function AskConversationPanel({
                   <span>{message.role === "assistant" ? "PSKA" : "你"}</span>
                   {message.role === "assistant" ? (
                     runById.get(messageRunId) ? (
-                      <AskResult result={runById.get(messageRunId) as WorkspaceAskResponse} />
+                      <AskResult result={runById.get(messageRunId) as WorkspaceAskResponse} knowledgeBases={knowledgeBases} />
                     ) : (
                       <p>{trimText(message.content || "", 800)}</p>
                     )
@@ -4007,7 +5002,7 @@ function AskConversationPanel({
                 {orphanRunResult ? (
                   <article className="ask-message assistant orphan-run">
                     <span>PSKA</span>
-                    <AskResult result={orphanRunResult} pending={orphanRunResult.status === "running"} />
+                    <AskResult result={orphanRunResult} pending={orphanRunResult.status === "running"} knowledgeBases={knowledgeBases} />
                   </article>
                 ) : null}
               </div>
@@ -4023,7 +5018,7 @@ function AskConversationPanel({
               ) : null}
               <article className="ask-message assistant live">
                 <span>PSKA</span>
-                <AskResult result={liveResult as WorkspaceAskResponse} pending={livePending} />
+                <AskResult result={liveResult as WorkspaceAskResponse} pending={livePending} knowledgeBases={knowledgeBases} />
               </article>
             </>
           ) : null}
@@ -4106,6 +5101,11 @@ function DocumentLifecyclePanel({
   deleteTarget,
   actionRunning,
   query,
+  knowledgeBases,
+  linkTargetId,
+  onLinkTargetChange,
+  onLink,
+  onMove,
   onPreview,
   onDelete,
   onRestore,
@@ -4118,6 +5118,11 @@ function DocumentLifecyclePanel({
   deleteTarget: string;
   actionRunning: boolean;
   query: string;
+  knowledgeBases: KnowledgeBase[];
+  linkTargetId: string;
+  onLinkTargetChange: (knowledgeBaseId: string) => void;
+  onLink: (sourceItemId: string) => void;
+  onMove: (sourceItemId: string) => void;
   onPreview: (sourceItemId: string) => void;
   onDelete: (sourceItemId: string) => void;
   onRestore: (sourceItemId: string) => void;
@@ -4130,7 +5135,21 @@ function DocumentLifecyclePanel({
   });
   return (
     <section className="today-section document-lifecycle-panel">
-      <SectionTitle icon={<FileText size={18} />} title="资料条目" subtitle={`${documents.length} 条，可预览删除影响`} />
+      <SectionTitle icon={<FileText size={18} />} title="资料条目" subtitle={`${documents.length} 条，可加入其他知识库、从当前知识库移除或彻底清除`} />
+      {knowledgeBases.length > 0 ? (
+        <div className="document-link-toolbar">
+          <label>
+            <Link2 size={15} />
+            <select value={linkTargetId} onChange={(event) => onLinkTargetChange(event.target.value)} disabled={actionRunning}>
+              {knowledgeBases.map((knowledgeBase) => (
+                <option key={knowledgeBase.knowledge_base_id} value={knowledgeBase.knowledge_base_id}>
+                  {knowledgeBase.name || knowledgeBase.slug || "知识库"}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+      ) : null}
       {isError ? <div className="review-empty error-state compact">资料条目无法加载。</div> : null}
       {isLoading ? <div className="review-empty compact">正在加载资料条目...</div> : null}
       {!isLoading && documents.length === 0 ? <div className="review-empty compact">还没有可管理的资料。</div> : null}
@@ -4138,6 +5157,7 @@ function DocumentLifecyclePanel({
         {documents.slice(0, 12).map((document) => {
           const sourceItemId = document.source_item_id || "";
           const isDeleted = document.lifecycle_status === "deleted";
+          const knowledgeBaseLabel = knowledgeBaseLineageLabel(document);
           const previewMatches = deletePreview?.source_item_ids?.includes(sourceItemId);
           const counts = previewMatches ? deletePreview?.counts || deletePreview?.deleted || {} : document.impact || {};
           return (
@@ -4149,6 +5169,7 @@ function DocumentLifecyclePanel({
             >
               <div className="card-row">
                 <span className={`pill ${isDeleted ? "warning" : "muted"}`}>{document.lifecycle_status || "active"}</span>
+                {knowledgeBaseLabel ? <span className="document-kb-badge">{knowledgeBaseLabel}</span> : null}
                 <small>{formatSourceAge(document.created_at)}</small>
               </div>
               <h3>{displayText(document.title || sourceItemId, "未命名资料")}</h3>
@@ -4159,10 +5180,24 @@ function DocumentLifecyclePanel({
                 <span>Claims {counts.knowledge_claims ?? 0}</span>
                 <span>Digest {counts.digest_notes ?? 0}</span>
                 <span>Review {counts.review_items ?? 0}</span>
+                {counts.knowledge_base_source_items !== undefined ? <span>KB membership {counts.knowledge_base_source_items}</span> : null}
+                {counts.orphan_source_items !== undefined ? <span>孤儿软删 {counts.orphan_source_items}</span> : null}
               </div>
               <div className="source-cleanup-actions">
+                {!isDeleted && knowledgeBases.length > 0 ? (
+                  <button type="button" onClick={() => onLink(sourceItemId)} disabled={actionRunning || !sourceItemId || !linkTargetId} data-testid="document-link-kb">
+                    <Link2 size={14} />
+                    加入
+                  </button>
+                ) : null}
+                {!isDeleted && knowledgeBases.length > 0 ? (
+                  <button type="button" onClick={() => onMove(sourceItemId)} disabled={actionRunning || !sourceItemId || !linkTargetId} data-testid="document-move-kb">
+                    <ChevronRight size={14} />
+                    移动
+                  </button>
+                ) : null}
                 <button type="button" onClick={() => onPreview(sourceItemId)} disabled={actionRunning || !sourceItemId} data-testid="document-preview-delete">
-                  {deleteTarget === sourceItemId ? "预览中" : "预览影响"}
+                  {deleteTarget === sourceItemId ? "预览中" : "预览移除"}
                 </button>
                 {isDeleted ? (
                   <button type="button" onClick={() => onRestore(sourceItemId)} disabled={actionRunning || !sourceItemId} data-testid="document-restore">
@@ -4172,7 +5207,7 @@ function DocumentLifecyclePanel({
                 ) : (
                   <button className="danger" type="button" onClick={() => onDelete(sourceItemId)} disabled={actionRunning || !sourceItemId} data-testid="document-soft-delete">
                     <Trash2 size={14} />
-                    软删
+                    从库移除
                   </button>
                 )}
                 <button className="danger ghost" type="button" onClick={() => onPurge(sourceItemId)} disabled={actionRunning || !sourceItemId} data-testid="document-hard-purge">
@@ -4250,11 +5285,13 @@ function DigestLogPanel({
         const summary = log.candidate_summary || {};
         const note = (log.digest_notes || [])[0];
         const claim = (log.knowledge_claims || [])[0];
+        const knowledgeBaseLabel = knowledgeBaseLineageLabel(log) || sourceRefsKnowledgeBaseSummary(log.source_refs || []);
         const retryable = log.status === "failed" || log.status === "canceled";
         return (
           <article className="digest-log-card" key={log.job_id}>
             <div className="card-row">
               <span className={`pill ${log.status === "failed" ? "warning" : log.status === "succeeded" ? "" : "muted"}`}>{log.status || "unknown"}</span>
+              {knowledgeBaseLabel ? <span className="digest-log-kb">{knowledgeBaseLabel}</span> : null}
               <small>{formatReviewDate(log.updated_at)}</small>
             </div>
             <h3>{displayText(note?.title || log.latest_event?.message || log.job_id, "Digest 任务")}</h3>
@@ -4728,13 +5765,31 @@ function evidenceBriefUnavailableMessage(payload: { error?: string; reason?: str
 }
 
 function documentLifecyclePreviewMessage(counts: Record<string, number>) {
+  if (counts.knowledge_base_source_items !== undefined) {
+    return `预览完成：会从当前知识库移除 ${counts.knowledge_base_source_items ?? 0} 条资料；其中 ${counts.orphan_source_items ?? 0} 条没有其它知识库，会进入软删。`;
+  }
   return `预览完成：会影响资料 ${counts.source_items ?? 0} 条、文档 ${counts.documents ?? 0} 个、片段 ${counts.chunks ?? 0} 个、Digest ${counts.digest_notes ?? 0} 条、Review ${counts.review_items ?? 0} 条。`;
 }
 
 function documentLifecycleDoneMessage(counts: Record<string, number>, restore: boolean) {
+  if (!restore && counts.knowledge_base_source_items !== undefined) {
+    return `已从当前知识库移除 ${counts.knowledge_base_source_items ?? 0} 条资料；孤儿软删 ${counts.orphan_source_items ?? 0} 条。`;
+  }
   return restore
     ? `恢复完成：资料 ${counts.source_items ?? 0} 条、片段 ${counts.chunks ?? 0} 个重新可用。`
     : `删除状态已更新：资料 ${counts.source_items ?? 0} 条、片段 ${counts.chunks ?? 0} 个已从检索中移除或彻底清除。`;
+}
+
+function documentLinkDoneMessage(counts: Record<string, number>, targetName: string) {
+  const changed = counts.knowledge_base_source_items ?? 0;
+  if (changed === 0 && (counts.already_present ?? 0) > 0) {
+    return `资料已在 ${targetName} 中，无需重复加入。`;
+  }
+  return `已加入 ${targetName}：新增 ${counts.new ?? 0} 条，重新激活 ${counts.reactivated ?? 0} 条，已有 ${counts.already_present ?? 0} 条。`;
+}
+
+function documentMoveDoneMessage(counts: Record<string, number>, targetName: string) {
+  return `已移动到 ${targetName}：移动 ${counts.moved ?? 0} 条，新增 ${counts.new ?? 0} 条，重新激活 ${counts.reactivated ?? 0} 条，已有 ${counts.already_present ?? 0} 条。`;
 }
 
 function sourceFormPayload(kind: "url" | "rss" | "folder", rawValue: string, rawName: string) {
@@ -4917,6 +5972,156 @@ function corpusText(values: Array<string | undefined>) {
   return values.filter(Boolean).join(" ").toLowerCase();
 }
 
+function knowledgeBaseAskScope(
+  scopeMode: "current" | "all" | "selected" | "attachments",
+  currentKnowledgeBase?: KnowledgeBase,
+  selectedKnowledgeBaseIds: string[] = []
+): Record<string, unknown> {
+  if (scopeMode === "all") {
+    return { mode: "soft" };
+  }
+  const ids = scopeMode === "selected" ? selectedKnowledgeBaseIds : currentKnowledgeBase?.knowledge_base_id ? [currentKnowledgeBase.knowledge_base_id] : [];
+  return ids.length ? { mode: "hard", knowledge_base_ids: ids } : {};
+}
+
+function askConversationScopeLabel(conversation: AskConversation, knowledgeBases: KnowledgeBase[]) {
+  const metadata = isPlainObject(conversation.metadata) ? conversation.metadata : {};
+  const scope = isPlainObject(conversation.scope_applied)
+    ? conversation.scope_applied
+    : isPlainObject(metadata.ask_scope)
+      ? metadata.ask_scope
+      : isPlainObject(metadata.knowledge_base_scope)
+        ? metadata.knowledge_base_scope
+        : {};
+  if (Object.keys(scope).length === 0) {
+    return "";
+  }
+  const ids = Array.isArray(scope.knowledge_base_ids)
+    ? scope.knowledge_base_ids.filter((item): item is string => typeof item === "string" && item.length > 0)
+    : [];
+  if (ids.length === 0) {
+    return String(scope.mode || "") === "hard" ? "未选择资料库" : "全部资料库";
+  }
+  if (ids.length === 1) {
+    const knowledgeBase = knowledgeBases.find((item) => item.knowledge_base_id === ids[0]);
+    return knowledgeBase?.name || "当前资料库";
+  }
+  return `${ids.length} 个资料库`;
+}
+
+function knowledgeBaseScopedOptions(
+  scopeMode: "current" | "all" | "selected" | "attachments",
+  currentKnowledgeBase?: KnowledgeBase,
+  selectedKnowledgeBaseIds: string[] = []
+): { knowledgeBaseId?: string; knowledgeBaseIds?: string[] } {
+  if (scopeMode === "all") {
+    return {};
+  }
+  if (scopeMode === "selected") {
+    return selectedKnowledgeBaseIds.length ? { knowledgeBaseIds: selectedKnowledgeBaseIds } : {};
+  }
+  return currentKnowledgeBase?.knowledge_base_id ? { knowledgeBaseId: currentKnowledgeBase.knowledge_base_id } : {};
+}
+
+function knowledgeBaseScopeLabel(
+  scopeMode: "current" | "all" | "selected" | "attachments",
+  currentKnowledgeBase?: KnowledgeBase,
+  selectedKnowledgeBaseIds: string[] = []
+) {
+  if (scopeMode === "all") {
+    return "全部资料库";
+  }
+  if (scopeMode === "selected") {
+    return selectedKnowledgeBaseIds.length > 0 ? `${selectedKnowledgeBaseIds.length} 个资料库` : "未选择资料库";
+  }
+  return currentKnowledgeBase?.name || "当前资料库";
+}
+
+function knowledgeBaseReadinessPill(readiness?: KnowledgeBase["readiness"]) {
+  const status = String(readiness?.processing_status || "").toLowerCase();
+  const failedCount = Number(readiness?.failed_processing_count || 0);
+  const activeCount = Number(readiness?.processing_count || 0);
+  if (status === "failed" || failedCount > 0) {
+    return { label: "处理异常", className: "warning" };
+  }
+  if (status === "processing" || activeCount > 0) {
+    return { label: "处理中", className: "warning" };
+  }
+  if (readiness?.retrieval_ready) {
+    return { label: "可检索", className: "success" };
+  }
+  if (status === "pending") {
+    return { label: "待处理", className: "muted" };
+  }
+  return { label: "待入库", className: "muted" };
+}
+
+function knowledgeBaseEmbeddingCoverageLabel(readiness?: KnowledgeBase["readiness"]) {
+  const value = readiness?.embedding_coverage;
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return "-";
+  }
+  return `${Math.round(Math.max(0, Math.min(1, value)) * 100)}%`;
+}
+
+function writingKnowledgeScopeMetadata(
+  scopeMode: "current" | "all" | "selected" | "attachments",
+  currentKnowledgeBase?: KnowledgeBase,
+  selectedKnowledgeBaseIds: string[] = []
+): { scope: Record<string, unknown>; metadata: Record<string, unknown> } {
+  if (scopeMode === "all") {
+    const scope = { mode: "all", knowledge_base_ids: [] };
+    return { scope, metadata: { knowledge_base_scope: scope } };
+  }
+  const ids = Array.from(new Set((scopeMode === "selected" ? selectedKnowledgeBaseIds : currentKnowledgeBase?.knowledge_base_id ? [currentKnowledgeBase.knowledge_base_id] : []).filter(Boolean)));
+  const scope = ids.length
+    ? {
+        mode: "hard",
+        knowledge_base_ids: ids,
+        ...(ids.length === 1 && currentKnowledgeBase?.knowledge_base_id === ids[0] ? { knowledge_base_name: currentKnowledgeBase.name } : {})
+      }
+    : { mode: "all", knowledge_base_ids: [] };
+  return {
+    scope,
+    metadata: {
+      ...(ids.length ? { knowledge_base_ids: ids } : {}),
+      knowledge_base_scope: scope
+    }
+  };
+}
+
+function writingBoardKnowledgeScope(
+  board: WritingBoard | undefined,
+  fallback: { scope: Record<string, unknown>; metadata: Record<string, unknown> }
+): { scope: Record<string, unknown>; metadata: Record<string, unknown> } {
+  const metadata = isPlainObject(board?.metadata) ? board.metadata : {};
+  const rawScope = isPlainObject(metadata.knowledge_base_scope) ? metadata.knowledge_base_scope : {};
+  const scopeIds = Array.isArray(rawScope.knowledge_base_ids) ? rawScope.knowledge_base_ids.filter((item): item is string => typeof item === "string" && item.length > 0) : [];
+  const metadataIds = Array.isArray(metadata.knowledge_base_ids) ? metadata.knowledge_base_ids.filter((item): item is string => typeof item === "string" && item.length > 0) : [];
+  const ids = scopeIds.length ? scopeIds : metadataIds;
+  if (ids.length) {
+    const scope = { ...rawScope, mode: String(rawScope.mode || "hard"), knowledge_base_ids: ids };
+    return { scope, metadata: { ...metadata, knowledge_base_ids: ids, knowledge_base_scope: scope } };
+  }
+  if (Object.keys(rawScope).length > 0) {
+    const scope = { ...rawScope, mode: String(rawScope.mode || "all"), knowledge_base_ids: [] };
+    return { scope, metadata: { ...metadata, knowledge_base_scope: scope } };
+  }
+  return fallback;
+}
+
+function writingBoardKnowledgeScopeLabel(scope: Record<string, unknown>, knowledgeBases: KnowledgeBase[], currentKnowledgeBase?: KnowledgeBase) {
+  const ids = Array.isArray(scope.knowledge_base_ids) ? scope.knowledge_base_ids.filter((item): item is string => typeof item === "string" && item.length > 0) : [];
+  if (ids.length === 0) {
+    return "全部资料库";
+  }
+  if (ids.length === 1) {
+    const knowledgeBase = knowledgeBases.find((item) => item.knowledge_base_id === ids[0]) || (currentKnowledgeBase?.knowledge_base_id === ids[0] ? currentKnowledgeBase : undefined);
+    return knowledgeBase?.name || "当前资料库";
+  }
+  return `${ids.length} 个资料库`;
+}
+
 function channelCount(value: ConsoleSourceChannelStats) {
   if (typeof value === "number") {
     return value;
@@ -5025,10 +6230,18 @@ type WritingFlowNode = Node<WritingNodeData, "writingNode">;
 
 function WritingWorkspace({
   serviceToken,
+  knowledgeBases,
+  currentKnowledgeBase,
+  scopeMode,
+  selectedKnowledgeBaseIds,
   onPinCurrent,
   pinStatus
 }: {
   serviceToken: PSKAAuth;
+  knowledgeBases: KnowledgeBase[];
+  currentKnowledgeBase?: KnowledgeBase;
+  scopeMode: "current" | "all" | "selected" | "attachments";
+  selectedKnowledgeBaseIds: string[];
   onPinCurrent: () => void;
   pinStatus: "idle" | "saved" | "failed";
 }) {
@@ -5070,6 +6283,15 @@ function WritingWorkspace({
   const sections = writingNodes.filter((node) => node.node_type === "section");
   const answerNodes = writingNodes.filter((node) => node.node_type === "answer");
   const editingNode = writingNodes.find((node) => node.node_id === editingNodeId);
+  const newBoardKnowledgeScope = useMemo(
+    () => writingKnowledgeScopeMetadata(scopeMode, currentKnowledgeBase, selectedKnowledgeBaseIds),
+    [currentKnowledgeBase?.knowledge_base_id, currentKnowledgeBase?.name, scopeMode, selectedKnowledgeBaseIds]
+  );
+  const activeBoardScope = useMemo(
+    () => writingBoardKnowledgeScope(board, newBoardKnowledgeScope),
+    [board?.metadata, newBoardKnowledgeScope]
+  );
+  const activeBoardScopeLabel = writingBoardKnowledgeScopeLabel(activeBoardScope, knowledgeBases, currentKnowledgeBase);
 
   useEffect(() => {
     if (sections.length && !sections.some((section) => section.node_id === selectedSectionId)) {
@@ -5091,7 +6313,11 @@ function WritingWorkspace({
       const created = await createWritingBoard(serviceToken, {
         title: trimText(goal, 64) || "新写作网络",
         goal,
-        metadata: { canvas: "xyflow", product: "inquiry_graph" }
+        metadata: {
+          canvas: "xyflow",
+          product: "inquiry_graph",
+          ...newBoardKnowledgeScope.metadata
+        }
       });
       const boardId = created.board?.board_id;
       if (!boardId) {
@@ -5105,14 +6331,14 @@ function WritingWorkspace({
         title: "写作目标",
         body_markdown: goal,
         position: { x: 80, y: 120 },
-        metadata: { expanded: true }
+        metadata: { expanded: true, knowledge_base_scope: newBoardKnowledgeScope.scope }
       });
       const section = await createWritingNode(serviceToken, boardId, {
         node_type: "section",
         title: "第一部分",
         body_markdown: "把已验证的答案节点加入这里，再生成章节草稿。",
         position: { x: 80, y: 390 },
-        metadata: { expanded: false }
+        metadata: { expanded: false, knowledge_base_scope: newBoardKnowledgeScope.scope }
       });
       if (section.node?.node_id) {
         setSelectedSectionId(section.node.node_id);
@@ -5164,7 +6390,7 @@ function WritingWorkspace({
       title: writingNodeDefaultTitle(nodeType),
       body_markdown: nodeType === "question" ? "把要追问的问题写在这里，然后运行 Ask PSKA。" : "",
       position,
-      metadata: { expanded: nodeType === "question" }
+      metadata: { expanded: nodeType === "question", knowledge_base_scope: activeBoardScope.scope }
     });
     if (nodeType === "section" && created.node?.node_id) {
       setSelectedSectionId(created.node.node_id);
@@ -5238,7 +6464,7 @@ function WritingWorkspace({
       return;
     }
     const sessionId = writingNodeSessionId(node);
-    const scope = buildWritingAskScope(activeBoardId, node, writingNodes, writingEdges, sessionId);
+    const scope = buildWritingAskScope(activeBoardId, node, writingNodes, writingEdges, sessionId, activeBoardScope.scope);
     setRunningNodeIds((current) => current.includes(node.node_id) ? current : [...current, node.node_id]);
     setWorkspaceMessage("Ask PSKA 正在回答这个问题节点...");
     setAskPreviews((current) => ({ ...current, [node.node_id]: pendingAskResult(query) }));
@@ -5274,7 +6500,7 @@ function WritingWorkspace({
         citations: result.citations || [],
         source_refs: result.source_refs || [],
         quality_signals: result.quality_signals || {},
-        metadata: { route: result.route || {}, timing: result.timing || {}, session_id: sessionId, source_question_id: node.node_id, expanded: true }
+        metadata: { route: result.route || {}, timing: result.timing || {}, session_id: sessionId, source_question_id: node.node_id, expanded: true, knowledge_base_scope: activeBoardScope.scope }
       });
       if (answerNode.node?.node_id) {
         await createWritingEdge(serviceToken, activeBoardId, {
@@ -5302,7 +6528,7 @@ function WritingWorkspace({
           position: evidencePosition,
           source_refs: result.source_refs || [],
           citations: result.citations || [],
-          metadata: { expanded: false }
+          metadata: { expanded: false, knowledge_base_scope: activeBoardScope.scope }
         });
         if (evidenceNode.node?.node_id) {
           await createWritingEdge(serviceToken, activeBoardId, {
@@ -5329,7 +6555,7 @@ function WritingWorkspace({
           title: "证据缺口",
           body_markdown: gaps.map((gap) => `- ${gap}`).join("\n"),
           position: gapPosition,
-          metadata: { expanded: false }
+          metadata: { expanded: false, knowledge_base_scope: activeBoardScope.scope }
         });
         if (gapNode.node?.node_id) {
           await createWritingEdge(serviceToken, activeBoardId, {
@@ -5358,7 +6584,7 @@ function WritingWorkspace({
     if (!activeBoardId) {
       return;
     }
-    const response = await suggestWritingQuestions(serviceToken, activeBoardId, { node_id: node.node_id, direction });
+      const response = await suggestWritingQuestions(serviceToken, activeBoardId, { node_id: node.node_id, direction });
     setSuggestions((current) => ({ ...current, [node.node_id]: response.suggestions || [] }));
   }
 
@@ -5379,7 +6605,7 @@ function WritingWorkspace({
         "question",
         { expanded: true }
       ),
-      metadata: { expanded: true, suggestion }
+      metadata: { expanded: true, suggestion, knowledge_base_scope: activeBoardScope.scope }
     });
     if (created.node?.node_id) {
       await createWritingEdge(serviceToken, activeBoardId, {
@@ -5437,7 +6663,7 @@ function WritingWorkspace({
       position: draftPosition,
       source_refs: response.source_refs || [],
       citations: response.citations || [],
-      metadata: { expanded: true, composed_from: answerIds, retrieval_used: response.retrieval_used === true }
+      metadata: { expanded: true, composed_from: answerIds, retrieval_used: response.retrieval_used === true, knowledge_base_scope: activeBoardScope.scope }
     });
     if (draft.node?.node_id) {
       await createWritingEdge(serviceToken, activeBoardId, {
@@ -5535,6 +6761,7 @@ function WritingWorkspace({
             <span className="eyebrow">Writing Workspace</span>
             <h1>写作项目</h1>
             <p>每个项目是一块独立画布。问题节点有独立 session，连接到它的节点会作为结构化上下文传给 Ask PSKA。</p>
+            <span className="kb-inline-scope">新画布范围：{writingBoardKnowledgeScopeLabel(newBoardKnowledgeScope.scope, knowledgeBases, currentKnowledgeBase)}</span>
           </div>
           <textarea data-testid="writing-new-goal" value={newGoal} onChange={(event) => setNewGoal(event.target.value)} placeholder="我要写一篇关于……的文章/备忘录/报告，需要先弄清楚……" />
           <div className="writing-start-actions">
@@ -5552,6 +6779,7 @@ function WritingWorkspace({
               <button className="writing-project-card-main" type="button" onClick={() => openBoard(item.board_id)} data-testid="writing-open-board">
                 <strong>{item.title || "未命名写作项目"}</strong>
                 <p>{item.goal || "没有填写目标。"}</p>
+                <small>{writingBoardKnowledgeScopeLabel(writingBoardKnowledgeScope(item, newBoardKnowledgeScope).scope, knowledgeBases, currentKnowledgeBase)}</small>
                 <small>{item.updated_at ? `更新于 ${formatReviewDate(item.updated_at)}` : item.board_id}</small>
               </button>
               <div className="writing-project-actions">
@@ -5576,6 +6804,7 @@ function WritingWorkspace({
         <button type="button" onClick={() => void addNode("section")} data-testid="writing-add-section">章节</button>
         <button type="button" onClick={closeBoard} data-testid="writing-close-board">关闭项目</button>
         <button type="button" onClick={() => void copyBoardMarkdown()} data-testid="writing-export-markdown">导出 Markdown</button>
+        <span className="kb-inline-scope">{activeBoardScopeLabel}</span>
         <button type="button" onClick={onPinCurrent}>
           <Pin size={15} />
           {pinStatus === "saved" ? "已置顶" : pinStatus === "failed" ? "失败" : "置顶"}
@@ -5630,6 +6859,8 @@ function WritingCanvasNode({ data }: NodeProps<WritingFlowNode>) {
   const timelineResult = data.askPreview;
   const timelineRawEvents = timelineResult ? agenticTraceEvents(timelineResult) : [];
   const hasTimeline = Boolean(timelineResult?.agent_steps?.length || timelineRawEvents.length);
+  const citationRefs = node.citations?.length ? node.citations : node.source_refs || [];
+  const citationKnowledgeBaseLabel = sourceRefsKnowledgeBaseSummary(citationRefs);
 
   return (
     <div
@@ -5666,9 +6897,10 @@ function WritingCanvasNode({ data }: NodeProps<WritingFlowNode>) {
           <AskProcessTimeline steps={normalizeAskAgentSteps(timelineResult?.agent_steps)} rawEvents={timelineRawEvents} />
         </div>
       ) : null}
-      {node.citations?.length || node.source_refs?.length ? (
+      {citationRefs.length ? (
         <div className="writing-node-citation-bar">
-          <span>引用 {(node.citations || node.source_refs || []).length}</span>
+          <span>引用 {citationRefs.length}</span>
+          {citationKnowledgeBaseLabel ? <small>{citationKnowledgeBaseLabel}</small> : null}
         </div>
       ) : null}
       <div className="writing-node-actions nodrag">
@@ -5893,7 +7125,14 @@ function writingNodeLastAskPreview(node: WritingNode): WorkspaceAskResponse | un
   };
 }
 
-function buildWritingAskScope(boardId: string, node: WritingNode, nodes: WritingNode[], edges: WritingEdge[], sessionId: string) {
+function buildWritingAskScope(
+  boardId: string,
+  node: WritingNode,
+  nodes: WritingNode[],
+  edges: WritingEdge[],
+  sessionId: string,
+  boardScope: Record<string, unknown> = {}
+) {
   const connectedEdges = edges.filter((edge) => edge.source_node_id === node.node_id || edge.target_node_id === node.node_id);
   const connectedNodeIds = new Set<string>();
   connectedEdges.forEach((edge) => {
@@ -5911,7 +7150,9 @@ function buildWritingAskScope(boardId: string, node: WritingNode, nodes: Writing
       }
     });
   });
+  const knowledgeBaseIds = Array.isArray(boardScope.knowledge_base_ids) ? boardScope.knowledge_base_ids.filter((item): item is string => typeof item === "string" && item.length > 0) : [];
   return {
+    ...(knowledgeBaseIds.length ? { mode: "hard", knowledge_base_ids: knowledgeBaseIds } : {}),
     board_id: boardId,
     node_id: node.node_id,
     session_id: sessionId,
@@ -6052,19 +7293,31 @@ function DocumentWorkspace({
 
 function GraphWorkspace({
   serviceToken,
+  currentKnowledgeBase,
+  scopeMode,
+  selectedKnowledgeBaseIds,
   onPinCurrent,
   pinStatus
 }: {
   serviceToken: PSKAAuth;
+  currentKnowledgeBase?: KnowledgeBase;
+  scopeMode: "current" | "all" | "selected" | "attachments";
+  selectedKnowledgeBaseIds: string[];
   onPinCurrent: () => void;
   pinStatus: "idle" | "saved" | "failed";
 }) {
   const [graphLimit, setGraphLimit] = useState(20);
   const [activeTypes, setActiveTypes] = useState(() => new Set(["source", "document", "passage", "claim", "digest", "fact", "hyperedge", "memory", "memory_suggestion", "action"]));
   const activeTypeList = useMemo(() => Array.from(activeTypes).sort(), [activeTypes]);
+  const kbScopedOptions = useMemo(
+    () => knowledgeBaseScopedOptions(scopeMode, currentKnowledgeBase, selectedKnowledgeBaseIds),
+    [currentKnowledgeBase?.knowledge_base_id, scopeMode, selectedKnowledgeBaseIds]
+  );
+  const kbScopeKey = kbScopedOptions.knowledgeBaseIds?.join(",") || kbScopedOptions.knowledgeBaseId || "all";
+  const scopeLabel = knowledgeBaseScopeLabel(scopeMode, currentKnowledgeBase, selectedKnowledgeBaseIds);
   const graphQuery = useQuery({
-    queryKey: ["workspace-graph-v2", serviceToken, graphLimit, activeTypeList.join(",")],
-    queryFn: () => loadGraphData(serviceToken, graphLimit, activeTypeList),
+    queryKey: ["workspace-graph-v2", serviceToken, graphLimit, activeTypeList.join(","), kbScopeKey],
+    queryFn: () => loadGraphData(serviceToken, graphLimit, activeTypeList, kbScopedOptions),
     retry: 1
   });
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -6094,6 +7347,11 @@ function GraphWorkspace({
   const error = graphQuery.isError;
   const typeOptions = ["source", "document", "passage", "claim", "digest", "phrase", "entity", "fact", "hyperedge", "memory", "memory_suggestion", "action"];
 
+  useEffect(() => {
+    setExpandedGraph(null);
+    setSelectedNodeId(null);
+  }, [kbScopeKey]);
+
   function toggleType(type: string) {
     setActiveTypes((current) => {
       const next = new Set(current);
@@ -6116,9 +7374,10 @@ function GraphWorkspace({
     setPathError("");
     setGraphAskResult(pendingAskResult(query));
     try {
+      const askScope = knowledgeBaseAskScope(scopeMode, currentKnowledgeBase, selectedKnowledgeBaseIds);
       const payload = await askWorkspaceStream(query, serviceToken, "auto", "graph", ({ result: partial }) => {
         setGraphAskResult({ ...partial });
-      });
+      }, { scope: askScope });
       setGraphAskResult(payload);
       setPathResult(null);
       setPathStatus(payload.ok === false ? "error" : "success");
@@ -6136,7 +7395,7 @@ function GraphWorkspace({
     setExpandStatus("loading");
     setExpandError("");
     try {
-      const payload = await loadGraphSubgraph(serviceToken, selectedNodeId, Math.max(graphLimit, 80), 1, activeTypeList);
+      const payload = await loadGraphSubgraph(serviceToken, selectedNodeId, Math.max(graphLimit, 80), 1, activeTypeList, kbScopedOptions);
       setExpandedGraph((current) => mergeGraphResponses(current, payload));
       setExpandStatus("idle");
     } catch (err) {
@@ -6153,7 +7412,7 @@ function GraphWorkspace({
     setExpandStatus("loading");
     setExpandError("");
     try {
-      const payload = await loadGraphSearchSubgraph(serviceToken, query, Math.max(graphLimit, 80), 1, 5, activeTypeList);
+      const payload = await loadGraphSearchSubgraph(serviceToken, query, Math.max(graphLimit, 80), 1, 5, activeTypeList, kbScopedOptions);
       setExpandedGraph((current) => mergeGraphResponses(current, payload));
       const firstNodeId = payload.nodes?.[0]?.id;
       if (firstNodeId) {
@@ -6183,6 +7442,7 @@ function GraphWorkspace({
       <div className={`graph-control-dock ${controlsOpen ? "open" : ""}`} aria-label="Graph 控制抽屉">
         <div className="graph-control-head">
           <div className="graph-summary" aria-label="Graph 摘要">
+            <span><strong>{scopeLabel}</strong> 范围</span>
             <span><strong>{graph?.counts?.sources ?? 0}</strong> Sources</span>
             <span><strong>{graph?.counts?.claims ?? 0}</strong> Claims</span>
             <span><strong>{graph?.counts?.digest_notes ?? 0}</strong> Digest</span>

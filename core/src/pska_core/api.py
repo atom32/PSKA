@@ -53,6 +53,9 @@ from pska_core.models import (
     AskMessage,
     AskRun,
     ChannelIngestPayload,
+    KnowledgeBase,
+    KnowledgeBaseSource,
+    KnowledgeBaseSourceItem,
     KnowledgeSource,
     KnowledgeTopic,
     PassageWindow,
@@ -265,10 +268,203 @@ class PSKAApi:
             "effective": effective,
         }
 
+    def workspace_knowledge_bases(self, payload: dict[str, Any] | None = None, context: RequestContext | None = None) -> dict[str, Any]:
+        payload = context.apply_to_payload(payload or {}) if context else dict(payload or {})
+        tenant_id = _tenant_id_for_request(context, str(payload.get("tenant_id")) if payload.get("tenant_id") else None)
+        owner_user_id = _workspace_owner_user_id(context, payload.get("owner_user_id") or payload.get("represented_user_id"))
+        default_space_id = str(payload.get("default_space_id") or payload.get("space_id") or "").strip() or None
+        include_deleted = _truthy(payload.get("include_deleted")) or _truthy(payload.get("include_archived"))
+        default_knowledge_base = self.store.ensure_default_knowledge_base(
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            created_by_user_id=_actor_user_id(context, payload),
+            default_space_id=default_space_id,
+        )
+        knowledge_bases = self.store.list_knowledge_bases(
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            include_deleted=include_deleted,
+        )
+        if default_knowledge_base.knowledge_base_id not in {knowledge_base.knowledge_base_id for knowledge_base in knowledge_bases}:
+            knowledge_bases = [default_knowledge_base, *knowledge_bases]
+        return {
+            "ok": True,
+            "tenant_id": tenant_id,
+            "owner_user_id": owner_user_id,
+            "knowledge_bases": [_knowledge_base_payload(self.store, knowledge_base) for knowledge_base in knowledge_bases],
+            "default_knowledge_base_id": default_knowledge_base.knowledge_base_id,
+            "include_deleted": include_deleted,
+        }
+
+    def workspace_knowledge_base(
+        self,
+        knowledge_base_id: str,
+        payload: dict[str, Any] | None = None,
+        context: RequestContext | None = None,
+    ) -> dict[str, Any]:
+        payload = context.apply_to_payload(payload or {}) if context else dict(payload or {})
+        tenant_id = _tenant_id_for_request(context, str(payload.get("tenant_id")) if payload.get("tenant_id") else None)
+        owner_user_id = _workspace_owner_user_id(context, payload.get("owner_user_id") or payload.get("represented_user_id"))
+        knowledge_base = _get_accessible_knowledge_base(self.store, knowledge_base_id, tenant_id=tenant_id, owner_user_id=owner_user_id)
+        return {
+            "ok": True,
+            "tenant_id": tenant_id,
+            "owner_user_id": owner_user_id,
+            "knowledge_base": _knowledge_base_payload(self.store, knowledge_base, include_source_item_ids=True),
+        }
+
+    def create_workspace_knowledge_base(self, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
+        payload = context.apply_to_payload(payload) if context else payload
+        tenant_id = _tenant_id_for_request(context, str(payload.get("tenant_id")) if payload.get("tenant_id") else None)
+        owner_user_id = _workspace_owner_user_id(context, payload.get("owner_user_id") or payload.get("represented_user_id"))
+        name = str(payload.get("name") or "").strip()
+        if not name:
+            raise ValueError("knowledge base name is required")
+        visibility = Visibility(str(payload.get("visibility") or Visibility.PRIVATE.value))
+        knowledge_base = KnowledgeBase(
+            knowledge_base_id=str(payload.get("knowledge_base_id") or f"kb_{uuid4().hex}"),
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            created_by_user_id=_actor_user_id(context, payload),
+            slug=_knowledge_base_slug(str(payload.get("slug") or name)),
+            name=name,
+            description=str(payload.get("description") or ""),
+            kb_type=str(payload.get("kb_type") or payload.get("type") or "document"),
+            status=str(payload.get("status") or "active"),
+            visibility=visibility,
+            visible_team_ids=_string_list(payload.get("visible_team_ids")),
+            default_space_id=str(payload.get("default_space_id") or payload.get("space_id") or "").strip() or None,
+            is_default=_truthy(payload.get("is_default")),
+            config=dict(payload.get("config") or {}) if isinstance(payload.get("config"), dict) else {},
+            readiness=dict(payload.get("readiness") or {}) if isinstance(payload.get("readiness"), dict) else {},
+        )
+        stored = self.store.upsert_knowledge_base(knowledge_base)
+        return {
+            "ok": True,
+            "tenant_id": tenant_id,
+            "owner_user_id": owner_user_id,
+            "knowledge_base": _knowledge_base_payload(self.store, stored),
+        }
+
+    def update_workspace_knowledge_base(
+        self,
+        knowledge_base_id: str,
+        payload: dict[str, Any],
+        context: RequestContext | None = None,
+    ) -> dict[str, Any]:
+        payload = context.apply_to_payload(payload) if context else payload
+        tenant_id = _tenant_id_for_request(context, str(payload.get("tenant_id")) if payload.get("tenant_id") else None)
+        owner_user_id = _workspace_owner_user_id(context, payload.get("owner_user_id") or payload.get("represented_user_id"))
+        status = str(payload.get("status") or "").strip().lower()
+        if status in {"archived", "deleted"}:
+            _get_accessible_knowledge_base(self.store, knowledge_base_id, tenant_id=tenant_id, owner_user_id=owner_user_id)
+            knowledge_base = self.store.archive_knowledge_base(knowledge_base_id, tenant_id=tenant_id, owner_user_id=owner_user_id)
+            return {
+                "ok": True,
+                "tenant_id": tenant_id,
+                "owner_user_id": owner_user_id,
+                "knowledge_base": _knowledge_base_payload(self.store, knowledge_base),
+            }
+
+        knowledge_base = _get_accessible_knowledge_base(self.store, knowledge_base_id, tenant_id=tenant_id, owner_user_id=owner_user_id)
+        if "name" in payload:
+            name = str(payload.get("name") or "").strip()
+            if not name:
+                raise ValueError("knowledge base name is required")
+            knowledge_base.name = name
+        if "slug" in payload:
+            knowledge_base.slug = _knowledge_base_slug(str(payload.get("slug") or knowledge_base.name))
+        if "description" in payload:
+            knowledge_base.description = str(payload.get("description") or "")
+        if "kb_type" in payload or "type" in payload:
+            knowledge_base.kb_type = str(payload.get("kb_type") or payload.get("type") or knowledge_base.kb_type)
+        if status:
+            knowledge_base.status = status
+            if status == "active":
+                knowledge_base.deleted_at = None
+        if "visibility" in payload:
+            knowledge_base.visibility = Visibility(str(payload.get("visibility") or Visibility.PRIVATE.value))
+        if "visible_team_ids" in payload:
+            knowledge_base.visible_team_ids = _string_list(payload.get("visible_team_ids"))
+        if "default_space_id" in payload or "space_id" in payload:
+            knowledge_base.default_space_id = str(payload.get("default_space_id") or payload.get("space_id") or "").strip() or None
+        if "pinned" in payload:
+            knowledge_base.pinned_at = datetime.now(UTC) if _truthy(payload.get("pinned")) else None
+        if isinstance(payload.get("config"), dict):
+            knowledge_base.config = dict(payload["config"])
+        if isinstance(payload.get("readiness"), dict):
+            knowledge_base.readiness = dict(payload["readiness"])
+        stored = self.store.upsert_knowledge_base(knowledge_base)
+        return {
+            "ok": True,
+            "tenant_id": tenant_id,
+            "owner_user_id": owner_user_id,
+            "knowledge_base": _knowledge_base_payload(self.store, stored),
+        }
+
+    def delete_workspace_knowledge_base(
+        self,
+        knowledge_base_id: str,
+        payload: dict[str, Any] | None = None,
+        context: RequestContext | None = None,
+    ) -> dict[str, Any]:
+        payload = context.apply_to_payload(payload or {}) if context else dict(payload or {})
+        tenant_id = _tenant_id_for_request(context, str(payload.get("tenant_id")) if payload.get("tenant_id") else None)
+        owner_user_id = _workspace_owner_user_id(context, payload.get("owner_user_id") or payload.get("represented_user_id"))
+        _get_accessible_knowledge_base(self.store, knowledge_base_id, tenant_id=tenant_id, owner_user_id=owner_user_id)
+        knowledge_base = self.store.archive_knowledge_base(knowledge_base_id, tenant_id=tenant_id, owner_user_id=owner_user_id)
+        return {
+            "ok": True,
+            "tenant_id": tenant_id,
+            "owner_user_id": owner_user_id,
+            "knowledge_base": _knowledge_base_payload(self.store, knowledge_base),
+        }
+
+    def restore_workspace_knowledge_base(
+        self,
+        knowledge_base_id: str,
+        payload: dict[str, Any] | None = None,
+        context: RequestContext | None = None,
+    ) -> dict[str, Any]:
+        payload = context.apply_to_payload(payload or {}) if context else dict(payload or {})
+        tenant_id = _tenant_id_for_request(context, str(payload.get("tenant_id")) if payload.get("tenant_id") else None)
+        owner_user_id = _workspace_owner_user_id(context, payload.get("owner_user_id") or payload.get("represented_user_id"))
+        knowledge_base = self.store.restore_knowledge_base(knowledge_base_id, tenant_id=tenant_id, owner_user_id=owner_user_id)
+        return {
+            "ok": True,
+            "tenant_id": tenant_id,
+            "owner_user_id": owner_user_id,
+            "knowledge_base": _knowledge_base_payload(self.store, knowledge_base, include_source_item_ids=True),
+        }
+
+    def pin_workspace_knowledge_base(
+        self,
+        knowledge_base_id: str,
+        payload: dict[str, Any] | None = None,
+        context: RequestContext | None = None,
+        *,
+        pinned: bool = True,
+    ) -> dict[str, Any]:
+        payload = context.apply_to_payload(payload or {}) if context else dict(payload or {})
+        tenant_id = _tenant_id_for_request(context, str(payload.get("tenant_id")) if payload.get("tenant_id") else None)
+        owner_user_id = _workspace_owner_user_id(context, payload.get("owner_user_id") or payload.get("represented_user_id"))
+        knowledge_base = _get_accessible_knowledge_base(self.store, knowledge_base_id, tenant_id=tenant_id, owner_user_id=owner_user_id)
+        knowledge_base.pinned_at = datetime.now(UTC) if pinned else None
+        stored = self.store.upsert_knowledge_base(knowledge_base)
+        return {
+            "ok": True,
+            "tenant_id": tenant_id,
+            "owner_user_id": owner_user_id,
+            "knowledge_base": _knowledge_base_payload(self.store, stored),
+        }
+
     def index_status(self, *, tenant_id: str | None = None) -> dict[str, Any]:
         return {
             "tenant_id": tenant_id,
             "source_items": self.store.count_table("source_items", tenant_id=tenant_id),
+            "knowledge_bases": self.store.count_table("knowledge_bases", tenant_id=tenant_id),
+            "knowledge_base_sources": self.store.count_table("knowledge_base_sources", tenant_id=tenant_id),
+            "knowledge_base_source_items": self.store.count_table("knowledge_base_source_items", tenant_id=tenant_id),
             "documents": self.store.count_table("documents", tenant_id=tenant_id),
             "chunks": self.store.count_table("chunks", tenant_id=tenant_id),
             "entities": self.store.count_table("entities", tenant_id=tenant_id),
@@ -310,6 +506,9 @@ class PSKAApi:
             "jobs",
             "connector_states",
             "knowledge_sources",
+            "knowledge_bases",
+            "knowledge_base_sources",
+            "knowledge_base_source_items",
             "sync_runs",
             "processing_spans",
             "offline_index_states",
@@ -434,14 +633,28 @@ class PSKAApi:
         payload = context.apply_to_payload(payload) if context else payload
         tenant_id = str(payload.get("tenant_id") or DEFAULT_TENANT_ID)
         user = self.store.get_user(payload.get("user_id") or "user_primary", tenant_id=tenant_id)
-        return to_jsonable(
+        represented_user_id = payload.get("represented_user_id")
+        owner_user_id = str(represented_user_id or user.user_id)
+        scope = _resolve_knowledge_base_scope(
+            self.store,
+            _scope_from_payload(payload),
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+        )
+        scoped_source_item_ids = _ask_scope_source_item_ids(scope)
+        scope_mode = _ask_scope_mode(scope, ask_intent="kb_search")
+        result = to_jsonable(
             self.retrieval.search(
                 payload["query"],
                 user,
-                represented_user_id=payload.get("represented_user_id"),
+                represented_user_id=represented_user_id,
                 top_k=int(payload.get("top_k") or 5),
+                source_item_ids=_retrieval_source_item_ids_arg(scoped_source_item_ids, scope_mode=scope_mode),
+                scope_mode=scope_mode,
             )
         )
+        result["scope_applied"] = _ask_scope_applied(scope, ask_intent="kb_search")
+        return result
 
     def agentic_search(self, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
         payload = context.apply_to_payload(payload) if context else payload
@@ -678,10 +891,32 @@ class PSKAApi:
             source = source_service.add_url_source(value, processing_config=processing_config, **common)
         else:
             raise ValueError(f"Unsupported source_type: {source_type}")
+        knowledge_bases = _knowledge_bases_for_payload(
+            self.store,
+            payload,
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            actor_user_id=_actor_user_id(context, payload),
+            default_space_id=str(payload.get("default_space_id") or "").strip() or None,
+        )
+        _bind_source_to_knowledge_bases(
+            self.store,
+            source,
+            knowledge_bases=knowledge_bases,
+            source_item_ids=[],
+            actor_user_id=_actor_user_id(context, payload),
+            membership_type="source",
+        )
         preview = None
         if bool(payload.get("preview", False)):
             preview = build_source_adapter(self.store, source, processing_config=processing_config).preview(limit=max(1, min(int(payload.get("limit") or 5), 20)))
-        return {"ok": True, "knowledge_source": to_jsonable(source), "preview": preview, "adapters": supported_source_adapters()}
+        return {
+            "ok": True,
+            "knowledge_source": to_jsonable(source),
+            "knowledge_base_ids": [knowledge_base.knowledge_base_id for knowledge_base in knowledge_bases],
+            "preview": preview,
+            "adapters": supported_source_adapters(),
+        }
 
     def create_text_source(self, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
         payload = context.apply_to_payload(payload) if context else payload
@@ -740,6 +975,20 @@ class PSKAApi:
         preview = adapter.preview(limit=1)
         report = adapter.sync(limit=1)
         run = KnowledgeSourceService(self.store).record_sync_report(source, report)
+        knowledge_bases = _knowledge_bases_for_source_or_payload(
+            self.store,
+            payload,
+            source,
+            actor_user_id=_actor_user_id(context, payload),
+        )
+        _bind_source_to_knowledge_bases(
+            self.store,
+            source,
+            knowledge_bases=knowledge_bases,
+            source_item_ids=report.source_item_ids,
+            actor_user_id=_actor_user_id(context, payload),
+            membership_type=action,
+        )
         digest_mode = str(payload.get("digest_mode") or "after_upload").strip().lower()
         digest = None
         if digest_mode in {"after_upload", "auto", "immediate"} and report.source_item_ids:
@@ -765,6 +1014,7 @@ class PSKAApi:
             "tenant_id": source.tenant_id,
             "owner_user_id": source.owner_user_id,
             "knowledge_source": to_jsonable(source),
+            "knowledge_base_ids": [knowledge_base.knowledge_base_id for knowledge_base in knowledge_bases],
             "source_item_ids": report.source_item_ids,
             "documents": to_jsonable(documents),
             "chunk_stats": _chunk_stats(chunks),
@@ -807,6 +1057,20 @@ class PSKAApi:
                 reports.append(report)
                 failed.extend(getattr(report, "failed", []) or [])
                 sync_runs.append(source_service.record_sync_report(source, report))
+                knowledge_bases = _knowledge_bases_for_source_or_payload(
+                    self.store,
+                    payload,
+                    source,
+                    actor_user_id=_actor_user_id(context, payload),
+                )
+                _bind_source_to_knowledge_bases(
+                    self.store,
+                    source,
+                    knowledge_bases=knowledge_bases,
+                    source_item_ids=list(getattr(report, "source_item_ids", []) or []),
+                    actor_user_id=_actor_user_id(context, payload),
+                    membership_type="sync",
+                )
             except Exception as exc:  # noqa: BLE001 - keep syncing other sources.
                 error = f"{type(exc).__name__}: {exc}"
                 failed.append({"knowledge_source_id": source.knowledge_source_id, "uri": source.uri, "error": error})
@@ -835,7 +1099,11 @@ class PSKAApi:
         payload = context.apply_to_payload(payload) if context else payload
         source_service = KnowledgeSourceService(self.store)
         tenant_id = str(payload.get("tenant_id") or self.config.files.tenant_id or DEFAULT_TENANT_ID)
-        owner_user_id = str(payload.get("owner_user_id") or self.config.files.owner_user_id)
+        owner_user_id = (
+            _owner_user_id_for_write(payload, context)
+            if context or payload.get("owner_user_id")
+            else str(self.config.files.owner_user_id)
+        )
         requested_roots = [Path(str(root)).expanduser().resolve() for root in _string_list(payload.get("roots") or payload.get("root"))]
         ignore = _string_list(payload.get("ignore"))
         requested_max_bytes = _optional_positive_int(payload.get("max_bytes"))
@@ -929,6 +1197,20 @@ class PSKAApi:
                 reports.append(report)
                 failed.extend(report.failed)
                 sync_runs.append(source_service.record_sync_report(source, report))
+                knowledge_bases = _knowledge_bases_for_source_or_payload(
+                    self.store,
+                    payload,
+                    source,
+                    actor_user_id=_actor_user_id(context, payload),
+                )
+                _bind_source_to_knowledge_bases(
+                    self.store,
+                    source,
+                    knowledge_bases=knowledge_bases,
+                    source_item_ids=list(getattr(report, "source_item_ids", []) or []),
+                    actor_user_id=_actor_user_id(context, payload),
+                    membership_type="files_sync",
+                )
             except Exception as exc:  # noqa: BLE001 - report all roots together.
                 error = f"{type(exc).__name__}: {exc}"
                 failed.append({"root": str(root), "knowledge_source_id": source.knowledge_source_id, "error": error})
@@ -1100,50 +1382,149 @@ class PSKAApi:
             }
         return {"jobs": to_jsonable(self.store.list_jobs(tenant_id=tenant_id, status=status, job_type=job_type, limit=limit))}
 
-    def digest_logs(self, *, owner_user_id: str = "user_primary", tenant_id: str | None = None, limit: int = 10) -> dict[str, Any]:
+    def digest_logs(
+        self,
+        *,
+        owner_user_id: str = "user_primary",
+        tenant_id: str | None = None,
+        knowledge_base_ids: list[str] | None = None,
+        limit: int = 10,
+    ) -> dict[str, Any]:
         limit = max(1, limit)
         tenant_id = tenant_id or DEFAULT_TENANT_ID
+        scope = _knowledge_base_scope_for_ids(self.store, knowledge_base_ids or [], tenant_id=tenant_id, owner_user_id=owner_user_id)
+        scoped_source_item_ids = set(_string_list(scope.get("source_item_ids")))
+        has_kb_scope = bool(_knowledge_base_ids_from_scope(scope))
         jobs = [
             job
-            for job in self.store.list_jobs(tenant_id=tenant_id, job_type=DIGEST_VIA_FASTREACT, limit=max(limit * 3, limit))
+            for job in self.store.list_jobs(
+                tenant_id=tenant_id,
+                job_type=DIGEST_VIA_FASTREACT,
+                limit=10_000 if has_kb_scope else max(limit * 3, limit),
+            )
             if str(job.payload.get("owner_user_id") or owner_user_id) == owner_user_id
+            and (not has_kb_scope or bool(_job_source_item_ids(job) & scoped_source_item_ids))
         ][:limit]
         entries = []
+        selected_knowledge_base_ids = _knowledge_base_ids_from_scope(scope)
         for job in jobs:
             source_ids = _job_source_item_ids(job)
             events = self.store.list_job_events(job.job_id)
-            claims = self.store.list_knowledge_claims(owner_user_id=owner_user_id, tenant_id=tenant_id, job_id=job.job_id, limit=20)
-            notes = self.store.list_digest_notes(owner_user_id=owner_user_id, tenant_id=tenant_id, job_id=job.job_id, limit=10)
-            entries.append(_digest_log_entry(job, events, claims, notes, source_ids))
+            scoped_job_source_ids = source_ids & scoped_source_item_ids if has_kb_scope else source_ids
+            claims = self.store.list_knowledge_claims(
+                owner_user_id=owner_user_id,
+                tenant_id=tenant_id,
+                source_item_ids=scoped_job_source_ids or None,
+                job_id=job.job_id,
+                limit=20,
+            )
+            notes = self.store.list_digest_notes(
+                owner_user_id=owner_user_id,
+                tenant_id=tenant_id,
+                source_item_ids=scoped_job_source_ids or None,
+                job_id=job.job_id,
+                limit=10,
+            )
+            claim_payloads = _enrich_understanding_artifacts_knowledge_bases(
+                self.store,
+                to_jsonable(claims),
+                tenant_id=tenant_id,
+                owner_user_id=owner_user_id,
+                selected_knowledge_base_ids=selected_knowledge_base_ids,
+            )
+            note_payloads = _enrich_understanding_artifacts_knowledge_bases(
+                self.store,
+                to_jsonable(notes),
+                tenant_id=tenant_id,
+                owner_user_id=owner_user_id,
+                selected_knowledge_base_ids=selected_knowledge_base_ids,
+            )
+            source_refs = _enrich_source_refs_knowledge_bases(
+                self.store,
+                [{"source_item_id": source_id} for source_id in sorted(source_ids)],
+                tenant_id=tenant_id,
+                owner_user_id=owner_user_id,
+                selected_knowledge_base_ids=selected_knowledge_base_ids,
+            )
+            entries.append(_digest_log_entry(job, events, claim_payloads, note_payloads, source_ids, source_refs=source_refs))
         return {
             "ok": True,
             "owner_user_id": owner_user_id,
+            "scope_applied": _knowledge_scope_applied(scope),
             "summary": _digest_logs_summary(entries),
             "logs": to_jsonable(entries),
             "count": len(entries),
         }
 
-    def workspace_digest_data(self, *, owner_user_id: str | None = None, tenant_id: str | None = None, limit: int = 50, context: RequestContext | None = None) -> dict[str, Any]:
+    def workspace_digest_data(
+        self,
+        *,
+        owner_user_id: str | None = None,
+        tenant_id: str | None = None,
+        knowledge_base_ids: list[str] | None = None,
+        limit: int = 50,
+        context: RequestContext | None = None,
+    ) -> dict[str, Any]:
         tenant_id = tenant_id or (context.tenant_id if context else DEFAULT_TENANT_ID)
         owner_user_id = _workspace_owner_user_id(context, owner_user_id)
         limit = max(1, min(limit, 100))
-        notes = self.store.list_digest_notes(owner_user_id=owner_user_id, tenant_id=tenant_id, limit=limit)
-        claims = self.store.list_knowledge_claims(owner_user_id=owner_user_id, tenant_id=tenant_id, limit=limit)
+        scope = _knowledge_base_scope_for_ids(self.store, knowledge_base_ids or [], tenant_id=tenant_id, owner_user_id=owner_user_id)
+        scoped_source_item_ids = set(_string_list(scope.get("source_item_ids")))
+        has_kb_scope = bool(_knowledge_base_ids_from_scope(scope))
+        notes = self.store.list_digest_notes(
+            owner_user_id=owner_user_id,
+            tenant_id=tenant_id,
+            source_item_ids=scoped_source_item_ids if has_kb_scope else None,
+            limit=limit,
+        )
+        claims = self.store.list_knowledge_claims(
+            owner_user_id=owner_user_id,
+            tenant_id=tenant_id,
+            source_item_ids=scoped_source_item_ids if has_kb_scope else None,
+            limit=limit,
+        )
         review_items = [
             item
             for item in self.store.list_review_items(tenant_id=tenant_id)
             if item.owner_user_id == owner_user_id
+            and (
+                not has_kb_scope
+                or _review_item_matches_source_item_ids(item, scoped_source_item_ids)
+            )
         ]
         review_items = sorted(review_items, key=lambda item: item.created_at, reverse=True)[:limit]
         discoveries = self.store.list_discovery_items(owner_user_id=owner_user_id, tenant_id=tenant_id, limit=limit)
         stats = self.job_stats(tenant_id=tenant_id)["stats"]
+        selected_knowledge_base_ids = _knowledge_base_ids_from_scope(scope)
+        note_payloads = _enrich_understanding_artifacts_knowledge_bases(
+            self.store,
+            to_jsonable(notes),
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            selected_knowledge_base_ids=selected_knowledge_base_ids,
+        )
+        claim_payloads = _enrich_understanding_artifacts_knowledge_bases(
+            self.store,
+            to_jsonable(claims),
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            selected_knowledge_base_ids=selected_knowledge_base_ids,
+        )
+        review_payloads = _enrich_review_candidate_payloads_knowledge_bases(
+            self.store,
+            to_jsonable(review_items),
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            selected_knowledge_base_ids=selected_knowledge_base_ids,
+        )
         return {
             "ok": True,
             "tenant_id": tenant_id,
             "owner_user_id": owner_user_id,
-            "digest_notes": to_jsonable(notes),
-            "knowledge_claims": to_jsonable(claims),
-            "review_candidates": to_jsonable(review_items),
+            "scope_applied": _knowledge_scope_applied(scope),
+            "digest_notes": note_payloads,
+            "knowledge_claims": claim_payloads,
+            "review_candidates": review_payloads,
             "discovery_summaries": to_jsonable(discoveries),
             "summary": {
                 "digest_notes": len(notes),
@@ -1159,15 +1540,24 @@ class PSKAApi:
         tenant_id = str(payload.get("tenant_id") or (context.tenant_id if context else DEFAULT_TENANT_ID))
         owner_user_id = _owner_user_id_for_write(payload, context)
         source_item_ids = _string_list(payload.get("source_item_ids"))
+        knowledge_base_ids = _knowledge_base_ids_from_payload(payload)
         knowledge_source_ids = _string_list(payload.get("knowledge_source_ids") or payload.get("sources"))
         if not source_item_ids and knowledge_source_ids:
             source_item_ids = _source_item_ids_for_knowledge_sources(self.store, tenant_id=tenant_id, knowledge_source_ids=knowledge_source_ids)
+        scope = _resolve_knowledge_base_scope(
+            self.store,
+            _scope_from_payload({**payload, "source_item_ids": source_item_ids}),
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+        )
+        source_item_ids = _string_list(scope.get("source_item_ids"))
         scheduled = self.schedule_digest(
             {
                 **payload,
                 "tenant_id": tenant_id,
                 "owner_user_id": owner_user_id,
                 "source_item_ids": source_item_ids,
+                "scope": scope,
                 "reason": payload.get("reason") or "workspace digest run",
             },
             context=context,
@@ -1189,10 +1579,16 @@ class PSKAApi:
                 owner_user_id=owner_user_id,
             )
             worker_status = _workspace_digest_worker_status(worker_runs)
-        data = self.workspace_digest_data(owner_user_id=owner_user_id, tenant_id=tenant_id, context=context)
+        data = self.workspace_digest_data(
+            owner_user_id=owner_user_id,
+            tenant_id=tenant_id,
+            knowledge_base_ids=_knowledge_base_ids_from_scope(scope),
+            context=context,
+        )
         return {
             "ok": bool(worker_status.get("ok", True)),
             "scheduled": scheduled,
+            "scope_applied": _knowledge_scope_applied(scope),
             "mode": "sync_worker" if worker_status.get("requested") else "queued",
             "queued": not bool(worker_status.get("requested")),
             "job": scheduled.get("job"),
@@ -1350,15 +1746,40 @@ class PSKAApi:
             }
         }
 
-    def console_reviews(self, *, status: str = "pending", owner_user_id: str = "user_primary", tenant_id: str | None = None, limit: int = 50) -> dict[str, Any]:
+    def console_reviews(
+        self,
+        *,
+        status: str = "pending",
+        owner_user_id: str = "user_primary",
+        tenant_id: str | None = None,
+        knowledge_base_ids: list[str] | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
         limit = max(0, limit)
         tenant_id = tenant_id or DEFAULT_TENANT_ID
-        items = _console_review_items(
+        scope = _knowledge_base_scope_for_ids(self.store, knowledge_base_ids or [], tenant_id=tenant_id, owner_user_id=owner_user_id)
+        scoped_source_item_ids = set(_string_list(scope.get("source_item_ids")))
+        has_kb_scope = bool(_knowledge_base_ids_from_scope(scope))
+        all_items = _console_review_items(
             to_jsonable(self.store.list_review_items(tenant_id=tenant_id)),
             status=status,
             owner_user_id=owner_user_id,
-            limit=limit,
+            limit=10_000,
         )
+        if has_kb_scope:
+            all_items = [
+                item
+                for item in all_items
+                if _source_refs_match_source_item_ids(_list_of_dicts(item.get("source_refs")), scoped_source_item_ids)
+            ]
+        all_items = _enrich_review_items_knowledge_bases(
+            self.store,
+            all_items,
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            selected_knowledge_base_ids=_knowledge_base_ids_from_scope(scope),
+        )
+        items = all_items[:limit]
         return {
             "ok": True,
             "owner_user_id": owner_user_id,
@@ -1366,14 +1787,8 @@ class PSKAApi:
             "status": status,
             "review_items": items,
             "count": len(items),
-            "total_matching": len(
-                _console_review_items(
-                    to_jsonable(self.store.list_review_items(tenant_id=tenant_id)),
-                    status=status,
-                    owner_user_id=owner_user_id,
-                    limit=10_000,
-                )
-            ),
+            "total_matching": len(all_items),
+            "scope_applied": _knowledge_scope_applied(scope),
             "supports_single_item_actions": True,
         }
 
@@ -1387,6 +1802,15 @@ class PSKAApi:
         represented_user_id = payload.get("represented_user_id")
         mode = str(payload.get("mode") or "direct")
         user = self.store.get_user(user_id, tenant_id=tenant_id)
+        owner_user_id = str(represented_user_id or user_id)
+        scope = _resolve_knowledge_base_scope(
+            self.store,
+            _scope_from_payload(payload),
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+        )
+        scoped_source_item_ids = _ask_scope_source_item_ids(scope)
+        scope_mode = _ask_scope_mode(scope, ask_intent="kb_search")
         if mode == "agentic":
             try:
                 result = self._agentic_service_search(
@@ -1401,6 +1825,8 @@ class PSKAApi:
                     user,
                     represented_user_id=represented_user_id,
                     top_k=int(payload.get("top_k") or 5),
+                    source_item_ids=_retrieval_source_item_ids_arg(scoped_source_item_ids, scope_mode=scope_mode),
+                    scope_mode=scope_mode,
                 )
                 fallback_retrieval = _console_search_summary(to_jsonable(fallback))
                 return {
@@ -1411,6 +1837,7 @@ class PSKAApi:
                     "query": query,
                     "answer": _direct_retrieval_fallback_answer(query, fallback_retrieval),
                     "retrieval": fallback_retrieval,
+                    "scope_applied": _ask_scope_applied(scope, ask_intent="kb_search"),
                     "citations": fallback_retrieval.get("citations") or [],
                     "source_refs": fallback_retrieval.get("citations") or [],
                     "fallback_reason": "agentic_service_unavailable",
@@ -1456,6 +1883,8 @@ class PSKAApi:
             user,
             represented_user_id=represented_user_id,
             top_k=int(payload.get("top_k") or 5),
+            source_item_ids=_retrieval_source_item_ids_arg(scoped_source_item_ids, scope_mode=scope_mode),
+            scope_mode=scope_mode,
         )
         return {
             "ok": True,
@@ -1463,6 +1892,7 @@ class PSKAApi:
             "requires_agentic_service_online": False,
             "query": query,
             "retrieval": _console_search_summary(to_jsonable(response)),
+            "scope_applied": _ask_scope_applied(scope, ask_intent="kb_search"),
         }
 
     def workspace_search(self, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
@@ -1493,6 +1923,74 @@ class PSKAApi:
             },
         }
 
+    def workspace_knowledge_base_search(self, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
+        payload = context.apply_to_payload(payload) if context else payload
+        query = str(payload.get("query") or "").strip()
+        if not query:
+            raise ValueError("query is required")
+        tenant_id = str(payload.get("tenant_id") or (context.tenant_id if context else DEFAULT_TENANT_ID))
+        owner_user_id = _workspace_owner_user_id(context, payload.get("owner_user_id") or payload.get("represented_user_id"))
+        knowledge_base_ids = _knowledge_base_ids_from_payload(payload)
+        if not knowledge_base_ids:
+            raise ValueError("knowledge_base_ids is required")
+        scope = _resolve_knowledge_base_scope(
+            self.store,
+            {**_scope_from_payload(payload), "knowledge_base_ids": knowledge_base_ids, "mode": str(payload.get("mode") or "hard")},
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+        )
+        search_payload = {
+            **payload,
+            "query": query,
+            "mode": "direct",
+            "scope": scope,
+            "knowledge_base_ids": _knowledge_base_ids_from_scope(scope),
+            "top_k": max(1, min(int(payload.get("top_k") or 8), 50)),
+            "capture": False,
+        }
+        result = self.workspace_search(search_payload, context=context)
+        retrieval = result.get("retrieval") if isinstance(result.get("retrieval"), dict) else {}
+        enriched_retrieval = _enrich_search_retrieval_knowledge_bases(
+            self.store,
+            retrieval,
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            selected_knowledge_base_ids=_knowledge_base_ids_from_scope(scope),
+        )
+        scope_applied = _ask_scope_applied(scope, ask_intent="kb_search")
+        knowledge_bases = [
+            _knowledge_base_payload(self.store, knowledge_base)
+            for knowledge_base in (
+                _get_accessible_knowledge_base(self.store, knowledge_base_id, tenant_id=tenant_id, owner_user_id=owner_user_id)
+                for knowledge_base_id in _knowledge_base_ids_from_scope(scope)
+            )
+        ]
+        return {
+            "ok": True,
+            "query": query,
+            "mode": "knowledge_base_search",
+            "search_mode": str(payload.get("mode") or "hybrid"),
+            "tenant_id": tenant_id,
+            "owner_user_id": owner_user_id,
+            "knowledge_base_ids": _knowledge_base_ids_from_scope(scope),
+            "knowledge_bases": knowledge_bases,
+            "scope_applied": scope_applied,
+            "retrieval": enriched_retrieval,
+            "results": enriched_retrieval.get("results") or [],
+            "citations": enriched_retrieval.get("citations") or [],
+            "source_refs": enriched_retrieval.get("citations") or [],
+            "diagnostics": enriched_retrieval.get("diagnostics") or {},
+            "workspace": {
+                **dict(result.get("workspace") or {}),
+                "surface": "knowledge_base_search",
+                "evidence": {
+                    **dict((result.get("workspace") or {}).get("evidence") or {}),
+                    "citations": enriched_retrieval.get("citations") or [],
+                    "source_refs": enriched_retrieval.get("citations") or [],
+                },
+            },
+        }
+
     def workspace_ask_understand(self, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
         payload = context.apply_to_payload(payload) if context else payload
         query = str(payload.get("query") or "").strip()
@@ -1504,7 +2002,12 @@ class PSKAApi:
         owner_user_id = _workspace_owner_user_id(context, payload.get("owner_user_id") or payload.get("represented_user_id"))
         user_id = str(payload.get("user_id") or owner_user_id)
         represented_user_id = str(payload.get("represented_user_id") or owner_user_id)
-        scope = payload.get("scope") if isinstance(payload.get("scope"), dict) else {}
+        scope = _resolve_knowledge_base_scope(
+            self.store,
+            _scope_from_payload(payload),
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+        )
         surface = str(payload.get("surface") or "ask").strip() or "ask"
         session_id = str(payload.get("session_id") or "").strip() or None
         skip_intent_classifier = _truthy(payload.get("skip_intent_classifier"))
@@ -1649,7 +2152,12 @@ class PSKAApi:
         user_id = str(payload.get("user_id") or owner_user_id)
         represented_user_id = str(payload.get("represented_user_id") or owner_user_id)
         surface = str(payload.get("surface") or "ask").strip() or "ask"
-        scope = payload.get("scope") if isinstance(payload.get("scope"), dict) else {}
+        scope = _resolve_knowledge_base_scope(
+            self.store,
+            _scope_from_payload(payload),
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+        )
         top_k = max(1, min(int(payload.get("top_k") or 8), 20))
         session_id = str(payload.get("session_id") or "").strip() or None
         skip_intent_classifier = _truthy(payload.get("skip_intent_classifier"))
@@ -1668,8 +2176,13 @@ class PSKAApi:
         )
         ask_intent = str(understand.get("intent") or "kb_search")
         scope = _ask_scope_for_intent(scope, ask_intent=ask_intent)
+        understand = {
+            **understand,
+            "scope_applied": _ask_scope_applied(scope, ask_intent=ask_intent),
+        }
         selected_intent = str(understand.get("selected_intent") or "quick")
         if selected_intent == "deep":
+            tool_policy = _ask_read_tool_policy(understand.get("scope_applied") if isinstance(understand.get("scope_applied"), dict) else {})
             try:
                 deep_query = _ask_deep_query(query=query, surface=surface, scope={**scope, "understand": understand})
                 deep = self._workspace_ask_deep_agentic(
@@ -1678,7 +2191,7 @@ class PSKAApi:
                     represented_user_id=represented_user_id,
                     max_iterations=max(1, min(int(payload.get("max_iterations") or 4), 8)),
                     skills=[PSKA_QA_SKILL],
-                    tool_policy={"mode": "allowlist", "allowed_tools": ASK_READ_ONLY_TOOLS},
+                    tool_policy=tool_policy,
                     session_id=session_id,
                 )
                 return _ask_with_quality_signals(
@@ -1693,6 +2206,7 @@ class PSKAApi:
                         agentic=deep,
                         started_at=started_at,
                         allowed_tools=ASK_READ_ONLY_TOOLS,
+                        tool_policy=tool_policy,
                         store=self.store,
                     )
                 )
@@ -1792,7 +2306,12 @@ class PSKAApi:
         user_id = str(payload.get("user_id") or owner_user_id)
         represented_user_id = str(payload.get("represented_user_id") or owner_user_id)
         surface = str(payload.get("surface") or "ask").strip() or "ask"
-        scope = payload.get("scope") if isinstance(payload.get("scope"), dict) else {}
+        scope = _resolve_knowledge_base_scope(
+            self.store,
+            _scope_from_payload(payload),
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+        )
         top_k = max(1, min(int(payload.get("top_k") or 8), 20))
         session_id = str(payload.get("session_id") or "").strip() or None
         skip_intent_classifier = _truthy(payload.get("skip_intent_classifier"))
@@ -1811,6 +2330,10 @@ class PSKAApi:
         )
         ask_intent = str(understand.get("intent") or "kb_search")
         scope = _ask_scope_for_intent(scope, ask_intent=ask_intent)
+        understand = {
+            **understand,
+            "scope_applied": _ask_scope_applied(scope, ask_intent=ask_intent),
+        }
         selected_intent = str(understand.get("selected_intent") or "quick")
         requires_retrieval = bool(understand.get("requires_retrieval", _ask_requires_retrieval(ask_intent)))
         if selected_intent != "deep" or not hasattr(self.agentic_service, "search_event_stream"):
@@ -1885,6 +2408,7 @@ class PSKAApi:
             yield from _ask_sse_events(final_payload)
             return
 
+        tool_policy = _ask_read_tool_policy(understand.get("scope_applied") if isinstance(understand.get("scope_applied"), dict) else {})
         route = {
             "intent": str(understand.get("intent") or "kb_search"),
             "requested_intent": intent,
@@ -1892,7 +2416,7 @@ class PSKAApi:
             "retrieval_owner": "fastreact_pska_mcp",
             "surface": surface,
             "requires_agentic_service_online": True,
-            "tool_policy": {"mode": "allowlist", "allowed_tools": ASK_READ_ONLY_TOOLS},
+            "tool_policy": tool_policy,
             "tool_profile": ASK_READ_TOOL_PROFILE,
             "routing_owner": "pska_planner",
             "query_terms": _ask_query_terms(str(understand.get("rewrite_query") or query)),
@@ -1926,7 +2450,7 @@ class PSKAApi:
                 represented_user_id=represented_user_id,
                 max_iterations=max(1, min(int(payload.get("max_iterations") or 4), 8)),
                 skills=[PSKA_QA_SKILL],
-                tool_policy={"mode": "allowlist", "allowed_tools": ASK_READ_ONLY_TOOLS},
+                tool_policy=tool_policy,
                 session_id=session_id,
             )
             for raw_event in event_stream:
@@ -2008,6 +2532,7 @@ class PSKAApi:
             agentic=agentic,
             started_at=started_at,
             allowed_tools=ASK_READ_ONLY_TOOLS,
+            tool_policy=tool_policy,
             store=self.store,
         )
         final_payload["agent_steps"] = agent_steps or _ask_agent_steps_from_events(raw_events)
@@ -2035,12 +2560,17 @@ class PSKAApi:
         tenant_id = _tenant_id_for_request(context, str(payload.get("tenant_id")) if payload.get("tenant_id") else None)
         owner_user_id = _workspace_owner_user_id(context, payload.get("owner_user_id") or payload.get("represented_user_id"))
         title = str(payload.get("title") or "Ask PSKA conversation").strip()
+        metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+        metadata = _ask_conversation_metadata_with_scope(
+            metadata,
+            _ask_scope_applied_from_payload(self.store, payload, tenant_id=tenant_id, owner_user_id=owner_user_id),
+        )
         conversation = AskConversation(
             conversation_id=str(payload.get("conversation_id") or f"ask_{uuid4().hex}"),
             owner_user_id=owner_user_id,
             title=title,
             summary=str(payload.get("summary") or ""),
-            metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
+            metadata=metadata,
             tenant_id=tenant_id,
         )
         stored = self.store.create_ask_conversation(conversation)
@@ -2086,12 +2616,26 @@ class PSKAApi:
                 )
             )
         prompt_lineage = _prompt_profile_lineage(self.store, tenant_id=tenant_id, owner_user_id=owner_user_id, profile_type="ask")
+        initial_scope_applied = _ask_scope_applied_from_payload(self.store, payload, tenant_id=tenant_id, owner_user_id=owner_user_id)
+        if initial_scope_applied:
+            conversation.metadata = _ask_conversation_metadata_with_scope(conversation.metadata, initial_scope_applied)
+            conversation = self.store.create_ask_conversation(conversation)
+        initial_route = {
+            "intent": str(payload.get("intent") or "auto"),
+            "requested_intent": str(payload.get("intent") or "auto"),
+            "selected_intent": "pending",
+            "surface": str(payload.get("surface") or "ask"),
+            "scope_applied": initial_scope_applied,
+            "routing_owner": "pska_planner",
+        }
         run = self.store.add_ask_run(
             AskRun(
                 run_id=str(payload.get("run_id") or f"askrun_{uuid4().hex}"),
                 conversation_id=conversation.conversation_id,
                 owner_user_id=owner_user_id,
                 query=query,
+                route=initial_route,
+                result={"query": query, "status": "running", "scope_applied": initial_scope_applied, "route": initial_route},
                 prompt_profile_id=prompt_lineage.get("prompt_profile_id"),
                 prompt_profile_version=prompt_lineage.get("prompt_profile_version"),
                 tenant_id=tenant_id,
@@ -2106,7 +2650,7 @@ class PSKAApi:
                 role="user",
                 content=query,
                 run_id=run.run_id,
-                metadata={"prompt_profile": prompt_lineage},
+                metadata={"prompt_profile": prompt_lineage, "ask_scope": initial_scope_applied, "knowledge_base_ids": initial_scope_applied.get("knowledge_base_ids") or []},
                 tenant_id=tenant_id,
             )
         )
@@ -2132,6 +2676,11 @@ class PSKAApi:
                 _accumulate_ask_stream_result(result, event_name, event_payload)
                 if event_name == "done":
                     result["status"] = "succeeded" if result.get("ok") is not False else "failed"
+                    final_scope_applied = _ask_scope_applied_from_result(result) or initial_scope_applied
+                    if final_scope_applied:
+                        result["scope_applied"] = final_scope_applied
+                        conversation.metadata = _ask_conversation_metadata_with_scope(conversation.metadata, final_scope_applied)
+                        conversation = self.store.create_ask_conversation(conversation)
                     self.store.finish_ask_run(run.run_id, status="succeeded" if result.get("ok") is not False else "failed", result=result)
                     finished = True
                     self.store.add_ask_message(
@@ -2144,7 +2693,7 @@ class PSKAApi:
                             run_id=run.run_id,
                             citations=_list_of_dicts(result.get("citations")),
                             source_refs=_list_of_dicts(result.get("source_refs")),
-                            metadata={"quality_signals": result.get("quality_signals") or {}, "prompt_profile": prompt_lineage},
+                            metadata={"quality_signals": result.get("quality_signals") or {}, "prompt_profile": prompt_lineage, "ask_scope": final_scope_applied, "knowledge_base_ids": final_scope_applied.get("knowledge_base_ids") or []},
                             tenant_id=tenant_id,
                         )
                     )
@@ -2211,7 +2760,12 @@ class PSKAApi:
         understand: dict[str, Any] | None = None,
         session_id: str | None = None,
     ) -> dict[str, Any]:
-        scope = scope or {}
+        scope = _resolve_knowledge_base_scope(
+            self.store,
+            scope or {},
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+        )
         understand = understand or _ask_understand_payload(
             query=query,
             intent=intent,
@@ -2330,7 +2884,7 @@ class PSKAApi:
             user,
             represented_user_id=represented_user_id,
             top_k=top_k,
-            source_item_ids=scoped_source_item_ids or None,
+            source_item_ids=_retrieval_source_item_ids_arg(scoped_source_item_ids, scope_mode=scope_mode),
             scope_mode=scope_mode,
         )
         retrieval = _console_search_summary(to_jsonable(retrieval_result))
@@ -2338,6 +2892,13 @@ class PSKAApi:
             self.store,
             retrieval,
             query=query,
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+        )
+        retrieval = _ask_enrich_retrieval_knowledge_bases(
+            self.store,
+            retrieval,
+            scope=scope,
             tenant_id=tenant_id,
             owner_user_id=owner_user_id,
         )
@@ -2632,6 +3193,7 @@ class PSKAApi:
         self,
         *,
         owner_user_id: str | None = None,
+        knowledge_base_ids: list[str] | None = None,
         source_channel: str | None = None,
         query: str | None = None,
         limit: int = 20,
@@ -2643,6 +3205,13 @@ class PSKAApi:
         query_text = str(query or "").strip().lower()
         channel = str(source_channel or "").strip()
         all_sources = [item for item in self.store.list_source_items(tenant_id=tenant_id) if item.owner_user_id == owner_user_id and _is_active_lifecycle(item)]
+        scoped_source_item_ids = self.store.list_knowledge_base_source_item_ids(
+            set(knowledge_base_ids or []),
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+        )
+        if knowledge_base_ids:
+            all_sources = [item for item in all_sources if item.source_item_id in scoped_source_item_ids]
         all_source_ids = {item.source_item_id for item in all_sources}
         all_chunks = self.store.list_chunks_for_sources(all_source_ids)
         chunks_by_source: dict[str, list[Any]] = {}
@@ -2688,6 +3257,7 @@ class PSKAApi:
                 "source_channel": channel or None,
                 "query": query or "",
                 "limit": limit,
+                "knowledge_base_ids": list(knowledge_base_ids or []),
                 "available_source_channels": sorted({item.source_channel for item in all_sources}),
             },
             "counts": {
@@ -2720,11 +3290,35 @@ class PSKAApi:
         tenant_id = _tenant_id_for_request(context, str(payload.get("tenant_id")) if payload.get("tenant_id") else None)
         include_deleted = bool(payload.get("include_deleted", True))
         limit = max(1, min(int(payload.get("limit") or 100), 500))
+        knowledge_base_ids = _knowledge_base_ids_from_payload(payload)
+        active_scoped_source_item_ids = self.store.list_knowledge_base_source_item_ids(
+            set(knowledge_base_ids),
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            active_only=True,
+        )
+        deleted_scoped_source_item_ids = (
+            self.store.list_knowledge_base_source_item_ids(
+                set(knowledge_base_ids),
+                tenant_id=tenant_id,
+                owner_user_id=owner_user_id,
+                active_only=False,
+            )
+            if include_deleted
+            else set()
+        )
         source_items = [
             item
             for item in self.store.list_source_items(tenant_id=tenant_id)
             if item.owner_user_id == owner_user_id and (include_deleted or _is_active_lifecycle(item))
         ]
+        if knowledge_base_ids:
+            source_items = [
+                item
+                for item in source_items
+                if item.source_item_id in active_scoped_source_item_ids
+                or (include_deleted and not _is_active_lifecycle(item) and item.source_item_id in deleted_scoped_source_item_ids)
+            ]
         source_items.sort(key=lambda item: (getattr(item, "updated_at", None) or getattr(item, "created_at", datetime.min.replace(tzinfo=UTC))), reverse=True)
         source_items = source_items[:limit]
         source_ids = {item.source_item_id for item in source_items}
@@ -2739,9 +3333,17 @@ class PSKAApi:
         rows = []
         for item in source_items:
             source_id = item.source_item_id
+            knowledge_base_lineage = _source_item_knowledge_base_lineage(
+                self.store,
+                source_id,
+                tenant_id=tenant_id,
+                owner_user_id=owner_user_id,
+                active_only=_is_active_lifecycle(item),
+            )
             rows.append(
                 {
                     **_workspace_source(item, chunks_by_source.get(source_id, [])),
+                    **knowledge_base_lineage,
                     "lifecycle_status": _lifecycle_status(item),
                     "deleted_at": getattr(item, "deleted_at", None),
                     "deleted_by": getattr(item, "deleted_by", None),
@@ -2756,6 +3358,7 @@ class PSKAApi:
             "tenant_id": tenant_id,
             "owner_user_id": owner_user_id,
             "include_deleted": include_deleted,
+            "knowledge_base_ids": knowledge_base_ids,
             "documents": rows,
             "counts": {
                 "documents": len(rows),
@@ -2781,9 +3384,40 @@ class PSKAApi:
             raise PermissionError("no owned document entries matched")
         execute = bool(payload.get("execute", False))
         restore = bool(payload.get("restore", False))
-        hard_delete = str(payload.get("mode") or payload.get("delete_mode") or "").lower() in {"hard", "purge", "hard_purge"} or bool(payload.get("hard_delete", False))
+        delete_mode = str(payload.get("mode") or payload.get("delete_mode") or "").strip().lower()
+        hard_delete = delete_mode in {"hard", "purge", "hard_purge"} or bool(payload.get("hard_delete", False))
+        knowledge_base_ids = _knowledge_base_ids_from_payload(payload)
+        if delete_mode in {"membership", "scope", "knowledge_base", "kb"} and not knowledge_base_ids:
+            raise ValueError("knowledge_base_id is required for membership delete")
+        membership_delete = bool(
+            not restore
+            and not hard_delete
+            and knowledge_base_ids
+            and delete_mode not in {"source", "soft", "lifecycle", "global"}
+        )
+        membership_source_ids: list[str] = []
+        orphan_source_ids: list[str] = []
+        if membership_delete:
+            for knowledge_base_id in knowledge_base_ids:
+                _get_accessible_knowledge_base(self.store, knowledge_base_id, tenant_id=tenant_id, owner_user_id=owner_user_id)
+            membership_plan = _document_membership_delete_plan(
+                self.store,
+                source_item_ids=owned_ids,
+                knowledge_base_ids=knowledge_base_ids,
+                tenant_id=tenant_id,
+                owner_user_id=owner_user_id,
+            )
+            membership_source_ids = membership_plan["membership_source_item_ids"]
+            orphan_source_ids = membership_plan["orphan_source_item_ids"]
         reason = str(payload.get("reason") or ("restore document" if restore else "workspace document lifecycle update"))
-        impact = _document_delete_impact(self.store, tenant_id=tenant_id, source_item_ids=owned_ids)
+        impact_source_ids = orphan_source_ids if membership_delete else owned_ids
+        impact = _document_delete_impact(self.store, tenant_id=tenant_id, source_item_ids=impact_source_ids)
+        if membership_delete:
+            impact = {
+                **impact,
+                "knowledge_base_source_items": len(membership_source_ids),
+                "orphan_source_items": len(orphan_source_ids),
+            }
         if not execute:
             return {
                 "ok": True,
@@ -2791,11 +3425,13 @@ class PSKAApi:
                 "execute": False,
                 "restore": restore,
                 "hard_delete": hard_delete,
+                "delete_mode": "membership" if membership_delete else ("hard" if hard_delete else "source"),
+                "knowledge_base_ids": knowledge_base_ids,
                 "tenant_id": tenant_id,
                 "owner_user_id": owner_user_id,
-                "source_item_ids": owned_ids,
+                "source_item_ids": membership_source_ids if membership_delete else owned_ids,
                 "counts": impact,
-                "notes": _document_delete_notes(restore=restore, hard_delete=hard_delete),
+                "notes": _document_delete_notes(restore=restore, hard_delete=hard_delete, membership_delete=membership_delete),
             }
         actor_user_id = _actor_user_id(context, payload)
         deleted: dict[str, int] = {}
@@ -2824,6 +3460,31 @@ class PSKAApi:
                     hard_delete=True,
                 )
             )
+        elif membership_delete:
+            for knowledge_base_id in knowledge_base_ids:
+                membership_deleted = self.store.archive_knowledge_base_source_items(
+                    knowledge_base_id,
+                    owned_ids,
+                    tenant_id=tenant_id,
+                    owner_user_id=owner_user_id,
+                    actor_user_id=actor_user_id,
+                    reason=reason,
+                )
+                for key, value in membership_deleted.items():
+                    deleted[key] = deleted.get(key, 0) + value
+            if orphan_source_ids:
+                deleted["orphan_source_items"] = len(orphan_source_ids)
+                deleted.update(
+                    self.store.update_source_lifecycle(
+                        orphan_source_ids,
+                        lifecycle_status="deleted",
+                        actor_user_id=actor_user_id,
+                        reason=reason,
+                        tenant_id=tenant_id,
+                    )
+                )
+                stale = _mark_source_derivatives_stale(self.store, orphan_source_ids, tenant_id=tenant_id, actor_user_id=actor_user_id, reason=reason)
+                deleted.update({f"stale_{key}": value for key, value in stale.items()})
         else:
             deleted.update(
                 self.store.update_source_lifecycle(
@@ -2842,18 +3503,257 @@ class PSKAApi:
             "execute": True,
             "restore": restore,
             "hard_delete": hard_delete,
+            "delete_mode": "membership" if membership_delete else ("hard" if hard_delete else "source"),
+            "knowledge_base_ids": knowledge_base_ids,
             "tenant_id": tenant_id,
             "owner_user_id": owner_user_id,
-            "source_item_ids": owned_ids,
+            "source_item_ids": membership_source_ids if membership_delete else owned_ids,
             "counts": impact,
             "deleted": deleted,
-            "notes": _document_delete_notes(restore=restore, hard_delete=hard_delete),
+            "notes": _document_delete_notes(restore=restore, hard_delete=hard_delete, membership_delete=membership_delete),
+        }
+
+    def workspace_documents_link(self, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
+        payload = context.apply_to_payload(payload) if context else payload
+        tenant_id = _tenant_id_for_request(context, str(payload.get("tenant_id")) if payload.get("tenant_id") else None)
+        owner_user_id = _workspace_owner_user_id(context, payload.get("owner_user_id") or payload.get("represented_user_id"))
+        requested_ids = _string_list(payload.get("source_item_ids") or payload.get("source_item_id") or payload.get("document_ids"))
+        if not requested_ids:
+            raise ValueError("source_item_ids is required")
+        target_knowledge_base_ids = []
+        target_knowledge_base_ids.extend(_string_list(payload.get("target_knowledge_base_id")))
+        target_knowledge_base_ids.extend(_string_list(payload.get("target_knowledge_base_ids")))
+        target_knowledge_base_ids.extend(_knowledge_base_ids_from_payload(payload))
+        target_knowledge_base_ids = list(dict.fromkeys(item for item in target_knowledge_base_ids if item))
+        if not target_knowledge_base_ids:
+            raise ValueError("target_knowledge_base_id is required")
+        for knowledge_base_id in target_knowledge_base_ids:
+            _get_accessible_knowledge_base(self.store, knowledge_base_id, tenant_id=tenant_id, owner_user_id=owner_user_id)
+
+        requested_id_set = set(requested_ids)
+        source_items = [
+            item
+            for item in self.store.list_source_items(tenant_id=tenant_id)
+            if item.owner_user_id == owner_user_id and item.source_item_id in requested_id_set and _is_active_lifecycle(item)
+        ]
+        if not source_items:
+            raise PermissionError("no active owned document entries matched")
+        source_items.sort(key=lambda item: item.source_item_id)
+        source_item_ids = [item.source_item_id for item in source_items]
+        source_item_id_set = set(source_item_ids)
+
+        active_pairs: set[tuple[str, str]] = set()
+        reactivated_pairs: set[tuple[str, str]] = set()
+        for knowledge_base_id in target_knowledge_base_ids:
+            active_ids = self.store.list_knowledge_base_source_item_ids(
+                {knowledge_base_id},
+                tenant_id=tenant_id,
+                owner_user_id=owner_user_id,
+                active_only=True,
+            ) & source_item_id_set
+            all_ids = self.store.list_knowledge_base_source_item_ids(
+                {knowledge_base_id},
+                tenant_id=tenant_id,
+                owner_user_id=owner_user_id,
+                active_only=False,
+            ) & source_item_id_set
+            active_pairs.update((knowledge_base_id, source_item_id) for source_item_id in active_ids)
+            reactivated_pairs.update((knowledge_base_id, source_item_id) for source_item_id in all_ids - active_ids)
+
+        requested_pairs = {
+            (knowledge_base_id, source_item_id)
+            for knowledge_base_id in target_knowledge_base_ids
+            for source_item_id in source_item_ids
+        }
+        new_pairs = requested_pairs - active_pairs - reactivated_pairs
+        changed_pairs = new_pairs | reactivated_pairs
+        execute = bool(payload.get("execute", False))
+        counts = {
+            "requested_source_items": len(requested_id_set),
+            "source_items": len(source_item_ids),
+            "target_knowledge_bases": len(target_knowledge_base_ids),
+            "knowledge_base_source_items": len(changed_pairs),
+            "already_present": len(active_pairs),
+            "reactivated": len(reactivated_pairs),
+            "new": len(new_pairs),
+        }
+        response = {
+            "ok": True,
+            "dry_run": not execute,
+            "execute": execute,
+            "tenant_id": tenant_id,
+            "owner_user_id": owner_user_id,
+            "knowledge_base_ids": target_knowledge_base_ids,
+            "target_knowledge_base_ids": target_knowledge_base_ids,
+            "source_item_ids": source_item_ids,
+            "counts": counts,
+            "notes": [
+                "This operation links existing active source items to the selected knowledge base by membership.",
+                "It does not duplicate documents, chunks, vectors, or source connector configuration.",
+            ],
+        }
+        if not execute:
+            return response
+
+        actor_user_id = _actor_user_id(context, payload)
+        membership_type = str(payload.get("membership_type") or "manual").strip() or "manual"
+        payload_metadata = dict(payload.get("metadata") or {}) if isinstance(payload.get("metadata"), dict) else {}
+        for knowledge_base_id in target_knowledge_base_ids:
+            for source_item_id in source_item_ids:
+                self.store.add_knowledge_base_source_item(
+                    KnowledgeBaseSourceItem(
+                        knowledge_base_id=knowledge_base_id,
+                        source_item_id=source_item_id,
+                        tenant_id=tenant_id,
+                        owner_user_id=owner_user_id,
+                        added_by_user_id=actor_user_id,
+                        membership_type=membership_type,
+                        metadata={
+                            **payload_metadata,
+                            "bound_by": "workspace_api",
+                            "membership_action": "link",
+                            "target_knowledge_base_id": knowledge_base_id,
+                        },
+                    )
+                )
+        return {
+            **response,
+            "linked": counts,
+        }
+
+    def workspace_documents_move(self, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
+        payload = context.apply_to_payload(payload) if context else payload
+        tenant_id = _tenant_id_for_request(context, str(payload.get("tenant_id")) if payload.get("tenant_id") else None)
+        owner_user_id = _workspace_owner_user_id(context, payload.get("owner_user_id") or payload.get("represented_user_id"))
+        requested_ids = _string_list(payload.get("source_item_ids") or payload.get("source_item_id") or payload.get("document_ids"))
+        if not requested_ids:
+            raise ValueError("source_item_ids is required")
+        source_knowledge_base_id = str(
+            payload.get("source_knowledge_base_id")
+            or payload.get("from_knowledge_base_id")
+            or payload.get("current_knowledge_base_id")
+            or ""
+        ).strip()
+        if not source_knowledge_base_id:
+            source_ids_from_payload = _knowledge_base_ids_from_payload(payload)
+            source_knowledge_base_id = source_ids_from_payload[0] if source_ids_from_payload else ""
+        target_knowledge_base_id = str(payload.get("target_knowledge_base_id") or payload.get("to_knowledge_base_id") or "").strip()
+        if not source_knowledge_base_id:
+            raise ValueError("source_knowledge_base_id is required")
+        if not target_knowledge_base_id:
+            raise ValueError("target_knowledge_base_id is required")
+        if source_knowledge_base_id == target_knowledge_base_id:
+            raise ValueError("target_knowledge_base_id must differ from source_knowledge_base_id")
+        _get_accessible_knowledge_base(self.store, source_knowledge_base_id, tenant_id=tenant_id, owner_user_id=owner_user_id)
+        _get_accessible_knowledge_base(self.store, target_knowledge_base_id, tenant_id=tenant_id, owner_user_id=owner_user_id)
+
+        requested_id_set = set(requested_ids)
+        active_owned_ids = {
+            item.source_item_id
+            for item in self.store.list_source_items(tenant_id=tenant_id)
+            if item.owner_user_id == owner_user_id and item.source_item_id in requested_id_set and _is_active_lifecycle(item)
+        }
+        source_scoped_ids = self.store.list_knowledge_base_source_item_ids(
+            {source_knowledge_base_id},
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            active_only=True,
+        )
+        source_item_ids = sorted(active_owned_ids & source_scoped_ids)
+        if not source_item_ids:
+            raise PermissionError("no active source membership matched")
+        source_item_id_set = set(source_item_ids)
+
+        target_active_ids = self.store.list_knowledge_base_source_item_ids(
+            {target_knowledge_base_id},
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            active_only=True,
+        ) & source_item_id_set
+        target_all_ids = self.store.list_knowledge_base_source_item_ids(
+            {target_knowledge_base_id},
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            active_only=False,
+        ) & source_item_id_set
+        target_reactivated_ids = target_all_ids - target_active_ids
+        target_new_ids = source_item_id_set - target_active_ids - target_reactivated_ids
+        target_changed = len(target_new_ids) + len(target_reactivated_ids)
+        execute = bool(payload.get("execute", False))
+        counts = {
+            "requested_source_items": len(requested_id_set),
+            "source_items": len(source_item_ids),
+            "moved": len(source_item_ids),
+            "source_knowledge_base_source_items": len(source_item_ids),
+            "target_knowledge_base_source_items": target_changed,
+            "knowledge_base_source_items": len(source_item_ids) + target_changed,
+            "already_present": len(target_active_ids),
+            "reactivated": len(target_reactivated_ids),
+            "new": len(target_new_ids),
+            "orphan_source_items": 0,
+        }
+        response = {
+            "ok": True,
+            "dry_run": not execute,
+            "execute": execute,
+            "tenant_id": tenant_id,
+            "owner_user_id": owner_user_id,
+            "source_knowledge_base_id": source_knowledge_base_id,
+            "target_knowledge_base_id": target_knowledge_base_id,
+            "knowledge_base_ids": [source_knowledge_base_id, target_knowledge_base_id],
+            "source_item_ids": source_item_ids,
+            "counts": counts,
+            "notes": [
+                "This operation moves existing active source items between knowledge bases by membership.",
+                "It activates the target membership before archiving the source membership, so the source item is not soft-deleted as an orphan.",
+            ],
+        }
+        if not execute:
+            return response
+
+        actor_user_id = _actor_user_id(context, payload)
+        membership_type = str(payload.get("membership_type") or "manual").strip() or "manual"
+        payload_metadata = dict(payload.get("metadata") or {}) if isinstance(payload.get("metadata"), dict) else {}
+        for source_item_id in source_item_ids:
+            self.store.add_knowledge_base_source_item(
+                KnowledgeBaseSourceItem(
+                    knowledge_base_id=target_knowledge_base_id,
+                    source_item_id=source_item_id,
+                    tenant_id=tenant_id,
+                    owner_user_id=owner_user_id,
+                    added_by_user_id=actor_user_id,
+                    membership_type=membership_type,
+                    metadata={
+                        **payload_metadata,
+                        "bound_by": "workspace_api",
+                        "membership_action": "move",
+                        "source_knowledge_base_id": source_knowledge_base_id,
+                        "target_knowledge_base_id": target_knowledge_base_id,
+                    },
+                )
+            )
+        archived = self.store.archive_knowledge_base_source_items(
+            source_knowledge_base_id,
+            source_item_ids,
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            actor_user_id=actor_user_id,
+            reason=str(payload.get("reason") or "workspace document move"),
+        )
+        moved = {
+            **counts,
+            "archived_source_memberships": archived.get("knowledge_base_source_items", 0),
+        }
+        return {
+            **response,
+            "moved": moved,
         }
 
     def workspace_graph_data(
         self,
         *,
         owner_user_id: str | None = None,
+        knowledge_base_ids: list[str] | None = None,
         limit: int = 30,
         node_types: set[str] | None = None,
         context: RequestContext | None = None,
@@ -2861,7 +3761,16 @@ class PSKAApi:
         owner_user_id = _workspace_owner_user_id(context, owner_user_id)
         tenant_id = _tenant_id_for_request(context)
         limit = max(1, min(limit, 100))
-        source_items = [item for item in self.store.list_source_items(tenant_id=tenant_id) if item.owner_user_id == owner_user_id and _is_active_lifecycle(item)][:limit]
+        scope = _knowledge_base_scope_for_ids(self.store, knowledge_base_ids or [], tenant_id=tenant_id, owner_user_id=owner_user_id)
+        scoped_source_item_ids = set(_string_list(scope.get("source_item_ids")))
+        has_kb_scope = bool(_knowledge_base_ids_from_scope(scope))
+        source_items = [
+            item
+            for item in self.store.list_source_items(tenant_id=tenant_id)
+            if item.owner_user_id == owner_user_id
+            and _is_active_lifecycle(item)
+            and (not has_kb_scope or item.source_item_id in scoped_source_item_ids)
+        ][:limit]
         source_ids = {item.source_item_id for item in source_items}
         documents = self.store.list_documents_for_sources(source_ids)
         chunks = self.store.list_chunks_for_sources(source_ids)
@@ -2884,11 +3793,19 @@ class PSKAApi:
             status="active",
             limit=limit * 10,
         )
-        memories = self.store.list_agent_memories(owner_user_id=owner_user_id, tenant_id=tenant_id)[:limit]
+        memories = self.store.list_agent_memories(owner_user_id=owner_user_id, tenant_id=tenant_id)
+        if has_kb_scope:
+            memories = [
+                memory
+                for memory in memories
+                if _source_refs_match_source_item_ids(_source_refs_payload(getattr(memory, "source_refs", [])), scoped_source_item_ids)
+            ]
+        memories = memories[:limit]
         review_items = [
             item
             for item in self.store.list_review_items(tenant_id=tenant_id)
             if getattr(item, "owner_user_id", "") == owner_user_id and getattr(item, "status", "") == "pending"
+            and (not has_kb_scope or _review_item_matches_source_item_ids(item, scoped_source_item_ids))
         ][:limit]
         entities = [entity for entity in self.store.list_entities(tenant_id=tenant_id) if getattr(entity, "owner_user_id", "") == owner_user_id]
         entity_by_id = {entity.entity_id: entity for entity in entities}
@@ -2896,7 +3813,11 @@ class PSKAApi:
             (edge, members)
             for edge, members in self.store.list_hyperedges_for_entities(set(entity_by_id))
             if getattr(edge, "owner_user_id", "") == owner_user_id
+            and (not has_kb_scope or _source_refs_match_source_item_ids(_source_refs_payload(getattr(edge, "source_refs", [])), scoped_source_item_ids))
         ]
+        if has_kb_scope:
+            entity_ids = {getattr(member, "entity_id", "") for _, members in hyperedges for member in members}
+            entities = [entity for entity in entities if getattr(entity, "entity_id", "") in entity_ids]
         nodes, edges = _workspace_graph_nodes_edges(
             source_items=source_items,
             documents=documents,
@@ -2917,6 +3838,7 @@ class PSKAApi:
             "ok": True,
             "owner_user_id": owner_user_id,
             "ontology_version": "pska.graph.v2",
+            "scope_applied": _knowledge_scope_applied(scope),
             "nodes": nodes,
             "edges": edges,
             "insights": _workspace_graph_insights(nodes, edges),
@@ -2954,6 +3876,7 @@ class PSKAApi:
         *,
         node_id: str,
         owner_user_id: str | None = None,
+        knowledge_base_ids: list[str] | None = None,
         limit: int = 80,
         hops: int = 1,
         node_types: set[str] | None = None,
@@ -2962,7 +3885,13 @@ class PSKAApi:
         owner_user_id = _workspace_owner_user_id(context, owner_user_id)
         limit = max(1, min(limit, 160))
         hops = max(1, min(hops, 3))
-        graph = self.workspace_graph_data(owner_user_id=owner_user_id, limit=limit, node_types=None, context=context)
+        graph = self.workspace_graph_data(
+            owner_user_id=owner_user_id,
+            knowledge_base_ids=knowledge_base_ids,
+            limit=limit,
+            node_types=None,
+            context=context,
+        )
         nodes = _list_of_dicts(graph.get("nodes"))
         edges = _list_of_dicts(graph.get("edges"))
         sub_nodes, sub_edges = _workspace_graph_subgraph(nodes, edges, node_id=node_id, hops=hops, node_types=node_types)
@@ -2970,6 +3899,7 @@ class PSKAApi:
             "ok": bool(sub_nodes),
             "owner_user_id": owner_user_id,
             "ontology_version": graph.get("ontology_version") or "pska.graph.v2",
+            "scope_applied": graph.get("scope_applied") or {},
             "node_id": node_id,
             "hops": hops,
             "nodes": sub_nodes,
@@ -2995,6 +3925,7 @@ class PSKAApi:
         *,
         query: str,
         owner_user_id: str | None = None,
+        knowledge_base_ids: list[str] | None = None,
         limit: int = 80,
         hops: int = 1,
         top_k: int = 5,
@@ -3005,7 +3936,13 @@ class PSKAApi:
         limit = max(1, min(limit, 160))
         hops = max(1, min(hops, 3))
         top_k = max(1, min(top_k, 20))
-        graph = self.workspace_graph_data(owner_user_id=owner_user_id, limit=limit, node_types=None, context=context)
+        graph = self.workspace_graph_data(
+            owner_user_id=owner_user_id,
+            knowledge_base_ids=knowledge_base_ids,
+            limit=limit,
+            node_types=None,
+            context=context,
+        )
         nodes = _list_of_dicts(graph.get("nodes"))
         edges = _list_of_dicts(graph.get("edges"))
         matches = _workspace_graph_search_nodes(nodes, query=query, node_types=node_types, limit=top_k)
@@ -3023,6 +3960,7 @@ class PSKAApi:
             "ok": bool(matches),
             "owner_user_id": owner_user_id,
             "ontology_version": graph.get("ontology_version") or "pska.graph.v2",
+            "scope_applied": graph.get("scope_applied") or {},
             "query": query,
             "hops": hops,
             "matches": matches,
@@ -3627,13 +4565,19 @@ class PSKAApi:
         payload, tenant_id, owner = _writing_request_scope(context, payload)
         title = str(payload.get("title") or "").strip() or "Untitled inquiry"
         goal = str(payload.get("goal") or "").strip()
+        metadata = _writing_board_metadata_with_knowledge_scope(
+            self.store,
+            payload,
+            tenant_id=tenant_id,
+            owner_user_id=owner,
+        )
         board = WritingBoard(
             board_id=str(payload.get("board_id") or f"wboard_{uuid4().hex}"),
             tenant_id=tenant_id,
             owner_user_id=owner,
             title=title,
             goal=goal,
-            metadata=dict(payload.get("metadata") or {}),
+            metadata=metadata,
         )
         created = self.store.create_writing_board(board)
         return {"ok": True, "board": _writing_board_payload(created)}
@@ -3658,7 +4602,14 @@ class PSKAApi:
             owner_user_id=owner,
             title=str(payload["title"]) if "title" in payload else None,
             goal=str(payload["goal"]) if "goal" in payload else None,
-            metadata=dict(payload["metadata"]) if isinstance(payload.get("metadata"), dict) else None,
+            metadata=_writing_board_metadata_with_knowledge_scope(
+                self.store,
+                payload,
+                tenant_id=tenant_id,
+                owner_user_id=owner,
+            )
+            if isinstance(payload.get("metadata"), dict) or _knowledge_base_ids_from_payload(payload)
+            else None,
         )
         return {"ok": True, "board": _writing_board_payload(board)}
 
@@ -3852,6 +4803,21 @@ class PSKAApi:
             source_refs=refs,
             warnings=warnings,
         )
+        knowledge_base_lineage = _knowledge_base_lineage_from_source_refs(refs)
+        board_metadata = {
+            "kind": "evidence_wiki_brief",
+            "status": "draft",
+            "review_status": _evidence_brief_review_status(review_items),
+            "lineage": lineage,
+            **knowledge_base_lineage,
+        }
+        knowledge_base_ids = _string_list(knowledge_base_lineage.get("knowledge_base_ids"))
+        if knowledge_base_ids:
+            board_metadata["knowledge_base_scope"] = {
+                "mode": "hard",
+                "knowledge_base_ids": knowledge_base_ids,
+                "source_item_count": len(_source_refs_source_item_ids(refs)),
+            }
         board = self.store.create_writing_board(
             WritingBoard(
                 board_id=str(payload.get("board_id") or f"wbrief_{uuid4().hex}"),
@@ -3859,12 +4825,7 @@ class PSKAApi:
                 owner_user_id=owner,
                 title=title,
                 goal=str(payload.get("goal") or "Evidence Wiki brief draft with citations and review lineage."),
-                metadata={
-                    "kind": "evidence_wiki_brief",
-                    "status": "draft",
-                    "review_status": _evidence_brief_review_status(review_items),
-                    "lineage": lineage,
-                },
+                metadata=board_metadata,
             )
         )
         nodes, edges = _create_evidence_brief_writing_nodes(
@@ -3887,6 +4848,7 @@ class PSKAApi:
                 "source_refs": refs,
                 "lineage": lineage,
                 "warnings": warnings,
+                **knowledge_base_lineage,
             },
             "board": _writing_board_payload(board),
             "nodes": [_writing_node_payload(node) for node in nodes],
@@ -4083,6 +5045,7 @@ class PSKAApi:
         tenant_id = str(payload.get("tenant_id") or DEFAULT_TENANT_ID)
         owner_user_id = _owner_user_id_for_write(payload, context)
         source_item_ids = _string_list(payload.get("source_item_ids"))
+        knowledge_base_ids = _knowledge_base_ids_from_payload(payload)
         scoped_source_item_ids = set(_string_list(context.scope.get("source_item_ids"))) if context and context.scope else set()
         force = bool(payload.get("force", False))
         limit = _batch_limit(payload.get("limit") or 20)
@@ -4148,13 +5111,16 @@ class PSKAApi:
         job = None
         if source_refs:
             prompt_lineage = _prompt_profile_lineage(self.store, tenant_id=tenant_id, owner_user_id=owner_user_id, profile_type="digest")
+            job_scope: dict[str, Any] = {"source_item_ids": [ref["source_item_id"] for ref in source_refs]}
+            if knowledge_base_ids:
+                job_scope["knowledge_base_ids"] = knowledge_base_ids
             job_payload: dict[str, Any] = {
                 "owner_user_id": owner_user_id,
                 "tenant_id": tenant_id,
                 "batch_size": batch_size,
                 "retry_backoff_seconds": retry_backoff_seconds,
                 "source_refs": source_refs,
-                "scope": {"source_item_ids": [ref["source_item_id"] for ref in source_refs]},
+                "scope": job_scope,
                 "triggered_by": str(payload.get("triggered_by") or payload.get("actor_user_id") or owner_user_id),
                 "producer": "pska.digest_scheduler",
                 **prompt_lineage,
@@ -4297,6 +5263,18 @@ class PSKAApi:
 class PSKARequestHandler(BaseHTTPRequestHandler):
     api: PSKAApi
 
+    def handle_one_request(self) -> None:
+        try:
+            super().handle_one_request()
+        except KeyError as exc:
+            if not hasattr(self, "_request_meta"):
+                self._begin_request(path=getattr(self, "path", ""), payload={})
+            self._json(404, {"error": f"not found: {exc}"})
+        except PermissionError as exc:
+            if not hasattr(self, "_request_meta"):
+                self._begin_request(path=getattr(self, "path", ""), payload={})
+            self._json(403, {"error": str(exc)})
+
     def do_GET(self) -> None:  # noqa: N802 - stdlib handler API
         parsed_url = urlparse(self.path)
         path = parsed_url.path
@@ -4356,12 +5334,38 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
                     "effective": prompt_profiles.get("effective") or {},
                 },
             )
+        if path == "/workspace/knowledge-bases":
+            return self._json(
+                200,
+                self.api.workspace_knowledge_bases(
+                    {
+                        "owner_user_id": _first(query.get("owner_user_id")),
+                        "default_space_id": _first(query.get("default_space_id")),
+                        "space_id": _first(query.get("space_id")),
+                        "include_deleted": (_first(query.get("include_deleted")) or "false").lower() == "true",
+                        "include_archived": (_first(query.get("include_archived")) or "false").lower() == "true",
+                    },
+                    context=context,
+                ),
+            )
+        if path.startswith("/workspace/knowledge-bases/"):
+            parts = _knowledge_base_path_parts(path)
+            if len(parts) == 1:
+                return self._json(
+                    200,
+                    self.api.workspace_knowledge_base(
+                        unquote(parts[0]),
+                        {"owner_user_id": _first(query.get("owner_user_id"))},
+                        context=context,
+                    ),
+                )
         if path == "/workspace/documents/data":
             return self._json(
                 200,
                 self.api.workspace_documents_data(
                     {
                         "owner_user_id": _first(query.get("owner_user_id")),
+                        "knowledge_base_ids": _query_string_list(query, "knowledge_base_ids") or _query_string_list(query, "knowledge_base_id"),
                         "include_deleted": (_first(query.get("include_deleted")) or "true").lower() != "false",
                         "limit": _int_first(query.get("limit")) or 100,
                     },
@@ -4396,6 +5400,7 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
                     status=_first(query.get("status")) or "pending",
                     owner_user_id=_first(query.get("owner_user_id")) or "user_primary",
                     tenant_id=context.tenant_id,
+                    knowledge_base_ids=_query_string_list(query, "knowledge_base_ids") or _query_string_list(query, "knowledge_base_id"),
                     limit=_int_first(query.get("limit")) or 50,
                 ),
             )
@@ -4416,6 +5421,7 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
                 self.api.digest_logs(
                     owner_user_id=_first(query.get("owner_user_id")) or "user_primary",
                     tenant_id=context.tenant_id,
+                    knowledge_base_ids=_query_string_list(query, "knowledge_base_ids") or _query_string_list(query, "knowledge_base_id"),
                     limit=_int_first(query.get("limit")) or 10,
                 ),
             )
@@ -4425,6 +5431,7 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
                 self.api.workspace_digest_data(
                     owner_user_id=_first(query.get("owner_user_id")),
                     tenant_id=context.tenant_id,
+                    knowledge_base_ids=_query_string_list(query, "knowledge_base_ids") or _query_string_list(query, "knowledge_base_id"),
                     limit=_int_first(query.get("limit")) or 50,
                     context=context,
                 ),
@@ -4471,6 +5478,7 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
                 200,
                 self.api.workspace_corpus(
                     owner_user_id=_first(query.get("owner_user_id")),
+                    knowledge_base_ids=_query_string_list(query, "knowledge_base_ids") or _query_string_list(query, "knowledge_base_id"),
                     source_channel=_first(query.get("source_channel")),
                     query=_first(query.get("query")),
                     limit=_int_first(query.get("limit")) or 20,
@@ -4482,6 +5490,7 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
                 200,
                 self.api.workspace_graph_data(
                     owner_user_id=_first(query.get("owner_user_id")),
+                    knowledge_base_ids=_query_string_list(query, "knowledge_base_ids") or _query_string_list(query, "knowledge_base_id"),
                     limit=_int_first(query.get("limit")) or 30,
                     node_types=_node_types_param(_first(query.get("node_types"))),
                     context=context,
@@ -4503,6 +5512,7 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
                 self.api.workspace_graph_subgraph(
                     node_id=_first(query.get("node_id")) or "",
                     owner_user_id=_first(query.get("owner_user_id")),
+                    knowledge_base_ids=_query_string_list(query, "knowledge_base_ids") or _query_string_list(query, "knowledge_base_id"),
                     limit=_int_first(query.get("limit")) or 80,
                     hops=_int_first(query.get("hops")) or 1,
                     node_types=_node_types_param(_first(query.get("node_types"))),
@@ -4515,6 +5525,7 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
                 self.api.workspace_graph_search_subgraph(
                     query=_first(query.get("query")) or "",
                     owner_user_id=_first(query.get("owner_user_id")),
+                    knowledge_base_ids=_query_string_list(query, "knowledge_base_ids") or _query_string_list(query, "knowledge_base_id"),
                     limit=_int_first(query.get("limit")) or 80,
                     hops=_int_first(query.get("hops")) or 1,
                     top_k=_int_first(query.get("top_k")) or 5,
@@ -4634,8 +5645,18 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
                     return self._sse_events(200, self.api.workspace_ask_conversation_event_stream(unquote(parts[0]), payload, context=context))
             if path == "/workspace/search/query":
                 return self._json(200, self.api.workspace_search(payload, context=context))
+            if path == "/workspace/knowledge-bases/search":
+                return self._json(200, self.api.workspace_knowledge_base_search(payload, context=context))
             if path == "/workspace/chunking/preview":
                 return self._json(200, self.api.chunking_preview(payload, context=context))
+            if path == "/workspace/knowledge-bases":
+                return self._json(200, self.api.create_workspace_knowledge_base(payload, context=context))
+            if path.startswith("/workspace/knowledge-bases/"):
+                parts = _knowledge_base_path_parts(path)
+                if len(parts) == 2 and parts[1] == "restore":
+                    return self._json(200, self.api.restore_workspace_knowledge_base(unquote(parts[0]), payload, context=context))
+                if len(parts) == 2 and parts[1] == "pin":
+                    return self._json(200, self.api.pin_workspace_knowledge_base(unquote(parts[0]), payload, context=context, pinned=True))
             if path == "/workspace/sources/preview":
                 return self._json(200, self.api.source_preview(payload, context=context))
             if path == "/workspace/sources/text":
@@ -4646,6 +5667,10 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
                 return self._json(200, self.api.create_knowledge_source(payload, context=context))
             if path == "/workspace/sources/sync":
                 return self._json(200, self.api.sync_knowledge_sources(payload, context=context))
+            if path == "/workspace/documents/move":
+                return self._json(200, self.api.workspace_documents_move(payload, context=context))
+            if path in {"/workspace/documents/link", "/workspace/documents/memberships"}:
+                return self._json(200, self.api.workspace_documents_link(payload, context=context))
             if path == "/workspace/documents/delete":
                 return self._json(200, self.api.workspace_documents_delete(payload, context=context))
             if path == "/workspace/prompt-profiles":
@@ -4756,6 +5781,10 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
             context = self._context(payload)
             if context is None:
                 return
+            if path.startswith("/workspace/knowledge-bases/"):
+                parts = _knowledge_base_path_parts(path)
+                if len(parts) == 1:
+                    return self._json(200, self.api.update_workspace_knowledge_base(unquote(parts[0]), payload, context=context))
             if path.startswith("/workspace/writing/boards/"):
                 parts = _writing_path_parts(path)
                 if len(parts) == 1:
@@ -4784,6 +5813,12 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
             context = self._context(payload)
             if context is None:
                 return
+            if path.startswith("/workspace/knowledge-bases/"):
+                parts = _knowledge_base_path_parts(path)
+                if len(parts) == 2 and parts[1] == "pin":
+                    return self._json(200, self.api.pin_workspace_knowledge_base(unquote(parts[0]), payload, context=context, pinned=False))
+                if len(parts) == 1:
+                    return self._json(200, self.api.delete_workspace_knowledge_base(unquote(parts[0]), payload, context=context))
             if path.startswith("/workspace/ask/conversations/"):
                 parts = _ask_conversation_path_parts(path)
                 if len(parts) == 1:
@@ -5092,10 +6127,17 @@ def _response_metrics(payload: dict[str, Any]) -> dict[str, Any]:
     return metrics
 
 
-def _digest_log_entry(job: Any, events: list[Any], claims: list[Any], notes: list[Any], source_ids: set[str]) -> dict[str, Any]:
+def _digest_log_entry(job: Any, events: list[Any], claims: list[Any], notes: list[Any], source_ids: set[str], *, source_refs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     candidate_summary = _job_candidate_summary(job, events)
     candidate_summary = _digest_candidate_summary_with_persisted(candidate_summary, claims=claims, notes=notes)
     latest_event = events[-1] if events else None
+    lineage_refs = list(source_refs or [])
+    for item in [*claims, *notes]:
+        if isinstance(item, dict):
+            lineage_refs.extend(_list_of_dicts(item.get("source_refs")))
+        else:
+            lineage_refs.extend(_source_refs_payload(getattr(item, "source_refs", [])))
+    knowledge_base_lineage = _knowledge_base_lineage_from_source_refs(lineage_refs)
     return {
         "job_id": job.job_id,
         "status": job.status,
@@ -5110,6 +6152,8 @@ def _digest_log_entry(job: Any, events: list[Any], claims: list[Any], notes: lis
         "error": job.error,
         "source_item_ids": sorted(source_ids),
         "source_item_count": len(source_ids),
+        "source_refs": source_refs or [],
+        **knowledge_base_lineage,
         "candidate_summary": candidate_summary,
         "knowledge_claims": claims,
         "digest_notes": notes,
@@ -6179,15 +7223,26 @@ def _ask_scope_mode(scope: dict[str, Any], *, ask_intent: str) -> str:
 
 def _ask_scope_applied(scope: dict[str, Any], *, ask_intent: str) -> dict[str, Any]:
     source_item_ids = sorted(_ask_scope_source_item_ids(scope))
+    knowledge_base_source_item_ids = _string_list(scope.get("knowledge_base_source_item_ids"))
     return {
         "mode": _ask_scope_mode(scope, ask_intent=ask_intent),
+        "knowledge_base_ids": _knowledge_base_ids_from_scope(scope),
+        "knowledge_base_source_item_count": len(knowledge_base_source_item_ids),
         "source_item_ids": source_item_ids,
         "source_item_count": len(source_item_ids),
+        "dropped_scope_ids": _string_list(scope.get("dropped_scope_ids")),
+        "dropped_source_item_ids": _string_list(scope.get("dropped_source_item_ids")),
         "attachment_ids": _string_list(scope.get("attachment_ids")),
         "allow_expand_scope": bool(scope.get("allow_expand_scope")),
         "conversation_id": scope.get("conversation_id"),
         "context_node_count": len(_list_of_dicts(scope.get("context_nodes"))),
     }
+
+
+def _retrieval_source_item_ids_arg(source_item_ids: set[str], *, scope_mode: str) -> set[str] | None:
+    if scope_mode == "hard":
+        return set(source_item_ids)
+    return source_item_ids or None
 
 
 def _ask_no_retrieval_answer(ask_intent: str, query: str) -> tuple[str, str]:
@@ -6818,6 +7873,25 @@ def _ask_route_payload(
     return payload
 
 
+def _ask_read_tool_policy(scope_applied: dict[str, Any] | None = None, *, allowed_tools: list[str] | None = None) -> dict[str, Any]:
+    scope_applied = scope_applied if isinstance(scope_applied, dict) else {}
+    source_item_ids = _string_list(scope_applied.get("source_item_ids"))
+    knowledge_base_ids = _string_list(scope_applied.get("knowledge_base_ids"))
+    scope_mode = str(scope_applied.get("mode") or scope_applied.get("scope_mode") or ("hard" if source_item_ids or knowledge_base_ids else "soft"))
+    policy: dict[str, Any] = {
+        "mode": "allowlist",
+        "allowed_tools": allowed_tools or ASK_READ_ONLY_TOOLS,
+    }
+    if source_item_ids or knowledge_base_ids:
+        policy["scope"] = {
+            "mode": "hard" if scope_mode == "hard" or source_item_ids or knowledge_base_ids else "soft",
+            "scope_mode": "hard" if scope_mode == "hard" or source_item_ids or knowledge_base_ids else "soft",
+            "knowledge_base_ids": knowledge_base_ids,
+            "source_item_ids": source_item_ids,
+        }
+    return policy
+
+
 def _ask_route_planner_steps(
     *,
     query: str,
@@ -6971,6 +8045,8 @@ def _ask_scope_trace(scope: dict[str, Any]) -> dict[str, Any]:
         "context_model": scope.get("context_model"),
         "context_node_count": len(context_nodes),
         "context_edge_count": len(context_edges),
+        "knowledge_base_ids": _knowledge_base_ids_from_scope(scope),
+        "knowledge_base_source_item_ids": _string_list(scope.get("knowledge_base_source_item_ids"))[:20],
         "source_item_ids": _string_list(scope.get("source_item_ids"))[:20],
     }
 
@@ -7724,6 +8800,78 @@ def _ask_hydrate_retrieval_source_windows(
     return retrieval
 
 
+def _ask_enrich_retrieval_knowledge_bases(
+    store: Any,
+    retrieval: dict[str, Any],
+    *,
+    scope: dict[str, Any],
+    tenant_id: str,
+    owner_user_id: str,
+) -> dict[str, Any]:
+    selected_knowledge_base_ids = set(_knowledge_base_ids_from_scope(scope))
+    lineage_cache: dict[str, dict[str, Any]] = {}
+
+    def lineage_for_source(source_item_id: str) -> dict[str, Any]:
+        if not source_item_id:
+            return {}
+        if source_item_id in lineage_cache:
+            return lineage_cache[source_item_id]
+        all_ids = sorted(
+            store.list_knowledge_base_ids_for_source_item(
+                source_item_id,
+                tenant_id=tenant_id,
+                owner_user_id=owner_user_id,
+            )
+        )
+        scoped_ids = [knowledge_base_id for knowledge_base_id in all_ids if not selected_knowledge_base_ids or knowledge_base_id in selected_knowledge_base_ids]
+        knowledge_base_ids = scoped_ids or all_ids
+        knowledge_base_names: list[str] = []
+        for knowledge_base_id in knowledge_base_ids:
+            try:
+                knowledge_base = store.get_knowledge_base(knowledge_base_id, tenant_id=tenant_id, owner_user_id=owner_user_id)
+            except KeyError:
+                continue
+            name = str(getattr(knowledge_base, "name", "") or getattr(knowledge_base, "slug", "") or knowledge_base_id).strip()
+            if name:
+                knowledge_base_names.append(name)
+        lineage = {
+            "knowledge_base_ids": knowledge_base_ids,
+            "knowledge_base_names": knowledge_base_names,
+        }
+        if len(knowledge_base_ids) == 1:
+            lineage["knowledge_base_id"] = knowledge_base_ids[0]
+        if len(knowledge_base_names) == 1:
+            lineage["knowledge_base_name"] = knowledge_base_names[0]
+        lineage_cache[source_item_id] = lineage
+        return lineage
+
+    def enrich_ref(ref: dict[str, Any]) -> dict[str, Any]:
+        source_item_id = str(ref.get("source_item_id") or "").strip()
+        if not source_item_id:
+            return ref
+        lineage = lineage_for_source(source_item_id)
+        if not lineage.get("knowledge_base_ids"):
+            return ref
+        return {**ref, **lineage}
+
+    results: list[dict[str, Any]] = []
+    for result in _list_of_dicts(retrieval.get("results")):
+        enriched = enrich_ref(result)
+        citation = result.get("citation") if isinstance(result.get("citation"), dict) else {}
+        if citation:
+            enriched["citation"] = enrich_ref(citation)
+        source_window = result.get("source_window") if isinstance(result.get("source_window"), dict) else {}
+        if source_window:
+            enriched["source_window"] = enrich_ref(source_window)
+        results.append(enriched)
+
+    enriched = dict(retrieval)
+    enriched["results"] = results
+    enriched["citations"] = [enrich_ref(citation) for citation in _list_of_dicts(retrieval.get("citations"))]
+    enriched["source_windows"] = [enrich_ref(window) for window in _list_of_dicts(retrieval.get("source_windows"))]
+    return enriched
+
+
 def _ask_source_window_for_result(
     ref: dict[str, Any],
     *,
@@ -7943,6 +9091,7 @@ def _ask_deep_response(
     agentic: dict[str, Any],
     started_at: float,
     allowed_tools: list[str],
+    tool_policy: dict[str, Any] | None = None,
     store: Any,
 ) -> dict[str, Any]:
     understand = understand or _ask_understand_payload(
@@ -8012,7 +9161,7 @@ def _ask_deep_response(
         **trace,
         "mode": "deep",
         "retrieval_owner": "fastreact_pska_mcp",
-        "tool_policy": {"mode": "allowlist", "allowed_tools": allowed_tools},
+        "tool_policy": tool_policy or _ask_read_tool_policy(scope_applied, allowed_tools=allowed_tools),
         "tool_profile": ASK_READ_TOOL_PROFILE,
         "evidence_check": evidence_check,
     }
@@ -8035,7 +9184,7 @@ def _ask_deep_response(
             "retrieval_owner": "fastreact_pska_mcp",
             "surface": surface,
             "requires_agentic_service_online": True,
-            "tool_policy": {"mode": "allowlist", "allowed_tools": allowed_tools},
+            "tool_policy": tool_policy or _ask_read_tool_policy(scope_applied, allowed_tools=allowed_tools),
             "tool_profile": ASK_READ_TOOL_PROFILE,
             "routing_owner": "pska_planner",
             "query_terms": _ask_query_terms(rewrite_query),
@@ -8377,6 +9526,13 @@ def _number_or_none(value: Any) -> float | None:
         return None
 
 
+def _int_value(value: Any, *, fallback: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
 def _ask_with_quality_signals(payload: dict[str, Any]) -> dict[str, Any]:
     enriched = dict(payload)
     evidence = enriched.get("evidence") if isinstance(enriched.get("evidence"), dict) else {}
@@ -8467,11 +9623,45 @@ def _ask_no_answer_diagnostics(
     dimensions: list[dict[str, Any]] = []
     reasons: list[str] = []
     tool_errors = _ask_trace_tool_errors(trace)
+    scope_applied = route.get("scope_applied") if isinstance(route.get("scope_applied"), dict) else {}
+    knowledge_base_ids = _string_list(scope_applied.get("knowledge_base_ids"))
+    scoped_source_item_ids = _string_list(scope_applied.get("source_item_ids"))
+    knowledge_base_source_item_count = _int_value(
+        scope_applied.get("knowledge_base_source_item_count"),
+        fallback=len(_string_list(scope_applied.get("knowledge_base_source_item_ids"))),
+    )
+    source_item_count = _int_value(scope_applied.get("source_item_count"), fallback=len(scoped_source_item_ids))
 
     def add(dimension: str, status: str, detail: str) -> None:
         dimensions.append({"dimension": dimension, "status": status, "detail": detail})
         if status not in {"ok", "not_applicable"}:
             reasons.append(status)
+
+    if knowledge_base_ids:
+        if knowledge_base_source_item_count == 0:
+            add(
+                "knowledge_base_scope",
+                "selected_knowledge_base_empty",
+                f"{len(knowledge_base_ids)} selected knowledge base(s) have no active source items.",
+            )
+        elif source_item_count == 0:
+            add(
+                "knowledge_base_scope",
+                "selected_scope_empty",
+                "Selected knowledge base scope resolved to zero active source items after source filters.",
+            )
+        elif not citations and not results:
+            add(
+                "knowledge_base_scope",
+                "selected_knowledge_base_no_relevant_chunks",
+                f"Selected knowledge base scope resolved to {source_item_count} active source item(s), but no matching chunks were returned.",
+            )
+        else:
+            add(
+                "knowledge_base_scope",
+                "ok",
+                f"Selected knowledge base scope resolved to {source_item_count} active source item(s).",
+            )
 
     if citations:
         add("evidence", "ok", f"{len(citations)} citations are available.")
@@ -8606,6 +9796,22 @@ def _ask_quality_signals(payload: dict[str, Any]) -> dict[str, Any]:
         flags.append("fallback")
     if dropped_source_refs:
         flags.append("dropped_source_refs")
+    scope_applied = route.get("scope_applied") if isinstance(route.get("scope_applied"), dict) else {}
+    knowledge_base_ids = _string_list(scope_applied.get("knowledge_base_ids"))
+    knowledge_base_source_item_count = _int_value(
+        scope_applied.get("knowledge_base_source_item_count"),
+        fallback=len(_string_list(scope_applied.get("knowledge_base_source_item_ids"))),
+    )
+    source_item_count = _int_value(
+        scope_applied.get("source_item_count"),
+        fallback=len(_string_list(scope_applied.get("source_item_ids"))),
+    )
+    if knowledge_base_ids and knowledge_base_source_item_count == 0:
+        flags.append("selected_knowledge_base_empty")
+    elif knowledge_base_ids and source_item_count == 0:
+        flags.append("selected_scope_empty")
+    elif knowledge_base_ids and not citations and not results:
+        flags.append("selected_knowledge_base_no_relevant_chunks")
     flags.extend(flag for flag in _ask_answer_quality_flags(answer) if flag not in flags)
 
     evidence_status = "grounded" if citations else "retrieved_without_citations" if results else "no_evidence"
@@ -8894,9 +10100,36 @@ def _ask_public_trace_event(event: dict[str, Any]) -> dict[str, Any]:
     metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
     safe_metadata = {
         key: metadata.get(key)
-        for key in ["action", "duration_ms", "has_tool_calls", "llm_usage", "model", "decision_level", "approved"]
+        for key in [
+            "action",
+            "duration_ms",
+            "has_tool_calls",
+            "llm_usage",
+            "model",
+            "decision_level",
+            "approved",
+            "tool_policy_scope_applied",
+            "tool_policy_denied",
+            "denial_reason",
+        ]
         if metadata.get(key) is not None
     }
+    tool_policy = metadata.get("tool_policy") if isinstance(metadata.get("tool_policy"), dict) else {}
+    if tool_policy:
+        safe_policy = {
+            key: tool_policy.get(key)
+            for key in ["mode", "allowed_tools"]
+            if tool_policy.get(key) is not None
+        }
+        policy_scope = tool_policy.get("scope") if isinstance(tool_policy.get("scope"), dict) else {}
+        if policy_scope:
+            safe_policy["scope"] = {
+                key: policy_scope.get(key)
+                for key in ["mode", "scope_mode", "knowledge_base_ids", "source_item_ids"]
+                if policy_scope.get(key) is not None
+            }
+        if safe_policy:
+            safe_metadata["tool_policy"] = safe_policy
     if safe_metadata:
         public["metadata"] = safe_metadata
     if event_type == "tool_call":
@@ -8907,6 +10140,8 @@ def _ask_public_trace_event(event: dict[str, Any]) -> dict[str, Any]:
                 "query",
                 "top_k",
                 "max_results",
+                "knowledge_base_ids",
+                "scope_mode",
                 "source_item_ids",
                 "document_ids",
                 "chunk_ids",
@@ -8916,6 +10151,13 @@ def _ask_public_trace_event(event: dict[str, Any]) -> dict[str, Any]:
             ]
             if args.get(key) is not None
         }
+        scope = args.get("scope") if isinstance(args.get("scope"), dict) else {}
+        if scope:
+            public["tool_args"]["scope"] = {
+                key: scope.get(key)
+                for key in ["mode", "scope_mode", "knowledge_base_ids", "source_item_ids"]
+                if scope.get(key) is not None
+            }
     elif event_type == "tool_result":
         public["result_summary"] = _ask_tool_result_counts(event)
     elif event_type == "think":
@@ -8995,7 +10237,45 @@ def _ask_sse_events(payload: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]
     return events
 
 
+def _ask_scope_applied_from_payload(store: Any, payload: dict[str, Any], *, tenant_id: str, owner_user_id: str) -> dict[str, Any]:
+    raw_scope = _scope_from_payload(payload)
+    if not raw_scope:
+        return {}
+    scope = _resolve_knowledge_base_scope(store, raw_scope, tenant_id=tenant_id, owner_user_id=owner_user_id)
+    scope = _ask_scope_for_intent(scope, ask_intent="kb_search")
+    return _ask_scope_applied(scope, ask_intent="kb_search")
+
+
+def _ask_scope_applied_from_result(result: dict[str, Any]) -> dict[str, Any]:
+    route = result.get("route") if isinstance(result.get("route"), dict) else {}
+    scope_applied = route.get("scope_applied") if isinstance(route.get("scope_applied"), dict) else {}
+    if not scope_applied and isinstance(result.get("scope_applied"), dict):
+        scope_applied = result["scope_applied"]
+    return dict(scope_applied or {})
+
+
+def _ask_scope_applied_from_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    ask_scope = metadata.get("ask_scope") if isinstance(metadata.get("ask_scope"), dict) else {}
+    if not ask_scope and isinstance(metadata.get("knowledge_base_scope"), dict):
+        ask_scope = metadata["knowledge_base_scope"]
+    return dict(ask_scope or {})
+
+
+def _ask_conversation_metadata_with_scope(metadata: dict[str, Any], scope_applied: dict[str, Any]) -> dict[str, Any]:
+    updated = dict(metadata or {})
+    if not scope_applied:
+        return updated
+    scope = dict(scope_applied)
+    updated["ask_scope"] = scope
+    updated["knowledge_base_scope"] = scope
+    updated["knowledge_base_ids"] = _string_list(scope.get("knowledge_base_ids"))
+    updated["scope_mode"] = str(scope.get("mode") or "soft")
+    return updated
+
+
 def _ask_conversation_payload(conversation: Any) -> dict[str, Any]:
+    metadata = dict(getattr(conversation, "metadata", {}) or {})
+    scope_applied = _ask_scope_applied_from_metadata(metadata)
     return {
         "conversation_id": getattr(conversation, "conversation_id", ""),
         "tenant_id": getattr(conversation, "tenant_id", DEFAULT_TENANT_ID),
@@ -9003,13 +10283,17 @@ def _ask_conversation_payload(conversation: Any) -> dict[str, Any]:
         "title": getattr(conversation, "title", ""),
         "status": getattr(conversation, "status", "active"),
         "summary": getattr(conversation, "summary", ""),
-        "metadata": dict(getattr(conversation, "metadata", {}) or {}),
+        "metadata": metadata,
+        "scope_applied": scope_applied,
+        "knowledge_base_ids": _string_list(scope_applied.get("knowledge_base_ids")),
         "created_at": getattr(conversation, "created_at", None),
         "updated_at": getattr(conversation, "updated_at", None),
     }
 
 
 def _ask_message_payload(message: Any) -> dict[str, Any]:
+    metadata = dict(getattr(message, "metadata", {}) or {})
+    scope_applied = _ask_scope_applied_from_metadata(metadata)
     return {
         "message_id": getattr(message, "message_id", ""),
         "conversation_id": getattr(message, "conversation_id", ""),
@@ -9020,12 +10304,17 @@ def _ask_message_payload(message: Any) -> dict[str, Any]:
         "run_id": getattr(message, "run_id", None),
         "citations": list(getattr(message, "citations", []) or []),
         "source_refs": list(getattr(message, "source_refs", []) or []),
-        "metadata": dict(getattr(message, "metadata", {}) or {}),
+        "metadata": metadata,
+        "scope_applied": scope_applied,
+        "knowledge_base_ids": _string_list(scope_applied.get("knowledge_base_ids")),
         "created_at": getattr(message, "created_at", None),
     }
 
 
 def _ask_run_payload(run: Any) -> dict[str, Any]:
+    result = dict(getattr(run, "result", {}) or {})
+    route = dict(getattr(run, "route", {}) or {})
+    scope_applied = _ask_scope_applied_from_result({"result": result, "route": route, **result})
     return {
         "run_id": getattr(run, "run_id", ""),
         "conversation_id": getattr(run, "conversation_id", ""),
@@ -9033,8 +10322,10 @@ def _ask_run_payload(run: Any) -> dict[str, Any]:
         "owner_user_id": getattr(run, "owner_user_id", ""),
         "query": getattr(run, "query", ""),
         "status": getattr(run, "status", ""),
-        "result": dict(getattr(run, "result", {}) or {}),
-        "route": dict(getattr(run, "route", {}) or {}),
+        "result": result,
+        "route": route,
+        "scope_applied": scope_applied,
+        "knowledge_base_ids": _string_list(scope_applied.get("knowledge_base_ids")),
         "evidence_check": dict(getattr(run, "evidence_check", {}) or {}),
         "prompt_profile_id": getattr(run, "prompt_profile_id", None),
         "prompt_profile_version": getattr(run, "prompt_profile_version", None),
@@ -9263,6 +10554,510 @@ def _prompt_profile_payload(profile: Any) -> dict[str, Any]:
         "updated_at": getattr(profile, "updated_at", None),
         "tenant_id": getattr(profile, "tenant_id", None),
     }
+
+
+def _scope_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    scope = dict(payload.get("scope") or {}) if isinstance(payload.get("scope"), dict) else {}
+    knowledge_base_ids = _knowledge_base_ids_from_payload(payload)
+    if knowledge_base_ids:
+        scope["knowledge_base_ids"] = knowledge_base_ids
+    source_item_ids = _string_list(payload.get("source_item_ids"))
+    if source_item_ids:
+        scope["source_item_ids"] = sorted(set([*_string_list(scope.get("source_item_ids")), *source_item_ids]))
+    return scope
+
+
+def _knowledge_base_ids_from_payload(payload: dict[str, Any]) -> list[str]:
+    ids: list[str] = []
+    ids.extend(_string_list(payload.get("knowledge_base_id")))
+    ids.extend(_string_list(payload.get("knowledge_base_ids")))
+    scope = payload.get("scope") if isinstance(payload.get("scope"), dict) else {}
+    ids.extend(_string_list(scope.get("knowledge_base_id")))
+    ids.extend(_string_list(scope.get("knowledge_base_ids")))
+    return list(dict.fromkeys(item for item in ids if item))
+
+
+def _knowledge_base_ids_from_scope(scope: dict[str, Any]) -> list[str]:
+    ids: list[str] = []
+    ids.extend(_string_list(scope.get("knowledge_base_id")))
+    ids.extend(_string_list(scope.get("knowledge_base_ids")))
+    return list(dict.fromkeys(item for item in ids if item))
+
+
+def _knowledge_bases_for_payload(
+    store: Any,
+    payload: dict[str, Any],
+    *,
+    tenant_id: str,
+    owner_user_id: str,
+    actor_user_id: str,
+    default_space_id: str | None = None,
+) -> list[Any]:
+    knowledge_base_ids = _knowledge_base_ids_from_payload(payload)
+    if knowledge_base_ids:
+        return [
+            _get_accessible_knowledge_base(store, knowledge_base_id, tenant_id=tenant_id, owner_user_id=owner_user_id)
+            for knowledge_base_id in knowledge_base_ids
+        ]
+    return [
+        store.ensure_default_knowledge_base(
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            created_by_user_id=actor_user_id,
+            default_space_id=default_space_id,
+        )
+    ]
+
+
+def _knowledge_bases_for_source_or_payload(
+    store: Any,
+    payload: dict[str, Any],
+    source: Any,
+    *,
+    actor_user_id: str,
+) -> list[Any]:
+    knowledge_base_ids = _knowledge_base_ids_from_payload(payload)
+    if not knowledge_base_ids:
+        knowledge_base_ids = sorted(
+            store.list_knowledge_base_ids_for_source(
+                source.knowledge_source_id,
+                tenant_id=source.tenant_id,
+                owner_user_id=source.owner_user_id,
+            )
+        )
+    if knowledge_base_ids:
+        return [
+            _get_accessible_knowledge_base(
+                store,
+                knowledge_base_id,
+                tenant_id=source.tenant_id,
+                owner_user_id=source.owner_user_id,
+            )
+            for knowledge_base_id in knowledge_base_ids
+        ]
+    return [
+        store.ensure_default_knowledge_base(
+            tenant_id=source.tenant_id,
+            owner_user_id=source.owner_user_id,
+            created_by_user_id=actor_user_id,
+            default_space_id=None,
+        )
+    ]
+
+
+def _bind_source_to_knowledge_bases(
+    store: Any,
+    source: Any,
+    *,
+    knowledge_bases: list[Any],
+    source_item_ids: list[str],
+    actor_user_id: str,
+    membership_type: str,
+) -> None:
+    for knowledge_base in knowledge_bases:
+        store.add_knowledge_base_source(
+            KnowledgeBaseSource(
+                knowledge_base_id=knowledge_base.knowledge_base_id,
+                knowledge_source_id=source.knowledge_source_id,
+                tenant_id=source.tenant_id,
+                owner_user_id=source.owner_user_id,
+                added_by_user_id=actor_user_id,
+                metadata={"bound_by": "workspace_api", "membership_type": membership_type},
+            )
+        )
+        for source_item_id in source_item_ids:
+            store.add_knowledge_base_source_item(
+                KnowledgeBaseSourceItem(
+                    knowledge_base_id=knowledge_base.knowledge_base_id,
+                    source_item_id=source_item_id,
+                    tenant_id=source.tenant_id,
+                    owner_user_id=source.owner_user_id,
+                    added_by_user_id=actor_user_id,
+                    membership_type=membership_type,
+                    metadata={"bound_by": "workspace_api", "knowledge_source_id": source.knowledge_source_id},
+                )
+            )
+
+
+def _resolve_knowledge_base_scope(store: Any, scope: dict[str, Any], *, tenant_id: str, owner_user_id: str) -> dict[str, Any]:
+    resolved = dict(scope or {})
+    knowledge_base_ids = _knowledge_base_ids_from_scope(resolved)
+    if not knowledge_base_ids:
+        return resolved
+    for knowledge_base_id in knowledge_base_ids:
+        _get_accessible_knowledge_base(store, knowledge_base_id, tenant_id=tenant_id, owner_user_id=owner_user_id)
+    scoped_source_item_ids = store.list_knowledge_base_source_item_ids(
+        set(knowledge_base_ids),
+        tenant_id=tenant_id,
+        owner_user_id=owner_user_id,
+    )
+    has_explicit_source_item_ids = "source_item_ids" in resolved
+    requested_source_item_ids = set(_string_list(resolved.get("source_item_ids")))
+    source_item_ids = requested_source_item_ids & scoped_source_item_ids if has_explicit_source_item_ids else set(scoped_source_item_ids)
+    dropped_source_item_ids = sorted(requested_source_item_ids - source_item_ids) if has_explicit_source_item_ids else []
+    resolved["knowledge_base_ids"] = knowledge_base_ids
+    resolved["knowledge_base_source_item_ids"] = sorted(scoped_source_item_ids)
+    resolved["source_item_ids"] = sorted(source_item_ids)
+    resolved["dropped_source_item_ids"] = dropped_source_item_ids
+    resolved["dropped_scope_ids"] = dropped_source_item_ids
+    if not str(resolved.get("mode") or resolved.get("scope_mode") or "").strip():
+        resolved["mode"] = "hard"
+    return resolved
+
+
+def _get_accessible_knowledge_base(store: Any, knowledge_base_id: str, *, tenant_id: str, owner_user_id: str) -> Any:
+    try:
+        return store.get_knowledge_base(knowledge_base_id, tenant_id=tenant_id, owner_user_id=owner_user_id)
+    except KeyError as exc:
+        raise PermissionError("knowledge base is not accessible") from exc
+
+
+def _knowledge_base_scope_for_ids(store: Any, knowledge_base_ids: list[str], *, tenant_id: str, owner_user_id: str) -> dict[str, Any]:
+    ids = list(dict.fromkeys(item for item in _string_list(knowledge_base_ids) if item))
+    if not ids:
+        return {}
+    return _resolve_knowledge_base_scope(
+        store,
+        {"knowledge_base_ids": ids, "mode": "hard"},
+        tenant_id=tenant_id,
+        owner_user_id=owner_user_id,
+    )
+
+
+def _knowledge_scope_applied(scope: dict[str, Any]) -> dict[str, Any]:
+    source_item_ids = _string_list(scope.get("source_item_ids"))
+    knowledge_base_source_item_ids = _string_list(scope.get("knowledge_base_source_item_ids"))
+    return {
+        "mode": str(scope.get("mode") or scope.get("scope_mode") or ("hard" if _knowledge_base_ids_from_scope(scope) else "all")),
+        "knowledge_base_ids": _knowledge_base_ids_from_scope(scope),
+        "knowledge_base_source_item_count": len(knowledge_base_source_item_ids),
+        "source_item_count": len(source_item_ids),
+        "dropped_scope_ids": _string_list(scope.get("dropped_scope_ids")),
+        "dropped_source_item_ids": _string_list(scope.get("dropped_source_item_ids")),
+    }
+
+
+def _writing_board_metadata_with_knowledge_scope(
+    store: Any,
+    payload: dict[str, Any],
+    *,
+    tenant_id: str,
+    owner_user_id: str,
+) -> dict[str, Any]:
+    metadata = dict(payload.get("metadata") or {}) if isinstance(payload.get("metadata"), dict) else {}
+    metadata_scope = metadata.get("knowledge_base_scope") if isinstance(metadata.get("knowledge_base_scope"), dict) else {}
+    knowledge_base_ids = _knowledge_base_ids_from_payload(payload)
+    if not knowledge_base_ids:
+        knowledge_base_ids = _string_list(metadata.get("knowledge_base_ids"))
+    if not knowledge_base_ids:
+        knowledge_base_ids = _knowledge_base_ids_from_scope(metadata_scope)
+    if knowledge_base_ids:
+        scope = _resolve_knowledge_base_scope(
+            store,
+            {"knowledge_base_ids": knowledge_base_ids, "mode": str(metadata_scope.get("mode") or metadata.get("knowledge_base_scope_mode") or "hard")},
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+        )
+        metadata["knowledge_base_ids"] = _knowledge_base_ids_from_scope(scope)
+        metadata["knowledge_base_scope"] = _knowledge_scope_applied(scope)
+    elif metadata_scope:
+        metadata["knowledge_base_scope"] = {
+            "mode": str(metadata_scope.get("mode") or "all"),
+            "knowledge_base_ids": [],
+            "source_item_count": 0,
+        }
+    return metadata
+
+
+def _source_refs_source_item_ids(source_refs: list[dict[str, Any]]) -> set[str]:
+    ids: set[str] = set()
+    for ref in source_refs:
+        source_item_id = str(ref.get("source_item_id") or "").strip()
+        if source_item_id:
+            ids.add(source_item_id)
+    return ids
+
+
+def _source_refs_match_source_item_ids(source_refs: list[dict[str, Any]], source_item_ids: set[str]) -> bool:
+    return bool(source_item_ids and (_source_refs_source_item_ids(source_refs) & source_item_ids))
+
+
+def _review_item_matches_source_item_ids(item: Any, source_item_ids: set[str]) -> bool:
+    proposal = getattr(item, "proposal", {}) or {}
+    source_refs = _console_review_source_refs(proposal if isinstance(proposal, dict) else {})
+    return _source_refs_match_source_item_ids(source_refs, source_item_ids)
+
+
+def _enrich_review_items_knowledge_bases(
+    store: Any,
+    items: list[dict[str, Any]],
+    *,
+    tenant_id: str,
+    owner_user_id: str,
+    selected_knowledge_base_ids: list[str],
+) -> list[dict[str, Any]]:
+    selected_ids = set(selected_knowledge_base_ids)
+    lineage_cache: dict[str, dict[str, Any]] = {}
+
+    def lineage_for_source(source_item_id: str) -> dict[str, Any]:
+        if not source_item_id:
+            return {}
+        if source_item_id in lineage_cache:
+            return lineage_cache[source_item_id]
+        all_ids = sorted(
+            store.list_knowledge_base_ids_for_source_item(
+                source_item_id,
+                tenant_id=tenant_id,
+                owner_user_id=owner_user_id,
+            )
+        )
+        scoped_ids = [knowledge_base_id for knowledge_base_id in all_ids if not selected_ids or knowledge_base_id in selected_ids]
+        knowledge_base_ids = scoped_ids or all_ids
+        knowledge_base_names: list[str] = []
+        for knowledge_base_id in knowledge_base_ids:
+            try:
+                knowledge_base = store.get_knowledge_base(knowledge_base_id, tenant_id=tenant_id, owner_user_id=owner_user_id)
+            except KeyError:
+                continue
+            name = str(getattr(knowledge_base, "name", "") or getattr(knowledge_base, "slug", "") or knowledge_base_id).strip()
+            if name:
+                knowledge_base_names.append(name)
+        lineage: dict[str, Any] = {
+            "knowledge_base_ids": knowledge_base_ids,
+            "knowledge_base_names": knowledge_base_names,
+        }
+        if len(knowledge_base_ids) == 1:
+            lineage["knowledge_base_id"] = knowledge_base_ids[0]
+        if len(knowledge_base_names) == 1:
+            lineage["knowledge_base_name"] = knowledge_base_names[0]
+        lineage_cache[source_item_id] = lineage
+        return lineage
+
+    enriched_items: list[dict[str, Any]] = []
+    for item in items:
+        enriched = dict(item)
+        item_knowledge_base_ids: list[str] = []
+        item_knowledge_base_names: list[str] = []
+        refs: list[dict[str, Any]] = []
+        for ref in _list_of_dicts(item.get("source_refs")):
+            source_item_id = str(ref.get("source_item_id") or "").strip()
+            lineage = lineage_for_source(source_item_id)
+            if lineage.get("knowledge_base_ids"):
+                ref = {**ref, **lineage}
+                item_knowledge_base_ids.extend(_string_list(lineage.get("knowledge_base_ids")))
+                item_knowledge_base_names.extend(_string_list(lineage.get("knowledge_base_names")))
+            refs.append(ref)
+        enriched["source_refs"] = refs
+        item_knowledge_base_ids = list(dict.fromkeys(item_knowledge_base_ids))
+        item_knowledge_base_names = list(dict.fromkeys(item_knowledge_base_names))
+        if item_knowledge_base_ids:
+            enriched["knowledge_base_ids"] = item_knowledge_base_ids
+        if item_knowledge_base_names:
+            enriched["knowledge_base_names"] = item_knowledge_base_names
+        if len(item_knowledge_base_ids) == 1:
+            enriched["knowledge_base_id"] = item_knowledge_base_ids[0]
+        if len(item_knowledge_base_names) == 1:
+            enriched["knowledge_base_name"] = item_knowledge_base_names[0]
+        enriched_items.append(enriched)
+    return enriched_items
+
+
+def _knowledge_base_payload(store: Any, knowledge_base: Any, *, include_source_item_ids: bool = False) -> dict[str, Any]:
+    source_item_ids = store.list_knowledge_base_source_item_ids(
+        {knowledge_base.knowledge_base_id},
+        tenant_id=knowledge_base.tenant_id,
+        owner_user_id=knowledge_base.owner_user_id,
+    )
+    source_items = [
+        item
+        for item in store.list_source_items(tenant_id=knowledge_base.tenant_id)
+        if item.source_item_id in source_item_ids and item.owner_user_id == knowledge_base.owner_user_id and _is_active_lifecycle(item)
+    ]
+    documents = [document for document in store.list_documents_for_sources(source_item_ids) if _is_active_lifecycle(document)]
+    chunks = [chunk for chunk in store.list_chunks_for_sources(source_item_ids) if _is_active_lifecycle(chunk)]
+    embedded_chunks = [chunk for chunk in chunks if getattr(chunk, "embedding", None)]
+    embedding_models = sorted(
+        {
+            _knowledge_base_embedding_label(chunk)
+            for chunk in chunks
+            if _knowledge_base_embedding_label(chunk)
+        }
+    )
+    source_ids = _knowledge_base_source_ids(store, knowledge_base, source_items)
+    sync_runs = _knowledge_base_sync_runs(store, knowledge_base, source_ids)
+    processing_spans = _knowledge_base_processing_spans(store, knowledge_base, source_item_ids, source_ids)
+    offline_states = _knowledge_base_offline_states(store, knowledge_base, source_item_ids)
+    digest_notes = store.list_digest_notes(
+        owner_user_id=knowledge_base.owner_user_id,
+        tenant_id=knowledge_base.tenant_id,
+        source_item_ids=source_item_ids,
+        limit=1,
+    )
+    processing_active = [span for span in processing_spans if str(getattr(span, "status", "")).lower() in {"pending", "running", "processing"}]
+    processing_failed = [span for span in processing_spans if str(getattr(span, "status", "")).lower() in {"failed", "error"}]
+    failed_sync_runs = [run for run in sync_runs if str(getattr(run, "status", "")).lower() == "failed" or int(getattr(run, "failed", 0) or 0) > 0]
+    embedding_coverage = (len(embedded_chunks) / len(chunks)) if chunks else 0.0
+    processing_status = (
+        "empty"
+        if not source_item_ids
+        else "failed"
+        if processing_failed or failed_sync_runs
+        else "processing"
+        if processing_active
+        else "ready"
+        if chunks
+        else "pending"
+    )
+    offline_dirty = [state for state in offline_states if str(getattr(state, "status", "")).lower() in {"dirty", "pending", "failed"}]
+    last_sync_at = _latest_datetime([getattr(run, "finished_at", None) or getattr(run, "started_at", None) for run in sync_runs])
+    last_processing_at = _latest_datetime([getattr(span, "finished_at", None) or getattr(span, "started_at", None) for span in processing_spans])
+    last_digest_at = _latest_datetime([getattr(note, "created_at", None) for note in digest_notes])
+    payload = to_jsonable(knowledge_base)
+    payload["counts"] = {
+        "source_items": len(source_items) or len(source_item_ids),
+        "documents": len(documents),
+        "chunks": len(chunks),
+        "active_chunks": len(chunks),
+        "embedded_chunks": len(embedded_chunks),
+        "processing_spans": len(processing_spans),
+        "failed_processing_spans": len(processing_failed),
+        "offline_index_states": len(offline_states),
+        "offline_index_dirty": len(offline_dirty),
+    }
+    payload["readiness"] = {
+        **dict(getattr(knowledge_base, "readiness", {}) or {}),
+        "has_source_items": bool(source_item_ids),
+        "has_documents": bool(documents),
+        "has_chunks": bool(chunks),
+        "retrieval_ready": bool(chunks),
+        "processing_status": processing_status,
+        "source_item_count": len(source_items) or len(source_item_ids),
+        "document_count": len(documents),
+        "chunk_count": len(chunks),
+        "active_chunk_count": len(chunks),
+        "embedded_chunk_count": len(embedded_chunks),
+        "embedding_coverage": round(embedding_coverage, 4),
+        "embedding_models": embedding_models,
+        "embedding_status": "complete" if chunks and len(embedded_chunks) == len(chunks) else "partial" if embedded_chunks else "missing" if chunks else "not_applicable",
+        "processing_count": len(processing_active),
+        "failed_processing_count": len(processing_failed) + len(failed_sync_runs),
+        "offline_index_state_count": len(offline_states),
+        "offline_index_dirty_count": len(offline_dirty),
+        "offline_index_fresh": bool(offline_states) and not offline_dirty,
+        "last_sync_at": last_sync_at,
+        "last_processing_at": last_processing_at,
+        "last_digest_at": last_digest_at,
+        "last_error": _knowledge_base_last_error(processing_spans, sync_runs),
+    }
+    payload["capabilities"] = {
+        "rag_scope": "source_item_membership",
+        "document_retrieval": bool(chunks),
+        "multi_kb_selectable": True,
+    }
+    if include_source_item_ids:
+        payload["source_item_ids"] = sorted(source_item_ids)
+    return payload
+
+
+def _knowledge_base_embedding_label(chunk: Any) -> str:
+    metadata = getattr(chunk, "metadata", {}) or {}
+    provider = str(metadata.get("embedding_provider") or "").strip()
+    model = str(metadata.get("embedding_model") or "").strip()
+    return "/".join(part for part in [provider, model] if part)
+
+
+def _knowledge_base_source_ids(store: Any, knowledge_base: Any, source_items: list[Any]) -> set[str]:
+    source_ids = {str(getattr(item, "source_id", "") or "") for item in source_items}
+    source_ids.discard("")
+    for source in store.list_knowledge_sources(tenant_id=knowledge_base.tenant_id, owner_user_id=knowledge_base.owner_user_id):
+        if knowledge_base.knowledge_base_id in store.list_knowledge_base_ids_for_source(
+            source.knowledge_source_id,
+            tenant_id=knowledge_base.tenant_id,
+            owner_user_id=knowledge_base.owner_user_id,
+        ):
+            source_ids.add(source.knowledge_source_id)
+    return source_ids
+
+
+def _knowledge_base_sync_runs(store: Any, knowledge_base: Any, source_ids: set[str]) -> list[Any]:
+    runs: list[Any] = []
+    seen: set[str] = set()
+    for source_id in sorted(source_ids):
+        for run in store.list_sync_runs(
+            tenant_id=knowledge_base.tenant_id,
+            owner_user_id=knowledge_base.owner_user_id,
+            knowledge_source_id=source_id,
+            limit=5,
+        ):
+            run_id = str(getattr(run, "sync_run_id", "") or "")
+            if run_id and run_id in seen:
+                continue
+            if run_id:
+                seen.add(run_id)
+            runs.append(run)
+    return runs
+
+
+def _knowledge_base_processing_spans(store: Any, knowledge_base: Any, source_item_ids: set[str], source_ids: set[str]) -> list[Any]:
+    spans: list[Any] = []
+    seen: set[str] = set()
+    for source_item_id in sorted(source_item_ids):
+        for span in store.list_processing_spans(tenant_id=knowledge_base.tenant_id, source_item_id=source_item_id, limit=10):
+            span_id = str(getattr(span, "processing_span_id", "") or "")
+            if span_id and span_id in seen:
+                continue
+            if span_id:
+                seen.add(span_id)
+            spans.append(span)
+    for source_id in sorted(source_ids):
+        for span in store.list_processing_spans(tenant_id=knowledge_base.tenant_id, knowledge_source_id=source_id, limit=10):
+            span_id = str(getattr(span, "processing_span_id", "") or "")
+            if span_id and span_id in seen:
+                continue
+            if span_id:
+                seen.add(span_id)
+            spans.append(span)
+    return spans
+
+
+def _knowledge_base_offline_states(store: Any, knowledge_base: Any, source_item_ids: set[str]) -> list[Any]:
+    states: list[Any] = []
+    seen: set[tuple[str, str]] = set()
+    for source_item_id in sorted(source_item_ids):
+        for state in store.list_offline_index_states(tenant_id=knowledge_base.tenant_id, source_item_id=source_item_id, limit=None):
+            key = (str(getattr(state, "object_type", "") or ""), str(getattr(state, "object_id", "") or ""))
+            if key in seen:
+                continue
+            seen.add(key)
+            states.append(state)
+    return states
+
+
+def _latest_datetime(values: list[Any]) -> str | None:
+    datetimes = [value for value in values if isinstance(value, datetime)]
+    if not datetimes:
+        return None
+    return max(datetimes).isoformat()
+
+
+def _knowledge_base_last_error(processing_spans: list[Any], sync_runs: list[Any]) -> str | None:
+    errors: list[tuple[datetime | None, str]] = []
+    for span in processing_spans:
+        error = str(getattr(span, "error", "") or "").strip()
+        if error:
+            errors.append((getattr(span, "finished_at", None) or getattr(span, "started_at", None), error))
+    for run in sync_runs:
+        error = str(getattr(run, "error", "") or "").strip()
+        if error:
+            errors.append((getattr(run, "finished_at", None) or getattr(run, "started_at", None), error))
+    if not errors:
+        return None
+    return sorted(errors, key=lambda item: (item[0] or datetime.min.replace(tzinfo=UTC)).timestamp(), reverse=True)[0][1]
+
+
+def _knowledge_base_slug(name: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "-", str(name or "").strip().casefold()).strip("-")
+    return normalized[:80] or "knowledge-base"
 
 
 def _prompt_profile_lineage(store: Any, *, tenant_id: str, owner_user_id: str, profile_type: str) -> dict[str, Any]:
@@ -11325,6 +13120,226 @@ def _source_refs_payload(source_refs: Any) -> list[dict[str, Any]]:
     return to_jsonable(source_refs if isinstance(source_refs, list) else list(source_refs or []))
 
 
+def _source_item_knowledge_base_lineage(
+    store: Any,
+    source_item_id: str,
+    *,
+    tenant_id: str,
+    owner_user_id: str,
+    selected_knowledge_base_ids: list[str] | set[str] | None = None,
+    active_only: bool = True,
+) -> dict[str, Any]:
+    source_item_id = str(source_item_id or "").strip()
+    if not source_item_id or not hasattr(store, "list_knowledge_base_ids_for_source_item"):
+        return {}
+    selected_ids = set(selected_knowledge_base_ids or [])
+    all_ids = sorted(
+        store.list_knowledge_base_ids_for_source_item(
+            source_item_id,
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            active_only=active_only,
+        )
+    )
+    knowledge_base_ids = [knowledge_base_id for knowledge_base_id in all_ids if not selected_ids or knowledge_base_id in selected_ids] or all_ids
+    knowledge_base_names: list[str] = []
+    for knowledge_base_id in knowledge_base_ids:
+        try:
+            knowledge_base = store.get_knowledge_base(knowledge_base_id, tenant_id=tenant_id, owner_user_id=owner_user_id)
+        except KeyError:
+            continue
+        name = str(getattr(knowledge_base, "name", "") or getattr(knowledge_base, "slug", "") or knowledge_base_id).strip()
+        if name:
+            knowledge_base_names.append(name)
+    knowledge_base_names = list(dict.fromkeys(knowledge_base_names))
+    lineage: dict[str, Any] = {
+        "knowledge_base_ids": knowledge_base_ids,
+        "knowledge_base_names": knowledge_base_names,
+    }
+    if len(knowledge_base_ids) == 1:
+        lineage["knowledge_base_id"] = knowledge_base_ids[0]
+    if len(knowledge_base_names) == 1:
+        lineage["knowledge_base_name"] = knowledge_base_names[0]
+    return lineage
+
+
+def _enrich_source_refs_knowledge_bases(
+    store: Any,
+    source_refs: list[dict[str, Any]],
+    *,
+    tenant_id: str,
+    owner_user_id: str,
+    selected_knowledge_base_ids: list[str] | set[str] | None = None,
+) -> list[dict[str, Any]]:
+    lineage_cache: dict[str, dict[str, Any]] = {}
+    enriched_refs: list[dict[str, Any]] = []
+    for ref in _list_of_dicts(source_refs):
+        next_ref = dict(ref)
+        source_item_id = str(next_ref.get("source_item_id") or "").strip()
+        if source_item_id:
+            if source_item_id not in lineage_cache:
+                lineage_cache[source_item_id] = _source_item_knowledge_base_lineage(
+                    store,
+                    source_item_id,
+                    tenant_id=tenant_id,
+                    owner_user_id=owner_user_id,
+                    selected_knowledge_base_ids=selected_knowledge_base_ids,
+                )
+            lineage = lineage_cache[source_item_id]
+            if lineage.get("knowledge_base_ids"):
+                next_ref.update(lineage)
+        enriched_refs.append(next_ref)
+    return enriched_refs
+
+
+def _knowledge_base_lineage_from_source_refs(source_refs: list[dict[str, Any]]) -> dict[str, Any]:
+    knowledge_base_ids: list[str] = []
+    knowledge_base_names: list[str] = []
+    for ref in _list_of_dicts(source_refs):
+        ref_ids = _string_list(ref.get("knowledge_base_ids")) or _string_list(ref.get("knowledge_base_id"))
+        ref_names = _string_list(ref.get("knowledge_base_names")) or _string_list(ref.get("knowledge_base_name"))
+        knowledge_base_ids.extend(ref_ids)
+        knowledge_base_names.extend(ref_names)
+    knowledge_base_ids = list(dict.fromkeys(knowledge_base_ids))
+    knowledge_base_names = list(dict.fromkeys(knowledge_base_names))
+    lineage: dict[str, Any] = {}
+    if knowledge_base_ids:
+        lineage["knowledge_base_ids"] = knowledge_base_ids
+    if knowledge_base_names:
+        lineage["knowledge_base_names"] = knowledge_base_names
+    if len(knowledge_base_ids) == 1:
+        lineage["knowledge_base_id"] = knowledge_base_ids[0]
+    if len(knowledge_base_names) == 1:
+        lineage["knowledge_base_name"] = knowledge_base_names[0]
+    return lineage
+
+
+def _enrich_understanding_artifacts_knowledge_bases(
+    store: Any,
+    items: list[dict[str, Any]],
+    *,
+    tenant_id: str,
+    owner_user_id: str,
+    selected_knowledge_base_ids: list[str] | set[str] | None = None,
+) -> list[dict[str, Any]]:
+    enriched_items: list[dict[str, Any]] = []
+    nested_ref_fields = ("key_points", "actions", "open_questions", "risks", "memory_suggestions", "relationship_suggestions")
+    for item in _list_of_dicts(items):
+        enriched = dict(item)
+        refs = _enrich_source_refs_knowledge_bases(
+            store,
+            _source_refs_payload(enriched.get("source_refs")),
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            selected_knowledge_base_ids=selected_knowledge_base_ids,
+        )
+        enriched["source_refs"] = refs
+        lineage = _knowledge_base_lineage_from_source_refs(refs)
+        if lineage:
+            enriched.update(lineage)
+            metadata = dict(enriched.get("metadata") or {}) if isinstance(enriched.get("metadata"), dict) else {}
+            metadata.update(lineage)
+            enriched["metadata"] = metadata
+        for field in nested_ref_fields:
+            nested_values: list[dict[str, Any]] = []
+            changed = False
+            for nested in _list_of_dicts(enriched.get(field)):
+                nested_item = dict(nested)
+                nested_refs = _source_refs_payload(nested_item.get("source_refs"))
+                if nested_refs:
+                    nested_item["source_refs"] = _enrich_source_refs_knowledge_bases(
+                        store,
+                        nested_refs,
+                        tenant_id=tenant_id,
+                        owner_user_id=owner_user_id,
+                        selected_knowledge_base_ids=selected_knowledge_base_ids,
+                    )
+                    changed = True
+                nested_values.append(nested_item)
+            if changed:
+                enriched[field] = nested_values
+        enriched_items.append(enriched)
+    return enriched_items
+
+
+def _enrich_review_candidate_payloads_knowledge_bases(
+    store: Any,
+    items: list[dict[str, Any]],
+    *,
+    tenant_id: str,
+    owner_user_id: str,
+    selected_knowledge_base_ids: list[str] | set[str] | None = None,
+) -> list[dict[str, Any]]:
+    enriched_items: list[dict[str, Any]] = []
+    for item in _list_of_dicts(items):
+        enriched = dict(item)
+        proposal = dict(enriched.get("proposal") or {}) if isinstance(enriched.get("proposal"), dict) else {}
+        refs = _source_refs_payload(proposal.get("source_refs") or proposal.get("sourceRefs") or enriched.get("source_refs"))
+        refs = _enrich_source_refs_knowledge_bases(
+            store,
+            refs,
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            selected_knowledge_base_ids=selected_knowledge_base_ids,
+        )
+        if refs:
+            proposal["source_refs"] = refs
+            enriched["proposal"] = proposal
+            enriched["source_refs"] = refs
+            enriched.update(_knowledge_base_lineage_from_source_refs(refs))
+        enriched_items.append(enriched)
+    return enriched_items
+
+
+def _enrich_search_retrieval_knowledge_bases(
+    store: Any,
+    retrieval: dict[str, Any],
+    *,
+    tenant_id: str,
+    owner_user_id: str,
+    selected_knowledge_base_ids: list[str] | set[str] | None = None,
+) -> dict[str, Any]:
+    enriched = dict(retrieval or {})
+    selected_ids = list(dict.fromkeys(str(item) for item in (selected_knowledge_base_ids or []) if item))
+
+    def enrich_refs(values: Any) -> list[dict[str, Any]]:
+        return _enrich_source_refs_knowledge_bases(
+            store,
+            _list_of_dicts(values),
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            selected_knowledge_base_ids=selected_ids,
+        )
+
+    results: list[dict[str, Any]] = []
+    for result in _list_of_dicts(enriched.get("results")):
+        result_payload = dict(result)
+        source_item_id = str(result_payload.get("source_item_id") or "").strip()
+        result_refs = enrich_refs([{"source_item_id": source_item_id}]) if source_item_id else []
+        if result_refs:
+            result_payload.update(_knowledge_base_lineage_from_source_refs(result_refs))
+        citation = result_payload.get("citation") if isinstance(result_payload.get("citation"), dict) else {}
+        if citation:
+            enriched_citations = enrich_refs([citation])
+            result_payload["citation"] = enriched_citations[0] if enriched_citations else citation
+            result_payload.update(_knowledge_base_lineage_from_source_refs(enriched_citations))
+        results.append(result_payload)
+    citations = enrich_refs(enriched.get("citations"))
+    enriched["results"] = results
+    enriched["citations"] = citations
+    enriched.update(_knowledge_base_lineage_from_source_refs([*citations, *[ref for result in results for ref in _list_of_dicts([result.get("citation")])]]))
+    diagnostics = dict(enriched.get("diagnostics") or {}) if isinstance(enriched.get("diagnostics"), dict) else {}
+    score_debug = dict(diagnostics.get("score_debug") or {}) if isinstance(diagnostics.get("score_debug"), dict) else {}
+    score_debug["knowledge_base_scope"] = {
+        "knowledge_base_ids": _string_list(enriched.get("knowledge_base_ids")) or selected_ids,
+        "citation_count": len(citations),
+        "result_count": len(results),
+    }
+    diagnostics["score_debug"] = score_debug
+    enriched["diagnostics"] = diagnostics
+    return enriched
+
+
 def _add_source_ref_edges(add_edge, source_refs: list[dict[str, Any]], target: str, edge_type: str, passage_by_document: dict[str, PassageWindow], passage_by_source: dict[str, PassageWindow]) -> None:
     for ref in source_refs:
         passage_window_id = ref.get("passage_window_id")
@@ -11744,7 +13759,12 @@ def _evidence_brief_refs(store: Any, *, tenant_id: str, owner_user_id: str, arti
         else:
             next_ref.setdefault("lifecycle_status", "missing")
         enriched.append(next_ref)
-    return enriched
+    return _enrich_source_refs_knowledge_bases(
+        store,
+        enriched,
+        tenant_id=tenant_id,
+        owner_user_id=owner_user_id,
+    )
 
 
 def _source_ref_lifecycle_status(ref: dict[str, Any]) -> str:
@@ -11874,6 +13894,7 @@ def _evidence_brief_lineage(
         "review_item_ids": [item.review_item_id for item in review_items],
         "ask_run_ids": [_ask_run_id(run) for run in (ask_runs or [])],
         "review_status": _evidence_brief_review_status(review_items),
+        **_knowledge_base_lineage_from_source_refs(source_refs),
     }
 
 
@@ -11890,6 +13911,19 @@ def _create_evidence_brief_writing_nodes(
 ) -> tuple[list[WritingNode], list[WritingEdge]]:
     nodes: list[WritingNode] = []
     edges: list[WritingEdge] = []
+    enriched_ref_by_key = {
+        _source_ref_key(ref): ref
+        for ref in refs
+        if _source_ref_key(ref) != ("", "")
+    }
+
+    def enriched_node_refs(raw_refs: Any) -> list[dict[str, Any]]:
+        node_refs: list[dict[str, Any]] = []
+        for ref in _source_refs_payload(raw_refs):
+            key = _source_ref_key(ref)
+            if key in enriched_ref_by_key:
+                node_refs.append(enriched_ref_by_key[key])
+        return _dedupe_writing_refs(node_refs)
 
     def add_node(node_type: str, title: str, body: str, *, x: int, y: int, source_refs: list[dict[str, Any]] | None = None, metadata: dict[str, Any] | None = None, status: str = "draft") -> WritingNode:
         node = WritingNode(
@@ -11942,7 +13976,7 @@ def _create_evidence_brief_writing_nodes(
     )
     add_edge(section, draft, "follows", "生成草稿")
     for index, note in enumerate(notes[:8]):
-        note_refs = _source_refs_payload(getattr(note, "source_refs", []))
+        note_refs = enriched_node_refs(getattr(note, "source_refs", []))
         node = add_node(
             "evidence",
             note.title or "Digest note",
@@ -11954,7 +13988,7 @@ def _create_evidence_brief_writing_nodes(
         )
         add_edge(node, draft, "supported_by", "Digest")
     for index, claim in enumerate(claims[:10]):
-        claim_refs = _source_refs_payload(getattr(claim, "source_refs", []))
+        claim_refs = enriched_node_refs(getattr(claim, "source_refs", []))
         node = add_node(
             "answer",
             _trim_words(claim.statement, 14) or "Knowledge claim",
@@ -11967,7 +14001,7 @@ def _create_evidence_brief_writing_nodes(
         )
         add_edge(node, draft, "supported_by", "Claim")
     for index, item in enumerate(review_items[:10]):
-        item_refs = _source_refs_payload((item.proposal or {}).get("source_refs") or [])
+        item_refs = enriched_node_refs((item.proposal or {}).get("source_refs") or [])
         node = add_node(
             "gap" if item.status == "pending" else "evidence",
             item.title or "Review item",
@@ -11983,7 +14017,7 @@ def _create_evidence_brief_writing_nodes(
     for index, run in enumerate(ask_runs[:8]):
         result = _ask_run_result_payload(run)
         evidence = result.get("evidence") if isinstance(result.get("evidence"), dict) else {}
-        run_refs = _source_refs_payload(result.get("source_refs") or result.get("citations") or evidence.get("source_refs") or evidence.get("citations") or [])
+        run_refs = enriched_node_refs(result.get("source_refs") or result.get("citations") or evidence.get("source_refs") or evidence.get("citations") or [])
         node = add_node(
             "answer" if result.get("answer_type") != "no_answer" else "gap",
             _trim_words(_ask_run_query(run), 14) or "Ask answer",
@@ -12043,8 +14077,13 @@ def _evidence_brief_markdown(title: str, *, notes: list[Any], claims: list[Any],
         title_ref = str(ref.get("title") or ref.get("source_item_id") or ref.get("chunk_id") or f"Source {index}")
         source_id = str(ref.get("source_item_id") or "")
         suffix = f" ({source_id})" if source_id and source_id != title_ref else ""
-        lines.append(f"{index}. {title_ref}{suffix}")
+        knowledge_base_label = ", ".join(_string_list(ref.get("knowledge_base_names")) or _string_list(ref.get("knowledge_base_ids")))
+        knowledge_base_suffix = f" [KB: {knowledge_base_label}]" if knowledge_base_label else ""
+        lines.append(f"{index}. {title_ref}{suffix}{knowledge_base_suffix}")
     lines.extend(["", "## Lineage", "", f"- Producer: {lineage.get('producer')}", f"- Review status: {lineage.get('review_status')}", f"- Job: {lineage.get('job_id') or '-'}"])
+    knowledge_base_names = _string_list(lineage.get("knowledge_base_names")) or _string_list(lineage.get("knowledge_base_ids"))
+    if knowledge_base_names:
+        lines.append(f"- Knowledge bases: {', '.join(knowledge_base_names)}")
     return "\n".join(lines).strip()
 
 
@@ -12897,6 +14936,42 @@ def _is_active_lifecycle(item: Any) -> bool:
     return _lifecycle_status(item) == "active"
 
 
+def _document_membership_delete_plan(
+    store: Any,
+    *,
+    source_item_ids: list[str],
+    knowledge_base_ids: list[str],
+    tenant_id: str,
+    owner_user_id: str,
+) -> dict[str, list[str]]:
+    scoped_source_ids = store.list_knowledge_base_source_item_ids(
+        set(knowledge_base_ids),
+        tenant_id=tenant_id,
+        owner_user_id=owner_user_id,
+        active_only=True,
+    )
+    requested_source_ids = set(source_item_ids)
+    membership_source_ids = sorted(requested_source_ids & scoped_source_ids)
+    removed_knowledge_base_ids = set(knowledge_base_ids)
+    orphan_source_ids = [
+        source_item_id
+        for source_item_id in membership_source_ids
+        if not (
+            store.list_knowledge_base_ids_for_source_item(
+                source_item_id,
+                tenant_id=tenant_id,
+                owner_user_id=owner_user_id,
+                active_only=True,
+            )
+            - removed_knowledge_base_ids
+        )
+    ]
+    return {
+        "membership_source_item_ids": membership_source_ids,
+        "orphan_source_item_ids": sorted(orphan_source_ids),
+    }
+
+
 def _document_delete_impact(store: Any, *, tenant_id: str, source_item_ids: list[str]) -> dict[str, int]:
     source_ids = set(source_item_ids)
     documents = store.list_documents_for_sources(source_ids)
@@ -12978,11 +15053,13 @@ def _object_has_source_ref(value: Any, source_ids: set[str]) -> bool:
     return False
 
 
-def _document_delete_notes(*, restore: bool, hard_delete: bool) -> list[str]:
+def _document_delete_notes(*, restore: bool, hard_delete: bool, membership_delete: bool = False) -> list[str]:
     if restore:
         return ["已恢复软删资料，资料、原文和检索片段会重新参与 Ask。"]
     if hard_delete:
         return ["彻底清除会删除资料条目、原文、检索片段、索引状态，以及未审阅的派生产物；已审阅知识不会静默删除。"]
+    if membership_delete:
+        return ["会先从当前知识库移除资料 membership；如果资料不再属于任何 active 知识库，再进入软删流程。"]
     return ["软删会让资料从检索中隐藏；已审阅的派生知识会标记为 stale/evidence_removed 并进入 Review。"]
 
 
@@ -13566,6 +15643,13 @@ def _first(values: list[str] | None) -> str | None:
     return values[0] if values else None
 
 
+def _query_string_list(query: dict[str, list[str]], key: str) -> list[str]:
+    values: list[str] = []
+    for raw in query.get(key) or []:
+        values.extend(part.strip() for part in str(raw).split(",") if part.strip())
+    return list(dict.fromkeys(values))
+
+
 def _writing_path_parts(path: str) -> list[str]:
     prefix = "/workspace/writing/boards/"
     if not path.startswith(prefix):
@@ -13575,6 +15659,13 @@ def _writing_path_parts(path: str) -> list[str]:
 
 def _ask_conversation_path_parts(path: str) -> list[str]:
     prefix = "/workspace/ask/conversations/"
+    if not path.startswith(prefix):
+        return []
+    return [part for part in path.removeprefix(prefix).split("/") if part]
+
+
+def _knowledge_base_path_parts(path: str) -> list[str]:
+    prefix = "/workspace/knowledge-bases/"
     if not path.startswith(prefix):
         return []
     return [part for part in path.removeprefix(prefix).split("/") if part]

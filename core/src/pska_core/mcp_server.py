@@ -42,6 +42,7 @@ TOOLS = [
                 "top_k": {"type": "integer", "default": 5},
                 "max_results": {"type": "integer", "default": 3},
                 "max_snippet_chars": {"type": "integer", "default": 700},
+                "knowledge_base_ids": {"type": "array", "items": {"type": "string"}},
                 "source_item_ids": {"type": "array", "items": {"type": "string"}},
                 "scope_mode": {"type": "string", "enum": ["soft", "hard"], "default": "soft"},
             },
@@ -75,6 +76,7 @@ TOOLS = [
                     },
                 },
                 "source_item_ids": {"type": "array", "items": {"type": "string"}},
+                "knowledge_base_ids": {"type": "array", "items": {"type": "string"}},
                 "document_ids": {"type": "array", "items": {"type": "string"}},
                 "chunk_ids": {"type": "array", "items": {"type": "string"}},
                 "max_items": {"type": "integer", "default": 5},
@@ -96,6 +98,7 @@ TOOLS = [
                 "entity_ids": {"type": "array", "items": {"type": "string"}},
                 "entity_labels": {"type": "array", "items": {"type": "string"}},
                 "source_item_ids": {"type": "array", "items": {"type": "string"}},
+                "knowledge_base_ids": {"type": "array", "items": {"type": "string"}},
                 "max_depth": {"type": "integer", "default": 2},
                 "max_paths": {"type": "integer", "default": 6},
                 "max_edges": {"type": "integer", "default": 8},
@@ -112,6 +115,7 @@ TOOLS = [
             "properties": {
                 "query": {"type": "string"},
                 "source_item_ids": {"type": "array", "items": {"type": "string"}},
+                "knowledge_base_ids": {"type": "array", "items": {"type": "string"}},
                 "job_id": {"type": "string"},
                 "max_claims": {"type": "integer", "default": 8},
                 "max_digest_notes": {"type": "integer", "default": 5},
@@ -392,23 +396,39 @@ class MCPServer:
         return {"content": [{"type": "text", "text": json.dumps(to_jsonable(payload), ensure_ascii=False)}]}
 
     def pska_search(self, arguments: dict[str, Any]) -> Any:
-        tenant_id = str(arguments.get("tenant_id") or DEFAULT_TENANT_ID)
-        user = self.store.get_user(arguments.get("user_id") or "user_primary", tenant_id=tenant_id)
+        tenant_id, user, represented_user_id = self._request_scope(arguments)
+        owner_user_id = represented_user_id or user.user_id
         source_item_ids = set(_string_list(arguments.get("source_item_ids")))
         scope_mode = str(arguments.get("scope_mode") or "soft").strip().lower()
+        kb_source_item_ids, knowledge_base_ids = self._knowledge_base_scope_source_ids(
+            arguments,
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+        )
+        if knowledge_base_ids:
+            source_item_ids = source_item_ids & kb_source_item_ids if source_item_ids else set(kb_source_item_ids)
+            scope_mode = "hard"
         response = self.retrieval.search(
             arguments["query"],
             user,
-            represented_user_id=arguments.get("represented_user_id"),
+            represented_user_id=represented_user_id,
             top_k=int(arguments.get("top_k") or 5),
-            source_item_ids=source_item_ids or None,
+            source_item_ids=source_item_ids if knowledge_base_ids else source_item_ids or None,
             scope_mode="hard" if scope_mode == "hard" else "soft",
         )
-        return _compact_search_response(
+        payload = _compact_search_response(
             to_jsonable(response),
             max_results=_bounded_int(arguments.get("max_results"), default=3, minimum=1, maximum=5),
             max_snippet_chars=_bounded_int(arguments.get("max_snippet_chars"), default=700, minimum=120, maximum=1600),
         )
+        if knowledge_base_ids:
+            payload["scope_applied"] = {
+                "mode": "hard",
+                "scope_mode": "hard",
+                "knowledge_base_ids": knowledge_base_ids,
+                "source_item_ids": sorted(source_item_ids),
+            }
+        return payload
 
     def pska_index_status(self, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
         tenant_id = str((arguments or {}).get("tenant_id") or DEFAULT_TENANT_ID)
@@ -443,6 +463,13 @@ class MCPServer:
         requested_source_ids = set(_string_list(arguments.get("source_item_ids")))
         requested_document_ids = set(_string_list(arguments.get("document_ids")))
         requested_chunk_ids = set(_string_list(arguments.get("chunk_ids")))
+        kb_source_item_ids, knowledge_base_ids = self._knowledge_base_scope_source_ids(
+            arguments,
+            tenant_id=tenant_id,
+            owner_user_id=represented_user_id or user.user_id,
+        )
+        if knowledge_base_ids:
+            requested_source_ids = requested_source_ids & kb_source_item_ids if requested_source_ids else set(kb_source_item_ids)
         for ref in refs:
             if ref.source_item_id:
                 requested_source_ids.add(ref.source_item_id)
@@ -450,12 +477,21 @@ class MCPServer:
                 requested_document_ids.add(ref.document_id)
             if ref.chunk_id:
                 requested_chunk_ids.add(ref.chunk_id)
+        if knowledge_base_ids:
+            requested_source_ids = requested_source_ids & kb_source_item_ids
         visible_items = self._visible_source_items(user, represented_user_id=represented_user_id)
         visible_by_id = {item.source_item_id: item for item in visible_items}
         if not requested_source_ids and not requested_document_ids and not requested_chunk_ids and query:
-            search = self.retrieval.search(query, user, represented_user_id=represented_user_id, top_k=max_items)
+            search = self.retrieval.search(
+                query,
+                user,
+                represented_user_id=represented_user_id,
+                top_k=max_items,
+                source_item_ids=kb_source_item_ids if knowledge_base_ids else None,
+                scope_mode="hard" if knowledge_base_ids else "soft",
+            )
             requested_source_ids.update(result.source_item_id for result in search.results[:max_items])
-        if requested_source_ids:
+        if knowledge_base_ids or requested_source_ids:
             visible_items = [item for item in visible_items if item.source_item_id in requested_source_ids]
         source_ids = {item.source_item_id for item in visible_items}
         documents = self.store.list_documents_for_sources(source_ids)
@@ -486,6 +522,12 @@ class MCPServer:
             "ok": True,
             "tenant_id": tenant_id,
             "request_user_id": represented_user_id or user.user_id,
+            "scope_applied": {
+                "mode": "hard",
+                "scope_mode": "hard",
+                "knowledge_base_ids": knowledge_base_ids,
+                "source_item_ids": sorted(kb_source_item_ids),
+            } if knowledge_base_ids else {},
             "query": query or None,
             "results": results[: max_items * 2],
             "citations": citations[: max_items * 2],
@@ -512,6 +554,13 @@ class MCPServer:
         entity_ids = set(_string_list(arguments.get("entity_ids")))
         entity_labels = [label.casefold() for label in _string_list(arguments.get("entity_labels"))]
         source_ids = set(_string_list(arguments.get("source_item_ids")))
+        kb_source_item_ids, knowledge_base_ids = self._knowledge_base_scope_source_ids(
+            arguments,
+            tenant_id=tenant_id,
+            owner_user_id=represented_user_id or user.user_id,
+        )
+        if knowledge_base_ids:
+            source_ids = source_ids & kb_source_item_ids if source_ids else set(kb_source_item_ids)
         all_entities = self.store.list_entities(tenant_id=tenant_id)
         visible_entities = self.retrieval._visible_entities(all_entities, user=user, represented_user_id=represented_user_id)
         selected_entities = []
@@ -527,8 +576,8 @@ class MCPServer:
                 user,
                 represented_user_id=represented_user_id,
                 top_k=max_paths,
-                source_item_ids=source_ids or None,
-                scope_mode="hard" if source_ids else "soft",
+                source_item_ids=source_ids if knowledge_base_ids else source_ids or None,
+                scope_mode="hard" if knowledge_base_ids or source_ids else "soft",
             )
             ranked = search.results
             source_ids.update(result.source_item_id for result in ranked[:max_paths])
@@ -543,7 +592,7 @@ class MCPServer:
                 if any(ref.source_item_id in source_ids for ref in edge.source_refs):
                     selected_entity_ids.update(member.entity_id for member in members)
             selected_entities = [entity for entity in visible_entities if entity.entity_id in selected_entity_ids]
-        ranked_for_paths = _retrieval_results_from_sources(query, self._visible_source_items(user, represented_user_id=represented_user_id), source_ids)
+        ranked_for_paths = [] if knowledge_base_ids and not source_ids else _retrieval_results_from_sources(query, self._visible_source_items(user, represented_user_id=represented_user_id), source_ids)
         graph_paths = self.retrieval._graph_paths(
             query=query or " ".join(entity.label for entity in selected_entities[:3]) or "graph context",
             ranked=ranked_for_paths,
@@ -557,6 +606,8 @@ class MCPServer:
         for edge, members in self.store.list_hyperedges_for_entities({entity.entity_id for entity in selected_entities}):
             if not self.retrieval._can_read_graph_object(user, edge.owner_user_id, edge.visibility, edge.visible_team_ids, represented_user_id):
                 continue
+            if knowledge_base_ids and not any(ref.source_item_id in source_ids for ref in edge.source_refs if ref.source_item_id):
+                continue
             edge_contexts.append(self.retrieval._edge_context(edge, members, entity_by_id, user=user, represented_user_id=represented_user_id))
             if len(edge_contexts) >= max_edges:
                 break
@@ -566,6 +617,12 @@ class MCPServer:
             "ok": True,
             "tenant_id": tenant_id,
             "request_user_id": represented_user_id or user.user_id,
+            "scope_applied": {
+                "mode": "hard",
+                "scope_mode": "hard",
+                "knowledge_base_ids": knowledge_base_ids,
+                "source_item_ids": sorted(kb_source_item_ids),
+            } if knowledge_base_ids else {},
             "query": query or None,
             "entities": [_compact_entity(entity) for entity in selected_entities[:max_edges]],
             "edges": [_compact_graph_edge(edge, max_snippet_chars=max_snippet_chars) for edge in edge_contexts],
@@ -585,24 +642,35 @@ class MCPServer:
         owner_user_id = represented_user_id or user.user_id
         query = _clean_string(arguments.get("query"))
         source_ids = set(_string_list(arguments.get("source_item_ids")))
+        kb_source_item_ids, knowledge_base_ids = self._knowledge_base_scope_source_ids(
+            arguments,
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+        )
+        if knowledge_base_ids:
+            source_ids = source_ids & kb_source_item_ids if source_ids else set(kb_source_item_ids)
         max_claims = _bounded_int(arguments.get("max_claims"), default=8, minimum=1, maximum=24)
         max_digest_notes = _bounded_int(arguments.get("max_digest_notes"), default=5, minimum=1, maximum=16)
         max_snippet_chars = _bounded_int(arguments.get("max_snippet_chars"), default=700, minimum=120, maximum=2000)
         job_id = _clean_string(arguments.get("job_id")) or None
-        claims = self.store.list_knowledge_claims(
-            owner_user_id=owner_user_id,
-            tenant_id=tenant_id,
-            source_item_ids=source_ids or None,
-            job_id=job_id,
-            limit=max_claims * 3,
-        )
-        notes = self.store.list_digest_notes(
-            owner_user_id=owner_user_id,
-            tenant_id=tenant_id,
-            source_item_ids=source_ids or None,
-            job_id=job_id,
-            limit=max_digest_notes * 3,
-        )
+        if knowledge_base_ids and not source_ids:
+            claims = []
+            notes = []
+        else:
+            claims = self.store.list_knowledge_claims(
+                owner_user_id=owner_user_id,
+                tenant_id=tenant_id,
+                source_item_ids=source_ids if knowledge_base_ids else source_ids or None,
+                job_id=job_id,
+                limit=max_claims * 3,
+            )
+            notes = self.store.list_digest_notes(
+                owner_user_id=owner_user_id,
+                tenant_id=tenant_id,
+                source_item_ids=source_ids if knowledge_base_ids else source_ids or None,
+                job_id=job_id,
+                limit=max_digest_notes * 3,
+            )
         if query:
             claims = _rank_objects_by_query(claims, query, fields=("statement", "evidence_text", "subject", "predicate", "object"))
             notes = _rank_objects_by_query(notes, query, fields=("title", "synopsis", "key_points", "actions", "open_questions", "risks"))
@@ -619,6 +687,12 @@ class MCPServer:
             "ok": True,
             "tenant_id": tenant_id,
             "request_user_id": owner_user_id,
+            "scope_applied": {
+                "mode": "hard",
+                "scope_mode": "hard",
+                "knowledge_base_ids": knowledge_base_ids,
+                "source_item_ids": sorted(kb_source_item_ids),
+            } if knowledge_base_ids else {},
             "query": query or None,
             "knowledge_claims": [_compact_knowledge_claim(claim) for claim in claims],
             "digest_notes": [_compact_digest_note(note) for note in notes],
@@ -642,6 +716,22 @@ class MCPServer:
             if str(getattr(item, "lifecycle_status", "active") or "active") == "active"
             if self.retrieval.acl.can_read_item(user, item, represented_user_id=represented_user_id)
         ]
+
+    def _knowledge_base_scope_source_ids(self, arguments: dict[str, Any], *, tenant_id: str, owner_user_id: str) -> tuple[set[str], list[str]]:
+        knowledge_base_ids = _knowledge_base_ids_from_mcp_arguments(arguments)
+        if not knowledge_base_ids:
+            return set(), []
+        for knowledge_base_id in knowledge_base_ids:
+            try:
+                self.store.get_knowledge_base(knowledge_base_id, tenant_id=tenant_id, owner_user_id=owner_user_id)
+            except KeyError as exc:
+                raise PermissionError("knowledge base is not accessible") from exc
+        source_item_ids = self.store.list_knowledge_base_source_item_ids(
+            set(knowledge_base_ids),
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+        )
+        return source_item_ids, knowledge_base_ids
 
     def pska_ingest_channel_payload(self, arguments: dict[str, Any]) -> Any:
         payload = dict(arguments["payload"])
@@ -992,6 +1082,16 @@ def _source_refs_from_mcp_arguments(arguments: dict[str, Any]) -> list[SourceRef
             )
         )
     return refs
+
+
+def _knowledge_base_ids_from_mcp_arguments(arguments: dict[str, Any]) -> list[str]:
+    ids: list[str] = []
+    ids.extend(_string_list(arguments.get("knowledge_base_id")))
+    ids.extend(_string_list(arguments.get("knowledge_base_ids")))
+    scope = arguments.get("scope") if isinstance(arguments.get("scope"), dict) else {}
+    ids.extend(_string_list(scope.get("knowledge_base_id")))
+    ids.extend(_string_list(scope.get("knowledge_base_ids")))
+    return list(dict.fromkeys(item for item in ids if item))
 
 
 def _string_list(value: Any) -> list[str]:

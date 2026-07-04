@@ -1,0 +1,214 @@
+#!/usr/bin/env python3
+"""Run the Phase 1 multi-knowledge-base RAG release gate.
+
+The default gate avoids browser automation and paid LLM calls. Use explicit
+flags to add the live browser scoped-Ask gate and the real FastReAct/PSKA MCP
+DeepSeek smoke.
+"""
+
+from __future__ import annotations
+
+import argparse
+from dataclasses import dataclass
+import json
+import os
+from pathlib import Path
+import shlex
+import subprocess
+import sys
+import time
+from typing import Sequence
+
+
+ROOT = Path(__file__).resolve().parents[1]
+FASTREACT_CONTRACT_TESTS = [
+    "tests/contracts/test_runtime_contracts.py",
+    "tests/contracts/test_http_service_contract.py",
+]
+
+
+class GateFailure(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class Step:
+    name: str
+    cwd: Path
+    argv: list[str]
+    env: dict[str, str] | None = None
+    live: bool = False
+
+
+@dataclass(frozen=True)
+class StepResult:
+    name: str
+    cwd: str
+    command: str
+    exit_code: int
+    elapsed_seconds: float
+    status: str
+    live: bool
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = parse_args(argv)
+    if args.include_all_live:
+        args.include_browser_e2e = True
+        args.include_fastreact_smoke = True
+
+    try:
+        steps = build_steps(args)
+    except GateFailure as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False, indent=2), file=sys.stderr)
+        return 2
+
+    started = time.monotonic()
+    results: list[StepResult] = []
+    for step in steps:
+        result = run_step(step, dry_run=args.dry_run)
+        results.append(result)
+        if result.exit_code != 0 and not args.keep_going:
+            break
+
+    ok = all(result.exit_code == 0 for result in results) and len(results) == len(steps)
+    report = {
+        "ok": ok,
+        "dry_run": bool(args.dry_run),
+        "live_checks_enabled": {
+            "browser_e2e": bool(args.include_browser_e2e),
+            "fastreact_smoke": bool(args.include_fastreact_smoke),
+        },
+        "elapsed_seconds": round(time.monotonic() - started, 3),
+        "steps": [result.__dict__ for result in results],
+    }
+    stream = sys.stdout if ok else sys.stderr
+    print(json.dumps(report, ensure_ascii=False, indent=2), file=stream)
+    return 0 if ok else 1
+
+
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--fastreact-repo", type=Path, default=None, help="Path to the fastreact-nano repository.")
+    parser.add_argument("--skip-core", action="store_true", help="Skip PSKA core pytest.")
+    parser.add_argument("--skip-frontend-build", action="store_true", help="Skip frontend TypeScript/Vite build.")
+    parser.add_argument("--skip-fastreact-contracts", action="store_true", help="Skip FastReAct contract tests.")
+    parser.add_argument("--skip-diff-check", action="store_true", help="Skip git diff --check for PSKA and FastReAct.")
+    parser.add_argument("--include-browser-e2e", action="store_true", help="Run the browser scoped Ask Playwright gate.")
+    parser.add_argument(
+        "--include-fastreact-smoke",
+        action="store_true",
+        help="Run the real FastReAct + PSKA MCP + LLM KB-scope smoke. Requires running services.",
+    )
+    parser.add_argument("--include-all-live", action="store_true", help="Enable all live checks.")
+    parser.add_argument("--keep-going", action="store_true", help="Continue after a failed step.")
+    parser.add_argument("--dry-run", action="store_true", help="Print the gate plan without running commands.")
+    args = parser.parse_args(argv)
+    args.fastreact_repo = resolve_fastreact_repo(args.fastreact_repo)
+    return args
+
+
+def resolve_fastreact_repo(value: Path | None) -> Path:
+    if value is not None:
+        return normalize_fastreact_repo(value.expanduser())
+
+    env_value = os.getenv("FASTREACT_NANO_REPO") or os.getenv("FASTREACT_REPO")
+    if env_value:
+        return normalize_fastreact_repo(Path(env_value).expanduser())
+
+    return normalize_fastreact_repo(Path.home() / "FastReAct")
+
+
+def normalize_fastreact_repo(path: Path) -> Path:
+    if (path / "fastreact-nano" / "pyproject.toml").exists():
+        return path / "fastreact-nano"
+    return path
+
+
+def build_steps(args: argparse.Namespace) -> list[Step]:
+    fastreact_repo = Path(args.fastreact_repo)
+    needs_fastreact_repo = not args.skip_fastreact_contracts or not args.skip_diff_check
+    if needs_fastreact_repo and not (fastreact_repo / "pyproject.toml").exists():
+        raise GateFailure(
+            f"FastReAct repo not found at {fastreact_repo}; pass --fastreact-repo or --skip-fastreact-contracts "
+            "and --skip-diff-check."
+        )
+
+    steps: list[Step] = []
+    if not args.skip_core:
+        steps.append(
+            Step(
+                name="pska_core_pytest",
+                cwd=ROOT / "core",
+                argv=["pytest", "-q"],
+                env={"PYTHONPATH": "..:.:src"},
+            )
+        )
+    if not args.skip_frontend_build:
+        steps.append(Step(name="frontend_build", cwd=ROOT / "frontend", argv=["npm", "run", "build"]))
+    if not args.skip_fastreact_contracts:
+        steps.append(
+            Step(
+                name="fastreact_contracts",
+                cwd=fastreact_repo,
+                argv=["pytest", *FASTREACT_CONTRACT_TESTS, "-q"],
+                env={"PYTHONPATH": "src"},
+            )
+        )
+    if args.include_browser_e2e:
+        steps.append(
+            Step(
+                name="browser_multi_kb_scoped_ask",
+                cwd=ROOT / "frontend",
+                argv=["npm", "run", "e2e:multi-kb-ask"],
+                live=True,
+            )
+        )
+    if args.include_fastreact_smoke:
+        steps.append(
+            Step(
+                name="real_fastreact_kb_scope_smoke",
+                cwd=ROOT,
+                argv=[str(ROOT / "scripts" / "pska-fastreact-kb-scope-smoke")],
+                live=True,
+            )
+        )
+    if not args.skip_diff_check:
+        steps.append(Step(name="pska_diff_check", cwd=ROOT, argv=["git", "diff", "--check"]))
+        steps.append(Step(name="fastreact_diff_check", cwd=fastreact_repo, argv=["git", "diff", "--check"]))
+    if not steps:
+        raise GateFailure("No gate steps selected.")
+    return steps
+
+
+def run_step(step: Step, *, dry_run: bool = False) -> StepResult:
+    command = shlex.join(step.argv)
+    print(f"[gate] {step.name}: (cd {shlex.quote(str(step.cwd))} && {command})", flush=True)
+    started = time.monotonic()
+    if dry_run:
+        exit_code = 0
+        status = "dry_run"
+    else:
+        env = os.environ.copy()
+        if step.env:
+            env.update(step.env)
+        try:
+            completed = subprocess.run(step.argv, cwd=step.cwd, env=env, check=False)
+            exit_code = int(completed.returncode)
+        except OSError as exc:
+            print(f"[gate] {step.name} failed to start: {exc}", file=sys.stderr, flush=True)
+            exit_code = 127
+        status = "passed" if exit_code == 0 else "failed"
+    return StepResult(
+        name=step.name,
+        cwd=str(step.cwd),
+        command=command,
+        exit_code=exit_code,
+        elapsed_seconds=round(time.monotonic() - started, 3),
+        status=status,
+        live=step.live,
+    )
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

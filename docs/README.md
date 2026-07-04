@@ -10,6 +10,7 @@ historical planning notes.
   identity headers, source/digest/Ask workflow, and verification commands.
 - [Developer Quickstart](DEVELOPER_QUICKSTART.md): one-command dev stack, first-time setup, cold-start checks, and FastReAct integration.
 - [Release, Init, and FastReAct Guide](RELEASE_INIT_FASTREACT_GUIDE.zh.md): Chinese operational guide for local release/init and real FastReAct linkage.
+- [Phase 1 Multi-KB RAG Release Notes](RELEASE_PHASE1_MULTI_KB_RAG.zh.md): Chinese release candidate notes, verification commands, and scope boundaries for the multi-knowledge-base RAG foundation.
 - [Configuration Contract](CONFIGURATION_CONTRACT.zh.md): Chinese reference for PSKA, FastReAct, and AuthNode config locations, startup entry points, and compatibility fields.
 
 ## Daily Use
@@ -30,6 +31,7 @@ Directory-level material packs can opt into source collection ingest with
 - [Architecture](ARCHITECTURE.md): current system shape, source-centric flow, discovery invariants, and scheduler behavior.
 - [API Reference](API_REFERENCE.md): HTTP endpoints used by the workspace, CLI, and integrations.
 - [Feature Reality Check](FEATURE_REALITY_CHECK.md): what is shipped, partial, or design-only.
+- [Phase 1 Multi-KB RAG Milestone](MILESTONE_PHASE1_MULTI_KB_RAG.zh.md): Chinese milestone and acceptance evidence for one-account-many-knowledge-bases.
 - [WeKnora Core Coverage Acceptance](WEKNORA_COVERAGE.zh.md): Chinese
   multi-tenant coverage checklist, E2E script, and competitor comparison bar.
 - [Telemetry Design](TELEMETRY.md): design-only telemetry notes.

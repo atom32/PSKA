@@ -119,6 +119,10 @@ export type EvidenceBriefResponse = {
     title?: string;
     status?: string;
     review_status?: string;
+    knowledge_base_id?: string;
+    knowledge_base_name?: string;
+    knowledge_base_ids?: string[];
+    knowledge_base_names?: string[];
     source_refs?: Array<Record<string, unknown>>;
     lineage?: Record<string, unknown>;
     warnings?: Array<Record<string, unknown>>;
@@ -133,6 +137,10 @@ export type WorkspaceCorpusSource = {
   source_item_id?: string;
   title?: string;
   source_channel?: string;
+  knowledge_base_id?: string;
+  knowledge_base_name?: string;
+  knowledge_base_ids?: string[];
+  knowledge_base_names?: string[];
   url?: string;
   created_at?: string;
   snippet?: string;
@@ -153,6 +161,12 @@ export type WorkspaceCorpusChunk = {
 export type WorkspaceCorpusResponse = {
   ok?: boolean;
   counts?: Record<string, number>;
+  filters?: {
+    knowledge_base_ids?: string[];
+    source_channel?: string | null;
+    query?: string;
+    limit?: number;
+  };
   entities?: Array<{ label?: string; canonical_name?: string; name?: string; entity_id?: string; entity_type?: string }>;
   memories?: Array<{ text?: string; confidence?: number; metadata?: Record<string, unknown> }>;
   sources?: WorkspaceCorpusSource[];
@@ -170,6 +184,85 @@ export type WorkspaceCorpusResponse = {
   }>;
 };
 
+export type KnowledgeBase = {
+  knowledge_base_id: string;
+  owner_user_id?: string;
+  tenant_id?: string;
+  name: string;
+  slug?: string;
+  description?: string;
+  kb_type?: string;
+  status?: string;
+  visibility?: string;
+  visible_team_ids?: string[];
+  default_space_id?: string | null;
+  is_default?: boolean;
+  pinned_at?: string | null;
+  counts?: {
+    source_items?: number;
+    documents?: number;
+    chunks?: number;
+    active_chunks?: number;
+    embedded_chunks?: number;
+    processing_spans?: number;
+    failed_processing_spans?: number;
+    offline_index_states?: number;
+    offline_index_dirty?: number;
+  };
+  readiness?: Record<string, unknown> & {
+    retrieval_ready?: boolean;
+    has_source_items?: boolean;
+    has_documents?: boolean;
+    has_chunks?: boolean;
+    processing_status?: string;
+    source_item_count?: number;
+    document_count?: number;
+    chunk_count?: number;
+    active_chunk_count?: number;
+    embedded_chunk_count?: number;
+    embedding_coverage?: number;
+    embedding_models?: string[];
+    embedding_status?: string;
+    processing_count?: number;
+    failed_processing_count?: number;
+    offline_index_state_count?: number;
+    offline_index_dirty_count?: number;
+    offline_index_fresh?: boolean;
+    last_sync_at?: string | null;
+    last_processing_at?: string | null;
+    last_digest_at?: string | null;
+    last_error?: string | null;
+  };
+  capabilities?: Record<string, unknown>;
+  source_item_ids?: string[];
+  created_at?: string;
+  updated_at?: string;
+  deleted_at?: string | null;
+};
+
+export type KnowledgeBaseListResponse = {
+  ok?: boolean;
+  tenant_id?: string;
+  owner_user_id?: string;
+  default_knowledge_base_id?: string;
+  knowledge_bases?: KnowledgeBase[];
+  error?: string;
+};
+
+export type KnowledgeBaseResponse = {
+  ok?: boolean;
+  tenant_id?: string;
+  owner_user_id?: string;
+  knowledge_base?: KnowledgeBase;
+  error?: string;
+};
+
+export type KnowledgeBaseScope = {
+  mode: "current" | "all" | "selected" | "attachments";
+  currentKnowledgeBaseId?: string;
+  selectedKnowledgeBaseIds?: string[];
+};
+
 export type WorkspaceSourceIngestResponse = {
   ok?: boolean;
   action?: "text" | "upload" | string;
@@ -180,6 +273,7 @@ export type WorkspaceSourceIngestResponse = {
     uri?: string;
     status?: string;
   };
+  knowledge_base_ids?: string[];
   source_item_ids?: string[];
   documents?: Array<Record<string, unknown>>;
   chunk_stats?: {
@@ -211,6 +305,7 @@ export type WorkspaceDocumentsResponse = {
   ok?: boolean;
   tenant_id?: string;
   owner_user_id?: string;
+  knowledge_base_ids?: string[];
   include_deleted?: boolean;
   documents?: WorkspaceDocumentEntry[];
   counts?: Record<string, number>;
@@ -223,9 +318,38 @@ export type WorkspaceDocumentDeleteResponse = {
   execute?: boolean;
   restore?: boolean;
   hard_delete?: boolean;
+  delete_mode?: string;
+  knowledge_base_ids?: string[];
   source_item_ids?: string[];
   counts?: Record<string, number>;
   deleted?: Record<string, number>;
+  notes?: string[];
+  error?: string;
+};
+
+export type WorkspaceDocumentLinkResponse = {
+  ok?: boolean;
+  dry_run?: boolean;
+  execute?: boolean;
+  knowledge_base_ids?: string[];
+  target_knowledge_base_ids?: string[];
+  source_item_ids?: string[];
+  counts?: Record<string, number>;
+  linked?: Record<string, number>;
+  notes?: string[];
+  error?: string;
+};
+
+export type WorkspaceDocumentMoveResponse = {
+  ok?: boolean;
+  dry_run?: boolean;
+  execute?: boolean;
+  source_knowledge_base_id?: string;
+  target_knowledge_base_id?: string;
+  knowledge_base_ids?: string[];
+  source_item_ids?: string[];
+  counts?: Record<string, number>;
+  moved?: Record<string, number>;
   notes?: string[];
   error?: string;
 };
@@ -235,6 +359,9 @@ export type AskConversation = {
   title?: string;
   status?: string;
   summary?: string;
+  metadata?: Record<string, unknown>;
+  scope_applied?: Record<string, unknown>;
+  knowledge_base_ids?: string[];
   created_at?: string;
   updated_at?: string;
 };
@@ -247,6 +374,9 @@ export type AskMessage = {
   run_id?: string | null;
   citations?: Array<Record<string, unknown>>;
   source_refs?: Array<Record<string, unknown>>;
+  metadata?: Record<string, unknown>;
+  scope_applied?: Record<string, unknown>;
+  knowledge_base_ids?: string[];
   created_at?: string;
 };
 
@@ -257,6 +387,8 @@ export type AskRun = {
   query?: string;
   result?: WorkspaceAskResponse;
   route?: Record<string, unknown>;
+  scope_applied?: Record<string, unknown>;
+  knowledge_base_ids?: string[];
   evidence_check?: Record<string, unknown>;
   started_at?: string;
   finished_at?: string;
@@ -332,6 +464,7 @@ export type WorkspaceGraphResponse = {
   ok?: boolean;
   ontology_version?: string;
   owner_user_id?: string;
+  scope_applied?: Record<string, unknown>;
   nodes?: WorkspaceGraphNode[];
   edges?: WorkspaceGraphEdge[];
   matches?: Array<WorkspaceGraphInsightNode & { score?: number }>;
@@ -619,6 +752,7 @@ export type KnowledgeSourceCreateResponse = {
     path?: string;
     status?: string;
   };
+  knowledge_base_ids?: string[];
   preview?: SourcePreviewResponse["preview"] | null;
   adapters?: SourceAdapterDefinition[];
   error?: string;
@@ -637,6 +771,7 @@ export type SourceSyncResponse = {
     failed?: number;
   };
   failed?: Array<{ error?: string } | string>;
+  knowledge_base_ids?: string[];
   knowledge_sources?: Array<Record<string, unknown>>;
   sync_runs?: Array<Record<string, unknown>>;
   reports?: Array<Record<string, unknown>>;
@@ -646,6 +781,7 @@ export type SourceSyncResponse = {
 export type DigestNowResponse = {
   ok?: boolean;
   error?: string;
+  scope_applied?: Record<string, unknown>;
   mode?: "queued" | "sync_worker" | string;
   queued?: boolean;
   job?: {
@@ -719,6 +855,11 @@ export type DigestLogEntry = {
   error?: string | null;
   source_item_ids?: string[];
   source_item_count?: number;
+  source_refs?: Array<Record<string, unknown>>;
+  knowledge_base_id?: string;
+  knowledge_base_name?: string;
+  knowledge_base_ids?: string[];
+  knowledge_base_names?: string[];
   candidate_summary?: {
     entities?: number;
     hyperedges?: number;
@@ -731,8 +872,29 @@ export type DigestLogEntry = {
     review_candidates?: number;
     warnings?: string[];
   };
-  knowledge_claims?: Array<{ statement?: string; claim_type?: string; confidence?: number; evidence_text?: string }>;
-  digest_notes?: Array<{ title?: string; synopsis?: string; actions?: unknown[]; open_questions?: unknown[]; risks?: unknown[] }>;
+  knowledge_claims?: Array<{
+    statement?: string;
+    claim_type?: string;
+    confidence?: number;
+    evidence_text?: string;
+    source_refs?: Array<Record<string, unknown>>;
+    knowledge_base_id?: string;
+    knowledge_base_name?: string;
+    knowledge_base_ids?: string[];
+    knowledge_base_names?: string[];
+  }>;
+  digest_notes?: Array<{
+    title?: string;
+    synopsis?: string;
+    actions?: unknown[];
+    open_questions?: unknown[];
+    risks?: unknown[];
+    source_refs?: Array<Record<string, unknown>>;
+    knowledge_base_id?: string;
+    knowledge_base_name?: string;
+    knowledge_base_ids?: string[];
+    knowledge_base_names?: string[];
+  }>;
   latest_event?: { event_type?: string; message?: string; created_at?: string; detail?: Record<string, unknown> } | null;
   timeline?: Array<{ event_type?: string; message?: string; created_at?: string; detail?: Record<string, unknown> }>;
 };
@@ -740,6 +902,7 @@ export type DigestLogEntry = {
 export type DigestLogsResponse = {
   ok?: boolean;
   owner_user_id?: string;
+  scope_applied?: Record<string, unknown>;
   summary?: {
     status_counts?: Record<string, number>;
     candidate_totals?: {
@@ -929,6 +1092,7 @@ export type WorkspaceSearchResponse = {
   };
   source_refs?: Array<{ title?: string; snippet?: string; source_item_id?: string; url?: string }>;
   citations?: Array<{ title?: string; snippet?: string; source_item_id?: string; url?: string }>;
+  scope_applied?: Record<string, unknown>;
   trace?: {
     events?: Array<Record<string, unknown>>;
     tool_calls?: Array<Record<string, unknown>>;
@@ -957,6 +1121,17 @@ export type WorkspaceSearchResponse = {
   retrieval?: {
     results?: Array<{ title?: string; snippet?: string; score?: number }>;
   };
+};
+
+export type KnowledgeBaseSearchResponse = WorkspaceSearchResponse & {
+  mode?: "knowledge_base_search" | string;
+  search_mode?: string;
+  tenant_id?: string;
+  owner_user_id?: string;
+  knowledge_base_ids?: string[];
+  knowledge_bases?: KnowledgeBase[];
+  results?: Array<Record<string, unknown>>;
+  diagnostics?: Record<string, unknown>;
 };
 
 export type KnowledgeSourceCleanupResponse = {
@@ -1044,7 +1219,22 @@ export type ReviewCenterItem = {
   status?: string;
   title: string;
   confidence?: number | null;
-  source_refs?: Array<{ source_item_id?: string; document_id?: string; chunk_id?: string; passage_window_id?: string; url?: string; title?: string }>;
+  knowledge_base_id?: string;
+  knowledge_base_name?: string;
+  knowledge_base_ids?: string[];
+  knowledge_base_names?: string[];
+  source_refs?: Array<{
+    source_item_id?: string;
+    document_id?: string;
+    chunk_id?: string;
+    passage_window_id?: string;
+    url?: string;
+    title?: string;
+    knowledge_base_id?: string;
+    knowledge_base_name?: string;
+    knowledge_base_ids?: string[];
+    knowledge_base_names?: string[];
+  }>;
   source_ref_status?: string;
   support_ids?: string[];
   support_kinds?: string[];
@@ -1064,6 +1254,7 @@ export type ReviewCenterResponse = {
   ok?: boolean;
   owner_user_id?: string;
   status?: string;
+  scope_applied?: Record<string, unknown>;
   review_items?: ReviewCenterItem[];
   count?: number;
   total_matching?: number;

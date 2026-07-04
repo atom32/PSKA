@@ -221,6 +221,19 @@ FastReAct 默认 API 地址：
 http://127.0.0.1:18741
 ```
 
+验证 deep Ask 是否通过真实 FastReAct + PSKA HTTP MCP 保留 KB hard scope：
+
+```bash
+cd "$PSKA_REPO"
+./scripts/pska-fastreact-kb-scope-smoke
+```
+
+该 smoke 会创建 alpha/beta 两个临时知识库，只对 alpha 发起 hard-scoped
+Deep Ask，并断言 FastReAct 的 `pska_pska_search` 等 PSKA MCP tool call
+带有 `knowledge_base_ids`、`source_item_ids`、`scope_mode=hard` 和
+`tool_policy_scope_applied=true`。脚本成功时会自动清理临时数据并输出
+`residue_counts` 全 0。
+
 PSKA 调用 FastReAct 时需要知道 FastReAct API 和 service token：
 
 ```json

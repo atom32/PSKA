@@ -23,6 +23,7 @@ from pska_core.api import (
     _ask_clean_evidence_text,
     _ask_hydrate_retrieval_source_windows,
     _ask_is_stream_done_event,
+    _ask_public_trace_event,
     _ask_query_terms,
     _ask_quick_answer,
     _ask_route_intent,
@@ -42,7 +43,7 @@ from pska_core.hypergraph import HypergraphService
 from pska_core.ingest import IngestService
 from pska_core.jobs import DIGEST_VIA_FASTREACT, EXTRACT_VIA_FASTREACT, JobService
 from pska_core.mcp_server import MCPServer
-from pska_core.models import AgentMemory, Chunk, ConnectorState, DigestNote, DiscoveryItem, Document, Entity, KnowledgeClaim, ReviewItem, SourceItem, SourceRef, User, UserProfileCard, utc_now
+from pska_core.models import AgentMemory, Chunk, ConnectorState, DigestNote, DiscoveryItem, Document, Entity, KnowledgeBase, KnowledgeBaseSourceItem, KnowledgeClaim, ReviewItem, SourceItem, SourceRef, User, UserProfileCard, utc_now
 from pska_core.retrieval import RetrievalService
 from pska_core.review import ReviewService
 from pska_core.serde import to_jsonable
@@ -2790,6 +2791,15 @@ def test_evidence_brief_creates_writing_draft_with_lineage_and_refs() -> None:
             "content": {"text": "Evidence brief drafts must keep citations and review lineage."},
         }
     )
+    knowledge_base = api.create_workspace_knowledge_base({"name": "Brief Corpus"}, context=context)["knowledge_base"]
+    api.workspace_documents_link(
+        {
+            "source_item_ids": [source.source_item_id],
+            "target_knowledge_base_id": knowledge_base["knowledge_base_id"],
+            "execute": True,
+        },
+        context=context,
+    )
     ref = SourceRef(source_item_id=source.source_item_id)
     api.store.add_digest_note(
         DigestNote(
@@ -2839,9 +2849,22 @@ def test_evidence_brief_creates_writing_draft_with_lineage_and_refs() -> None:
     assert payload["brief"]["lineage"]["knowledge_claim_ids"] == ["kc_brief"]
     assert payload["brief"]["lineage"]["review_item_ids"] == ["rev_brief"]
     assert payload["brief"]["source_refs"][0]["source_item_id"] == source.source_item_id
+    assert payload["brief"]["source_refs"][0]["knowledge_base_ids"] == [knowledge_base["knowledge_base_id"]]
+    assert payload["brief"]["source_refs"][0]["knowledge_base_names"] == ["Brief Corpus"]
+    assert payload["brief"]["lineage"]["knowledge_base_ids"] == [knowledge_base["knowledge_base_id"]]
+    assert payload["brief"]["knowledge_base_names"] == ["Brief Corpus"]
+    assert board["metadata"]["knowledge_base_ids"] == [knowledge_base["knowledge_base_id"]]
+    assert board["metadata"]["knowledge_base_scope"]["source_item_count"] == 1
     assert draft["source_refs"][0]["source_item_id"] == source.source_item_id
+    assert draft["source_refs"][0]["knowledge_base_name"] == "Brief Corpus"
+    assert draft["metadata"]["lineage"]["knowledge_base_ids"] == [knowledge_base["knowledge_base_id"]]
     assert "Evidence briefs preserve citations." in draft["body_markdown"]
-    assert api.workspace_writing_board(board["board_id"], context=context)["board"]["metadata"]["lineage"]["job_id"] == "job_brief"
+    assert "Knowledge bases: Brief Corpus" in draft["body_markdown"]
+    evidence_node = next(node for node in nodes if node["metadata"].get("artifact_type") == "digest_note")
+    assert evidence_node["source_refs"][0]["knowledge_base_name"] == "Brief Corpus"
+    persisted = api.workspace_writing_board(board["board_id"], context=context)
+    assert persisted["board"]["metadata"]["lineage"]["job_id"] == "job_brief"
+    assert persisted["board"]["metadata"]["knowledge_base_names"] == ["Brief Corpus"]
 
 
 def test_writing_ask_scope_uses_connected_node_context_in_quick_trace() -> None:
@@ -3228,6 +3251,200 @@ def test_workspace_ask_deep_uses_fastreact_readonly_tool_policy() -> None:
     assert call["tool_policy"] == payload["route"]["tool_policy"]
     assert call["session_id"] == "ask-session-1"
     assert "User question: 请分析 Atlas reporting" in call["query"]
+
+
+def test_workspace_ask_deep_passes_knowledge_base_scope_to_mcp_policy() -> None:
+    api = _api()
+    IngestService(api.store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "workspace-ask-deep-alpha",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "Deep Alpha",
+            "content": {"text": "deep scopedsharedtoken alpha-only evidence"},
+        }
+    )
+    IngestService(api.store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "workspace-ask-deep-beta",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "Deep Beta",
+            "content": {"text": "deep scopedsharedtoken beta-only evidence"},
+        }
+    )
+    alpha_source_id = next(item.source_item_id for item in api.store.list_source_items() if item.source_id == "workspace-ask-deep-alpha")
+    beta_source_id = next(item.source_item_id for item in api.store.list_source_items() if item.source_id == "workspace-ask-deep-beta")
+    alpha_kb = KnowledgeBase("kb_deep_alpha", "user_primary", "Deep Alpha KB")
+    beta_kb = KnowledgeBase("kb_deep_beta", "user_primary", "Deep Beta KB")
+    api.store.upsert_knowledge_base(alpha_kb)
+    api.store.upsert_knowledge_base(beta_kb)
+    api.store.add_knowledge_base_source_item(
+        KnowledgeBaseSourceItem(
+            knowledge_base_id=alpha_kb.knowledge_base_id,
+            source_item_id=alpha_source_id,
+            owner_user_id="user_primary",
+            added_by_user_id="user_primary",
+        )
+    )
+    api.store.add_knowledge_base_source_item(
+        KnowledgeBaseSourceItem(
+            knowledge_base_id=beta_kb.knowledge_base_id,
+            source_item_id=beta_source_id,
+            owner_user_id="user_primary",
+            added_by_user_id="user_primary",
+        )
+    )
+
+    with _http_server(api) as base_url:
+        status, payload = _http_json(
+            base_url,
+            "POST",
+            "/workspace/ask",
+            {
+                "query": "请深入分析 scopedsharedtoken 的证据。",
+                "intent": "deep",
+                "surface": "today",
+                "session_id": "ask-session-scope",
+                "user_id": "user_primary",
+                "represented_user_id": "user_primary",
+                "scope": {"mode": "hard", "knowledge_base_ids": [alpha_kb.knowledge_base_id]},
+            },
+        )
+
+    call = api.agentic_service.calls[0]
+    policy_scope = call["tool_policy"]["scope"]
+    evidence = payload["evidence"]
+    source_ids = {
+        item.get("source_item_id")
+        for bucket in ("citations", "source_refs", "results", "source_windows")
+        for item in evidence.get(bucket, [])
+        if isinstance(item, dict) and item.get("source_item_id")
+    }
+
+    assert status == 200
+    assert payload["route"]["scope_applied"]["knowledge_base_ids"] == [alpha_kb.knowledge_base_id]
+    assert payload["route"]["tool_policy"]["scope"]["knowledge_base_ids"] == [alpha_kb.knowledge_base_id]
+    assert policy_scope["knowledge_base_ids"] == [alpha_kb.knowledge_base_id]
+    assert policy_scope["source_item_ids"] == [alpha_source_id]
+    assert policy_scope["scope_mode"] == "hard"
+    assert beta_source_id not in source_ids
+    assert source_ids <= {alpha_source_id}
+
+
+def test_ask_public_trace_event_preserves_scope_audit_fields() -> None:
+    event = {
+        "schema": "fastreact.event.v1",
+        "type": "tool_call",
+        "event_id": "run_1:3",
+        "run_id": "run_1",
+        "sequence": 3,
+        "tool_name": "pska_pska_search",
+        "tool_args": {
+            "query": "scopedsharedtoken",
+            "knowledge_base_ids": ["kb_alpha"],
+            "scope_mode": "hard",
+            "source_item_ids": ["src_alpha"],
+            "scope": {
+                "mode": "hard",
+                "scope_mode": "hard",
+                "knowledge_base_ids": ["kb_alpha"],
+                "source_item_ids": ["src_alpha"],
+                "internal_note": "not public",
+            },
+            "unrelated": "not public",
+        },
+        "metadata": {
+            "action": "calling",
+            "tool_policy_scope_applied": True,
+            "tool_policy": {
+                "mode": "allowlist",
+                "allowed_tools": ["pska_pska_search"],
+                "scope": {
+                    "mode": "hard",
+                    "scope_mode": "hard",
+                    "knowledge_base_ids": ["kb_alpha"],
+                    "source_item_ids": ["src_alpha"],
+                    "internal_note": "not public",
+                },
+            },
+            "raw_args": {"not": "public"},
+        },
+    }
+
+    public = _ask_public_trace_event(event)
+
+    assert public["tool_args"] == {
+        "query": "scopedsharedtoken",
+        "knowledge_base_ids": ["kb_alpha"],
+        "scope_mode": "hard",
+        "source_item_ids": ["src_alpha"],
+        "scope": {
+            "mode": "hard",
+            "scope_mode": "hard",
+            "knowledge_base_ids": ["kb_alpha"],
+            "source_item_ids": ["src_alpha"],
+        },
+    }
+    assert public["metadata"]["tool_policy_scope_applied"] is True
+    assert public["metadata"]["tool_policy"] == {
+        "mode": "allowlist",
+        "allowed_tools": ["pska_pska_search"],
+        "scope": {
+            "mode": "hard",
+            "scope_mode": "hard",
+            "knowledge_base_ids": ["kb_alpha"],
+            "source_item_ids": ["src_alpha"],
+        },
+    }
+
+
+def test_workspace_ask_http_inaccessible_knowledge_base_scope_does_not_leak_id() -> None:
+    api = _api()
+    secret_kb_id = "kb_secret_should_not_leak"
+
+    with _http_server(api) as base_url:
+        status, payload = _http_json(
+            base_url,
+            "POST",
+            "/workspace/ask",
+            {
+                "query": "sharedtoken",
+                "intent": "quick",
+                "scope": {"knowledge_base_ids": [secret_kb_id]},
+                "user_id": "user_primary",
+                "represented_user_id": "user_primary",
+            },
+        )
+
+    assert status == 403
+    assert payload["error"] == "knowledge base is not accessible"
+    assert secret_kb_id not in json.dumps(payload)
+
+
+def test_workspace_knowledge_base_http_inaccessible_id_does_not_leak_id() -> None:
+    api = _api()
+    secret_kb_id = "kb_secret_direct_should_not_leak"
+
+    with _http_server(api) as base_url:
+        responses = [
+            _http_json(base_url, "GET", f"/workspace/knowledge-bases/{secret_kb_id}"),
+            _http_json(base_url, "PATCH", f"/workspace/knowledge-bases/{secret_kb_id}", {"status": "archived"}),
+            _http_json(base_url, "DELETE", f"/workspace/knowledge-bases/{secret_kb_id}", {}),
+        ]
+
+    for status, payload in responses:
+        assert status == 403
+        assert payload["error"] == "knowledge base is not accessible"
+        assert secret_kb_id not in json.dumps(payload)
 
 
 def test_workspace_ask_deep_drops_source_refs_outside_current_owner_scope() -> None:

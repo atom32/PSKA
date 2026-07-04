@@ -6,6 +6,9 @@ import type {
   DigestNowResponse,
   EvidenceBriefResponse,
   FileSyncResponse,
+  KnowledgeBaseSearchResponse,
+  KnowledgeBaseListResponse,
+  KnowledgeBaseResponse,
   KnowledgeSourceCleanupResponse,
   KnowledgeSourceCreateResponse,
   AskConversationResponse,
@@ -14,6 +17,8 @@ import type {
   ReviewActionResponse,
   SourcePreviewResponse,
   WorkspaceDocumentDeleteResponse,
+  WorkspaceDocumentLinkResponse,
+  WorkspaceDocumentMoveResponse,
   WorkspaceDocumentsResponse,
   WorkspaceSourceIngestResponse,
   SourceSyncResponse,
@@ -117,6 +122,11 @@ const ownerUserId = (auth: PSKAAuth) => resolveIdentity(auth).representedUserId;
 const actorUserId = (auth: PSKAAuth) => resolveIdentity(auth).userId;
 const clean = (value?: string) => (value || "").trim();
 
+const appendKnowledgeBaseParams = (params: URLSearchParams, options: { knowledgeBaseId?: string; knowledgeBaseIds?: string[] }) => {
+  const ids = unique([...(options.knowledgeBaseId ? [options.knowledgeBaseId] : []), ...(options.knowledgeBaseIds || [])].map(clean).filter(Boolean));
+  ids.forEach((id) => params.append("knowledge_base_ids", id));
+};
+
 export async function loadGatewaySession(): Promise<PSKAGatewaySession | null> {
   try {
     const response = await fetch("/auth/session", { headers: { Accept: "application/json" } });
@@ -181,8 +191,123 @@ export async function loadCorpusContext(serviceToken: PSKAAuth): Promise<Partial
   }
 }
 
-export async function loadCorpusData(serviceToken: PSKAAuth, limit = 16): Promise<WorkspaceCorpusResponse> {
+type KnowledgeBaseScopedOptions = {
+  knowledgeBaseId?: string;
+  knowledgeBaseIds?: string[];
+};
+
+export async function listKnowledgeBases(
+  serviceToken: PSKAAuth,
+  options: { includeArchived?: boolean } = {}
+): Promise<KnowledgeBaseListResponse> {
+  const params = new URLSearchParams({ owner_user_id: ownerUserId(serviceToken) });
+  if (options.includeArchived) {
+    params.set("include_archived", "true");
+  }
+  const response = await fetch(`/workspace/knowledge-bases?${params.toString()}`, { headers: headers(serviceToken) });
+  if (!response.ok) {
+    throw new Error(await responseError(response, "知识库加载失败"));
+  }
+  return (await response.json()) as KnowledgeBaseListResponse;
+}
+
+export async function loadKnowledgeBase(serviceToken: PSKAAuth, knowledgeBaseId: string): Promise<KnowledgeBaseResponse> {
+  const params = new URLSearchParams({ owner_user_id: ownerUserId(serviceToken) });
+  const response = await fetch(`/workspace/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}?${params.toString()}`, { headers: headers(serviceToken) });
+  if (!response.ok) {
+    throw new Error(await responseError(response, "知识库详情加载失败"));
+  }
+  return (await response.json()) as KnowledgeBaseResponse;
+}
+
+export async function createKnowledgeBase(
+  serviceToken: PSKAAuth,
+  payload: { name: string; description?: string }
+): Promise<KnowledgeBaseResponse> {
+  const response = await fetch("/workspace/knowledge-bases", {
+    method: "POST",
+    headers: headers(serviceToken),
+    body: JSON.stringify({
+      ...payload,
+      ...requestUserPayload(serviceToken)
+    })
+  });
+  if (!response.ok) {
+    throw new Error(await responseError(response, "创建知识库失败"));
+  }
+  return (await response.json()) as KnowledgeBaseResponse;
+}
+
+export async function patchKnowledgeBase(
+  serviceToken: PSKAAuth,
+  knowledgeBaseId: string,
+  payload: Partial<{ name: string; description: string; pinned: boolean }>
+): Promise<KnowledgeBaseResponse> {
+  const response = await fetch(`/workspace/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}`, {
+    method: "PATCH",
+    headers: headers(serviceToken),
+    body: JSON.stringify({
+      ...payload,
+      ...requestUserPayload(serviceToken)
+    })
+  });
+  if (!response.ok) {
+    throw new Error(await responseError(response, "保存知识库失败"));
+  }
+  return (await response.json()) as KnowledgeBaseResponse;
+}
+
+export async function restoreKnowledgeBase(serviceToken: PSKAAuth, knowledgeBaseId: string): Promise<KnowledgeBaseResponse> {
+  const response = await fetch(`/workspace/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/restore`, {
+    method: "POST",
+    headers: headers(serviceToken),
+    body: JSON.stringify(requestUserPayload(serviceToken))
+  });
+  if (!response.ok) {
+    throw new Error(await responseError(response, "恢复知识库失败"));
+  }
+  return (await response.json()) as KnowledgeBaseResponse;
+}
+
+export async function pinKnowledgeBase(serviceToken: PSKAAuth, knowledgeBaseId: string): Promise<KnowledgeBaseResponse> {
+  const response = await fetch(`/workspace/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/pin`, {
+    method: "POST",
+    headers: headers(serviceToken),
+    body: JSON.stringify(requestUserPayload(serviceToken))
+  });
+  if (!response.ok) {
+    throw new Error(await responseError(response, "置顶知识库失败"));
+  }
+  return (await response.json()) as KnowledgeBaseResponse;
+}
+
+export async function unpinKnowledgeBase(serviceToken: PSKAAuth, knowledgeBaseId: string): Promise<KnowledgeBaseResponse> {
+  const response = await fetch(`/workspace/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/pin`, {
+    method: "DELETE",
+    headers: headers(serviceToken),
+    body: JSON.stringify(requestUserPayload(serviceToken))
+  });
+  if (!response.ok) {
+    throw new Error(await responseError(response, "取消置顶知识库失败"));
+  }
+  return (await response.json()) as KnowledgeBaseResponse;
+}
+
+export async function deleteKnowledgeBase(serviceToken: PSKAAuth, knowledgeBaseId: string): Promise<KnowledgeBaseResponse> {
+  const response = await fetch(`/workspace/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}`, {
+    method: "DELETE",
+    headers: headers(serviceToken),
+    body: JSON.stringify(requestUserPayload(serviceToken))
+  });
+  if (!response.ok) {
+    throw new Error(await responseError(response, "归档知识库失败"));
+  }
+  return (await response.json()) as KnowledgeBaseResponse;
+}
+
+export async function loadCorpusData(serviceToken: PSKAAuth, limit = 16, options: KnowledgeBaseScopedOptions = {}): Promise<WorkspaceCorpusResponse> {
   const params = new URLSearchParams({ owner_user_id: ownerUserId(serviceToken), limit: String(limit) });
+  appendKnowledgeBaseParams(params, options);
   const response = await fetch(`/workspace/corpus/data?${params.toString()}`, { headers: headers(serviceToken) });
   if (!response.ok) {
     throw new Error(`corpus ${response.status}`);
@@ -190,11 +315,12 @@ export async function loadCorpusData(serviceToken: PSKAAuth, limit = 16): Promis
   return (await response.json()) as WorkspaceCorpusResponse;
 }
 
-export async function loadGraphData(serviceToken: PSKAAuth, limit = 60, nodeTypes: string[] = []): Promise<WorkspaceGraphResponse> {
+export async function loadGraphData(serviceToken: PSKAAuth, limit = 60, nodeTypes: string[] = [], options: KnowledgeBaseScopedOptions = {}): Promise<WorkspaceGraphResponse> {
   const params = new URLSearchParams({
     owner_user_id: ownerUserId(serviceToken),
     limit: String(limit)
   });
+  appendKnowledgeBaseParams(params, options);
   if (nodeTypes.length > 0) {
     params.set("node_types", nodeTypes.join(","));
   }
@@ -210,7 +336,8 @@ export async function loadGraphSubgraph(
   nodeId: string,
   limit = 80,
   hops = 1,
-  nodeTypes: string[] = []
+  nodeTypes: string[] = [],
+  options: KnowledgeBaseScopedOptions = {}
 ): Promise<WorkspaceGraphResponse> {
   const params = new URLSearchParams({
     owner_user_id: ownerUserId(serviceToken),
@@ -218,6 +345,7 @@ export async function loadGraphSubgraph(
     limit: String(limit),
     hops: String(hops)
   });
+  appendKnowledgeBaseParams(params, options);
   if (nodeTypes.length > 0) {
     params.set("node_types", nodeTypes.join(","));
   }
@@ -234,7 +362,8 @@ export async function loadGraphSearchSubgraph(
   limit = 80,
   hops = 1,
   topK = 5,
-  nodeTypes: string[] = []
+  nodeTypes: string[] = [],
+  options: KnowledgeBaseScopedOptions = {}
 ): Promise<WorkspaceGraphResponse> {
   const params = new URLSearchParams({
     owner_user_id: ownerUserId(serviceToken),
@@ -243,6 +372,7 @@ export async function loadGraphSearchSubgraph(
     hops: String(hops),
     top_k: String(topK)
   });
+  appendKnowledgeBaseParams(params, options);
   if (nodeTypes.length > 0) {
     params.set("node_types", nodeTypes.join(","));
   }
@@ -295,7 +425,8 @@ export async function runFileSync(serviceToken: PSKAAuth): Promise<FileSyncRespo
   return (await response.json()) as FileSyncResponse;
 }
 
-export async function runDigestNow(serviceToken: PSKAAuth): Promise<DigestNowResponse> {
+export async function runDigestNow(serviceToken: PSKAAuth, options: KnowledgeBaseScopedOptions = {}): Promise<DigestNowResponse> {
+  const knowledgeBaseIds = unique([...(options.knowledgeBaseId ? [options.knowledgeBaseId] : []), ...(options.knowledgeBaseIds || [])].map(clean).filter(Boolean));
   const response = await fetch("/workspace/digest/run", {
     method: "POST",
     headers: headers(serviceToken),
@@ -306,6 +437,7 @@ export async function runDigestNow(serviceToken: PSKAAuth): Promise<DigestNowRes
       run_worker: false,
       triggered_by: actorUserId(serviceToken),
       reason: "manual workspace digest run",
+      ...(knowledgeBaseIds.length ? { knowledge_base_ids: knowledgeBaseIds } : {}),
       ...requestUserPayload(serviceToken)
     })
   });
@@ -327,8 +459,9 @@ export async function retryDigestJob(serviceToken: PSKAAuth, jobId: string): Pro
   return (await response.json()) as { job?: unknown };
 }
 
-export async function loadDigestLogs(serviceToken: PSKAAuth, limit = 8): Promise<DigestLogsResponse> {
+export async function loadDigestLogs(serviceToken: PSKAAuth, limit = 8, options: KnowledgeBaseScopedOptions = {}): Promise<DigestLogsResponse> {
   const params = new URLSearchParams({ owner_user_id: ownerUserId(serviceToken), limit: String(limit) });
+  appendKnowledgeBaseParams(params, options);
   const response = await fetch(`/digest/logs?${params.toString()}`, { headers: headers(serviceToken) });
   if (!response.ok) {
     throw new Error(`digest logs ${response.status}`);
@@ -374,7 +507,7 @@ export async function previewKnowledgeSource(
 
 export async function createKnowledgeSource(
   serviceToken: PSKAAuth,
-  payload: { source_type: string; url?: string; path?: string; name?: string; preview?: boolean }
+  payload: { source_type: string; url?: string; path?: string; name?: string; preview?: boolean; knowledge_base_id?: string }
 ): Promise<KnowledgeSourceCreateResponse> {
   const response = await fetch("/workspace/sources", {
     method: "POST",
@@ -392,7 +525,7 @@ export async function createKnowledgeSource(
 
 export async function createTextSource(
   serviceToken: PSKAAuth,
-  payload: { title?: string; text: string; digest_mode?: "after_upload" | "manual" | "disabled" }
+  payload: { title?: string; text: string; digest_mode?: "after_upload" | "manual" | "disabled"; knowledge_base_id?: string }
 ): Promise<WorkspaceSourceIngestResponse> {
   const response = await fetch("/workspace/sources/text", {
     method: "POST",
@@ -412,7 +545,7 @@ export async function createTextSource(
 export async function uploadWorkspaceSource(
   serviceToken: PSKAAuth,
   file: File,
-  payload: { title?: string; digest_mode?: "after_upload" | "manual" | "disabled" } = {},
+  payload: { title?: string; digest_mode?: "after_upload" | "manual" | "disabled"; knowledge_base_id?: string } = {},
   onProgress?: (progress: WorkspaceUploadProgress) => void
 ): Promise<WorkspaceSourceIngestResponse> {
   const form = new FormData();
@@ -420,6 +553,9 @@ export async function uploadWorkspaceSource(
   form.set("filename", file.name);
   form.set("title", payload.title || file.name);
   form.set("digest_mode", payload.digest_mode || "after_upload");
+  if (payload.knowledge_base_id) {
+    form.set("knowledge_base_id", payload.knowledge_base_id);
+  }
   const identity = resolveIdentity(serviceToken);
   form.set("tenant_id", identity.tenantId);
   form.set("user_id", identity.userId);
@@ -465,12 +601,13 @@ export async function uploadWorkspaceSource(
   });
 }
 
-export async function loadWorkspaceDocuments(serviceToken: PSKAAuth, includeDeleted = true): Promise<WorkspaceDocumentsResponse> {
+export async function loadWorkspaceDocuments(serviceToken: PSKAAuth, includeDeleted = true, options: KnowledgeBaseScopedOptions = {}): Promise<WorkspaceDocumentsResponse> {
   const params = new URLSearchParams({
     owner_user_id: ownerUserId(serviceToken),
     include_deleted: includeDeleted ? "true" : "false",
     limit: "120"
   });
+  appendKnowledgeBaseParams(params, options);
   const response = await fetch(`/workspace/documents/data?${params.toString()}`, { headers: headers(serviceToken) });
   if (!response.ok) {
     throw new Error(await responseError(response, "资料列表加载失败"));
@@ -481,7 +618,7 @@ export async function loadWorkspaceDocuments(serviceToken: PSKAAuth, includeDele
 export async function deleteWorkspaceDocuments(
   serviceToken: PSKAAuth,
   sourceItemIds: string[],
-  options: { execute?: boolean; restore?: boolean; hardDelete?: boolean; reason?: string } = {}
+  options: { execute?: boolean; restore?: boolean; hardDelete?: boolean; reason?: string; knowledgeBaseId?: string; deleteMode?: "membership" | "source" | "hard" } = {}
 ): Promise<WorkspaceDocumentDeleteResponse> {
   const response = await fetch("/workspace/documents/delete", {
     method: "POST",
@@ -491,6 +628,8 @@ export async function deleteWorkspaceDocuments(
       execute: options.execute ?? false,
       restore: options.restore ?? false,
       hard_delete: options.hardDelete ?? false,
+      ...(options.knowledgeBaseId ? { knowledge_base_id: options.knowledgeBaseId } : {}),
+      ...(options.deleteMode ? { delete_mode: options.deleteMode } : {}),
       reason: options.reason,
       ...requestUserPayload(serviceToken)
     })
@@ -501,10 +640,57 @@ export async function deleteWorkspaceDocuments(
   return (await response.json()) as WorkspaceDocumentDeleteResponse;
 }
 
+export async function linkWorkspaceDocuments(
+  serviceToken: PSKAAuth,
+  sourceItemIds: string[],
+  options: { execute?: boolean; targetKnowledgeBaseId: string; membershipType?: string; metadata?: Record<string, unknown> }
+): Promise<WorkspaceDocumentLinkResponse> {
+  const response = await fetch("/workspace/documents/link", {
+    method: "POST",
+    headers: headers(serviceToken),
+    body: JSON.stringify({
+      source_item_ids: sourceItemIds,
+      target_knowledge_base_id: options.targetKnowledgeBaseId,
+      execute: options.execute ?? true,
+      ...(options.membershipType ? { membership_type: options.membershipType } : {}),
+      ...(options.metadata ? { metadata: options.metadata } : {}),
+      ...requestUserPayload(serviceToken)
+    })
+  });
+  if (!response.ok) {
+    throw new Error(await responseError(response, "资料加入知识库失败"));
+  }
+  return (await response.json()) as WorkspaceDocumentLinkResponse;
+}
+
+export async function moveWorkspaceDocuments(
+  serviceToken: PSKAAuth,
+  sourceItemIds: string[],
+  options: { execute?: boolean; sourceKnowledgeBaseId: string; targetKnowledgeBaseId: string; membershipType?: string; metadata?: Record<string, unknown> }
+): Promise<WorkspaceDocumentMoveResponse> {
+  const response = await fetch("/workspace/documents/move", {
+    method: "POST",
+    headers: headers(serviceToken),
+    body: JSON.stringify({
+      source_item_ids: sourceItemIds,
+      source_knowledge_base_id: options.sourceKnowledgeBaseId,
+      target_knowledge_base_id: options.targetKnowledgeBaseId,
+      execute: options.execute ?? true,
+      ...(options.membershipType ? { membership_type: options.membershipType } : {}),
+      ...(options.metadata ? { metadata: options.metadata } : {}),
+      ...requestUserPayload(serviceToken)
+    })
+  });
+  if (!response.ok) {
+    throw new Error(await responseError(response, "资料移动失败"));
+  }
+  return (await response.json()) as WorkspaceDocumentMoveResponse;
+}
+
 export async function syncKnowledgeSources(
   serviceToken: PSKAAuth,
   knowledgeSourceId?: string,
-  options: { sourceTypes?: string[] } = {}
+  options: { sourceTypes?: string[]; knowledgeBaseId?: string } = {}
 ): Promise<SourceSyncResponse> {
   const response = await fetch("/workspace/sources/sync", {
     method: "POST",
@@ -512,6 +698,7 @@ export async function syncKnowledgeSources(
     body: JSON.stringify({
       ...(knowledgeSourceId ? { knowledge_source_ids: [knowledgeSourceId] } : {}),
       ...(options.sourceTypes?.length ? { source_types: options.sourceTypes } : {}),
+      ...(options.knowledgeBaseId ? { knowledge_base_id: options.knowledgeBaseId } : {}),
       ...requestUserPayload(serviceToken)
     })
   });
@@ -562,6 +749,27 @@ export async function searchWorkspace(
     throw new Error(`search ${response.status}`);
   }
   return (await response.json()) as WorkspaceSearchResponse;
+}
+
+export async function searchKnowledgeBases(
+  serviceToken: PSKAAuth,
+  payload: { query: string; knowledgeBaseIds: string[]; topK?: number; mode?: "hybrid" | "lexical" | "direct" }
+): Promise<KnowledgeBaseSearchResponse> {
+  const response = await fetch("/workspace/knowledge-bases/search", {
+    method: "POST",
+    headers: headers(serviceToken),
+    body: JSON.stringify({
+      query: payload.query,
+      knowledge_base_ids: payload.knowledgeBaseIds,
+      top_k: payload.topK ?? 8,
+      mode: payload.mode || "hybrid",
+      ...requestUserPayload(serviceToken)
+    })
+  });
+  if (!response.ok) {
+    throw new Error(await responseError(response, "知识库搜索失败"));
+  }
+  return (await response.json()) as KnowledgeBaseSearchResponse;
 }
 
 export async function askWorkspace(
@@ -682,12 +890,14 @@ export async function loadAskConversations(serviceToken: PSKAAuth): Promise<AskC
   return (await response.json()) as AskConversationResponse;
 }
 
-export async function createAskConversation(serviceToken: PSKAAuth, title?: string): Promise<AskConversationResponse> {
+export async function createAskConversation(serviceToken: PSKAAuth, title?: string, options: { scope?: Record<string, unknown>; metadata?: Record<string, unknown> } = {}): Promise<AskConversationResponse> {
   const response = await fetch("/workspace/ask/conversations", {
     method: "POST",
     headers: headers(serviceToken),
     body: JSON.stringify({
       title: title || "Ask PSKA",
+      ...(options.scope ? { scope: options.scope } : {}),
+      ...(options.metadata ? { metadata: options.metadata } : {}),
       ...requestUserPayload(serviceToken)
     })
   });
@@ -1222,12 +1432,13 @@ export async function loadToday(serviceToken: PSKAAuth): Promise<TodayResponse> 
   return (await response.json()) as TodayResponse;
 }
 
-export async function loadReviewCenter(serviceToken: PSKAAuth, status = "pending"): Promise<ReviewCenterResponse> {
+export async function loadReviewCenter(serviceToken: PSKAAuth, status = "pending", options: KnowledgeBaseScopedOptions = {}): Promise<ReviewCenterResponse> {
   const params = new URLSearchParams({
     owner_user_id: ownerUserId(serviceToken),
     status,
     limit: "50"
   });
+  appendKnowledgeBaseParams(params, options);
   const response = await fetch(`/console/reviews/data?${params.toString()}`, { headers: headers(serviceToken) });
   if (!response.ok) {
     throw new Error(`reviews ${response.status}`);

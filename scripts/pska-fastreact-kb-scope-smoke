@@ -1,0 +1,581 @@
+#!/usr/bin/env python3
+"""Run a live PSKA -> FastReAct -> PSKA MCP knowledge-base scope smoke test.
+
+The script assumes PSKA was started through ./start.sh and a real FastReAct
+daemon is already running. It creates two temporary knowledge bases for one
+tenant/user, asks a deep question scoped only to the alpha KB, verifies real
+FastReAct PSKA MCP tool calls carry that hard scope, and then removes all
+temporary data identified by the unique marker.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import time
+from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote
+from urllib.request import Request, urlopen
+from uuid import uuid4
+
+
+ROOT = Path(__file__).resolve().parents[1]
+CORE_SRC = ROOT / "core" / "src"
+if str(CORE_SRC) not in sys.path:
+    sys.path.insert(0, str(CORE_SRC))
+
+from pska_core.config import PSKAConfig  # noqa: E402
+
+
+DEFAULT_PSKA_URL = "http://127.0.0.1:8765"
+DEFAULT_FASTREACT_URL = "http://127.0.0.1:18741"
+DEFAULT_TENANT_ID = "tenant_graphintell"
+DEFAULT_USER_ID = "test_user"
+PSKA_READ_TOOLS = {
+    "pska_pska_search",
+    "pska_pska_read_evidence_context",
+    "pska_pska_graph_context",
+}
+RESIDUE_TABLES = ["knowledge_bases", "knowledge_sources", "source_items", "documents", "chunks", "passage_windows"]
+MARKER_RE = re.compile(r"^[A-Za-z0-9_.:-]+$")
+
+
+class SmokeFailure(RuntimeError):
+    def __init__(self, message: str, report: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.report = report or {}
+
+
+def main() -> int:
+    args = parse_args()
+    try:
+        report = run_smoke(args)
+    except SmokeFailure as exc:
+        payload = {"ok": False, "error": str(exc)}
+        if exc.report:
+            payload["report"] = exc.report
+        print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+        return 1
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", type=Path, default=ROOT / ".pska" / "config.json", help="PSKA config file.")
+    parser.add_argument("--database-url", help="Override PSKA database URL for residue cleanup.")
+    parser.add_argument("--pska-url", default=os.getenv("PSKA_URL"))
+    parser.add_argument("--fastreact-url", default=os.getenv("PSKA_FASTREACT_URL") or os.getenv("FASTREACT_URL"))
+    parser.add_argument("--pska-service-token", default=os.getenv("PSKA_SERVICE_TOKEN"))
+    parser.add_argument("--fastreact-service-token", default=os.getenv("PSKA_FASTREACT_SERVICE_TOKEN") or os.getenv("FASTREACT_SERVICE_TOKEN"))
+    parser.add_argument("--tenant-id", default=os.getenv("PSKA_SMOKE_TENANT_ID", DEFAULT_TENANT_ID))
+    parser.add_argument("--user-id", default=os.getenv("PSKA_SMOKE_USER_ID", DEFAULT_USER_ID))
+    parser.add_argument("--owner-user-id", default=os.getenv("PSKA_SMOKE_OWNER_USER_ID"))
+    parser.add_argument("--marker", default=f"REAL_DEEP_KB_SCOPE_{time.strftime('%Y%m%d%H%M%S')}_{uuid4().hex[:8]}")
+    parser.add_argument("--timeout-seconds", type=float, default=float(os.getenv("PSKA_SMOKE_TIMEOUT_SECONDS", "180")))
+    parser.add_argument("--max-iterations", type=int, default=3)
+    parser.add_argument("--keep-data", action="store_true", help="Do not clean temporary smoke data. Intended only for debugging.")
+    return parser.parse_args()
+
+
+def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
+    marker = str(args.marker).strip()
+    require(bool(MARKER_RE.fullmatch(marker)), "marker must contain only letters, numbers, _, ., :, or -")
+    config = load_pska_config(args.config)
+    tenant_id = str(args.tenant_id)
+    owner_user_id = str(args.owner_user_id or args.user_id)
+    user_id = str(args.user_id)
+    database_url = args.database_url or config.database.url
+    pska_url = (args.pska_url or config_url(config.service.host, config.service.port) or DEFAULT_PSKA_URL).rstrip("/")
+    fastreact_url = (args.fastreact_url or config.agentic_service.url or config.fastreact.url or DEFAULT_FASTREACT_URL).rstrip("/")
+    pska_token = args.pska_service_token or config.service.service_token
+    fastreact_token = args.fastreact_service_token or config.agentic_service.service_token or config.fastreact.service_token
+    report: dict[str, Any] = {
+        "ok": False,
+        "marker": marker,
+        "tenant_id": tenant_id,
+        "owner_user_id": owner_user_id,
+        "services": {"pska_url": pska_url, "fastreact_url": fastreact_url},
+        "created": {"knowledge_base_ids": [], "source_item_ids": []},
+        "cleanup": {},
+    }
+
+    pska_headers = pska_identity_headers(pska_token, tenant_id=tenant_id, user_id=user_id, owner_user_id=owner_user_id)
+    fastreact_headers = fastreact_identity_headers(fastreact_token)
+    alpha_secret = f"ALPHA_ONLY_{uuid4().hex[:10]}"
+    beta_secret = f"BETA_ONLY_{uuid4().hex[:10]}"
+
+    try:
+        check_pska(pska_url, timeout=args.timeout_seconds)
+        fastreact_ready = check_fastreact(fastreact_url, headers=fastreact_headers, timeout=args.timeout_seconds)
+        report["fastreact"] = fastreact_ready
+
+        alpha = create_fixture(
+            pska_url,
+            pska_headers,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            owner_user_id=owner_user_id,
+            marker=marker,
+            label="Alpha",
+            secret=alpha_secret,
+            timeout=args.timeout_seconds,
+        )
+        beta = create_fixture(
+            pska_url,
+            pska_headers,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            owner_user_id=owner_user_id,
+            marker=marker,
+            label="Beta",
+            secret=beta_secret,
+            timeout=args.timeout_seconds,
+        )
+        report["created"]["knowledge_base_ids"] = [alpha["knowledge_base_id"], beta["knowledge_base_id"]]
+        report["created"]["source_item_ids"] = [*alpha["source_item_ids"], *beta["source_item_ids"]]
+
+        ask = ask_deep(
+            pska_url,
+            pska_headers,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            owner_user_id=owner_user_id,
+            marker=marker,
+            alpha_kb_id=alpha["knowledge_base_id"],
+            max_iterations=args.max_iterations,
+            timeout=args.timeout_seconds,
+        )
+        report["ask"] = summarize_ask(ask, alpha=alpha, beta=beta)
+        validate_ask_scope(ask, alpha=alpha, beta=beta, alpha_secret=alpha_secret, beta_secret=beta_secret)
+        report["ok"] = True
+    except SmokeFailure as exc:
+        exc.report = report
+        raise
+    finally:
+        if args.keep_data:
+            report["cleanup"] = {"skipped": True}
+        else:
+            report["cleanup"] = cleanup_fixture(
+                pska_url,
+                pska_headers,
+                database_url=database_url,
+                tenant_id=tenant_id,
+                owner_user_id=owner_user_id,
+                marker=marker,
+                knowledge_base_ids=list(report.get("created", {}).get("knowledge_base_ids") or []),
+                source_item_ids=list(report.get("created", {}).get("source_item_ids") or []),
+                timeout=args.timeout_seconds,
+            )
+
+    if not args.keep_data and not cleanup_zero(report.get("cleanup", {})):
+        raise SmokeFailure("temporary smoke data cleanup left residue", report)
+    return report
+
+
+def load_pska_config(path: Path) -> PSKAConfig:
+    base = PSKAConfig.load(path if path.exists() else None)
+    return PSKAConfig.from_env(base)
+
+
+def config_url(host: str, port: int) -> str:
+    host = host or "127.0.0.1"
+    if host in {"0.0.0.0", "::", "[::]"}:
+        host = "127.0.0.1"
+    return f"http://{host}:{port}"
+
+
+def check_pska(pska_url: str, *, timeout: float) -> None:
+    health = request_json("GET", f"{pska_url}/health", timeout=timeout)
+    require(bool(health.get("ok")), "PSKA /health is not ok; start PSKA with ./start.sh")
+
+
+def check_fastreact(fastreact_url: str, *, headers: dict[str, str], timeout: float) -> dict[str, Any]:
+    ready = request_json("GET", f"{fastreact_url}/ready", headers=headers, timeout=timeout)
+    mcp = ready.get("mcp") if isinstance(ready.get("mcp"), dict) else {}
+    tool_names = tool_names_from_payload(mcp)
+    missing = sorted(PSKA_READ_TOOLS.difference(tool_names))
+    require(ready.get("status") == "ready", "FastReAct /ready is not ready")
+    require(bool(mcp.get("ready")), "FastReAct MCP manager is not ready")
+    require(not missing, f"FastReAct is missing PSKA MCP read tools: {', '.join(missing)}")
+    return {
+        "status": ready.get("status"),
+        "model": (ready.get("model") or {}).get("name") if isinstance(ready.get("model"), dict) else None,
+        "mcp_ready": bool(mcp.get("ready")),
+        "tool_count": len(tool_names),
+        "pska_read_tools_loaded": sorted(PSKA_READ_TOOLS),
+    }
+
+
+def create_fixture(
+    pska_url: str,
+    headers: dict[str, str],
+    *,
+    tenant_id: str,
+    user_id: str,
+    owner_user_id: str,
+    marker: str,
+    label: str,
+    secret: str,
+    timeout: float,
+) -> dict[str, Any]:
+    base = {"tenant_id": tenant_id, "owner_user_id": owner_user_id, "user_id": user_id, "represented_user_id": owner_user_id}
+    kb = request_json(
+        "POST",
+        f"{pska_url}/workspace/knowledge-bases",
+        payload={
+            **base,
+            "name": f"Real FastReAct Scope {label} {marker}",
+            "description": f"Temporary {label.lower()} corpus for real FastReAct MCP scope smoke.",
+        },
+        headers=headers,
+        timeout=timeout,
+    ).get("knowledge_base")
+    require(isinstance(kb, dict) and bool(kb.get("knowledge_base_id")), f"failed to create {label} KB")
+    source = request_json(
+        "POST",
+        f"{pska_url}/workspace/sources/text",
+        payload={
+            **base,
+            "title": f"Real FastReAct Scope {label} Source {marker}",
+            "text": (
+                f"{marker}\n"
+                f"Corpus label: {label}.\n"
+                f"The scoped verification secret is {secret}.\n"
+                "This sentence verifies hard knowledge-base scoping through real FastReAct MCP tools."
+            ),
+            "knowledge_base_id": kb["knowledge_base_id"],
+            "digest_mode": "manual",
+            "processing_config": {"chunk_size": 800, "chunk_overlap": 0},
+        },
+        headers=headers,
+        timeout=timeout,
+    )
+    source_item_ids = [str(item) for item in source.get("source_item_ids") or [] if item]
+    require(bool(source_item_ids), f"failed to create {label} source item")
+    return {"knowledge_base_id": str(kb["knowledge_base_id"]), "source_item_ids": source_item_ids}
+
+
+def ask_deep(
+    pska_url: str,
+    headers: dict[str, str],
+    *,
+    tenant_id: str,
+    user_id: str,
+    owner_user_id: str,
+    marker: str,
+    alpha_kb_id: str,
+    max_iterations: int,
+    timeout: float,
+) -> dict[str, Any]:
+    return request_json(
+        "POST",
+        f"{pska_url}/workspace/ask",
+        payload={
+            "tenant_id": tenant_id,
+            "owner_user_id": owner_user_id,
+            "user_id": user_id,
+            "represented_user_id": owner_user_id,
+            "query": f"请只根据当前选择的知识库，深入分析 {marker} 对应的 scoped verification secret 是什么。不要使用范围外资料。",
+            "intent": "deep",
+            "routing_mode": "kb_search",
+            "skip_intent_classifier": True,
+            "top_k": 8,
+            "max_iterations": max(1, min(int(max_iterations), 8)),
+            "surface": "pska-fastreact-kb-scope-smoke",
+            "scope": {"mode": "hard", "knowledge_base_ids": [alpha_kb_id]},
+            "session_id": f"pska-fastreact-kb-scope-smoke-{marker}",
+        },
+        headers=headers,
+        timeout=timeout,
+    )
+
+
+def summarize_ask(ask: dict[str, Any], *, alpha: dict[str, Any], beta: dict[str, Any]) -> dict[str, Any]:
+    route = ask.get("route") if isinstance(ask.get("route"), dict) else {}
+    trace = ask.get("trace") if isinstance(ask.get("trace"), dict) else {}
+    events = trace.get("events") if isinstance(trace.get("events"), list) else []
+    tool_events = pska_tool_events(events)
+    return {
+        "ok": ask.get("ok"),
+        "route_retrieval_owner": route.get("retrieval_owner"),
+        "route_selected_intent": route.get("selected_intent"),
+        "route_scope_applied": route.get("scope_applied"),
+        "route_tool_policy_scope": (route.get("tool_policy") or {}).get("scope") if isinstance(route.get("tool_policy"), dict) else None,
+        "trace_run_id": trace.get("run_id"),
+        "trace_event_count": len(events),
+        "pska_tool_event_count": len(tool_events),
+        "pska_tool_scopes": [scope_from_event(event) for event in tool_events],
+        "alpha": alpha,
+        "beta": beta,
+    }
+
+
+def validate_ask_scope(
+    ask: dict[str, Any],
+    *,
+    alpha: dict[str, Any],
+    beta: dict[str, Any],
+    alpha_secret: str,
+    beta_secret: str,
+) -> None:
+    route = ask.get("route") if isinstance(ask.get("route"), dict) else {}
+    trace = ask.get("trace") if isinstance(ask.get("trace"), dict) else {}
+    answer = str(ask.get("answer") or "")
+    trace_text = json.dumps(trace, ensure_ascii=False)
+    route_text = json.dumps(route, ensure_ascii=False)
+    alpha_kb_id = alpha["knowledge_base_id"]
+    beta_kb_id = beta["knowledge_base_id"]
+    alpha_source_ids = set(alpha["source_item_ids"])
+    beta_source_ids = set(beta["source_item_ids"])
+
+    require(bool(ask.get("ok")), "PSKA Ask did not return ok=true")
+    require(route.get("retrieval_owner") == "fastreact_pska_mcp", "Deep Ask did not use FastReAct PSKA MCP route")
+    require(route.get("selected_intent") == "deep", "Ask did not execute the deep route")
+    require(alpha_secret in answer or alpha_secret in trace_text, "Deep Ask did not recover the alpha scoped secret")
+    require(beta_secret not in answer and beta_secret not in trace_text and beta_kb_id not in route_text, "Deep Ask leaked beta evidence or beta KB id")
+
+    events = trace.get("events") if isinstance(trace.get("events"), list) else []
+    scopes = [scope_from_event(event) for event in pska_tool_events(events)]
+    search_scopes = [scope for scope in scopes if scope.get("tool_name") == "pska_pska_search"]
+    require(bool(search_scopes), "FastReAct trace contains no pska_pska_search tool call")
+    for scope in scopes:
+        require(scope.get("knowledge_base_ids") == [alpha_kb_id], f"{scope.get('tool_name')} did not carry alpha KB scope")
+        require(scope.get("scope_mode") == "hard", f"{scope.get('tool_name')} did not carry scope_mode=hard")
+        require(bool(scope.get("metadata_scope_applied")), f"{scope.get('tool_name')} did not record tool_policy_scope_applied=true")
+        source_ids = set(scope.get("source_item_ids") or [])
+        require(not (source_ids & beta_source_ids), f"{scope.get('tool_name')} carried beta source ids")
+        require(not source_ids or source_ids <= alpha_source_ids, f"{scope.get('tool_name')} carried non-alpha source ids")
+        policy_scope = scope.get("metadata_tool_policy_scope") or {}
+        require(policy_scope.get("knowledge_base_ids") == [alpha_kb_id], f"{scope.get('tool_name')} metadata missed alpha KB scope")
+
+
+def pska_tool_events(events: list[Any]) -> list[dict[str, Any]]:
+    return [
+        event
+        for event in events
+        if isinstance(event, dict)
+        and event.get("type") == "tool_call"
+        and str(event.get("tool_name") or "").startswith("pska_")
+    ]
+
+
+def scope_from_event(event: dict[str, Any]) -> dict[str, Any]:
+    args = event.get("tool_args") if isinstance(event.get("tool_args"), dict) else {}
+    nested = args.get("scope") if isinstance(args.get("scope"), dict) else {}
+    metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+    policy = metadata.get("tool_policy") if isinstance(metadata.get("tool_policy"), dict) else {}
+    return {
+        "tool_name": event.get("tool_name"),
+        "knowledge_base_ids": args.get("knowledge_base_ids") or nested.get("knowledge_base_ids"),
+        "source_item_ids": args.get("source_item_ids") or nested.get("source_item_ids"),
+        "scope_mode": args.get("scope_mode") or nested.get("scope_mode") or nested.get("mode"),
+        "metadata_scope_applied": bool(metadata.get("tool_policy_scope_applied")),
+        "metadata_tool_policy_scope": policy.get("scope"),
+    }
+
+
+def cleanup_fixture(
+    pska_url: str,
+    headers: dict[str, str],
+    *,
+    database_url: str,
+    tenant_id: str,
+    owner_user_id: str,
+    marker: str,
+    knowledge_base_ids: list[str],
+    source_item_ids: list[str],
+    timeout: float,
+) -> dict[str, Any]:
+    cleanup: dict[str, Any] = {"document_delete_ok": False, "kb_archive_ok": False}
+    base = {"tenant_id": tenant_id, "owner_user_id": owner_user_id, "user_id": owner_user_id, "represented_user_id": owner_user_id}
+    if source_item_ids:
+        try:
+            request_json(
+                "POST",
+                f"{pska_url}/workspace/documents/delete",
+                payload={
+                    **base,
+                    "source_item_ids": source_item_ids,
+                    "execute": True,
+                    "hard_delete": True,
+                    "reason": f"real FastReAct KB scope smoke cleanup {marker}",
+                },
+                headers=headers,
+                timeout=timeout,
+            )
+            cleanup["document_delete_ok"] = True
+        except SmokeFailure as exc:
+            cleanup["document_delete_error"] = str(exc)
+    archived = 0
+    for kb_id in knowledge_base_ids:
+        try:
+            request_json(
+                "DELETE",
+                f"{pska_url}/workspace/knowledge-bases/{quote(kb_id)}",
+                payload={**base, "reason": f"real FastReAct KB scope smoke cleanup {marker}"},
+                headers=headers,
+                timeout=timeout,
+            )
+            archived += 1
+        except SmokeFailure as exc:
+            cleanup.setdefault("kb_archive_errors", []).append(str(exc))
+    cleanup["kb_archive_ok"] = archived == len(knowledge_base_ids)
+    cleanup["residue_counts"] = cleanup_with_psql(database_url, tenant_id=tenant_id, owner_user_id=owner_user_id, marker=marker)
+    return cleanup
+
+
+def cleanup_with_psql(database_url: str, *, tenant_id: str, owner_user_id: str, marker: str) -> dict[str, int]:
+    sql = cleanup_sql(tenant_id=tenant_id, owner_user_id=owner_user_id, marker=marker)
+    try:
+        result = subprocess.run(
+            ["psql", "-X", "-d", database_url, "-A", "-t", "-q", "-c", sql],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        raise SmokeFailure(f"psql cleanup failed: {type(exc).__name__}: {exc}") from exc
+    lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    require(bool(lines), "psql cleanup returned no residue counts")
+    counts = json.loads(lines[-1])
+    require(isinstance(counts, dict), "psql cleanup returned invalid residue counts")
+    return {key: int(counts.get(key) or 0) for key in RESIDUE_TABLES}
+
+
+def cleanup_sql(*, tenant_id: str, owner_user_id: str, marker: str) -> str:
+    tenant = sql_literal(tenant_id)
+    owner = sql_literal(owner_user_id)
+    like = sql_literal(f"%{marker}%")
+    return f"""
+with target_items as (
+  select source_item_id from source_items
+  where tenant_id = {tenant} and owner_user_id = {owner} and (title like {like} or content_text like {like})
+), target_kbs as (
+  select knowledge_base_id from knowledge_bases
+  where tenant_id = {tenant} and owner_user_id = {owner} and name like {like}
+)
+delete from knowledge_base_source_items
+where tenant_id = {tenant}
+  and (source_item_id in (select source_item_id from target_items)
+       or knowledge_base_id in (select knowledge_base_id from target_kbs));
+with target_items as (
+  select source_item_id from source_items
+  where tenant_id = {tenant} and owner_user_id = {owner} and (title like {like} or content_text like {like})
+)
+delete from offline_index_states where tenant_id = {tenant} and source_item_id in (select source_item_id from target_items);
+with target_items as (
+  select source_item_id from source_items
+  where tenant_id = {tenant} and owner_user_id = {owner} and (title like {like} or content_text like {like})
+)
+delete from passage_windows where tenant_id = {tenant} and source_item_id in (select source_item_id from target_items);
+with target_items as (
+  select source_item_id from source_items
+  where tenant_id = {tenant} and owner_user_id = {owner} and (title like {like} or content_text like {like})
+)
+delete from chunks where tenant_id = {tenant} and source_item_id in (select source_item_id from target_items);
+with target_items as (
+  select source_item_id from source_items
+  where tenant_id = {tenant} and owner_user_id = {owner} and (title like {like} or content_text like {like})
+)
+delete from documents where tenant_id = {tenant} and source_item_id in (select source_item_id from target_items);
+delete from source_items
+where tenant_id = {tenant} and owner_user_id = {owner} and (title like {like} or content_text like {like});
+delete from knowledge_sources
+where tenant_id = {tenant} and owner_user_id = {owner} and (name like {like} or uri like {like});
+delete from knowledge_bases
+where tenant_id = {tenant} and owner_user_id = {owner} and name like {like};
+select json_build_object(
+  'knowledge_bases', (select count(*) from knowledge_bases where tenant_id = {tenant} and owner_user_id = {owner} and name like {like}),
+  'knowledge_sources', (select count(*) from knowledge_sources where tenant_id = {tenant} and owner_user_id = {owner} and (name like {like} or uri like {like})),
+  'source_items', (select count(*) from source_items where tenant_id = {tenant} and owner_user_id = {owner} and (title like {like} or content_text like {like})),
+  'documents', (select count(*) from documents where tenant_id = {tenant} and body like {like}),
+  'chunks', (select count(*) from chunks where tenant_id = {tenant} and text like {like}),
+  'passage_windows', (select count(*) from passage_windows where tenant_id = {tenant} and text like {like})
+);
+"""
+
+
+def cleanup_zero(cleanup: dict[str, Any]) -> bool:
+    counts = cleanup.get("residue_counts") if isinstance(cleanup.get("residue_counts"), dict) else {}
+    return bool(counts) and all(table in counts and int(counts.get(table) or 0) == 0 for table in RESIDUE_TABLES)
+
+
+def pska_identity_headers(token: str | None, *, tenant_id: str, user_id: str, owner_user_id: str) -> dict[str, str]:
+    headers = {
+        "X-PSKA-Tenant-Id": tenant_id,
+        "X-PSKA-User-Id": user_id,
+        "X-PSKA-Represented-User-Id": owner_user_id,
+        "X-PSKA-Caller": "pska-fastreact-kb-scope-smoke",
+    }
+    if token:
+        headers["X-PSKA-Service-Token"] = token
+    return headers
+
+
+def fastreact_identity_headers(token: str | None) -> dict[str, str]:
+    return {"X-FastReAct-Service-Token": token} if token else {}
+
+
+def request_json(
+    method: str,
+    url: str,
+    *,
+    payload: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
+    timeout: float,
+) -> dict[str, Any]:
+    data = None if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    request_headers = {"accept": "application/json", **(headers or {})}
+    if data is not None:
+        request_headers["content-type"] = "application/json; charset=utf-8"
+    request = Request(url, data=data, method=method, headers=request_headers)
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            body = response.read().decode("utf-8")
+    except HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise SmokeFailure(f"{method} {url} failed with HTTP {exc.code}: {detail}") from exc
+    except URLError as exc:
+        raise SmokeFailure(f"{method} {url} unavailable: {exc.reason}") from exc
+    except TimeoutError as exc:
+        raise SmokeFailure(f"{method} {url} timed out") from exc
+    try:
+        parsed = json.loads(body or "{}")
+    except json.JSONDecodeError as exc:
+        raise SmokeFailure(f"{method} {url} returned invalid JSON") from exc
+    require(isinstance(parsed, dict), f"{method} {url} returned non-object JSON")
+    return parsed
+
+
+def tool_names_from_payload(payload: Any) -> set[str]:
+    raw_tools = payload.get("tools") if isinstance(payload, dict) else None
+    if not isinstance(raw_tools, list):
+        return set()
+    names: set[str] = set()
+    for tool in raw_tools:
+        if isinstance(tool, str):
+            names.add(tool)
+        elif isinstance(tool, dict) and tool.get("name"):
+            names.add(str(tool["name"]))
+    return names
+
+
+def sql_literal(value: str) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise SmokeFailure(message)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

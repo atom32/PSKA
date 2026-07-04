@@ -137,7 +137,7 @@ class RetrievalService:
         )
         source_ids = {item.source_item_id for item in visible_items}
         scoped_source_item_ids = set(source_item_ids or set()) & source_ids
-        hard_scope = scope_mode == "hard" and bool(source_item_ids)
+        hard_scope = scope_mode == "hard" and source_item_ids is not None
         if hard_scope:
             visible_items = [item for item in visible_items if item.source_item_id in scoped_source_item_ids]
             source_ids = {item.source_item_id for item in visible_items}

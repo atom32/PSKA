@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import timedelta
+import hashlib
+import re
 from typing import Any, Protocol
 from uuid import uuid4
 
@@ -22,6 +24,9 @@ from pska_core.models import (
     Job,
     JobEvent,
     AuditEvent,
+    KnowledgeBase,
+    KnowledgeBaseSource,
+    KnowledgeBaseSourceItem,
     KnowledgeClaim,
     KnowledgeSource,
     KnowledgeTopic,
@@ -43,6 +48,16 @@ from pska_core.models import (
     utc_now,
 )
 from pska_core.enums import Visibility
+
+
+def default_knowledge_base_id(tenant_id: str, owner_user_id: str) -> str:
+    digest = hashlib.md5(f"{tenant_id}:{owner_user_id}".encode("utf-8")).hexdigest()[:24]  # noqa: S324 - stable local id, not security.
+    return f"kb_default_{digest}"
+
+
+def knowledge_base_slug(name: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "-", str(name or "").strip().casefold()).strip("-")
+    return normalized[:80] or "knowledge-base"
 
 
 class KnowledgeStore(Protocol):
@@ -70,6 +85,68 @@ class KnowledgeStore(Protocol):
         source_type: str | None = None,
         status: str | None = None,
     ) -> list[KnowledgeSource]: ...
+    def upsert_knowledge_base(self, knowledge_base: KnowledgeBase) -> KnowledgeBase: ...
+    def ensure_default_knowledge_base(
+        self,
+        *,
+        tenant_id: str,
+        owner_user_id: str,
+        created_by_user_id: str | None = None,
+        default_space_id: str | None = None,
+    ) -> KnowledgeBase: ...
+    def get_knowledge_base(
+        self,
+        knowledge_base_id: str,
+        *,
+        tenant_id: str | None = None,
+        owner_user_id: str | None = None,
+        include_deleted: bool = False,
+    ) -> KnowledgeBase: ...
+    def list_knowledge_bases(
+        self,
+        *,
+        tenant_id: str | None = None,
+        owner_user_id: str | None = None,
+        include_deleted: bool = False,
+    ) -> list[KnowledgeBase]: ...
+    def archive_knowledge_base(self, knowledge_base_id: str, *, tenant_id: str, owner_user_id: str) -> KnowledgeBase: ...
+    def restore_knowledge_base(self, knowledge_base_id: str, *, tenant_id: str, owner_user_id: str) -> KnowledgeBase: ...
+    def add_knowledge_base_source(self, membership: KnowledgeBaseSource) -> KnowledgeBaseSource: ...
+    def list_knowledge_base_ids_for_source(
+        self,
+        knowledge_source_id: str,
+        *,
+        tenant_id: str,
+        owner_user_id: str | None = None,
+        active_only: bool = True,
+    ) -> set[str]: ...
+    def add_knowledge_base_source_item(self, membership: KnowledgeBaseSourceItem) -> KnowledgeBaseSourceItem: ...
+    def archive_knowledge_base_source_items(
+        self,
+        knowledge_base_id: str,
+        source_item_ids: list[str],
+        *,
+        tenant_id: str,
+        owner_user_id: str,
+        actor_user_id: str,
+        reason: str,
+    ) -> dict[str, int]: ...
+    def list_knowledge_base_ids_for_source_item(
+        self,
+        source_item_id: str,
+        *,
+        tenant_id: str,
+        owner_user_id: str | None = None,
+        active_only: bool = True,
+    ) -> set[str]: ...
+    def list_knowledge_base_source_item_ids(
+        self,
+        knowledge_base_ids: set[str],
+        *,
+        tenant_id: str,
+        owner_user_id: str | None = None,
+        active_only: bool = True,
+    ) -> set[str]: ...
     def add_sync_run(self, run: SyncRun) -> SyncRun: ...
     def list_sync_runs(self, *, tenant_id: str | None = None, knowledge_source_id: str | None = None, owner_user_id: str | None = None, limit: int = 50) -> list[SyncRun]: ...
     def add_processing_span(self, span: ProcessingSpan) -> ProcessingSpan: ...
@@ -324,6 +401,9 @@ class InMemoryKnowledgeStore:
         self.source_items: dict[str, SourceItem] = {}
         self.source_items_by_hash: dict[tuple[str, str, str], str] = {}
         self.knowledge_sources: dict[str, KnowledgeSource] = {}
+        self.knowledge_bases: dict[str, KnowledgeBase] = {}
+        self.knowledge_base_sources: dict[tuple[str, str], KnowledgeBaseSource] = {}
+        self.knowledge_base_source_items: dict[tuple[str, str], KnowledgeBaseSourceItem] = {}
         self.sync_runs: dict[str, SyncRun] = {}
         self.processing_spans: dict[str, ProcessingSpan] = {}
         self.connector_states: dict[str, ConnectorState] = {}
@@ -419,6 +499,11 @@ class InMemoryKnowledgeStore:
                 for key, item in self.source_items.items()
                 if not (item.source_item_id in ids and item.tenant_id == tenant)
             }
+            self.knowledge_base_source_items = {
+                key: membership
+                for key, membership in self.knowledge_base_source_items.items()
+                if not (membership.source_item_id in ids and membership.tenant_id == tenant)
+            }
             self.source_items_by_hash = {
                 key: source_item_id
                 for key, source_item_id in self.source_items_by_hash.items()
@@ -465,6 +550,9 @@ class InMemoryKnowledgeStore:
                 chunk.deleted_by = None if lifecycle_status == "active" else actor_user_id
                 chunk.delete_reason = None if lifecycle_status == "active" else reason
                 counts["chunks"] += 1
+        for membership in self.knowledge_base_source_items.values():
+            if membership.source_item_id in ids and membership.tenant_id == tenant:
+                membership.membership_status = "active" if lifecycle_status == "active" else "archived"
         if lifecycle_status != "active":
             for source_item_id in ids:
                 self.tombstone_offline_index_for_source(source_item_id, reason=reason)
@@ -499,6 +587,301 @@ class InMemoryKnowledgeStore:
         if status:
             sources = [source for source in sources if source.status == status]
         return sorted(sources, key=lambda source: (source.updated_at, source.name), reverse=True)
+
+    def upsert_knowledge_base(self, knowledge_base: KnowledgeBase) -> KnowledgeBase:
+        if not knowledge_base.slug:
+            knowledge_base.slug = knowledge_base_slug(knowledge_base.name)
+        if not knowledge_base.created_by_user_id:
+            knowledge_base.created_by_user_id = knowledge_base.owner_user_id
+        knowledge_base.updated_at = utc_now()
+        existing = self.knowledge_bases.get(knowledge_base.knowledge_base_id)
+        if existing:
+            knowledge_base.created_at = existing.created_at
+        if knowledge_base.is_default:
+            for candidate in self.knowledge_bases.values():
+                if (
+                    candidate.tenant_id == knowledge_base.tenant_id
+                    and candidate.owner_user_id == knowledge_base.owner_user_id
+                    and candidate.knowledge_base_id != knowledge_base.knowledge_base_id
+                ):
+                    candidate.is_default = False
+                    candidate.updated_at = utc_now()
+        self.knowledge_bases[knowledge_base.knowledge_base_id] = knowledge_base
+        return knowledge_base
+
+    def ensure_default_knowledge_base(
+        self,
+        *,
+        tenant_id: str,
+        owner_user_id: str,
+        created_by_user_id: str | None = None,
+        default_space_id: str | None = None,
+    ) -> KnowledgeBase:
+        knowledge_base_id = default_knowledge_base_id(tenant_id, owner_user_id)
+        existing = self.knowledge_bases.get(knowledge_base_id)
+        if existing:
+            changed = False
+            if not existing.is_default:
+                existing.is_default = True
+                changed = True
+            if existing.status != "active" or existing.deleted_at is not None:
+                existing.status = "active"
+                existing.deleted_at = None
+                changed = True
+            if default_space_id and existing.default_space_id != default_space_id:
+                existing.default_space_id = default_space_id
+                changed = True
+            if changed:
+                existing.updated_at = utc_now()
+            return existing
+        return self.upsert_knowledge_base(
+            KnowledgeBase(
+                knowledge_base_id=knowledge_base_id,
+                tenant_id=tenant_id,
+                owner_user_id=owner_user_id,
+                created_by_user_id=created_by_user_id or owner_user_id,
+                slug="default",
+                name="Default Knowledge Base",
+                description="System-created default knowledge base.",
+                default_space_id=default_space_id,
+                is_default=True,
+            )
+        )
+
+    def get_knowledge_base(
+        self,
+        knowledge_base_id: str,
+        *,
+        tenant_id: str | None = None,
+        owner_user_id: str | None = None,
+        include_deleted: bool = False,
+    ) -> KnowledgeBase:
+        knowledge_base = self.knowledge_bases[knowledge_base_id]
+        if tenant_id and knowledge_base.tenant_id != tenant_id:
+            raise KeyError(knowledge_base_id)
+        if owner_user_id and knowledge_base.owner_user_id != owner_user_id:
+            raise KeyError(knowledge_base_id)
+        if not include_deleted and knowledge_base.deleted_at is not None:
+            raise KeyError(knowledge_base_id)
+        return knowledge_base
+
+    def list_knowledge_bases(
+        self,
+        *,
+        tenant_id: str | None = None,
+        owner_user_id: str | None = None,
+        include_deleted: bool = False,
+    ) -> list[KnowledgeBase]:
+        knowledge_bases = list(self.knowledge_bases.values())
+        if tenant_id:
+            knowledge_bases = [knowledge_base for knowledge_base in knowledge_bases if knowledge_base.tenant_id == tenant_id]
+        if owner_user_id:
+            knowledge_bases = [knowledge_base for knowledge_base in knowledge_bases if knowledge_base.owner_user_id == owner_user_id]
+        if not include_deleted:
+            knowledge_bases = [knowledge_base for knowledge_base in knowledge_bases if knowledge_base.deleted_at is None]
+        return sorted(
+            knowledge_bases,
+            key=lambda knowledge_base: (
+                knowledge_base.pinned_at is not None,
+                knowledge_base.pinned_at or knowledge_base.updated_at,
+                knowledge_base.updated_at,
+                knowledge_base.name,
+            ),
+            reverse=True,
+        )
+
+    def archive_knowledge_base(self, knowledge_base_id: str, *, tenant_id: str, owner_user_id: str) -> KnowledgeBase:
+        knowledge_base = self.get_knowledge_base(knowledge_base_id, tenant_id=tenant_id, owner_user_id=owner_user_id)
+        if knowledge_base.is_default:
+            raise ValueError("Default knowledge base cannot be archived")
+        now = utc_now()
+        knowledge_base.status = "archived"
+        knowledge_base.deleted_at = now
+        knowledge_base.updated_at = now
+        for membership in self.knowledge_base_sources.values():
+            if membership.knowledge_base_id == knowledge_base_id and membership.tenant_id == tenant_id and membership.membership_status == "active":
+                membership.metadata = {
+                    **dict(membership.metadata or {}),
+                    "archived_by_knowledge_base": knowledge_base_id,
+                }
+                membership.membership_status = "archived"
+        for membership in self.knowledge_base_source_items.values():
+            if membership.knowledge_base_id == knowledge_base_id and membership.tenant_id == tenant_id and membership.membership_status == "active":
+                membership.metadata = {
+                    **dict(membership.metadata or {}),
+                    "archived_by_knowledge_base": knowledge_base_id,
+                }
+                membership.membership_status = "archived"
+        return knowledge_base
+
+    def restore_knowledge_base(self, knowledge_base_id: str, *, tenant_id: str, owner_user_id: str) -> KnowledgeBase:
+        knowledge_base = self.get_knowledge_base(
+            knowledge_base_id,
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            include_deleted=True,
+        )
+        now = utc_now()
+        knowledge_base.status = "active"
+        knowledge_base.deleted_at = None
+        knowledge_base.updated_at = now
+        for membership in self.knowledge_base_sources.values():
+            if (
+                membership.knowledge_base_id == knowledge_base_id
+                and membership.tenant_id == tenant_id
+                and dict(membership.metadata or {}).get("archived_by_knowledge_base") == knowledge_base_id
+            ):
+                membership.membership_status = "active"
+                membership.metadata = {key: value for key, value in dict(membership.metadata or {}).items() if key != "archived_by_knowledge_base"}
+        for membership in self.knowledge_base_source_items.values():
+            if (
+                membership.knowledge_base_id == knowledge_base_id
+                and membership.tenant_id == tenant_id
+                and dict(membership.metadata or {}).get("archived_by_knowledge_base") == knowledge_base_id
+            ):
+                membership.membership_status = "active"
+                membership.metadata = {key: value for key, value in dict(membership.metadata or {}).items() if key != "archived_by_knowledge_base"}
+        return knowledge_base
+
+    def add_knowledge_base_source(self, membership: KnowledgeBaseSource) -> KnowledgeBaseSource:
+        self.get_knowledge_base(
+            membership.knowledge_base_id,
+            tenant_id=membership.tenant_id,
+            owner_user_id=membership.owner_user_id,
+        )
+        source = self.knowledge_sources.get(membership.knowledge_source_id)
+        if source and (source.tenant_id != membership.tenant_id or source.owner_user_id != membership.owner_user_id):
+            raise KeyError(membership.knowledge_source_id)
+        key = (membership.knowledge_base_id, membership.knowledge_source_id)
+        existing = self.knowledge_base_sources.get(key)
+        if existing:
+            membership.added_at = existing.added_at
+        self.knowledge_base_sources[key] = membership
+        return membership
+
+    def list_knowledge_base_ids_for_source(
+        self,
+        knowledge_source_id: str,
+        *,
+        tenant_id: str,
+        owner_user_id: str | None = None,
+        active_only: bool = True,
+    ) -> set[str]:
+        knowledge_base_ids: set[str] = set()
+        for membership in self.knowledge_base_sources.values():
+            if membership.knowledge_source_id != knowledge_source_id or membership.tenant_id != tenant_id:
+                continue
+            if owner_user_id and membership.owner_user_id != owner_user_id:
+                continue
+            if active_only and membership.membership_status != "active":
+                continue
+            knowledge_base = self.knowledge_bases.get(membership.knowledge_base_id)
+            if active_only and (knowledge_base is None or knowledge_base.deleted_at is not None):
+                continue
+            knowledge_base_ids.add(membership.knowledge_base_id)
+        return knowledge_base_ids
+
+    def add_knowledge_base_source_item(self, membership: KnowledgeBaseSourceItem) -> KnowledgeBaseSourceItem:
+        self.get_knowledge_base(
+            membership.knowledge_base_id,
+            tenant_id=membership.tenant_id,
+            owner_user_id=membership.owner_user_id,
+        )
+        source_item = self.source_items.get(membership.source_item_id)
+        if source_item and (source_item.tenant_id != membership.tenant_id or source_item.owner_user_id != membership.owner_user_id):
+            raise KeyError(membership.source_item_id)
+        key = (membership.knowledge_base_id, membership.source_item_id)
+        existing = self.knowledge_base_source_items.get(key)
+        if existing:
+            membership.added_at = existing.added_at
+        self.knowledge_base_source_items[key] = membership
+        return membership
+
+    def archive_knowledge_base_source_items(
+        self,
+        knowledge_base_id: str,
+        source_item_ids: list[str],
+        *,
+        tenant_id: str,
+        owner_user_id: str,
+        actor_user_id: str,
+        reason: str,
+    ) -> dict[str, int]:
+        self.get_knowledge_base(knowledge_base_id, tenant_id=tenant_id, owner_user_id=owner_user_id)
+        archived = 0
+        archived_at = utc_now().isoformat()
+        source_ids = set(source_item_ids)
+        for source_item_id in source_ids:
+            membership = self.knowledge_base_source_items.get((knowledge_base_id, source_item_id))
+            if not membership:
+                continue
+            if membership.tenant_id != tenant_id or membership.owner_user_id != owner_user_id:
+                continue
+            if membership.membership_status != "active":
+                continue
+            membership.membership_status = "archived"
+            membership.metadata = {
+                **dict(membership.metadata or {}),
+                "archived_by_user_id": actor_user_id,
+                "archive_reason": reason,
+                "archived_at": archived_at,
+            }
+            archived += 1
+        return {"knowledge_base_source_items": archived}
+
+    def list_knowledge_base_ids_for_source_item(
+        self,
+        source_item_id: str,
+        *,
+        tenant_id: str,
+        owner_user_id: str | None = None,
+        active_only: bool = True,
+    ) -> set[str]:
+        knowledge_base_ids: set[str] = set()
+        for membership in self.knowledge_base_source_items.values():
+            if membership.tenant_id != tenant_id or membership.source_item_id != source_item_id:
+                continue
+            if owner_user_id and membership.owner_user_id != owner_user_id:
+                continue
+            if active_only and membership.membership_status != "active":
+                continue
+            knowledge_base = self.knowledge_bases.get(membership.knowledge_base_id)
+            if active_only and (knowledge_base is None or knowledge_base.deleted_at is not None):
+                continue
+            source_item = self.source_items.get(membership.source_item_id)
+            if active_only and (source_item is None or source_item.lifecycle_status != "active"):
+                continue
+            knowledge_base_ids.add(membership.knowledge_base_id)
+        return knowledge_base_ids
+
+    def list_knowledge_base_source_item_ids(
+        self,
+        knowledge_base_ids: set[str],
+        *,
+        tenant_id: str,
+        owner_user_id: str | None = None,
+        active_only: bool = True,
+    ) -> set[str]:
+        if not knowledge_base_ids:
+            return set()
+        source_item_ids: set[str] = set()
+        for membership in self.knowledge_base_source_items.values():
+            if membership.tenant_id != tenant_id:
+                continue
+            if owner_user_id and membership.owner_user_id != owner_user_id:
+                continue
+            if membership.knowledge_base_id not in knowledge_base_ids:
+                continue
+            if active_only and membership.membership_status != "active":
+                continue
+            knowledge_base = self.knowledge_bases.get(membership.knowledge_base_id)
+            if active_only and (knowledge_base is None or knowledge_base.deleted_at is not None):
+                continue
+            source_item = self.source_items.get(membership.source_item_id)
+            if active_only and (source_item is None or source_item.lifecycle_status != "active"):
+                continue
+            source_item_ids.add(membership.source_item_id)
+        return source_item_ids
 
     def add_sync_run(self, run: SyncRun) -> SyncRun:
         self.sync_runs[run.sync_run_id] = run
@@ -1657,6 +2040,9 @@ class InMemoryKnowledgeStore:
         tables = {
             "source_items": self.source_items,
             "knowledge_sources": self.knowledge_sources,
+            "knowledge_bases": self.knowledge_bases,
+            "knowledge_base_sources": self.knowledge_base_sources,
+            "knowledge_base_source_items": self.knowledge_base_source_items,
             "sync_runs": self.sync_runs,
             "processing_spans": self.processing_spans,
             "connector_states": self.connector_states,

@@ -5,7 +5,7 @@ import json
 from pska_core.ingest import IngestService
 from pska_core.jobs import JobService
 from pska_core.mcp_server import MCPServer
-from pska_core.models import DigestNote, KnowledgeClaim, SourceRef, User
+from pska_core.models import DigestNote, KnowledgeBase, KnowledgeBaseSourceItem, KnowledgeClaim, SourceRef, User
 from pska_core.store import InMemoryKnowledgeStore
 from tests.fakes import FakeLLM, extraction_response
 
@@ -28,6 +28,58 @@ def make_server() -> MCPServer:
     return MCPServer("postgresql:///unused", store=store, llm=FakeLLM([extraction_response(), extraction_response()]))
 
 
+def make_scoped_kb_server() -> tuple[MCPServer, str, str, str, str]:
+    store = InMemoryKnowledgeStore()
+    store.add_user(User("user_primary", "primary"))
+    IngestService(store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "mcp-alpha-note",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "content": {"text": "mcp scoped sharedtoken alpha-only evidence"},
+        }
+    )
+    IngestService(store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "mcp-beta-note",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "content": {"text": "mcp scoped sharedtoken beta-only evidence"},
+        }
+    )
+    alpha_source_id = next(item.source_item_id for item in store.list_source_items() if item.source_id == "mcp-alpha-note")
+    beta_source_id = next(item.source_item_id for item in store.list_source_items() if item.source_id == "mcp-beta-note")
+    alpha_kb = KnowledgeBase("kb_mcp_alpha", "user_primary", "MCP Alpha KB")
+    beta_kb = KnowledgeBase("kb_mcp_beta", "user_primary", "MCP Beta KB")
+    store.upsert_knowledge_base(alpha_kb)
+    store.upsert_knowledge_base(beta_kb)
+    store.add_knowledge_base_source_item(
+        KnowledgeBaseSourceItem(
+            knowledge_base_id=alpha_kb.knowledge_base_id,
+            source_item_id=alpha_source_id,
+            owner_user_id="user_primary",
+            added_by_user_id="user_primary",
+        )
+    )
+    store.add_knowledge_base_source_item(
+        KnowledgeBaseSourceItem(
+            knowledge_base_id=beta_kb.knowledge_base_id,
+            source_item_id=beta_source_id,
+            owner_user_id="user_primary",
+            added_by_user_id="user_primary",
+        )
+    )
+    return MCPServer("postgresql:///unused", store=store), alpha_kb.knowledge_base_id, beta_kb.knowledge_base_id, alpha_source_id, beta_source_id
+
+
 def test_mcp_lists_pska_tools() -> None:
     response = make_server().handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}})
 
@@ -45,6 +97,7 @@ def test_mcp_lists_pska_tools() -> None:
     search_properties = tools_by_name["pska_search"]["inputSchema"]["properties"]
     assert "tenant_id" not in search_properties
     assert "user_id" not in search_properties
+    assert "knowledge_base_ids" in search_properties
     assert tools_by_name["pska_index_status"]["inputSchema"]["properties"] == {}
 
 
@@ -63,6 +116,69 @@ def test_mcp_calls_pska_search() -> None:
     assert payload["citations"]
     assert payload["results"][0]["source_item_id"]
     assert "score_debug" not in payload["results"][0]
+
+
+def test_mcp_search_filters_by_knowledge_base_ids() -> None:
+    server, alpha_kb_id, beta_kb_id, alpha_source_id, beta_source_id = make_scoped_kb_server()
+
+    response = server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 22,
+            "method": "tools/call",
+            "params": {
+                "name": "pska_search",
+                "arguments": {
+                    "query": "sharedtoken evidence",
+                    "user_id": "user_primary",
+                    "knowledge_base_ids": [alpha_kb_id],
+                    "top_k": 5,
+                },
+            },
+        }
+    )
+
+    payload = json.loads(response["result"]["content"][0]["text"])
+    result_source_ids = {result["source_item_id"] for result in payload["results"]}
+    citation_source_ids = {citation["source_item_id"] for citation in payload["citations"]}
+
+    assert payload["scope_applied"]["knowledge_base_ids"] == [alpha_kb_id]
+    assert payload["scope_applied"]["source_item_ids"] == [alpha_source_id]
+    assert result_source_ids == {alpha_source_id}
+    assert citation_source_ids == {alpha_source_id}
+    assert beta_kb_id not in payload["scope_applied"]["knowledge_base_ids"]
+    assert beta_source_id not in result_source_ids | citation_source_ids
+
+
+def test_mcp_read_evidence_context_filters_by_knowledge_base_ids() -> None:
+    server, alpha_kb_id, _, alpha_source_id, beta_source_id = make_scoped_kb_server()
+
+    response = server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 23,
+            "method": "tools/call",
+            "params": {
+                "name": "pska_read_evidence_context",
+                "arguments": {
+                    "query": "sharedtoken evidence",
+                    "user_id": "user_primary",
+                    "knowledge_base_ids": [alpha_kb_id],
+                    "max_items": 4,
+                },
+            },
+        }
+    )
+
+    payload = json.loads(response["result"]["content"][0]["text"])
+    result_source_ids = {result["source_item_id"] for result in payload["results"]}
+    citation_source_ids = {citation["source_item_id"] for citation in payload["citations"]}
+
+    assert payload["scope_applied"]["knowledge_base_ids"] == [alpha_kb_id]
+    assert payload["scope_applied"]["source_item_ids"] == [alpha_source_id]
+    assert result_source_ids == {alpha_source_id}
+    assert citation_source_ids == {alpha_source_id}
+    assert beta_source_id not in result_source_ids | citation_source_ids
 
 
 def test_mcp_params_tenant_identity_overrides_tool_arguments() -> None:

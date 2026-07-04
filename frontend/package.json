@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "tsc -b && vite build",
+    "e2e:multi-kb-ask": "playwright test --config=playwright.config.ts e2e/multi-kb-scoped-ask.spec.ts",
     "e2e:upload-delete": "playwright test --config=playwright.config.ts e2e/upload-ask-delete.spec.ts",
     "e2e:writing": "playwright test --config=playwright.config.ts e2e/writing-workspace.spec.ts",
     "preview": "vite preview --host 0.0.0.0"

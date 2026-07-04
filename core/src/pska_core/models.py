@@ -178,6 +178,54 @@ class KnowledgeSource:
 
 
 @dataclass(slots=True)
+class KnowledgeBase:
+    knowledge_base_id: str
+    owner_user_id: str
+    name: str
+    created_by_user_id: str = ""
+    slug: str = ""
+    description: str = ""
+    kb_type: str = "document"
+    status: str = "active"
+    visibility: Visibility = Visibility.PRIVATE
+    visible_team_ids: list[str] = field(default_factory=list)
+    default_space_id: str | None = None
+    is_default: bool = False
+    pinned_at: datetime | None = None
+    config: dict[str, Any] = field(default_factory=dict)
+    readiness: dict[str, Any] = field(default_factory=dict)
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
+    deleted_at: datetime | None = None
+    tenant_id: str = DEFAULT_TENANT_ID
+
+
+@dataclass(slots=True)
+class KnowledgeBaseSource:
+    knowledge_base_id: str
+    knowledge_source_id: str
+    owner_user_id: str
+    added_by_user_id: str
+    membership_status: str = "active"
+    metadata: dict[str, Any] = field(default_factory=dict)
+    added_at: datetime = field(default_factory=utc_now)
+    tenant_id: str = DEFAULT_TENANT_ID
+
+
+@dataclass(slots=True)
+class KnowledgeBaseSourceItem:
+    knowledge_base_id: str
+    source_item_id: str
+    owner_user_id: str
+    added_by_user_id: str
+    membership_type: str = "manual"
+    membership_status: str = "active"
+    metadata: dict[str, Any] = field(default_factory=dict)
+    added_at: datetime = field(default_factory=utc_now)
+    tenant_id: str = DEFAULT_TENANT_ID
+
+
+@dataclass(slots=True)
 class SyncRun:
     sync_run_id: str
     knowledge_source_id: str

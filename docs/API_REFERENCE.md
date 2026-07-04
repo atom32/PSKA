@@ -90,6 +90,60 @@ limit=20
 Returns sources, chunks, documents, entities, hyperedges, memories, and profile
 cards.
 
+### Knowledge Bases / Corpus Scope
+
+`knowledge_bases` is the first-class corpus boundary for multi-KB RAG. Product
+UI may label this surface as `资料库`, but API clients should treat
+`knowledge_base_id` as the stable retrievable-corpus id. `KnowledgeSource`
+remains the connector/source configuration object.
+
+Core endpoints:
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /workspace/knowledge-bases?include_archived=false` | List current user's active KBs and ensure a default KB exists. |
+| `POST /workspace/knowledge-bases` | Create a KB. Required: `name`; optional: `description`, `slug`, `kb_type`, `visibility`, `default_space_id`, `config`. |
+| `GET /workspace/knowledge-bases/{knowledge_base_id}` | Load one KB, including counts/readiness and source item ids. |
+| `PATCH /workspace/knowledge-bases/{knowledge_base_id}` | Update name, slug, description, type, visibility, pinned state, config, readiness, or status. |
+| `DELETE /workspace/knowledge-bases/{knowledge_base_id}` | Archive a KB. This removes it from default lists but does not hard-delete source items. |
+| `POST /workspace/knowledge-bases/{knowledge_base_id}/restore` | Restore an archived KB. |
+| `POST /workspace/knowledge-bases/{knowledge_base_id}/pin` | Pin a KB. |
+| `DELETE /workspace/knowledge-bases/{knowledge_base_id}/pin` | Unpin a KB. |
+| `POST /workspace/knowledge-bases/search` | Search one or more KBs and return attributed results/citations. |
+
+List/detail responses include `knowledge_bases`, `default_knowledge_base_id`,
+and each KB's `counts` and `readiness`. The current minimal readiness contract
+includes source/document/chunk counts, active/embedded chunk counts,
+`embedding_coverage`, `retrieval_ready`, and processing/error counts.
+
+Legacy data migration creates one default KB per `(tenant_id, owner_user_id)` and
+backfills existing `knowledge_sources` and `source_items` into membership tables.
+The migration is idempotent; source/item membership is not stored as a single
+column on the source item.
+
+Endpoints that create or ingest corpus material accept `knowledge_base_id`:
+
+| Endpoint | Scope field |
+| --- | --- |
+| `POST /workspace/sources/text` | JSON `knowledge_base_id` |
+| `POST /workspace/sources/upload` | JSON/form `knowledge_base_id` |
+| `POST /workspace/sources` | JSON `knowledge_base_id` |
+| `POST /workspace/sources/sync` | JSON `knowledge_base_id` or existing source membership |
+| `POST /files/sync` | JSON `knowledge_base_id` |
+
+When no KB id is passed, the request remains backward compatible and binds new
+material to the user's default KB where the product flow creates source items.
+
+Read/list surfaces accept `knowledge_base_id` or repeated/array
+`knowledge_base_ids`, including `/workspace/corpus/data`,
+`/workspace/documents/data`, `/workspace/graph/data`, `/digest/logs`,
+`/workspace/digest/data`, and `/console/reviews/data`.
+
+Security invariant: KB scope is only a candidate-set filter. Retrieval still
+intersects KB membership with tenant/user ACL. Inaccessible KB ids fail closed
+with `403 {"error": "knowledge base is not accessible"}` and do not return a
+partial list of inaccessible ids.
+
 ### `POST /workspace/ask`
 
 Primary Ask PSKA endpoint for workspace QA. This is the product-facing route
@@ -100,7 +154,11 @@ used by Today, Corpus, and Graph surfaces.
   "query": "Agent Runtime",
   "intent": "auto",
   "surface": "today",
-  "scope": {},
+  "scope": {
+    "mode": "hard",
+    "knowledge_base_ids": ["kb_..."],
+    "source_item_ids": ["optional-explicit-source-item-id"]
+  },
   "session_id": "optional-session-id",
   "user_id": "user_primary",
   "represented_user_id": "user_primary",
@@ -113,6 +171,65 @@ FastReAct through PSKA read-only MCP tools. `intent=auto` first runs the PSKA
 planner (`route.routing_owner=pska_planner`) to extract query terms and choose
 between those routes. `route.retrieval_owner` is still the hard evidence owner:
 either `pska` or `fastreact_pska_mcp`. Deep Ask uses `route.tool_profile="ask_read"`.
+
+Knowledge-base scope contract:
+
+- `scope.knowledge_base_ids` may contain one or more accessible KB ids.
+- PSKA resolves KB ids before retrieval, validates access, and compiles active
+  KB membership into `source_item_ids`.
+- If the request also passes `scope.source_item_ids`, PSKA intersects explicit
+  source ids with KB membership.
+- `scope.mode="hard"` is implied when KB ids are present and no explicit mode is
+  supplied. Hard scope means citations/source refs/source windows must come only
+  from resolved `source_item_ids`.
+- `route.scope_applied` is the canonical resolved scope. It includes `mode`,
+  `knowledge_base_ids`, `knowledge_base_source_item_count`, `source_item_ids`,
+  `source_item_count`, `dropped_scope_ids`, `dropped_source_item_ids`,
+  `attachment_ids`, `allow_expand_scope`, `conversation_id`, and
+  `context_node_count`.
+- `dropped_scope_ids` currently records explicit source item ids supplied by the
+  caller but removed by KB/source intersection. It is not used to reveal
+  inaccessible KB ids.
+- `citations`, `source_refs`, `source_windows`, and search `results` include
+  `knowledge_base_ids` / `knowledge_base_names` when lineage is known.
+- Empty selected KBs surface no-answer diagnostics such as
+  `selected_knowledge_base_empty`; explicit source ids outside the selected KB
+  surface `selected_scope_empty`.
+
+Deep Ask receives the same resolved scope through `route.tool_policy.scope`:
+
+```json
+{
+  "mode": "allowlist",
+  "allowed_tools": [
+    "pska_pska_search",
+    "pska_pska_index_status",
+    "pska_pska_read_evidence_context",
+    "pska_pska_graph_context",
+    "pska_pska_digest_context"
+  ],
+  "scope": {
+    "mode": "hard",
+    "scope_mode": "hard",
+    "knowledge_base_ids": ["kb_..."],
+    "source_item_ids": ["src_..."]
+  }
+}
+```
+
+FastReAct must preserve this policy when calling PSKA MCP tools. PSKA MCP also
+revalidates KB ids and ACL on every tool call, so tool-policy propagation is a
+product consistency requirement, not the only security boundary.
+
+For diagnostics, Deep Ask public traces preserve safe scope audit fields on
+FastReAct tool-call events:
+
+- `trace.events[*].tool_args.knowledge_base_ids`
+- `trace.events[*].tool_args.source_item_ids`
+- `trace.events[*].tool_args.scope_mode`
+- `trace.events[*].tool_args.scope`
+- `trace.events[*].metadata.tool_policy_scope_applied`
+- `trace.events[*].metadata.tool_policy.scope`
 
 Response includes:
 
@@ -141,6 +258,8 @@ SSE version of Ask PSKA. Events are `route`, `agent_step`, `evidence`,
 user-facing search timeline. `time_to_first_agent_event_ms` starts at the first
 `agent_step`; `time_to_first_answer_ms` starts when the first user-visible
 answer character is emitted, not when route, agent, or trace events start.
+The `route` event carries the same `scope_applied` and `tool_policy` contract as
+the non-streaming response.
 
 ### `POST /workspace/search/query`
 
@@ -298,14 +417,16 @@ Candidates require valid `source_refs` and preserve audit/source metadata.
 | `POST /connectors/states` | Upsert adapter runtime state |
 | `GET /console/sources/data` | UI-ready source/runtime summary |
 
-Knowledge Source is the user-facing model. Connector state endpoints remain as
-runtime/adapter support for sync cursors, manifests, and diagnostics.
+`KnowledgeSource` is the connector/source runtime model, not the user-facing KB
+container. Connector state endpoints remain as runtime/adapter support for sync
+cursors, manifests, and diagnostics.
 
 ## Document Library Product APIs
 
-User-facing product copy should call this surface the document library
-(`资料库`). Reviewed long-term memory, graph, and Evidence Wiki/Brief material is
-the knowledge base (`知识库`). `KnowledgeSource`, `source_item`, `document`, and
+User-facing product copy may call this corpus surface `资料库`; the API object is
+`knowledge_bases`. Reviewed long-term claims, graph, memory, and Evidence
+Brief/Writing material remain downstream knowledge artifacts, not replacements
+for the KB corpus object. `KnowledgeSource`, `source_item`, `document`, and
 `chunk` remain internal/API model names.
 
 | Endpoint | Purpose |
@@ -314,9 +435,12 @@ the knowledge base (`知识库`). `KnowledgeSource`, `source_item`, `document`, 
 | `POST /workspace/sources/text` | Paste long text or Markdown into the private document library |
 | `GET /workspace/documents/data` | List source items/documents with lifecycle state, chunk counts, impact counts, and delete metadata |
 | `POST /workspace/documents/delete` | Preview or execute soft delete, restore, or admin/dev hard purge |
+| `POST /workspace/documents/link` | Add existing source items to a target KB without re-ingesting. |
+| `POST /workspace/documents/move` | Move source item membership from one KB to another. |
 
 `/workspace/sources/upload` accepts either multipart form fields
-(`file`, `filename`, `digest_mode`) or JSON (`bytes_base64`, `text`, `filename`).
+(`file`, `filename`, `digest_mode`, `knowledge_base_id`) or JSON
+(`bytes_base64`, `text`, `filename`, `knowledge_base_id`).
 `digest_mode=after_upload` schedules `digest_via_fastreact`; `manual` only
 ingests and indexes. Upload/text sources are private by default and inherit the
 request tenant/user from AuthNode/Gateway context.
@@ -325,6 +449,12 @@ Document delete defaults to dry-run preview. Soft delete removes documents from
 active retrieval and tombstones index state. Reviewed knowledge derived from
 removed evidence should be marked stale/reviewable instead of being silently
 deleted. Hard purge is for explicit admin/dev cleanup flows.
+
+When `POST /workspace/documents/delete` receives `knowledge_base_id` and
+`delete_mode="membership"`, it archives only the KB membership for the selected
+source items. The source item remains active in other KBs. `delete_mode="source"`
+or `hard_delete=true` affects the source item itself and should be reserved for
+explicit delete/purge flows.
 
 ## Ask Conversations
 
@@ -381,3 +511,12 @@ Digest workers use `pska_job_context` and `pska_write_candidates`; admin ingest
 and extract tools are not part of Ask. HTTP MCP should receive tenant/user from
 AuthNode JWT or trusted headers. Stdio MCP is local/dev only; in that mode
 FastReAct is the only security boundary.
+
+Read-only MCP tools accept KB scope either as top-level
+`knowledge_base_ids`/`scope_mode` or nested under `scope`. For
+`pska_search`, `pska_read_evidence_context`, `pska_graph_context`, and
+`pska_digest_context`, KB ids are resolved to source item ids inside PSKA and
+then intersected with any explicit `source_item_ids`. If KB ids are present,
+PSKA applies hard scope and returns `scope_applied` with `knowledge_base_ids` and
+resolved `source_item_ids`. Inaccessible KB ids raise
+`knowledge base is not accessible`.
