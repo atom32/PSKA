@@ -44,7 +44,7 @@ marketplace yet.
 | PSKA Brain search | Real | Real | Partial | Uses workspace search and corpus context; recall quality depends on indexing/embeddings. |
 | Corpus browser | Real | Partial | Partial | Backend corpus endpoint exists; frontend uses it in selected panels. |
 | Graph browser | Real | Partial | Partial | Graph data exists; visual exploration supports focused subgraphs from Review and citation-backed selected-node Writing drafts, but broader graph ergonomics are still early. |
-| Evidence Brief / Writing draft | Real | Real | Partial | Digest/review artifacts, supported Ask runs, Graph Ask citations, and selected Graph nodes can generate citation-backed Writing board drafts; Writing now has an Evidence Brief Library for list/detail/re-digest/expire/rollback lifecycle work plus draft/published Wiki promotion status, published Wiki search, and publish review gates. |
+| Evidence Brief / Writing draft | Real | Real | Partial | Digest/review artifacts, supported Ask runs, Graph Ask citations, and selected Graph nodes can generate citation-backed Writing board drafts; Writing now has an Evidence Brief Library for list/detail/re-digest/expire/rollback lifecycle work plus draft/published Wiki promotion status, publish review gates, published Wiki search, and a dedicated read-only published page preview. |
 | Document editor | Planned | Mock | Mock | Tiptap editor exists, but document persistence is not wired as a source editor. |
 | Canvas | Planned | Mock | Mock | React Flow canvas is local/sample state. |
 | Project/tag navigation | Planned | Mock | Mock | Sidebar labels exist without a durable project/tag model. |
@@ -65,8 +65,8 @@ empty review queue.
 
 1. Complete remaining Review workspace ergonomics such as richer type-specific
    remediation actions and decision analytics across review types.
-2. Extend Evidence Wiki publish/promotion beyond searchable gated draft/published
-   collections into dedicated published pages.
+2. Extend Evidence Wiki beyond searchable gated published pages into richer
+   navigation, permission affordances, and standalone Wiki-page workflows.
 3. Expand SourceAdapter coverage beyond folder/RSS/URL when enterprise
    connectors become product priority.
 4. Wire durable document/canvas persistence before treating editor/canvas as

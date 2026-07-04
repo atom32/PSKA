@@ -5,6 +5,7 @@ import type {
   DigestLogsResponse,
   DigestNowResponse,
   EvidenceBriefResponse,
+  EvidenceWikiPageResponse,
   EvidenceWikiPublishResponse,
   EvidenceWikiSearchResponse,
   FileSyncResponse,
@@ -1232,6 +1233,16 @@ export async function searchEvidenceWiki(
     throw new Error(await responseError(response, "Evidence Wiki 搜索失败"));
   }
   return (await response.json()) as EvidenceWikiSearchResponse;
+}
+
+export async function loadEvidenceWikiPage(serviceToken: PSKAAuth, boardId: string): Promise<EvidenceWikiPageResponse> {
+  const response = await fetch(`/workspace/evidence-wiki/pages/${encodeURIComponent(boardId)}`, {
+    headers: headers(serviceToken)
+  });
+  if (!response.ok) {
+    throw new Error(await responseError(response, "Evidence Wiki 页面加载失败"));
+  }
+  return (await response.json()) as EvidenceWikiPageResponse;
 }
 
 export async function publishEvidenceWikiBrief(

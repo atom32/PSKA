@@ -4716,6 +4716,36 @@ class PSKAApi:
             "results": results,
         }
 
+    def workspace_evidence_wiki_page(self, board_id: str, *, context: RequestContext | None = None) -> dict[str, Any]:
+        _, tenant_id, owner = _writing_request_scope(context)
+        board_id = str(board_id or "").strip()
+        if not board_id:
+            return {"ok": False, "reason": "missing_board_id", "error": "Evidence Wiki page lookup needs a board_id."}
+        board = self.store.get_writing_board(board_id, tenant_id=tenant_id, owner_user_id=owner)
+        nodes = self.store.list_writing_nodes(board_id, tenant_id=tenant_id, owner_user_id=owner)
+        if not _evidence_wiki_board_is_published(board):
+            return {
+                "ok": False,
+                "reason": "not_published",
+                "error": "This Evidence Brief is not an active published Evidence Wiki page.",
+                "board": _writing_board_payload(board),
+            }
+        review_gate = _evidence_wiki_review_gate(self.store, board, tenant_id=tenant_id, owner_user_id=owner)
+        if review_gate.get("blocked"):
+            return {
+                "ok": False,
+                "reason": review_gate.get("reason") or "review_gate",
+                "error": review_gate.get("error") or "Evidence Wiki page review gate failed.",
+                "review_gate": review_gate,
+                "board": _writing_board_payload(board),
+            }
+        return {
+            "ok": True,
+            "page": _evidence_wiki_page_payload(board, nodes, review_gate=review_gate),
+            "board": _writing_board_payload(board),
+            "nodes": [_writing_node_payload(node) for node in nodes],
+        }
+
     def workspace_evidence_wiki_publish(self, payload: dict[str, Any] | None = None, context: RequestContext | None = None) -> dict[str, Any]:
         payload, tenant_id, owner = _writing_request_scope(context, payload or {})
         board_id = str(payload.get("board_id") or "").strip()
@@ -5790,6 +5820,10 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
                     context=context,
                 ),
             )
+        if path.startswith("/workspace/evidence-wiki/pages/"):
+            parts = _evidence_wiki_page_path_parts(path)
+            if len(parts) == 1:
+                return self._json(200, self.api.workspace_evidence_wiki_page(unquote(parts[0]), context=context))
         if path == "/workspace/writing/boards":
             return self._json(
                 200,
@@ -14325,6 +14359,57 @@ def _evidence_wiki_board_source_refs(board: Any) -> list[dict[str, Any]]:
     )
 
 
+def _evidence_wiki_page_payload(board: Any, nodes: list[Any], *, review_gate: dict[str, Any]) -> dict[str, Any]:
+    metadata = dict(getattr(board, "metadata", {}) or {})
+    lineage = metadata.get("lineage") if isinstance(metadata.get("lineage"), dict) else {}
+    body_markdown = _evidence_wiki_page_body(board, nodes)
+    return {
+        "board_id": getattr(board, "board_id", ""),
+        "title": getattr(board, "title", "") or "Evidence Wiki Brief",
+        "summary": _evidence_wiki_snippet(body_markdown or str(getattr(board, "goal", "") or ""), "", radius=420),
+        "body_markdown": body_markdown,
+        "published_at": metadata.get("published_at") or metadata.get("publish_updated_at"),
+        "publish_updated_at": metadata.get("publish_updated_at"),
+        "status": metadata.get("status") or metadata.get("publish_status"),
+        "publish_status": metadata.get("publish_status") or metadata.get("status"),
+        "lifecycle_status": metadata.get("lifecycle_status") or "active",
+        "knowledge_base_ids": _string_list(metadata.get("knowledge_base_ids") or lineage.get("knowledge_base_ids")),
+        "knowledge_base_names": _string_list(metadata.get("knowledge_base_names") or lineage.get("knowledge_base_names")),
+        "source_refs": _evidence_wiki_board_source_refs(board),
+        "lineage": lineage,
+        "review_gate": review_gate,
+        "node_ids": [str(getattr(node, "node_id", "") or "") for node in nodes if getattr(node, "node_id", None)],
+    }
+
+
+def _evidence_wiki_page_body(board: Any, nodes: list[Any]) -> str:
+    rank = {"draft": 0, "answer": 1, "section": 2, "evidence": 3, "question": 4, "gap": 5}
+    ordered_nodes = sorted(
+        nodes,
+        key=lambda node: (
+            rank.get(str(getattr(node, "node_type", "") or ""), 99),
+            (getattr(node, "created_at", None).isoformat() if getattr(node, "created_at", None) else ""),
+        ),
+    )
+    pieces: list[str] = []
+    seen: set[str] = set()
+    for node in ordered_nodes:
+        body = str(getattr(node, "body_markdown", "") or "").strip()
+        if not body:
+            continue
+        title = str(getattr(node, "title", "") or "").strip()
+        node_type = str(getattr(node, "node_type", "") or "").strip().lower()
+        text = body if node_type in {"draft", "answer"} or not title else f"## {title}\n\n{body}"
+        normalized = _normalize_search_text(text)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        pieces.append(text)
+    if pieces:
+        return "\n\n".join(pieces).strip()
+    return str(getattr(board, "goal", "") or getattr(board, "title", "") or "").strip()
+
+
 def _evidence_wiki_review_gate(store: Any, board: Any, *, tenant_id: str, owner_user_id: str) -> dict[str, Any]:
     metadata = dict(getattr(board, "metadata", {}) or {})
     lineage = metadata.get("lineage") if isinstance(metadata.get("lineage"), dict) else {}
@@ -16200,6 +16285,13 @@ def _query_string_list(query: dict[str, list[str]], key: str) -> list[str]:
 
 def _writing_path_parts(path: str) -> list[str]:
     prefix = "/workspace/writing/boards/"
+    if not path.startswith(prefix):
+        return []
+    return [part for part in path.removeprefix(prefix).split("/") if part]
+
+
+def _evidence_wiki_page_path_parts(path: str) -> list[str]:
+    prefix = "/workspace/evidence-wiki/pages/"
     if not path.startswith(prefix):
         return []
     return [part for part in path.removeprefix(prefix).split("/") if part]

@@ -2900,6 +2900,9 @@ def test_evidence_brief_creates_writing_draft_with_lineage_and_refs() -> None:
     assert persisted["board"]["metadata"]["knowledge_base_names"] == ["Brief Corpus"]
     draft_search = api.workspace_evidence_wiki_search({"query": "Evidence brief drafts must keep citations"}, context=context)
     assert draft_search["results"] == []
+    draft_page = api.workspace_evidence_wiki_page(board["board_id"], context=context)
+    assert draft_page["ok"] is False
+    assert draft_page["reason"] == "not_published"
 
     blocked_publish = api.workspace_evidence_wiki_publish({"board_id": board["board_id"], "publish_status": "published"}, context=context)
     assert blocked_publish["ok"] is False
@@ -2924,6 +2927,13 @@ def test_evidence_brief_creates_writing_draft_with_lineage_and_refs() -> None:
     assert search["results"][0]["board"]["board_id"] == board["board_id"]
     assert "Evidence brief drafts must keep citations" in search["results"][0]["snippet"]
     assert search["results"][0]["source_refs"][0]["source_item_id"] == source.source_item_id
+    page = api.workspace_evidence_wiki_page(board["board_id"], context=context)
+    assert page["ok"] is True
+    assert page["page"]["board_id"] == board["board_id"]
+    assert page["page"]["publish_status"] == "published"
+    assert "Evidence brief drafts must keep citations" in page["page"]["body_markdown"]
+    assert page["page"]["source_refs"][0]["source_item_id"] == source.source_item_id
+    assert page["page"]["lineage"]["review_item_ids"] == ["rev_brief"]
 
 
 def test_writing_ask_scope_uses_connected_node_context_in_quick_trace() -> None:

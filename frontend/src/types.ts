@@ -150,6 +150,33 @@ export type EvidenceWikiSearchResponse = {
   results?: EvidenceWikiSearchResult[];
 };
 
+export type EvidenceWikiPage = {
+  board_id?: string;
+  title?: string;
+  summary?: string;
+  body_markdown?: string;
+  published_at?: string | null;
+  publish_updated_at?: string | null;
+  status?: string;
+  publish_status?: string;
+  lifecycle_status?: string;
+  knowledge_base_ids?: string[];
+  knowledge_base_names?: string[];
+  source_refs?: Array<Record<string, unknown>>;
+  lineage?: Record<string, unknown>;
+  review_gate?: Record<string, unknown>;
+  node_ids?: string[];
+};
+
+export type EvidenceWikiPageResponse = {
+  ok?: boolean;
+  reason?: string;
+  error?: string;
+  page?: EvidenceWikiPage;
+  board?: WritingBoard;
+  nodes?: WritingNode[];
+};
+
 export type EvidenceWikiPublishResponse = {
   ok?: boolean;
   reason?: string;

@@ -89,6 +89,7 @@ import {
   loadGraphData,
   loadGraphSearchSubgraph,
   loadGraphSubgraph,
+  loadEvidenceWikiPage,
   loadAskConversation,
   loadReviewCenter,
   loadAskConversations,
@@ -8075,6 +8076,15 @@ function evidenceBriefSourceRefs(board: WritingBoard) {
   ]);
 }
 
+function evidenceWikiRefText(ref: Record<string, unknown>, key: string) {
+  const value = ref[key];
+  return typeof value === "string" ? value : "";
+}
+
+function evidenceWikiRefLabel(ref: Record<string, unknown>) {
+  return displayText(evidenceWikiRefText(ref, "title") || evidenceWikiRefText(ref, "source_item_id") || evidenceWikiRefText(ref, "chunk_id"), "来源");
+}
+
 function evidenceBriefLineageSummary(board: WritingBoard) {
   const lineage = evidenceBriefLineage(board);
   const parts = [
@@ -9004,6 +9014,7 @@ function EvidenceBriefLibrary({
   const [selectedBriefId, setSelectedBriefId] = useState("");
   const [showInactive, setShowInactive] = useState(false);
   const [wikiQuery, setWikiQuery] = useState("");
+  const [selectedWikiPageBoardId, setSelectedWikiPageBoardId] = useState("");
   const normalizedWikiQuery = wikiQuery.trim();
   const sortedBoards = useMemo(
     () => [...boards].sort((a, b) => displayText(b.updated_at || b.created_at, "").localeCompare(displayText(a.updated_at || a.created_at, ""))),
@@ -9028,6 +9039,28 @@ function EvidenceBriefLibrary({
     enabled: Boolean(normalizedWikiQuery),
     retry: 1
   });
+  const wikiPageQuery = useQuery({
+    queryKey: ["evidence-wiki-page", serviceToken, selectedWikiPageBoardId],
+    queryFn: () => loadEvidenceWikiPage(serviceToken, selectedWikiPageBoardId),
+    enabled: Boolean(selectedWikiPageBoardId),
+    retry: 1
+  });
+  const wikiPage = wikiPageQuery.data?.page;
+  const wikiPageRefs = wikiPage?.source_refs || [];
+
+  useEffect(() => {
+    if (!normalizedWikiQuery) {
+      setSelectedWikiPageBoardId("");
+    }
+  }, [normalizedWikiQuery]);
+
+  function handleOpenWikiPage(board: WritingBoard | undefined) {
+    if (!board?.board_id) {
+      return;
+    }
+    setSelectedBriefId(board.board_id);
+    setSelectedWikiPageBoardId(board.board_id);
+  }
 
   function handleLifecycleChange(board: WritingBoard, lifecycleStatus: EvidenceBriefLifecycleStatus) {
     if (lifecycleStatus !== "active") {
@@ -9039,6 +9072,9 @@ function EvidenceBriefLibrary({
 
   function handlePublishChange(board: WritingBoard, publishStatus: EvidenceBriefPublishStatus) {
     setSelectedBriefId(board.board_id);
+    if (publishStatus === "draft" && selectedWikiPageBoardId === board.board_id) {
+      setSelectedWikiPageBoardId("");
+    }
     onSetPublishStatus(board, publishStatus);
   }
 
@@ -9089,7 +9125,7 @@ function EvidenceBriefLibrary({
                   type="button"
                   className="writing-brief-wiki-result"
                   data-testid="writing-brief-wiki-result"
-                  onClick={() => board?.board_id && onOpenBoard(board.board_id)}
+                  onClick={() => handleOpenWikiPage(board)}
                 >
                   <span className="writing-brief-publish-status published">已发布到 Wiki</span>
                   <strong>{board?.title || "未命名 Wiki Brief"}</strong>
@@ -9101,6 +9137,43 @@ function EvidenceBriefLibrary({
             <div className="review-empty compact">没有匹配的已发布 Brief。</div>
           )}
         </div>
+      ) : null}
+      {selectedWikiPageBoardId ? (
+        <section className="writing-brief-wiki-page" aria-label="Evidence Wiki 已发布页" data-testid="writing-brief-wiki-page">
+          {wikiPageQuery.isError ? (
+            <div className="review-empty error-state compact">Evidence Wiki 页面加载失败。</div>
+          ) : wikiPageQuery.isLoading ? (
+            <div className="review-empty compact">正在打开已发布页...</div>
+          ) : wikiPageQuery.data?.ok === false ? (
+            <div className="review-empty error-state compact">{wikiPageQuery.data.error || "这个 Brief 当前不是可读取的已发布 Wiki 页。"}</div>
+          ) : wikiPage ? (
+            <>
+              <div className="writing-brief-wiki-page-head">
+                <div>
+                  <span className="writing-brief-publish-status published">已发布到 Wiki</span>
+                  <h3>{wikiPage.title || wikiPageQuery.data?.board?.title || "未命名 Wiki Brief"}</h3>
+                  <small>
+                    {[wikiPage.published_at ? formatReviewDate(wikiPage.published_at) : "", wikiPage.knowledge_base_names?.join(" / "), `${wikiPageRefs.length} 引用`].filter(Boolean).join(" · ")}
+                  </small>
+                </div>
+                <button type="button" onClick={() => selectedWikiPageBoardId && onOpenBoard(selectedWikiPageBoardId)} data-testid="writing-brief-wiki-page-open">
+                  <BookOpen size={14} />
+                  打开写作源
+                </button>
+              </div>
+              <article className="writing-brief-wiki-page-body">{trimText(wikiPage.body_markdown || wikiPage.summary || "", 1600)}</article>
+              {wikiPageRefs.length ? (
+                <div className="writing-brief-wiki-page-refs" aria-label="Evidence Wiki 引用来源">
+                  {wikiPageRefs.slice(0, 6).map((ref, index) => (
+                    <span key={`${evidenceWikiRefText(ref, "source_item_id") || evidenceWikiRefText(ref, "chunk_id") || evidenceWikiRefLabel(ref)}-${index}`}>
+                      {trimText(evidenceWikiRefLabel(ref), 56)}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+            </>
+          ) : null}
+        </section>
       ) : null}
       {sortedBoards.length ? (
         <div className="writing-brief-layout">
