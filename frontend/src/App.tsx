@@ -112,6 +112,7 @@ import {
   restoreReviewItem,
   retryDigestJob,
   runDigestNow,
+  searchEvidenceWiki,
   snoozeDiscovery,
   snoozeReviewItem,
   searchKnowledgeBases,
@@ -8893,6 +8894,7 @@ function WritingWorkspace({
             boards={evidenceBriefBoards}
             activeBoardId={activeBoardId}
             busyBoardId={briefActionBoardId}
+            serviceToken={serviceToken}
             knowledgeBases={knowledgeBases}
             currentKnowledgeBase={currentKnowledgeBase}
             fallbackScope={newBoardKnowledgeScope}
@@ -8987,6 +8989,7 @@ function EvidenceBriefLibrary({
   boards,
   activeBoardId,
   busyBoardId,
+  serviceToken,
   knowledgeBases,
   currentKnowledgeBase,
   fallbackScope,
@@ -8998,6 +9001,7 @@ function EvidenceBriefLibrary({
   boards: WritingBoard[];
   activeBoardId: string;
   busyBoardId: string;
+  serviceToken: PSKAAuth;
   knowledgeBases: KnowledgeBase[];
   currentKnowledgeBase?: KnowledgeBase;
   fallbackScope: { scope: Record<string, unknown>; metadata: Record<string, unknown> };
@@ -9008,6 +9012,8 @@ function EvidenceBriefLibrary({
 }) {
   const [selectedBriefId, setSelectedBriefId] = useState("");
   const [showInactive, setShowInactive] = useState(false);
+  const [wikiQuery, setWikiQuery] = useState("");
+  const normalizedWikiQuery = wikiQuery.trim();
   const sortedBoards = useMemo(
     () => [...boards].sort((a, b) => displayText(b.updated_at || b.created_at, "").localeCompare(displayText(a.updated_at || a.created_at, ""))),
     [boards]
@@ -9025,6 +9031,12 @@ function EvidenceBriefLibrary({
     ? writingBoardKnowledgeScopeLabel(writingBoardKnowledgeScope(selectedBrief, fallbackScope).scope, knowledgeBases, currentKnowledgeBase)
     : "";
   const selectedBusy = Boolean(selectedBrief && busyBoardId === selectedBrief.board_id);
+  const wikiSearchQuery = useQuery({
+    queryKey: ["evidence-wiki-search", serviceToken, fallbackScope.scope, normalizedWikiQuery],
+    queryFn: () => searchEvidenceWiki(serviceToken, { query: normalizedWikiQuery, scope: fallbackScope.scope, limit: 8 }),
+    enabled: Boolean(normalizedWikiQuery),
+    retry: 1
+  });
 
   function handleLifecycleChange(board: WritingBoard, lifecycleStatus: EvidenceBriefLifecycleStatus) {
     if (lifecycleStatus !== "active") {
@@ -9056,6 +9068,49 @@ function EvidenceBriefLibrary({
           <span>显示已过期/回滚</span>
         </label>
       </div>
+      <form className="writing-brief-wiki-search" onSubmit={(event) => event.preventDefault()}>
+        <label>
+          <Search size={15} />
+          <input
+            value={wikiQuery}
+            onChange={(event) => setWikiQuery(event.target.value)}
+            placeholder="搜索已发布 Wiki Brief"
+            data-testid="writing-brief-wiki-search-input"
+          />
+        </label>
+        <button type="submit" disabled={!normalizedWikiQuery || wikiSearchQuery.isFetching}>
+          <Search size={14} />
+          {wikiSearchQuery.isFetching ? "搜索中" : "搜索"}
+        </button>
+      </form>
+      {normalizedWikiQuery ? (
+        <div className="writing-brief-wiki-results" data-testid="writing-brief-wiki-results">
+          {wikiSearchQuery.isError ? (
+            <div className="review-empty error-state compact">Evidence Wiki 搜索失败。</div>
+          ) : wikiSearchQuery.isLoading ? (
+            <div className="review-empty compact">正在搜索已发布 Brief...</div>
+          ) : wikiSearchQuery.data?.results?.length ? (
+            wikiSearchQuery.data.results.map((result, index) => {
+              const board = result.board;
+              return (
+                <button
+                  key={board?.board_id || `wiki-result-${index}`}
+                  type="button"
+                  className="writing-brief-wiki-result"
+                  data-testid="writing-brief-wiki-result"
+                  onClick={() => board?.board_id && onOpenBoard(board.board_id)}
+                >
+                  <span className="writing-brief-publish-status published">已发布到 Wiki</span>
+                  <strong>{board?.title || "未命名 Wiki Brief"}</strong>
+                  <small>{trimText(result.snippet || board?.goal || "", 180)}</small>
+                </button>
+              );
+            })
+          ) : (
+            <div className="review-empty compact">没有匹配的已发布 Brief。</div>
+          )}
+        </div>
+      ) : null}
       {sortedBoards.length ? (
         <div className="writing-brief-layout">
           <div className="writing-brief-list" aria-label="Evidence Brief 列表">

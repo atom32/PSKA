@@ -4670,6 +4670,52 @@ class PSKAApi:
         boards = self.store.list_writing_boards(tenant_id=tenant_id, owner_user_id=owner, limit=limit)
         return {"ok": True, "boards": [_writing_board_payload(board) for board in boards]}
 
+    def workspace_evidence_wiki_search(self, payload: dict[str, Any] | None = None, context: RequestContext | None = None) -> dict[str, Any]:
+        payload, tenant_id, owner = _writing_request_scope(context, payload or {})
+        query = str(payload.get("query") or "").strip()
+        limit = max(1, min(int(payload.get("limit") or 12), 50))
+        scope = _knowledge_base_scope_for_ids(
+            self.store,
+            _knowledge_base_ids_from_payload(payload),
+            tenant_id=tenant_id,
+            owner_user_id=owner,
+        )
+        scoped_source_item_ids = set(_string_list(scope.get("source_item_ids")))
+        boards = self.store.list_writing_boards(tenant_id=tenant_id, owner_user_id=owner, limit=max(100, limit * 4))
+        results: list[dict[str, Any]] = []
+        for board in boards:
+            if not _evidence_wiki_board_is_published(board):
+                continue
+            metadata = dict(getattr(board, "metadata", {}) or {})
+            source_refs = _evidence_wiki_board_source_refs(board)
+            if scoped_source_item_ids and not _source_refs_match_source_item_ids(source_refs, scoped_source_item_ids):
+                board_kb_ids = set(_string_list(metadata.get("knowledge_base_ids")))
+                if not (board_kb_ids & set(_knowledge_base_ids_from_scope(scope))):
+                    continue
+            nodes = self.store.list_writing_nodes(board.board_id, tenant_id=tenant_id, owner_user_id=owner)
+            match = _evidence_wiki_board_match(board, nodes, query)
+            if not match:
+                continue
+            results.append(
+                {
+                    "board": _writing_board_payload(board),
+                    "snippet": match["snippet"],
+                    "match_fields": match["fields"],
+                    "source_refs": source_refs[:6],
+                    "lineage": metadata.get("lineage") if isinstance(metadata.get("lineage"), dict) else {},
+                    "published_at": metadata.get("published_at") or metadata.get("publish_updated_at"),
+                }
+            )
+            if len(results) >= limit:
+                break
+        return {
+            "ok": True,
+            "query": query,
+            "count": len(results),
+            "scope_applied": _knowledge_scope_applied(scope),
+            "results": results,
+        }
+
     def workspace_writing_create_board(self, payload: dict[str, Any], context: RequestContext | None = None) -> dict[str, Any]:
         payload, tenant_id, owner = _writing_request_scope(context, payload)
         title = str(payload.get("title") or "").strip() or "Untitled inquiry"
@@ -5805,6 +5851,8 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
                 return self._json(200, self.api.workspace_digest_linking_run(payload, context=context))
             if path == "/workspace/evidence-briefs":
                 return self._json(200, self.api.workspace_evidence_brief_create(payload, context=context))
+            if path == "/workspace/evidence-wiki/search":
+                return self._json(200, self.api.workspace_evidence_wiki_search(payload, context=context))
             if path == "/workspace/writer/suggest":
                 return self._json(200, self.api.workspace_writer_suggest(payload, context=context))
             if path == "/workspace/activity":
@@ -14185,6 +14233,73 @@ def _evidence_brief_review_status(review_items: list[ReviewItem]) -> str:
     if review_items:
         return "review_linked"
     return "draft"
+
+
+def _evidence_wiki_board_is_published(board: Any) -> bool:
+    metadata = dict(getattr(board, "metadata", {}) or {})
+    if metadata.get("kind") != "evidence_wiki_brief":
+        return False
+    lifecycle = str(metadata.get("lifecycle_status") or "").strip().lower()
+    if lifecycle in {"expired", "rolled_back"}:
+        return False
+    status = str(metadata.get("status") or "").strip().lower()
+    publish_status = str(metadata.get("publish_status") or "").strip().lower()
+    return publish_status == "published" or status == "published"
+
+
+def _evidence_wiki_board_source_refs(board: Any) -> list[dict[str, Any]]:
+    metadata = dict(getattr(board, "metadata", {}) or {})
+    lineage = metadata.get("lineage") if isinstance(metadata.get("lineage"), dict) else {}
+    return _dedupe_writing_refs(
+        [
+            *(_list_of_dicts(lineage.get("source_refs")) if isinstance(lineage, dict) else []),
+            *_list_of_dicts(metadata.get("source_refs")),
+        ]
+    )
+
+
+def _evidence_wiki_board_match(board: Any, nodes: list[Any], query: str) -> dict[str, Any] | None:
+    normalized_query = _normalize_search_text(query)
+    metadata = dict(getattr(board, "metadata", {}) or {})
+    lineage = metadata.get("lineage") if isinstance(metadata.get("lineage"), dict) else {}
+    fields: list[tuple[str, str]] = [
+        ("title", str(getattr(board, "title", "") or "")),
+        ("goal", str(getattr(board, "goal", "") or "")),
+        ("metadata", json.dumps(to_jsonable(metadata), ensure_ascii=False, sort_keys=True)),
+        ("lineage", json.dumps(to_jsonable(lineage), ensure_ascii=False, sort_keys=True)),
+    ]
+    for node in nodes:
+        fields.append(("node", " ".join([str(getattr(node, "title", "") or ""), str(getattr(node, "body_markdown", "") or "")]).strip()))
+    if not normalized_query:
+        text = next((value for _, value in fields if value.strip()), str(getattr(board, "title", "") or ""))
+        return {"fields": ["published"], "snippet": _evidence_wiki_snippet(text, "")}
+    matched_fields: list[str] = []
+    snippet = ""
+    for field, text in fields:
+        if normalized_query in _normalize_search_text(text):
+            matched_fields.append(field)
+            if not snippet:
+                snippet = _evidence_wiki_snippet(text, query)
+    if not matched_fields:
+        return None
+    return {"fields": list(dict.fromkeys(matched_fields)), "snippet": snippet}
+
+
+def _evidence_wiki_snippet(text: str, query: str, radius: int = 180) -> str:
+    normalized = re.sub(r"\s+", " ", text).strip()
+    if not normalized:
+        return ""
+    if not query.strip():
+        return normalized[:radius]
+    index = _normalize_search_text(normalized).find(_normalize_search_text(query))
+    if index < 0:
+        return normalized[:radius]
+    start = max(0, index - radius // 3)
+    return normalized[start : start + radius].strip()
+
+
+def _normalize_search_text(value: str) -> str:
+    return re.sub(r"\s+", " ", value).strip().casefold()
 
 
 def _evidence_brief_lineage(

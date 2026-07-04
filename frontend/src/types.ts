@@ -133,6 +133,23 @@ export type EvidenceBriefResponse = {
   error?: string;
 };
 
+export type EvidenceWikiSearchResult = {
+  board?: WritingBoard;
+  snippet?: string;
+  match_fields?: string[];
+  source_refs?: Array<Record<string, unknown>>;
+  lineage?: Record<string, unknown>;
+  published_at?: string | null;
+};
+
+export type EvidenceWikiSearchResponse = {
+  ok?: boolean;
+  query?: string;
+  count?: number;
+  scope_applied?: Record<string, unknown>;
+  results?: EvidenceWikiSearchResult[];
+};
+
 export type WorkspaceCorpusSource = {
   source_item_id?: string;
   title?: string;

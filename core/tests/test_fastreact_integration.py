@@ -2898,6 +2898,28 @@ def test_evidence_brief_creates_writing_draft_with_lineage_and_refs() -> None:
     persisted = api.workspace_writing_board(board["board_id"], context=context)
     assert persisted["board"]["metadata"]["lineage"]["job_id"] == "job_brief"
     assert persisted["board"]["metadata"]["knowledge_base_names"] == ["Brief Corpus"]
+    draft_search = api.workspace_evidence_wiki_search({"query": "Evidence brief drafts must keep citations"}, context=context)
+    assert draft_search["results"] == []
+
+    published_metadata = {
+        **persisted["board"]["metadata"],
+        "status": "published",
+        "publish_status": "published",
+        "published_at": "2026-01-01T00:00:00+00:00",
+    }
+    api.workspace_writing_update_board(board["board_id"], {"metadata": published_metadata}, context=context)
+    search = api.workspace_evidence_wiki_search(
+        {
+            "query": "Evidence brief drafts must keep citations",
+            "knowledge_base_ids": [knowledge_base["knowledge_base_id"]],
+        },
+        context=context,
+    )
+    assert search["count"] == 1
+    assert search["scope_applied"]["knowledge_base_ids"] == [knowledge_base["knowledge_base_id"]]
+    assert search["results"][0]["board"]["board_id"] == board["board_id"]
+    assert "Evidence brief drafts must keep citations" in search["results"][0]["snippet"]
+    assert search["results"][0]["source_refs"][0]["source_item_id"] == source.source_item_id
 
 
 def test_writing_ask_scope_uses_connected_node_context_in_quick_trace() -> None:

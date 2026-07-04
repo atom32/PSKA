@@ -4977,6 +4977,63 @@ button.context-item-main {
   font-weight: 700;
 }
 
+.writing-brief-wiki-search {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.writing-brief-wiki-search label {
+  min-width: 0;
+  border: 1px solid rgba(39, 37, 31, 0.12);
+  border-radius: 8px;
+  background: var(--paper);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+}
+
+.writing-brief-wiki-search input {
+  min-width: 0;
+  width: 100%;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+}
+
+.writing-brief-wiki-results {
+  display: grid;
+  gap: 8px;
+}
+
+.writing-brief-wiki-result {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid rgba(46, 117, 100, 0.18);
+  border-radius: 8px;
+  background: #f7fbf6;
+  color: var(--ink);
+  display: grid;
+  gap: 5px;
+  padding: 10px;
+  text-align: left;
+}
+
+.writing-brief-wiki-result strong,
+.writing-brief-wiki-result small {
+  overflow-wrap: anywhere;
+}
+
+.writing-brief-wiki-result small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .writing-brief-layout {
   min-width: 0;
   display: grid;
