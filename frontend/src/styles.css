@@ -935,6 +935,23 @@ button.context-item-main {
   flex-wrap: wrap;
 }
 
+.today-scope-picker {
+  min-width: min(300px, 100%);
+  flex: 0 1 360px;
+}
+
+.today-scope-picker .kb-scope-chip {
+  width: 100%;
+  min-width: 0;
+  max-width: 360px;
+  height: 38px;
+}
+
+.today-scope-picker .kb-scope-menu-panel {
+  left: 0;
+  right: auto;
+}
+
 .force-deep-toggle {
   min-height: 34px;
   display: inline-flex;
@@ -8046,6 +8063,24 @@ button.context-item-main {
 
   .ask-stage {
     min-height: 0;
+  }
+
+  .today-chat-tools {
+    flex-wrap: wrap;
+  }
+
+  .today-chat-tool-left {
+    width: 100%;
+  }
+
+  .today-scope-picker {
+    min-width: min(220px, 100%);
+    flex: 1 1 220px;
+  }
+
+  .today-scope-picker .kb-scope-chip,
+  .today-scope-picker .kb-scope-chip select {
+    max-width: none;
   }
 
   .corpus-header,

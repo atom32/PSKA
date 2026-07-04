@@ -490,10 +490,14 @@ export default function App() {
             serviceToken={pskaIdentity}
             knowledgeBases={knowledgeBases}
             currentKnowledgeBase={currentKnowledgeBase}
+            currentKnowledgeBaseId={currentKnowledgeBase?.knowledge_base_id || currentKnowledgeBaseId}
             scopeMode={knowledgeBaseScopeMode}
             selectedKnowledgeBaseIds={selectedKnowledgeBaseIds}
             activeConversationId={activeAskConversationId}
             onActiveConversationChange={setActiveAskConversationId}
+            onKnowledgeBaseChange={setCurrentKnowledgeBaseId}
+            onScopeModeChange={setKnowledgeBaseScopeMode}
+            onSelectedKnowledgeBaseIdsChange={setSelectedKnowledgeBaseIds}
             onOpenWorkspace={setMode}
             setBrain={setBrain}
           />
@@ -1002,6 +1006,7 @@ function KnowledgeBaseScopeChip({
       <button
         className={scopeMode === "all" ? "active" : ""}
         type="button"
+        data-testid="kb-scope-toggle-current-all"
         onClick={() => onScopeModeChange(scopeMode === "all" ? "current" : "all")}
         title={scopeMode === "all" ? "切回当前知识库" : "查询全部资料库"}
       >
@@ -1018,6 +1023,11 @@ function KnowledgeBaseScopeChip({
             <input
               value={scopeSearch}
               onChange={(event) => setScopeSearch(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                }
+              }}
               placeholder="搜索知识库"
               data-testid="kb-scope-search"
             />
@@ -1093,20 +1103,28 @@ function TodayWorkspace({
   serviceToken,
   knowledgeBases,
   currentKnowledgeBase,
+  currentKnowledgeBaseId,
   scopeMode,
   selectedKnowledgeBaseIds,
   activeConversationId,
   onActiveConversationChange,
+  onKnowledgeBaseChange,
+  onScopeModeChange,
+  onSelectedKnowledgeBaseIdsChange,
   onOpenWorkspace,
   setBrain
 }: {
   serviceToken: PSKAAuth;
   knowledgeBases: KnowledgeBase[];
   currentKnowledgeBase?: KnowledgeBase;
+  currentKnowledgeBaseId: string;
   scopeMode: "current" | "all" | "selected" | "attachments";
   selectedKnowledgeBaseIds: string[];
   activeConversationId: string;
   onActiveConversationChange: (conversationId: string) => void;
+  onKnowledgeBaseChange: (knowledgeBaseId: string) => void;
+  onScopeModeChange: (mode: "current" | "all" | "selected" | "attachments") => void;
+  onSelectedKnowledgeBaseIdsChange: (knowledgeBaseIds: string[]) => void;
   onOpenWorkspace: (mode: WorkspaceMode) => void;
   setBrain: (brain: Partial<BrainState>) => void;
 }) {
@@ -1153,12 +1171,6 @@ function TodayWorkspace({
   const previousActiveConversationId = useRef(activeConversationId);
   const liveSearchResult = searchResult;
   const liveResultMatchesActive = Boolean(liveSearchResult) && liveConversationId === activeConversationId;
-  const askScopeLabel = scopeMode === "all"
-    ? "全部资料库"
-    : scopeMode === "selected"
-      ? selectedKnowledgeBaseIds.length > 0 ? `${selectedKnowledgeBaseIds.length} 个资料库` : "未选择资料库"
-      : currentKnowledgeBase?.name || "当前资料库";
-
   useEffect(() => {
     if (!activeConversationId && conversations[0]?.conversation_id) {
       onActiveConversationChange(conversations[0].conversation_id);
@@ -1400,10 +1412,17 @@ function TodayWorkspace({
                       <input type="file" onChange={(event) => setAttachmentFile(event.target.files?.[0] || null)} data-testid="today-attachment-input" />
                       <span>{attachmentFile ? trimText(attachmentFile.name, 24) : "附件"}</span>
                     </label>
-                    <span className="kb-inline-scope" title="Ask 范围">
-                      <BookOpen size={14} />
-                      {trimText(askScopeLabel, 18)}
-                    </span>
+                    <div className="today-scope-picker" data-testid="today-scope-picker">
+                      <KnowledgeBaseScopeChip
+                        knowledgeBases={knowledgeBases}
+                        currentKnowledgeBaseId={currentKnowledgeBase?.knowledge_base_id || currentKnowledgeBaseId}
+                        scopeMode={scopeMode}
+                        selectedKnowledgeBaseIds={selectedKnowledgeBaseIds}
+                        onKnowledgeBaseChange={onKnowledgeBaseChange}
+                        onScopeModeChange={onScopeModeChange}
+                        onSelectedKnowledgeBaseIdsChange={onSelectedKnowledgeBaseIdsChange}
+                      />
+                    </div>
                     {readerFocusRef ? (
                       <span className="reader-focus-chip" title="下一问限定到这条引用" data-testid="reader-focus-chip">
                         <FileText size={14} />

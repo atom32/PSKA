@@ -448,7 +448,7 @@ async function openWorkspace(page: Page, label: string) {
 }
 
 async function selectCurrentKnowledgeBase(page: Page, knowledgeBaseId: string) {
-  const selector = page.locator(".kb-scope-chip select");
+  const selector = page.locator(".top-bar .kb-scope-chip select");
   await expect(selector).toBeVisible({ timeout: 45_000 });
   await expect(selector.locator(`option[value="${knowledgeBaseId}"]`)).toHaveCount(1, { timeout: 45_000 });
   await selector.selectOption(knowledgeBaseId);
@@ -456,9 +456,9 @@ async function selectCurrentKnowledgeBase(page: Page, knowledgeBaseId: string) {
 }
 
 async function expectKnowledgeBaseScopeMenuSearch(page: Page, alpha: KnowledgeBase, beta: KnowledgeBase) {
-  const menu = page.locator(".kb-scope-menu");
+  const menu = page.locator(".top-bar .kb-scope-menu");
   await menu.locator("summary").click();
-  const panel = page.locator(".kb-scope-menu-panel");
+  const panel = page.locator(".top-bar .kb-scope-menu-panel");
   await expect(panel).toBeVisible();
   await panel.getByTestId("kb-scope-search").fill(alpha.name);
   await expect(panel.getByTestId("kb-scope-filter-summary")).toContainText("1 个匹配");
@@ -495,6 +495,17 @@ async function askViaBrowserComposer(
   query: string,
   expected: { marker: string; knowledgeBaseName: string; alphaSecret: string; betaSecret: string; alphaSourceItemId: string }
 ) {
+  const todayScope = page.getByTestId("today-scope-picker");
+  await expect(todayScope).toBeVisible();
+  await expect(todayScope).toContainText(expected.knowledgeBaseName);
+  const currentAllToggle = todayScope.getByTestId("kb-scope-toggle-current-all");
+  await expect(currentAllToggle).toContainText("当前");
+  await currentAllToggle.click();
+  await expect(currentAllToggle).toContainText("全部");
+  await currentAllToggle.click();
+  await expect(currentAllToggle).toContainText("当前");
+  await expect(todayScope).toContainText(expected.knowledgeBaseName);
+
   await page.getByTestId("today-ask-input").fill(query);
   await page.getByTestId("today-ask-submit").click();
   const result = page.getByTestId("ask-result").filter({ hasText: expected.alphaSecret }).last();
