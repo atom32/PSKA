@@ -4744,7 +4744,17 @@ class PSKAApi:
             }
         return {
             "ok": True,
-            "page": _evidence_wiki_page_payload(board, nodes, review_gate=review_gate),
+            "page": _evidence_wiki_page_payload(
+                board,
+                nodes,
+                review_gate=review_gate,
+                related_pages=_evidence_wiki_related_pages(
+                    self.store,
+                    board,
+                    tenant_id=tenant_id,
+                    owner_user_id=owner,
+                ),
+            ),
             "board": _writing_board_payload(board),
             "nodes": [_writing_node_payload(node) for node in nodes],
         }
@@ -14567,7 +14577,13 @@ def _evidence_wiki_board_source_refs(board: Any) -> list[dict[str, Any]]:
     )
 
 
-def _evidence_wiki_page_payload(board: Any, nodes: list[Any], *, review_gate: dict[str, Any]) -> dict[str, Any]:
+def _evidence_wiki_page_payload(
+    board: Any,
+    nodes: list[Any],
+    *,
+    review_gate: dict[str, Any],
+    related_pages: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     metadata = dict(getattr(board, "metadata", {}) or {})
     lineage = metadata.get("lineage") if isinstance(metadata.get("lineage"), dict) else {}
     body_markdown = _evidence_wiki_page_body(board, nodes)
@@ -14587,8 +14603,66 @@ def _evidence_wiki_page_payload(board: Any, nodes: list[Any], *, review_gate: di
         "lineage": lineage,
         "review_gate": review_gate,
         "access": _evidence_wiki_access_payload(board),
+        "related_pages": related_pages or [],
         "node_ids": [str(getattr(node, "node_id", "") or "") for node in nodes if getattr(node, "node_id", None)],
     }
+
+
+def _evidence_wiki_related_pages(store: Any, board: Any, *, tenant_id: str, owner_user_id: str, limit: int = 6) -> list[dict[str, Any]]:
+    current_board_id = str(getattr(board, "board_id", "") or "")
+    current_source_refs = _evidence_wiki_board_source_refs(board)
+    current_source_item_ids = _source_refs_source_item_ids(current_source_refs)
+    current_kb_ids = set(_evidence_wiki_board_knowledge_base_ids(board))
+    related: list[tuple[int, str, dict[str, Any]]] = []
+    for candidate in store.list_writing_boards(tenant_id=tenant_id, owner_user_id=owner_user_id, limit=max(200, limit * 8)):
+        if str(getattr(candidate, "board_id", "") or "") == current_board_id:
+            continue
+        if not _evidence_wiki_board_is_published(candidate):
+            continue
+        review_gate = _evidence_wiki_review_gate(store, candidate, tenant_id=tenant_id, owner_user_id=owner_user_id)
+        if review_gate.get("blocked"):
+            continue
+        candidate_source_refs = _evidence_wiki_board_source_refs(candidate)
+        candidate_source_item_ids = _source_refs_source_item_ids(candidate_source_refs)
+        shared_source_item_ids = sorted(current_source_item_ids & candidate_source_item_ids)
+        candidate_kb_ids = set(_evidence_wiki_board_knowledge_base_ids(candidate))
+        shared_kb_ids = sorted(current_kb_ids & candidate_kb_ids)
+        if not shared_source_item_ids and not shared_kb_ids:
+            continue
+        metadata = dict(getattr(candidate, "metadata", {}) or {})
+        score = len(shared_source_item_ids) * 3 + len(shared_kb_ids)
+        published_at = str(metadata.get("published_at") or metadata.get("publish_updated_at") or "")
+        related.append(
+            (
+                score,
+                published_at,
+                {
+                    "board": _writing_board_payload(candidate),
+                    "reason": _evidence_wiki_related_reason(shared_source_item_ids, shared_kb_ids),
+                    "shared_source_item_ids": shared_source_item_ids,
+                    "shared_knowledge_base_ids": shared_kb_ids,
+                    "source_refs": candidate_source_refs[:4],
+                    "published_at": metadata.get("published_at") or metadata.get("publish_updated_at"),
+                    "access": _evidence_wiki_access_payload(candidate),
+                },
+            )
+        )
+    related.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return [item[2] for item in related[:limit]]
+
+
+def _evidence_wiki_board_knowledge_base_ids(board: Any) -> list[str]:
+    metadata = dict(getattr(board, "metadata", {}) or {})
+    lineage = metadata.get("lineage") if isinstance(metadata.get("lineage"), dict) else {}
+    return _string_list(metadata.get("knowledge_base_ids") or (lineage.get("knowledge_base_ids") if isinstance(lineage, dict) else []))
+
+
+def _evidence_wiki_related_reason(shared_source_item_ids: list[str], shared_kb_ids: list[str]) -> str:
+    if shared_source_item_ids:
+        return f"共享 {len(shared_source_item_ids)} 个来源"
+    if shared_kb_ids:
+        return f"同属 {len(shared_kb_ids)} 个知识库"
+    return "相关页面"
 
 
 def _evidence_wiki_access_payload(board: Any) -> dict[str, Any]:

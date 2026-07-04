@@ -5314,6 +5314,64 @@ button.context-item-main {
   padding: 5px 8px;
 }
 
+.writing-brief-wiki-related {
+  min-width: 0;
+  border-top: 1px solid rgba(46, 117, 100, 0.14);
+  display: grid;
+  gap: 7px;
+  padding-top: 10px;
+}
+
+.writing-brief-wiki-related-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.writing-brief-wiki-related-head strong {
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.25;
+}
+
+.writing-brief-wiki-related-head small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.writing-brief-wiki-related button {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid rgba(46, 117, 100, 0.16);
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--ink);
+  display: grid;
+  gap: 4px;
+  padding: 9px 10px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.writing-brief-wiki-related button:hover {
+  border-color: rgba(46, 117, 100, 0.35);
+  background: var(--accent-soft);
+}
+
+.writing-brief-wiki-related span {
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.writing-brief-wiki-related small {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
 .writing-brief-layout {
   min-width: 0;
   display: grid;

@@ -9191,6 +9191,7 @@ function EvidenceBriefLibrary({
   });
   const wikiPage = wikiPageQuery.data?.page;
   const wikiPageRefs = wikiPage?.source_refs || [];
+  const wikiRelatedPages = wikiPage?.related_pages || [];
   const wikiResults = wikiSearchQuery.data?.results || [];
 
   function handleOpenWikiPage(board: WritingBoard | undefined) {
@@ -9311,6 +9312,28 @@ function EvidenceBriefLibrary({
                       {trimText(evidenceWikiRefLabel(ref), 56)}
                     </span>
                   ))}
+                </div>
+              ) : null}
+              {wikiRelatedPages.length ? (
+                <div className="writing-brief-wiki-related" data-testid="writing-brief-wiki-related" aria-label="相关 Wiki 页面">
+                  <div className="writing-brief-wiki-related-head">
+                    <strong>相关页面</strong>
+                    <small>{wikiRelatedPages.length} 个</small>
+                  </div>
+                  {wikiRelatedPages.slice(0, 4).map((related, index) => {
+                    const relatedBoard = related.board;
+                    return (
+                      <button
+                        key={relatedBoard?.board_id || `related-wiki-${index}`}
+                        type="button"
+                        data-testid="writing-brief-wiki-related-page"
+                        onClick={() => handleOpenWikiPage(relatedBoard)}
+                      >
+                        <span>{trimText(relatedBoard?.title || "未命名 Wiki Brief", 72)}</span>
+                        <small>{[related.reason, related.published_at ? formatReviewDate(related.published_at) : "", evidenceWikiAccessLabel(related.access)].filter(Boolean).join(" · ")}</small>
+                      </button>
+                    );
+                  })}
                 </div>
               ) : null}
             </>

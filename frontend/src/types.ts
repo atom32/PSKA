@@ -167,7 +167,18 @@ export type EvidenceWikiPage = {
   lineage?: Record<string, unknown>;
   review_gate?: Record<string, unknown>;
   access?: Record<string, unknown>;
+  related_pages?: EvidenceWikiRelatedPage[];
   node_ids?: string[];
+};
+
+export type EvidenceWikiRelatedPage = {
+  board?: WritingBoard;
+  reason?: string;
+  shared_source_item_ids?: string[];
+  shared_knowledge_base_ids?: string[];
+  source_refs?: Array<Record<string, unknown>>;
+  published_at?: string | null;
+  access?: Record<string, unknown>;
 };
 
 export type EvidenceWikiPageResponse = {

@@ -322,12 +322,20 @@ Core endpoints:
 | `DELETE /workspace/writing/boards/{board_id}/edges/{edge_id}` | Delete one relation. |
 | `POST /workspace/writing/boards/{board_id}/suggest-questions` | Return generic follow-up question suggestions; does not persist nodes. |
 | `POST /workspace/writing/boards/{board_id}/compose` | Build Markdown from selected answer nodes; does not perform retrieval. |
+| `POST /workspace/evidence-wiki/publish` | Promote or unpublish an Evidence Brief after review-gate checks. |
+| `POST /workspace/evidence-wiki/search` | Search scoped published Evidence Wiki pages. Empty `query` lists published pages in scope. |
+| `GET /workspace/evidence-wiki/pages/{board_id}` | Load a read-only published Evidence Wiki page. |
 
 `compose` is intentionally retrieval-free. It only uses the selected answer
 nodes' Markdown, citations, and source refs, so the retrieval owner remains the
 original Ask PSKA run that produced those answer nodes. Follow-up context comes
 from the Inquiry Graph: connected nodes are sent as structured scope, not as a
 hidden second search channel.
+
+Published Evidence Wiki page payloads include source refs, lineage, access
+hints, review-gate state, and `related_pages`. Related pages are generated from
+shared source refs or shared KB ids among active published pages in the same
+tenant/user scope; they are navigation aids, not a separate retrieval source.
 
 For a complete seed-and-run scenario, see
 [`WRITING_WORKSPACE_TEST_CASE.zh.md`](WRITING_WORKSPACE_TEST_CASE.zh.md).
