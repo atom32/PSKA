@@ -121,6 +121,7 @@ import {
   syncKnowledgeSources,
   suggestWritingQuestions,
   unpinKnowledgeBase,
+  updateEvidenceWikiTaxonomy,
   updatePromptProfiles,
   uploadWorkspaceSource
 } from "./api";
@@ -133,6 +134,8 @@ import type {
   ConsoleSourcesResponse,
   DigestNowResponse,
   DigestLogsResponse,
+  EvidenceWikiTaxonomy,
+  EvidenceWikiTaxonomyFacet,
   KnowledgeBase,
   KnowledgeBaseSearchResponse,
   KnowledgeSourceCleanupResponse,
@@ -8129,6 +8132,23 @@ type EvidenceBriefCreatePayload = {
   limit?: number;
 };
 
+type EvidenceWikiTaxonomyKey = "tags" | "categories" | "topics" | "collections";
+type EvidenceWikiTaxonomyDraft = Record<EvidenceWikiTaxonomyKey, string>;
+
+const EVIDENCE_WIKI_TAXONOMY_FIELDS: Array<{ key: EvidenceWikiTaxonomyKey; label: string; placeholder: string }> = [
+  { key: "tags", label: "标签", placeholder: "引用, RAG" },
+  { key: "categories", label: "分类", placeholder: "产品, 研究" },
+  { key: "topics", label: "主题", placeholder: "证据治理" },
+  { key: "collections", label: "集合", placeholder: "Phase 2" }
+];
+
+const EMPTY_EVIDENCE_WIKI_TAXONOMY_DRAFT: EvidenceWikiTaxonomyDraft = {
+  tags: "",
+  categories: "",
+  topics: "",
+  collections: ""
+};
+
 function evidenceBriefMetadata(board: WritingBoard): Record<string, unknown> {
   return isPlainObject(board.metadata) ? board.metadata : {};
 }
@@ -8221,6 +8241,55 @@ function evidenceWikiAccessLabel(access?: Record<string, unknown>) {
     return "共享范围可见";
   }
   return "当前用户可见";
+}
+
+function evidenceWikiTaxonomyValues(taxonomy: EvidenceWikiTaxonomy | undefined, key: EvidenceWikiTaxonomyKey): string[] {
+  const value = taxonomy?.[key];
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
+}
+
+function evidenceWikiTaxonomyDraftFromTaxonomy(taxonomy: EvidenceWikiTaxonomy | undefined): EvidenceWikiTaxonomyDraft {
+  return EVIDENCE_WIKI_TAXONOMY_FIELDS.reduce<EvidenceWikiTaxonomyDraft>(
+    (draft, field) => ({
+      ...draft,
+      [field.key]: evidenceWikiTaxonomyValues(taxonomy, field.key).join(", ")
+    }),
+    { ...EMPTY_EVIDENCE_WIKI_TAXONOMY_DRAFT }
+  );
+}
+
+function evidenceWikiTaxonomyFromDraft(draft: EvidenceWikiTaxonomyDraft): EvidenceWikiTaxonomy {
+  return EVIDENCE_WIKI_TAXONOMY_FIELDS.reduce<EvidenceWikiTaxonomy>((taxonomy, field) => {
+    const values = draft[field.key]
+      .split(/[,，\n]+/)
+      .map((item) => item.replace(/\s+/g, " ").trim())
+      .filter(Boolean)
+      .filter((item, index, all) => all.findIndex((candidate) => candidate.toLowerCase() === item.toLowerCase()) === index)
+      .slice(0, 24);
+    return { ...taxonomy, [field.key]: values };
+  }, {});
+}
+
+function evidenceWikiTaxonomySummary(taxonomy: EvidenceWikiTaxonomy | undefined, maxItems = 6) {
+  const values = EVIDENCE_WIKI_TAXONOMY_FIELDS.flatMap((field) =>
+    evidenceWikiTaxonomyValues(taxonomy, field.key).map((value) => `${field.label}: ${value}`)
+  );
+  return values.slice(0, maxItems).join(" · ");
+}
+
+function evidenceWikiTaxonomyFilterCount(filters: EvidenceWikiTaxonomy) {
+  return EVIDENCE_WIKI_TAXONOMY_FIELDS.reduce((count, field) => count + evidenceWikiTaxonomyValues(filters, field.key).length, 0);
+}
+
+function evidenceWikiTaxonomyFacets(facets: Record<string, EvidenceWikiTaxonomyFacet[]> | undefined) {
+  return EVIDENCE_WIKI_TAXONOMY_FIELDS.flatMap((field) =>
+    (facets?.[field.key] || []).slice(0, 6).map((facet) => ({
+      key: field.key,
+      label: field.label,
+      value: displayText(facet.value, ""),
+      count: Number(facet.count || 0)
+    }))
+  ).filter((facet) => facet.value);
 }
 
 function evidenceBriefLineageSummary(board: WritingBoard) {
@@ -9154,11 +9223,17 @@ function EvidenceBriefLibrary({
   onSetLifecycle: (board: WritingBoard, lifecycleStatus: EvidenceBriefLifecycleStatus) => void;
   onSetPublishStatus: (board: WritingBoard, publishStatus: EvidenceBriefPublishStatus) => void;
 }) {
+  const queryClient = useQueryClient();
   const [selectedBriefId, setSelectedBriefId] = useState("");
   const [showInactive, setShowInactive] = useState(false);
   const [wikiQuery, setWikiQuery] = useState("");
+  const [wikiTaxonomyFilters, setWikiTaxonomyFilters] = useState<EvidenceWikiTaxonomy>({});
+  const [wikiTaxonomyDraft, setWikiTaxonomyDraft] = useState<EvidenceWikiTaxonomyDraft>({ ...EMPTY_EVIDENCE_WIKI_TAXONOMY_DRAFT });
+  const [wikiTaxonomySaving, setWikiTaxonomySaving] = useState(false);
+  const [wikiTaxonomyStatus, setWikiTaxonomyStatus] = useState("");
   const [selectedWikiPageBoardId, setSelectedWikiPageBoardId] = useState("");
   const normalizedWikiQuery = wikiQuery.trim();
+  const wikiTaxonomyFilterCount = evidenceWikiTaxonomyFilterCount(wikiTaxonomyFilters);
   const sortedBoards = useMemo(
     () => [...boards].sort((a, b) => displayText(b.updated_at || b.created_at, "").localeCompare(displayText(a.updated_at || a.created_at, ""))),
     [boards]
@@ -9178,8 +9253,14 @@ function EvidenceBriefLibrary({
   const selectedBusy = Boolean(selectedBrief && busyBoardId === selectedBrief.board_id);
   const wikiScopeLabel = writingBoardKnowledgeScopeLabel(fallbackScope.scope, knowledgeBases, currentKnowledgeBase);
   const wikiSearchQuery = useQuery({
-    queryKey: ["evidence-wiki-search", serviceToken, fallbackScope.scope, normalizedWikiQuery],
-    queryFn: () => searchEvidenceWiki(serviceToken, { query: normalizedWikiQuery, scope: fallbackScope.scope, limit: normalizedWikiQuery ? 8 : 6 }),
+    queryKey: ["evidence-wiki-search", serviceToken, fallbackScope.scope, normalizedWikiQuery, wikiTaxonomyFilters],
+    queryFn: () =>
+      searchEvidenceWiki(serviceToken, {
+        query: normalizedWikiQuery,
+        scope: fallbackScope.scope,
+        taxonomy_filters: wikiTaxonomyFilters,
+        limit: normalizedWikiQuery || wikiTaxonomyFilterCount ? 8 : 6
+      }),
     enabled: true,
     retry: 1
   });
@@ -9193,6 +9274,12 @@ function EvidenceBriefLibrary({
   const wikiPageRefs = wikiPage?.source_refs || [];
   const wikiRelatedPages = wikiPage?.related_pages || [];
   const wikiResults = wikiSearchQuery.data?.results || [];
+  const wikiTaxonomyFacetItems = evidenceWikiTaxonomyFacets(wikiSearchQuery.data?.taxonomy_facets);
+
+  useEffect(() => {
+    setWikiTaxonomyDraft(evidenceWikiTaxonomyDraftFromTaxonomy(wikiPage?.taxonomy));
+    setWikiTaxonomyStatus("");
+  }, [wikiPage?.board_id, wikiPage?.taxonomy]);
 
   function handleOpenWikiPage(board: WritingBoard | undefined) {
     if (!board?.board_id) {
@@ -9200,6 +9287,45 @@ function EvidenceBriefLibrary({
     }
     setSelectedBriefId(board.board_id);
     setSelectedWikiPageBoardId(board.board_id);
+  }
+
+  function handleToggleWikiTaxonomyFilter(key: EvidenceWikiTaxonomyKey, value: string) {
+    setWikiTaxonomyFilters((current) => {
+      const currentValues = evidenceWikiTaxonomyValues(current, key);
+      const exists = currentValues.some((item) => item.toLowerCase() === value.toLowerCase());
+      return {
+        ...current,
+        [key]: exists ? currentValues.filter((item) => item.toLowerCase() !== value.toLowerCase()) : [...currentValues, value]
+      };
+    });
+  }
+
+  function handleClearWikiTaxonomyFilters() {
+    setWikiTaxonomyFilters({});
+  }
+
+  async function handleSaveWikiTaxonomy() {
+    if (!selectedWikiPageBoardId || wikiTaxonomySaving) {
+      return;
+    }
+    setWikiTaxonomySaving(true);
+    setWikiTaxonomyStatus("");
+    try {
+      const taxonomy = evidenceWikiTaxonomyFromDraft(wikiTaxonomyDraft);
+      const payload = await updateEvidenceWikiTaxonomy(serviceToken, selectedWikiPageBoardId, { taxonomy });
+      if (payload.ok === false) {
+        throw new Error(payload.error || "Evidence Wiki 分类保存失败。");
+      }
+      setWikiTaxonomyDraft(evidenceWikiTaxonomyDraftFromTaxonomy(payload.taxonomy || taxonomy));
+      setWikiTaxonomyStatus("已保存");
+      await queryClient.invalidateQueries({ queryKey: ["evidence-wiki-search"] });
+      await queryClient.invalidateQueries({ queryKey: ["evidence-wiki-page"] });
+      await queryClient.invalidateQueries({ queryKey: ["writing-boards"] });
+    } catch (error) {
+      setWikiTaxonomyStatus(error instanceof Error ? error.message : "Evidence Wiki 分类保存失败。");
+    } finally {
+      setWikiTaxonomySaving(false);
+    }
   }
 
   function handleLifecycleChange(board: WritingBoard, lifecycleStatus: EvidenceBriefLifecycleStatus) {
@@ -9252,9 +9378,35 @@ function EvidenceBriefLibrary({
       </form>
       <div className="writing-brief-wiki-results" data-testid="writing-brief-wiki-results">
         <div className="writing-brief-wiki-results-head" data-testid="writing-brief-wiki-scope">
-          <strong>{normalizedWikiQuery ? "Wiki 搜索结果" : "已发布 Wiki"}</strong>
-          <small>{normalizedWikiQuery ? `${wikiResults.length} 个匹配` : "当前范围内最新发布"} · {wikiScopeLabel}</small>
+          <strong>{normalizedWikiQuery || wikiTaxonomyFilterCount ? "Wiki 搜索结果" : "已发布 Wiki"}</strong>
+          <small>{normalizedWikiQuery || wikiTaxonomyFilterCount ? `${wikiSearchQuery.data?.total_count ?? wikiResults.length} 个匹配` : "当前范围内最新发布"} · {wikiScopeLabel}</small>
         </div>
+        {wikiTaxonomyFacetItems.length || wikiTaxonomyFilterCount ? (
+          <div className="writing-brief-wiki-taxonomy-facets" data-testid="writing-brief-wiki-taxonomy-facets">
+            {wikiTaxonomyFacetItems.map((facet) => {
+              const active = evidenceWikiTaxonomyValues(wikiTaxonomyFilters, facet.key).some((item) => item.toLowerCase() === facet.value.toLowerCase());
+              return (
+                <button
+                  key={`${facet.key}:${facet.value}`}
+                  type="button"
+                  className={active ? "active" : ""}
+                  onClick={() => handleToggleWikiTaxonomyFilter(facet.key, facet.value)}
+                  data-testid="writing-brief-wiki-taxonomy-filter"
+                >
+                  <Tag size={12} />
+                  {facet.label}: {facet.value}
+                  <small>{facet.count}</small>
+                </button>
+              );
+            })}
+            {wikiTaxonomyFilterCount ? (
+              <button type="button" className="clear" onClick={handleClearWikiTaxonomyFilters}>
+                <X size={12} />
+                清除
+              </button>
+            ) : null}
+          </div>
+        ) : null}
         {wikiSearchQuery.isError ? (
           <div className="review-empty error-state compact">Evidence Wiki 搜索失败。</div>
         ) : wikiSearchQuery.isLoading ? (
@@ -9262,6 +9414,7 @@ function EvidenceBriefLibrary({
         ) : wikiResults.length ? (
           wikiResults.map((result, index) => {
             const board = result.board;
+            const taxonomySummary = evidenceWikiTaxonomySummary(result.taxonomy, 4);
             return (
               <button
                 key={board?.board_id || `wiki-result-${index}`}
@@ -9273,6 +9426,7 @@ function EvidenceBriefLibrary({
                 <span className="writing-brief-publish-status published">已发布到 Wiki</span>
                 <strong>{board?.title || "未命名 Wiki Brief"}</strong>
                 <small>{trimText(result.snippet || board?.goal || "", 180)}</small>
+                {taxonomySummary ? <small className="writing-brief-wiki-taxonomy-line">{taxonomySummary}</small> : null}
                 <small>{[result.published_at ? formatReviewDate(result.published_at) : "", evidenceWikiAccessLabel(result.access)].filter(Boolean).join(" · ")}</small>
               </button>
             );
@@ -9304,6 +9458,47 @@ function EvidenceBriefLibrary({
                   打开写作源
                 </button>
               </div>
+              {evidenceWikiTaxonomySummary(wikiPage.taxonomy) ? (
+                <div className="writing-brief-wiki-taxonomy-chips" data-testid="writing-brief-wiki-taxonomy">
+                  {EVIDENCE_WIKI_TAXONOMY_FIELDS.flatMap((field) =>
+                    evidenceWikiTaxonomyValues(wikiPage.taxonomy, field.key).map((value) => (
+                      <span key={`${field.key}:${value}`}>
+                        <Tag size={11} />
+                        {field.label}: {value}
+                      </span>
+                    ))
+                  )}
+                </div>
+              ) : null}
+              <form
+                className="writing-brief-wiki-taxonomy-editor"
+                data-testid="writing-brief-wiki-taxonomy-editor"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void handleSaveWikiTaxonomy();
+                }}
+              >
+                <div className="writing-brief-wiki-taxonomy-editor-grid">
+                  {EVIDENCE_WIKI_TAXONOMY_FIELDS.map((field) => (
+                    <label key={field.key}>
+                      <span>{field.label}</span>
+                      <input
+                        value={wikiTaxonomyDraft[field.key]}
+                        onChange={(event) => setWikiTaxonomyDraft((current) => ({ ...current, [field.key]: event.target.value }))}
+                        placeholder={field.placeholder}
+                        data-testid={`writing-brief-wiki-taxonomy-${field.key}`}
+                      />
+                    </label>
+                  ))}
+                </div>
+                <div className="writing-brief-wiki-taxonomy-editor-actions">
+                  {wikiTaxonomyStatus ? <small>{wikiTaxonomyStatus}</small> : null}
+                  <button type="submit" disabled={wikiTaxonomySaving}>
+                    <Tag size={13} />
+                    {wikiTaxonomySaving ? "保存中" : "保存分类"}
+                  </button>
+                </div>
+              </form>
               <article className="writing-brief-wiki-page-body">{trimText(wikiPage.body_markdown || wikiPage.summary || "", 1600)}</article>
               {wikiPageRefs.length ? (
                 <div className="writing-brief-wiki-page-refs" aria-label="Evidence Wiki 引用来源">

@@ -141,13 +141,29 @@ export type EvidenceWikiSearchResult = {
   lineage?: Record<string, unknown>;
   published_at?: string | null;
   access?: Record<string, unknown>;
+  taxonomy?: EvidenceWikiTaxonomy;
+};
+
+export type EvidenceWikiTaxonomy = {
+  tags?: string[];
+  categories?: string[];
+  topics?: string[];
+  collections?: string[];
+};
+
+export type EvidenceWikiTaxonomyFacet = {
+  value?: string;
+  count?: number;
 };
 
 export type EvidenceWikiSearchResponse = {
   ok?: boolean;
   query?: string;
   count?: number;
+  total_count?: number;
   scope_applied?: Record<string, unknown>;
+  taxonomy_filters?: EvidenceWikiTaxonomy;
+  taxonomy_facets?: Record<string, EvidenceWikiTaxonomyFacet[]>;
   results?: EvidenceWikiSearchResult[];
 };
 
@@ -167,6 +183,7 @@ export type EvidenceWikiPage = {
   lineage?: Record<string, unknown>;
   review_gate?: Record<string, unknown>;
   access?: Record<string, unknown>;
+  taxonomy?: EvidenceWikiTaxonomy;
   related_pages?: EvidenceWikiRelatedPage[];
   node_ids?: string[];
 };
@@ -176,6 +193,8 @@ export type EvidenceWikiRelatedPage = {
   reason?: string;
   shared_source_item_ids?: string[];
   shared_knowledge_base_ids?: string[];
+  shared_taxonomy?: EvidenceWikiTaxonomy;
+  taxonomy?: EvidenceWikiTaxonomy;
   source_refs?: Array<Record<string, unknown>>;
   published_at?: string | null;
   access?: Record<string, unknown>;
@@ -188,6 +207,15 @@ export type EvidenceWikiPageResponse = {
   page?: EvidenceWikiPage;
   board?: WritingBoard;
   nodes?: WritingNode[];
+};
+
+export type EvidenceWikiTaxonomyUpdateResponse = {
+  ok?: boolean;
+  reason?: string;
+  error?: string;
+  taxonomy?: EvidenceWikiTaxonomy;
+  board?: WritingBoard;
+  page?: EvidenceWikiPage;
 };
 
 export type EvidenceWikiPublishResponse = {

@@ -4676,6 +4676,7 @@ class PSKAApi:
         payload, tenant_id, owner = _writing_request_scope(context, payload or {})
         query = str(payload.get("query") or "").strip()
         limit = max(1, min(int(payload.get("limit") or 12), 50))
+        taxonomy_filters = _evidence_wiki_taxonomy_filters_from_payload(payload)
         scope = _knowledge_base_scope_for_ids(
             self.store,
             _knowledge_base_ids_from_payload(payload),
@@ -4685,6 +4686,8 @@ class PSKAApi:
         scoped_source_item_ids = set(_string_list(scope.get("source_item_ids")))
         boards = self.store.list_writing_boards(tenant_id=tenant_id, owner_user_id=owner, limit=max(100, limit * 4))
         results: list[dict[str, Any]] = []
+        matched_count = 0
+        matched_taxonomies: list[dict[str, list[str]]] = []
         for board in boards:
             if not _evidence_wiki_board_is_published(board):
                 continue
@@ -4698,24 +4701,32 @@ class PSKAApi:
             match = _evidence_wiki_board_match(board, nodes, query)
             if not match:
                 continue
-            results.append(
-                {
-                    "board": _writing_board_payload(board),
-                    "snippet": match["snippet"],
-                    "match_fields": match["fields"],
-                    "source_refs": source_refs[:6],
-                    "lineage": metadata.get("lineage") if isinstance(metadata.get("lineage"), dict) else {},
-                    "published_at": metadata.get("published_at") or metadata.get("publish_updated_at"),
-                    "access": _evidence_wiki_access_payload(board),
-                }
-            )
-            if len(results) >= limit:
-                break
+            taxonomy = _evidence_wiki_board_taxonomy(board)
+            if not _evidence_wiki_taxonomy_matches_filters(taxonomy, taxonomy_filters):
+                continue
+            matched_count += 1
+            matched_taxonomies.append(taxonomy)
+            if len(results) < limit:
+                results.append(
+                    {
+                        "board": _writing_board_payload(board),
+                        "snippet": match["snippet"],
+                        "match_fields": match["fields"],
+                        "source_refs": source_refs[:6],
+                        "lineage": metadata.get("lineage") if isinstance(metadata.get("lineage"), dict) else {},
+                        "published_at": metadata.get("published_at") or metadata.get("publish_updated_at"),
+                        "access": _evidence_wiki_access_payload(board),
+                        "taxonomy": taxonomy,
+                    }
+                )
         return {
             "ok": True,
             "query": query,
             "count": len(results),
+            "total_count": matched_count,
             "scope_applied": _knowledge_scope_applied(scope),
+            "taxonomy_filters": taxonomy_filters,
+            "taxonomy_facets": _evidence_wiki_taxonomy_facets(matched_taxonomies),
             "results": results,
         }
 
@@ -4758,6 +4769,63 @@ class PSKAApi:
             "board": _writing_board_payload(board),
             "nodes": [_writing_node_payload(node) for node in nodes],
         }
+
+    def workspace_evidence_wiki_update_taxonomy(
+        self,
+        board_id: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        context: RequestContext | None = None,
+    ) -> dict[str, Any]:
+        payload, tenant_id, owner = _writing_request_scope(context, payload or {})
+        board_id = str(board_id or payload.get("board_id") or "").strip()
+        if not board_id:
+            return {"ok": False, "reason": "missing_board_id", "error": "Evidence Wiki taxonomy update needs a board_id."}
+        board = self.store.get_writing_board(board_id, tenant_id=tenant_id, owner_user_id=owner)
+        metadata = dict(getattr(board, "metadata", {}) or {})
+        if metadata.get("kind") != "evidence_wiki_brief":
+            return {
+                "ok": False,
+                "reason": "not_evidence_wiki_brief",
+                "error": "Only Evidence Brief boards can carry Evidence Wiki taxonomy.",
+                "board": _writing_board_payload(board),
+            }
+        taxonomy = _evidence_wiki_taxonomy_from_payload(
+            payload,
+            base=_evidence_wiki_taxonomy_from_metadata(metadata),
+        )
+        next_metadata = {
+            **metadata,
+            "wiki_taxonomy": taxonomy,
+            "taxonomy_updated_at": datetime.now(UTC).isoformat(),
+        }
+        updated = self.store.update_writing_board(
+            board_id,
+            tenant_id=tenant_id,
+            owner_user_id=owner,
+            metadata=next_metadata,
+        )
+        response: dict[str, Any] = {
+            "ok": True,
+            "taxonomy": taxonomy,
+            "board": _writing_board_payload(updated),
+        }
+        if _evidence_wiki_board_is_published(updated):
+            nodes = self.store.list_writing_nodes(board_id, tenant_id=tenant_id, owner_user_id=owner)
+            review_gate = _evidence_wiki_review_gate(self.store, updated, tenant_id=tenant_id, owner_user_id=owner)
+            if not review_gate.get("blocked"):
+                response["page"] = _evidence_wiki_page_payload(
+                    updated,
+                    nodes,
+                    review_gate=review_gate,
+                    related_pages=_evidence_wiki_related_pages(
+                        self.store,
+                        updated,
+                        tenant_id=tenant_id,
+                        owner_user_id=owner,
+                    ),
+                )
+        return response
 
     def workspace_evidence_wiki_publish(self, payload: dict[str, Any] | None = None, context: RequestContext | None = None) -> dict[str, Any]:
         payload, tenant_id, owner = _writing_request_scope(context, payload or {})
@@ -5963,6 +6031,10 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
                 return self._json(200, self.api.workspace_digest_linking_run(payload, context=context))
             if path == "/workspace/evidence-briefs":
                 return self._json(200, self.api.workspace_evidence_brief_create(payload, context=context))
+            if path.startswith("/workspace/evidence-wiki/pages/"):
+                parts = _evidence_wiki_page_path_parts(path)
+                if len(parts) == 2 and parts[1] == "taxonomy":
+                    return self._json(200, self.api.workspace_evidence_wiki_update_taxonomy(unquote(parts[0]), payload, context=context))
             if path == "/workspace/evidence-wiki/publish":
                 return self._json(200, self.api.workspace_evidence_wiki_publish(payload, context=context))
             if path == "/workspace/evidence-wiki/search":
@@ -14577,6 +14649,15 @@ def _evidence_wiki_board_source_refs(board: Any) -> list[dict[str, Any]]:
     )
 
 
+_EVIDENCE_WIKI_TAXONOMY_KEYS = ("tags", "categories", "topics", "collections")
+_EVIDENCE_WIKI_TAXONOMY_ALIASES = {
+    "tags": ("tag", "tags"),
+    "categories": ("category", "categories"),
+    "topics": ("topic", "topics"),
+    "collections": ("collection", "collections"),
+}
+
+
 def _evidence_wiki_page_payload(
     board: Any,
     nodes: list[Any],
@@ -14603,6 +14684,7 @@ def _evidence_wiki_page_payload(
         "lineage": lineage,
         "review_gate": review_gate,
         "access": _evidence_wiki_access_payload(board),
+        "taxonomy": _evidence_wiki_taxonomy_from_metadata(metadata),
         "related_pages": related_pages or [],
         "node_ids": [str(getattr(node, "node_id", "") or "") for node in nodes if getattr(node, "node_id", None)],
     }
@@ -14613,6 +14695,7 @@ def _evidence_wiki_related_pages(store: Any, board: Any, *, tenant_id: str, owne
     current_source_refs = _evidence_wiki_board_source_refs(board)
     current_source_item_ids = _source_refs_source_item_ids(current_source_refs)
     current_kb_ids = set(_evidence_wiki_board_knowledge_base_ids(board))
+    current_taxonomy = _evidence_wiki_board_taxonomy(board)
     related: list[tuple[int, str, dict[str, Any]]] = []
     for candidate in store.list_writing_boards(tenant_id=tenant_id, owner_user_id=owner_user_id, limit=max(200, limit * 8)):
         if str(getattr(candidate, "board_id", "") or "") == current_board_id:
@@ -14627,10 +14710,13 @@ def _evidence_wiki_related_pages(store: Any, board: Any, *, tenant_id: str, owne
         shared_source_item_ids = sorted(current_source_item_ids & candidate_source_item_ids)
         candidate_kb_ids = set(_evidence_wiki_board_knowledge_base_ids(candidate))
         shared_kb_ids = sorted(current_kb_ids & candidate_kb_ids)
-        if not shared_source_item_ids and not shared_kb_ids:
+        candidate_taxonomy = _evidence_wiki_board_taxonomy(candidate)
+        shared_taxonomy = _evidence_wiki_shared_taxonomy(current_taxonomy, candidate_taxonomy)
+        shared_taxonomy_count = sum(len(values) for values in shared_taxonomy.values())
+        if not shared_source_item_ids and not shared_kb_ids and not shared_taxonomy_count:
             continue
         metadata = dict(getattr(candidate, "metadata", {}) or {})
-        score = len(shared_source_item_ids) * 3 + len(shared_kb_ids)
+        score = len(shared_source_item_ids) * 3 + shared_taxonomy_count * 2 + len(shared_kb_ids)
         published_at = str(metadata.get("published_at") or metadata.get("publish_updated_at") or "")
         related.append(
             (
@@ -14638,9 +14724,11 @@ def _evidence_wiki_related_pages(store: Any, board: Any, *, tenant_id: str, owne
                 published_at,
                 {
                     "board": _writing_board_payload(candidate),
-                    "reason": _evidence_wiki_related_reason(shared_source_item_ids, shared_kb_ids),
+                    "reason": _evidence_wiki_related_reason(shared_source_item_ids, shared_kb_ids, shared_taxonomy),
                     "shared_source_item_ids": shared_source_item_ids,
                     "shared_knowledge_base_ids": shared_kb_ids,
+                    "shared_taxonomy": shared_taxonomy,
+                    "taxonomy": candidate_taxonomy,
                     "source_refs": candidate_source_refs[:4],
                     "published_at": metadata.get("published_at") or metadata.get("publish_updated_at"),
                     "access": _evidence_wiki_access_payload(candidate),
@@ -14657,12 +14745,142 @@ def _evidence_wiki_board_knowledge_base_ids(board: Any) -> list[str]:
     return _string_list(metadata.get("knowledge_base_ids") or (lineage.get("knowledge_base_ids") if isinstance(lineage, dict) else []))
 
 
-def _evidence_wiki_related_reason(shared_source_item_ids: list[str], shared_kb_ids: list[str]) -> str:
+def _evidence_wiki_related_reason(
+    shared_source_item_ids: list[str],
+    shared_kb_ids: list[str],
+    shared_taxonomy: dict[str, list[str]] | None = None,
+) -> str:
     if shared_source_item_ids:
         return f"共享 {len(shared_source_item_ids)} 个来源"
+    shared_taxonomy = shared_taxonomy or {}
+    for key, label in (("tags", "标签"), ("categories", "分类"), ("topics", "主题"), ("collections", "集合")):
+        values = shared_taxonomy.get(key) or []
+        if values:
+            return f"共享 {len(values)} 个{label}"
     if shared_kb_ids:
         return f"同属 {len(shared_kb_ids)} 个知识库"
     return "相关页面"
+
+
+def _evidence_wiki_board_taxonomy(board: Any) -> dict[str, list[str]]:
+    return _evidence_wiki_taxonomy_from_metadata(dict(getattr(board, "metadata", {}) or {}))
+
+
+def _evidence_wiki_taxonomy_from_metadata(metadata: dict[str, Any]) -> dict[str, list[str]]:
+    taxonomy_sources: list[dict[str, Any]] = []
+    for key in ("wiki_taxonomy", "taxonomy"):
+        value = metadata.get(key)
+        if isinstance(value, dict):
+            taxonomy_sources.append(value)
+    taxonomy_sources.append(metadata)
+    result: dict[str, list[str]] = {}
+    for key in _EVIDENCE_WIKI_TAXONOMY_KEYS:
+        values: list[str] = []
+        for source in taxonomy_sources:
+            for alias in _EVIDENCE_WIKI_TAXONOMY_ALIASES[key]:
+                values.extend(_evidence_wiki_taxonomy_values(source.get(alias)))
+        result[key] = _dedupe_evidence_wiki_taxonomy_values(values)
+    return result
+
+
+def _evidence_wiki_taxonomy_from_payload(payload: dict[str, Any], *, base: dict[str, list[str]] | None = None) -> dict[str, list[str]]:
+    result: dict[str, list[str]] = {
+        key: _dedupe_evidence_wiki_taxonomy_values((base or {}).get(key) or [])
+        for key in _EVIDENCE_WIKI_TAXONOMY_KEYS
+    }
+    taxonomy_sources: list[dict[str, Any]] = []
+    for key in ("taxonomy", "wiki_taxonomy"):
+        value = payload.get(key)
+        if isinstance(value, dict):
+            taxonomy_sources.append(value)
+    taxonomy_sources.append(payload)
+    for key in _EVIDENCE_WIKI_TAXONOMY_KEYS:
+        values: list[str] = []
+        seen_key = False
+        for source in taxonomy_sources:
+            for alias in _EVIDENCE_WIKI_TAXONOMY_ALIASES[key]:
+                if alias in source:
+                    seen_key = True
+                    values.extend(_evidence_wiki_taxonomy_values(source.get(alias)))
+        if seen_key:
+            result[key] = _dedupe_evidence_wiki_taxonomy_values(values)
+    return result
+
+
+def _evidence_wiki_taxonomy_filters_from_payload(payload: dict[str, Any]) -> dict[str, list[str]]:
+    filters = _evidence_wiki_taxonomy_from_payload(
+        {
+            **(payload.get("taxonomy_filters") if isinstance(payload.get("taxonomy_filters"), dict) else {}),
+            **(payload.get("filters") if isinstance(payload.get("filters"), dict) else {}),
+            **payload,
+        },
+        base={key: [] for key in _EVIDENCE_WIKI_TAXONOMY_KEYS},
+    )
+    return {key: values for key, values in filters.items() if values}
+
+
+def _evidence_wiki_taxonomy_values(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        raw_values = re.split(r"[,，\n]+", value)
+    elif isinstance(value, list):
+        raw_values = value
+    else:
+        raw_values = [value]
+    values: list[str] = []
+    for raw in raw_values:
+        item = re.sub(r"\s+", " ", str(raw or "")).strip()
+        if item:
+            values.append(item[:80])
+    return values
+
+
+def _dedupe_evidence_wiki_taxonomy_values(values: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        key = value.casefold()
+        if key and key not in seen:
+            seen.add(key)
+            result.append(value)
+        if len(result) >= 24:
+            break
+    return result
+
+
+def _evidence_wiki_taxonomy_matches_filters(taxonomy: dict[str, list[str]], filters: dict[str, list[str]]) -> bool:
+    for key, requested in filters.items():
+        requested_keys = {value.casefold() for value in requested}
+        available_keys = {value.casefold() for value in taxonomy.get(key, [])}
+        if requested_keys and not (requested_keys & available_keys):
+            return False
+    return True
+
+
+def _evidence_wiki_taxonomy_facets(taxonomies: list[dict[str, list[str]]]) -> dict[str, list[dict[str, Any]]]:
+    facets: dict[str, list[dict[str, Any]]] = {}
+    for key in _EVIDENCE_WIKI_TAXONOMY_KEYS:
+        counts: dict[str, int] = {}
+        labels: dict[str, str] = {}
+        for taxonomy in taxonomies:
+            for value in taxonomy.get(key, []):
+                normalized = value.casefold()
+                counts[normalized] = counts.get(normalized, 0) + 1
+                labels.setdefault(normalized, value)
+        facets[key] = [
+            {"value": labels[normalized], "count": count}
+            for normalized, count in sorted(counts.items(), key=lambda item: (-item[1], labels[item[0]].casefold()))
+        ][:12]
+    return facets
+
+
+def _evidence_wiki_shared_taxonomy(left: dict[str, list[str]], right: dict[str, list[str]]) -> dict[str, list[str]]:
+    shared: dict[str, list[str]] = {}
+    for key in _EVIDENCE_WIKI_TAXONOMY_KEYS:
+        right_values = {value.casefold() for value in right.get(key, [])}
+        shared[key] = [value for value in left.get(key, []) if value.casefold() in right_values]
+    return shared
 
 
 def _evidence_wiki_access_payload(board: Any) -> dict[str, Any]:

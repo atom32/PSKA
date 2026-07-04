@@ -8,6 +8,8 @@ import type {
   EvidenceWikiPageResponse,
   EvidenceWikiPublishResponse,
   EvidenceWikiSearchResponse,
+  EvidenceWikiTaxonomy,
+  EvidenceWikiTaxonomyUpdateResponse,
   FileSyncResponse,
   KnowledgeBaseSearchResponse,
   KnowledgeBaseListResponse,
@@ -1221,6 +1223,11 @@ export async function searchEvidenceWiki(
     knowledge_base_id?: string;
     knowledge_base_ids?: string[];
     scope?: Record<string, unknown>;
+    taxonomy_filters?: EvidenceWikiTaxonomy;
+    tags?: string[];
+    categories?: string[];
+    topics?: string[];
+    collections?: string[];
     limit?: number;
   }
 ): Promise<EvidenceWikiSearchResponse> {
@@ -1243,6 +1250,28 @@ export async function loadEvidenceWikiPage(serviceToken: PSKAAuth, boardId: stri
     throw new Error(await responseError(response, "Evidence Wiki 页面加载失败"));
   }
   return (await response.json()) as EvidenceWikiPageResponse;
+}
+
+export async function updateEvidenceWikiTaxonomy(
+  serviceToken: PSKAAuth,
+  boardId: string,
+  payload: {
+    taxonomy?: EvidenceWikiTaxonomy;
+    tags?: string[];
+    categories?: string[];
+    topics?: string[];
+    collections?: string[];
+  }
+): Promise<EvidenceWikiTaxonomyUpdateResponse> {
+  const response = await fetch(`/workspace/evidence-wiki/pages/${encodeURIComponent(boardId)}/taxonomy`, {
+    method: "POST",
+    headers: headers(serviceToken),
+    body: JSON.stringify({ ...payload, ...requestUserPayload(serviceToken) })
+  });
+  if (!response.ok) {
+    throw new Error(await responseError(response, "Evidence Wiki 分类保存失败"));
+  }
+  return (await response.json()) as EvidenceWikiTaxonomyUpdateResponse;
 }
 
 export async function publishEvidenceWikiBrief(

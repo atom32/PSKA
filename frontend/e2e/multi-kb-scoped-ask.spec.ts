@@ -419,7 +419,7 @@ async function askViaBrowserComposer(
   await saveAskResultToWriting(page, expected);
 }
 
-async function saveAskResultToWriting(page: Page, expected: { alphaSecret: string; betaSecret: string }) {
+async function saveAskResultToWriting(page: Page, expected: { marker: string; alphaSecret: string; betaSecret: string }) {
   const result = page.getByTestId("ask-result").filter({ hasText: expected.alphaSecret }).last();
   const createBrief = result.getByTestId("ask-create-brief");
   await expect(createBrief).toBeEnabled({ timeout: 45_000 });
@@ -437,7 +437,7 @@ async function saveAskResultToWriting(page: Page, expected: { alphaSecret: strin
   await expectEvidenceBriefLibrary(page, briefTitle, expected);
 }
 
-async function expectEvidenceBriefLibrary(page: Page, briefTitle: string, expected: { alphaSecret: string; betaSecret: string }) {
+async function expectEvidenceBriefLibrary(page: Page, briefTitle: string, expected: { marker: string; alphaSecret: string; betaSecret: string }) {
   await page.getByTestId("writing-close-board").click();
   const library = page.getByTestId("writing-brief-library");
   await expect(library).toBeVisible({ timeout: 45_000 });
@@ -466,6 +466,16 @@ async function expectEvidenceBriefLibrary(page: Page, briefTitle: string, expect
   await expect(wikiPage).not.toContainText(expected.betaSecret);
   await expect(wikiPage.getByTestId("writing-brief-wiki-page-access")).toContainText("当前用户可见");
   await expect(wikiPage.getByTestId("writing-brief-wiki-page-open")).toBeVisible();
+  const taxonomyTag = `wiki-${expected.marker}`;
+  const taxonomyEditor = wikiPage.getByTestId("writing-brief-wiki-taxonomy-editor");
+  await taxonomyEditor.getByTestId("writing-brief-wiki-taxonomy-tags").fill(taxonomyTag);
+  await taxonomyEditor.getByTestId("writing-brief-wiki-taxonomy-categories").fill("E2E");
+  await taxonomyEditor.getByRole("button", { name: /保存分类/ }).click();
+  await expect(wikiPage.getByTestId("writing-brief-wiki-taxonomy")).toContainText(taxonomyTag, { timeout: 45_000 });
+  await expect(library.getByTestId("writing-brief-wiki-taxonomy-facets")).toContainText(taxonomyTag, { timeout: 45_000 });
+  await library.getByTestId("writing-brief-wiki-taxonomy-filter").filter({ hasText: taxonomyTag }).click();
+  await expect(library.getByTestId("writing-brief-wiki-scope")).toContainText("1 个匹配", { timeout: 45_000 });
+  await expect(wikiResults.getByTestId("writing-brief-wiki-result").filter({ hasText: briefTitle }).first()).toBeVisible({ timeout: 45_000 });
   await detail.getByTestId("writing-brief-unpublish").click();
   await expect(detail.getByTestId("writing-brief-publish-status")).toContainText("Wiki 草稿", { timeout: 45_000 });
   await library.getByTestId("writing-brief-wiki-search-input").fill("");

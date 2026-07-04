@@ -325,6 +325,7 @@ Core endpoints:
 | `POST /workspace/evidence-wiki/publish` | Promote or unpublish an Evidence Brief after review-gate checks. |
 | `POST /workspace/evidence-wiki/search` | Search scoped published Evidence Wiki pages. Empty `query` lists published pages in scope. |
 | `GET /workspace/evidence-wiki/pages/{board_id}` | Load a read-only published Evidence Wiki page. |
+| `POST /workspace/evidence-wiki/pages/{board_id}/taxonomy` | Update durable Evidence Wiki taxonomy metadata for one Evidence Brief page. |
 
 `compose` is intentionally retrieval-free. It only uses the selected answer
 nodes' Markdown, citations, and source refs, so the retrieval owner remains the
@@ -333,9 +334,13 @@ from the Inquiry Graph: connected nodes are sent as structured scope, not as a
 hidden second search channel.
 
 Published Evidence Wiki page payloads include source refs, lineage, access
-hints, review-gate state, and `related_pages`. Related pages are generated from
-shared source refs or shared KB ids among active published pages in the same
-tenant/user scope; they are navigation aids, not a separate retrieval source.
+hints, review-gate state, `taxonomy`, and `related_pages`. Taxonomy is stored in
+Writing board metadata under `wiki_taxonomy` with domain-agnostic `tags`,
+`categories`, `topics`, and `collections`; search can filter on these fields
+and returns `taxonomy_facets` for the current scoped result set. Related pages
+are generated from shared source refs, taxonomy, or shared KB ids among active
+published pages in the same tenant/user scope; they are navigation aids, not a
+separate retrieval source.
 
 For a complete seed-and-run scenario, see
 [`WRITING_WORKSPACE_TEST_CASE.zh.md`](WRITING_WORKSPACE_TEST_CASE.zh.md).

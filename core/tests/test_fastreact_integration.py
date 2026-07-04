@@ -2953,12 +2953,27 @@ def test_evidence_brief_creates_writing_draft_with_lineage_and_refs() -> None:
                 "status": "published",
                 "publish_status": "published",
                 "published_at": "2026-01-01T00:00:00+00:00",
+                "wiki_taxonomy": {"tags": ["citation"], "categories": ["governance"]},
                 "source_refs": [{"source_item_id": source.source_item_id, "knowledge_base_ids": [knowledge_base["knowledge_base_id"]]}],
                 "lineage": {"source_refs": [{"source_item_id": source.source_item_id}], "knowledge_base_ids": [knowledge_base["knowledge_base_id"]]},
             },
         },
         context=context,
     )["board"]
+    taxonomy_update = api.workspace_evidence_wiki_update_taxonomy(
+        board["board_id"],
+        {
+            "taxonomy": {
+                "tags": ["citation", "source grounded"],
+                "categories": ["governance"],
+                "topics": ["Evidence Wiki"],
+            }
+        },
+        context=context,
+    )
+    assert taxonomy_update["ok"] is True
+    assert taxonomy_update["taxonomy"]["tags"] == ["citation", "source grounded"]
+    assert taxonomy_update["page"]["taxonomy"]["categories"] == ["governance"]
     search = api.workspace_evidence_wiki_search(
         {
             "query": "Evidence brief drafts must keep citations",
@@ -2972,6 +2987,20 @@ def test_evidence_brief_creates_writing_draft_with_lineage_and_refs() -> None:
     assert "Evidence brief drafts must keep citations" in search["results"][0]["snippet"]
     assert search["results"][0]["source_refs"][0]["source_item_id"] == source.source_item_id
     assert search["results"][0]["access"] == {"visibility": "owner", "tenant_id": "tenant_a", "owner_user_id": "user_primary"}
+    assert search["results"][0]["taxonomy"]["tags"] == ["citation", "source grounded"]
+    tagged_search = api.workspace_evidence_wiki_search(
+        {
+            "query": "",
+            "knowledge_base_ids": [knowledge_base["knowledge_base_id"]],
+            "tags": ["source grounded"],
+        },
+        context=context,
+    )
+    assert tagged_search["count"] == 1
+    assert tagged_search["results"][0]["board"]["board_id"] == board["board_id"]
+    assert tagged_search["taxonomy_filters"] == {"tags": ["source grounded"]}
+    assert tagged_search["taxonomy_facets"]["categories"][0] == {"value": "governance", "count": 1}
+    assert api.workspace_evidence_wiki_search({"query": "", "tags": ["unrelated"]}, context=context)["results"] == []
     published_list = api.workspace_evidence_wiki_search({"query": "", "knowledge_base_ids": [knowledge_base["knowledge_base_id"]]}, context=context)
     assert published_list["count"] == 2
     assert {result["board"]["board_id"] for result in published_list["results"]} == {board["board_id"], related_board["board_id"]}
@@ -2983,8 +3012,10 @@ def test_evidence_brief_creates_writing_draft_with_lineage_and_refs() -> None:
     assert page["page"]["source_refs"][0]["source_item_id"] == source.source_item_id
     assert page["page"]["lineage"]["review_item_ids"] == ["rev_brief"]
     assert page["page"]["access"] == {"visibility": "owner", "tenant_id": "tenant_a", "owner_user_id": "user_primary"}
+    assert page["page"]["taxonomy"]["topics"] == ["Evidence Wiki"]
     assert page["page"]["related_pages"][0]["board"]["board_id"] == related_board["board_id"]
     assert page["page"]["related_pages"][0]["shared_source_item_ids"] == [source.source_item_id]
+    assert page["page"]["related_pages"][0]["shared_taxonomy"]["tags"] == ["citation"]
     assert "共享 1 个来源" in page["page"]["related_pages"][0]["reason"]
 
 
