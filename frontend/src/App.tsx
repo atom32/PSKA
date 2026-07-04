@@ -3981,6 +3981,7 @@ function ReaderPane({
   const documentChunks = chunks.filter((chunk) => !focusDocument?.document_id || chunk.document_id === focusDocument.document_id);
   const sourceTitle = reader.source_item?.title || focusRef.title || reader.source_item?.source_item_id || "原文";
   const documentHighlight = focusDocument?.body ? readerTextHighlight(focusDocument.body, focusRef, { maxChars: 1800, contextChars: 760 }) : null;
+  const focusStatus = readerFocusStatusView(reader, focusRef, documentHighlight, documentChunks, focusDocument?.document_id || "");
   const canAskSelection = Boolean(onAskFromSelection && selectedText.trim());
 
   function updateSelection() {
@@ -4014,6 +4015,14 @@ function ReaderPane({
             <span>追问选区</span>
           </button>
         ) : null}
+      </div>
+      <div className={`reader-focus-status ${focusStatus.tone}`} data-testid="reader-focus-status" aria-label="Reader focus status">
+        <span>{focusStatus.label}</span>
+        <div>
+          {focusStatus.items.map((item) => (
+            <small key={item}>{item}</small>
+          ))}
+        </div>
       </div>
       {focusDocument ? (
         <article className="reader-document">
@@ -4089,6 +4098,34 @@ function readerSelectionRef(
     passage_window_id: focusRef.passage_window_id,
     knowledge_base_ids: focusRef.knowledge_base_ids || reader.source_item?.knowledge_base_ids,
     knowledge_base_names: focusRef.knowledge_base_names || reader.source_item?.knowledge_base_names
+  };
+}
+
+function readerFocusStatusView(
+  reader: WorkspaceReaderSourceResponse,
+  focusRef: SearchEvidenceRef,
+  documentHighlight: ReaderTextHighlight | null,
+  documentChunks: Array<{ chunk_id?: string; document_id?: string; source_item_id?: string; ordinal?: number; text?: string }>,
+  focusDocumentId: string
+) {
+  const activeChunk = documentChunks.find((chunk) => chunk.chunk_id && chunk.chunk_id === focusRef.chunk_id);
+  const chunkOrdinal = typeof activeChunk?.ordinal === "number" ? activeChunk.ordinal + 1 : undefined;
+  const highlighted = Boolean(documentHighlight?.matched || activeChunk);
+  const knowledgeBaseLabel = sourceRefKnowledgeBaseLabel(focusRef);
+  const sourceId = focusRef.source_item_id || reader.source_item?.source_item_id || "";
+  const coordinateItems = [
+    knowledgeBaseLabel ? `KB ${knowledgeBaseLabel}` : "",
+    sourceId ? `source ${trimText(sourceId, 24)}` : "",
+    focusDocumentId ? `doc ${trimText(focusDocumentId, 18)}` : "",
+    focusRef.chunk_id ? `chunk ${chunkOrdinal ? `#${chunkOrdinal}` : trimText(focusRef.chunk_id, 18)}` : "",
+    focusRef.passage_window_id ? `passage ${trimText(focusRef.passage_window_id, 18)}` : "",
+    `${reader.counts?.documents || 0} docs`,
+    `${reader.counts?.chunks || 0} chunks`
+  ].filter(Boolean);
+  return {
+    tone: highlighted ? "good" : "warning",
+    label: highlighted ? "已定位引用" : "原文已打开",
+    items: coordinateItems
   };
 }
 

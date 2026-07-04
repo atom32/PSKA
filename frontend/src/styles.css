@@ -1866,6 +1866,57 @@ button.context-item-main {
   opacity: 0.5;
 }
 
+.reader-focus-status {
+  margin: 0 0 8px;
+  border: 1px solid rgba(35, 90, 77, 0.16);
+  border-radius: 7px;
+  background: #f6fbf7;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+}
+
+.reader-focus-status.warning {
+  border-color: rgba(184, 112, 29, 0.22);
+  background: #fff8ec;
+}
+
+.reader-focus-status > span {
+  border: 1px solid rgba(35, 90, 77, 0.16);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.78);
+  color: #235a4d;
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 850;
+  white-space: nowrap;
+}
+
+.reader-focus-status.warning > span {
+  color: #8c520e;
+}
+
+.reader-focus-status div {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.reader-focus-status small {
+  min-width: 0;
+  border: 1px solid rgba(35, 90, 77, 0.1);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.62);
+  color: var(--muted);
+  padding: 3px 7px;
+  font-size: 11px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
 .reader-document {
   border-top: 1px solid rgba(35, 90, 77, 0.12);
   padding-top: 8px;
@@ -8315,6 +8366,10 @@ button.context-item-main {
   }
 
   .ask-result-health {
+    grid-template-columns: 1fr;
+  }
+
+  .reader-focus-status {
     grid-template-columns: 1fr;
   }
 

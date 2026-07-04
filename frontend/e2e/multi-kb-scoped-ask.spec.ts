@@ -472,7 +472,9 @@ async function expectReviewEvidenceComparison(reviewCard: Locator, fixture: Revi
   await fixtureRef.click();
   await expect(inspector.getByTestId("ask-evidence-inspector")).toContainText(fixture.sourceItemIds[0]);
   await inspector.getByTestId("open-reader-pane").click();
-  await expect(inspector.getByTestId("reader-pane")).toContainText(fixture.topic);
+  const readerPane = inspector.getByTestId("reader-pane");
+  await expect(readerPane).toContainText(fixture.topic);
+  await expect(readerPane.getByTestId("reader-focus-status")).toContainText(/已定位引用|原文已打开/);
 }
 
 async function expectReviewSnoozeRestore(page: Page, fixture: ReviewHealthFixture) {
@@ -628,9 +630,17 @@ async function askViaBrowserComposer(
   await evidenceInspector.getByTestId("open-reader-pane").click();
   const readerPane = evidenceInspector.getByTestId("reader-pane");
   await expect(readerPane).toContainText(expected.alphaSecret);
+  const readerFocusStatus = readerPane.getByTestId("reader-focus-status");
+  await expect(readerFocusStatus).toContainText("已定位引用");
+  await expect(readerFocusStatus).toContainText("source");
+  await expect(readerFocusStatus).toContainText(/docs|chunks|chunk/);
   const readerHighlight = readerPane.getByTestId("reader-highlight").first();
   await expect(readerHighlight).toContainText(expected.alphaSecret);
   await expect(readerPane).not.toContainText(expected.betaSecret);
+  await page.setViewportSize({ width: 390, height: 820 });
+  await expect(readerPane.getByTestId("reader-focus-status")).toContainText("已定位引用");
+  await expect(readerPane.getByTestId("reader-highlight").first()).toContainText(expected.alphaSecret);
+  await page.setViewportSize({ width: 1365, height: 900 });
   await selectLocatorText(readerHighlight);
   await expect(readerPane.getByTestId("reader-ask-selection")).toBeEnabled();
   await readerPane.getByTestId("reader-ask-selection").click();
