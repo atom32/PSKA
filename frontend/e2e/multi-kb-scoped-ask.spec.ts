@@ -305,6 +305,19 @@ async function expectKnowledgeBaseAskPreflight(page: Page, knowledgeBase: Knowle
 
 async function expectKnowledgeBaseLinkedEmptyStates(page: Page, knowledgeBase: KnowledgeBase) {
   await openWorkspace(page, "资料库");
+  await page.getByTestId("knowledge-base-tab-digest").click();
+  const digestPanel = page.getByTestId("knowledge-base-digest-panel");
+  await expect(digestPanel).toContainText(knowledgeBase.name, { timeout: 45_000 });
+  const digestEmpty = digestPanel.getByTestId("knowledge-base-digest-empty");
+  await expect(digestEmpty).toBeVisible({ timeout: 45_000 });
+  await expect(digestEmpty).toContainText("还没有当前 KB 的 Digest");
+  await expect(digestEmpty.getByTestId("knowledge-base-empty-run-digest")).toBeDisabled();
+  await digestEmpty.getByTestId("knowledge-base-empty-open-sources").click();
+  await expect(page.getByTestId("corpus-upload-form")).toBeVisible({ timeout: 45_000 });
+  await page.getByTestId("knowledge-base-tab-digest").click();
+  await digestPanel.getByTestId("knowledge-base-empty-open-processing").click();
+  await expect(page.locator(".chunk-preview-surface")).toBeVisible({ timeout: 45_000 });
+
   await page.getByTestId("knowledge-base-tab-graph").click();
   const graphPanel = page.getByTestId("knowledge-base-graph-panel");
   await expect(graphPanel).toContainText(knowledgeBase.name, { timeout: 45_000 });

@@ -7132,7 +7132,24 @@ function CorpusWorkspace({
         ) : null}
       </div>
 
-      {knowledgeBaseTab === "digest" ? <UnderstandingSummary payload={digestLogs} /> : null}
+      {knowledgeBaseTab === "digest" ? (
+        <KnowledgeBaseDigestPanel
+          payload={digestLogs}
+          isLoading={digestLogsQuery.isLoading}
+          isError={digestLogsQuery.isError}
+          currentKnowledgeBase={currentKnowledgeBase}
+          currentKnowledgeBaseName={currentKnowledgeBase?.name || "当前知识库"}
+          readinessLabel={readinessPill.label}
+          actionRunning={actionRunning}
+          briefingJobId={briefingJobId}
+          onRunDigest={() => void handleDigestNow()}
+          onOpenSources={() => setKnowledgeBaseTab("sources")}
+          onOpenProcessing={() => setKnowledgeBaseTab("processing")}
+          onOpenReview={() => onOpenWorkspace("review")}
+          onOpenWriting={() => (onOpenWriting ? onOpenWriting() : onOpenWorkspace("writing"))}
+          onCreateBrief={(jobId) => void handleCreateEvidenceBrief(jobId)}
+        />
+      ) : null}
 
       {knowledgeBaseTab === "ask" ? (
       <>
@@ -8522,6 +8539,144 @@ function UnderstandingSummary({ payload }: { payload?: DigestLogsResponse }) {
   );
 }
 
+function KnowledgeBaseDigestPanel({
+  payload,
+  isLoading,
+  isError,
+  currentKnowledgeBase,
+  currentKnowledgeBaseName,
+  readinessLabel,
+  actionRunning,
+  briefingJobId,
+  onRunDigest,
+  onOpenSources,
+  onOpenProcessing,
+  onOpenReview,
+  onOpenWriting,
+  onCreateBrief
+}: {
+  payload?: DigestLogsResponse;
+  isLoading: boolean;
+  isError: boolean;
+  currentKnowledgeBase?: KnowledgeBase;
+  currentKnowledgeBaseName: string;
+  readinessLabel: string;
+  actionRunning: boolean;
+  briefingJobId?: string | null;
+  onRunDigest: () => void;
+  onOpenSources: () => void;
+  onOpenProcessing: () => void;
+  onOpenReview: () => void;
+  onOpenWriting: () => void;
+  onCreateBrief: (jobId: string) => void;
+}) {
+  const summary = payload?.summary;
+  const totals = summary?.candidate_totals || {};
+  const statusCounts = summary?.status_counts || {};
+  const logs = payload?.logs || [];
+  const latestLog = logs[0];
+  const latestDigestNote = summary?.recent_digest_notes?.[0] || latestLog?.digest_notes?.[0];
+  const latestClaim = summary?.recent_claims?.[0] || latestLog?.knowledge_claims?.[0];
+  const latestFailure = summary?.latest_failure;
+  const readiness = currentKnowledgeBase?.readiness || {};
+  const counts = currentKnowledgeBase?.counts || {};
+  const extendedCounts = counts as Record<string, unknown>;
+  const sourceItemCount = firstFiniteNumber(readiness.source_item_count, counts.source_items) || 0;
+  const chunkCount = firstFiniteNumber(readiness.active_chunk_count, readiness.chunk_count, counts.active_chunks, counts.chunks) || 0;
+  const digestCount = firstFiniteNumber(totals.digest_notes, extendedCounts.digest_notes) || 0;
+  const reviewCount = firstFiniteNumber(totals.review_candidates, totals.review_items, extendedCounts.review_items) || 0;
+  const failedCount = firstFiniteNumber(statusCounts.failed, statusCounts.error) || 0;
+  const latestBriefJob = logs.find((log) => digestLogHasBriefableOutput(log) && digestLogIsComplete(log));
+  const hasLogs = logs.length > 0;
+  const hasUsefulOutput = Boolean(summary?.has_useful_output || digestCount || reviewCount || latestDigestNote || latestClaim);
+  const headline = displayText(
+    latestDigestNote?.title || latestClaim?.statement || latestFailure?.error || (hasLogs ? "Digest 任务已经记录" : "等待当前 KB 的 Digest 输出"),
+    "等待当前 KB 的 Digest 输出"
+  );
+  const detail = displayText(
+    latestDigestNote?.synopsis ||
+      (latestClaim && "statement" in latestClaim ? latestClaim.statement : "") ||
+      latestFailure?.error ||
+      (sourceItemCount > 0 ? "运行 Digest 后，会把当前知识库资料整理成 claims、Review 候选和可生成 Brief 的证据。" : "先加入资料或同步高级源，再运行 Digest 生成可治理的候选知识。")
+  );
+  return (
+    <section className="today-section kb-digest-panel" data-testid="knowledge-base-digest-panel">
+      <SectionTitle icon={<Sparkles size={18} />} title="Digest Cockpit" subtitle={currentKnowledgeBaseName} />
+      <div className="kb-digest-hero">
+        <div>
+          <span className="eyebrow">当前 KB Digest</span>
+          <h2>{headline}</h2>
+          <p>{detail}</p>
+        </div>
+        <div className="kb-digest-actions">
+          <button type="button" className="primary" onClick={onRunDigest} disabled={actionRunning || !currentKnowledgeBase} data-testid="knowledge-base-run-digest">
+            <Sparkles size={15} />
+            运行 Digest
+          </button>
+          <button type="button" onClick={onOpenProcessing} data-testid="knowledge-base-digest-open-processing">
+            <TextCursorInput size={15} />
+            查看处理
+          </button>
+          <button type="button" onClick={onOpenReview} data-testid="knowledge-base-digest-open-review">
+            <GitPullRequest size={15} />
+            打开 Review
+          </button>
+          <button type="button" onClick={onOpenWriting} data-testid="knowledge-base-digest-open-writing">
+            <BookOpen size={15} />
+            打开 Writing
+          </button>
+          {latestBriefJob?.job_id ? (
+            <button
+              type="button"
+              onClick={() => onCreateBrief(latestBriefJob.job_id)}
+              disabled={actionRunning || briefingJobId === latestBriefJob.job_id}
+              data-testid="knowledge-base-digest-create-brief"
+            >
+              <BookOpen size={15} />
+              {briefingJobId === latestBriefJob.job_id ? "生成中" : "生成 Brief"}
+            </button>
+          ) : null}
+        </div>
+      </div>
+      {isError ? <div className="review-empty error-state compact" data-testid="knowledge-base-digest-error">Digest 摘要无法加载。</div> : null}
+      {isLoading ? <div className="review-empty compact">正在读取当前知识库的 Digest 摘要...</div> : null}
+      <div className="kb-linked-metrics kb-digest-metrics" aria-label="当前知识库 Digest 摘要">
+        <span><strong>{sourceItemCount}</strong> 资料</span>
+        <span><strong>{chunkCount}</strong> chunks</span>
+        <span><strong>{digestCount}</strong> Digest</span>
+        <span><strong>{totals.knowledge_claims ?? 0}</strong> Claims</span>
+        <span><strong>{reviewCount}</strong> Review</span>
+        <span><strong>{failedCount}</strong> 失败</span>
+        <span><strong>{latestLog?.status || "暂无"}</strong> 最近任务</span>
+        <span><strong>{readinessLabel}</strong> readiness</span>
+      </div>
+      {!isLoading && !hasLogs ? (
+        <KnowledgeBaseLinkedEmptyState
+          testId="knowledge-base-digest-empty"
+          title="还没有当前 KB 的 Digest"
+          detail={sourceItemCount > 0 ? "当前知识库已有资料，可以先运行 Digest，让候选知识进入 Review 与 Writing 链路。" : "当前知识库还没有资料。先加入资料，或到处理页检查同步与切片状态。"}
+          actions={[
+            { label: "运行 Digest", icon: <Sparkles size={15} />, onClick: onRunDigest, disabled: actionRunning || sourceItemCount === 0, testId: "knowledge-base-empty-run-digest" },
+            { label: "加入资料", icon: <UploadCloud size={15} />, onClick: onOpenSources, testId: "knowledge-base-empty-open-sources" },
+            { label: "查看处理", icon: <TextCursorInput size={15} />, onClick: onOpenProcessing, testId: "knowledge-base-empty-open-processing" }
+          ]}
+        />
+      ) : null}
+      {hasLogs && !hasUsefulOutput ? (
+        <KnowledgeBaseLinkedEmptyState
+          testId="knowledge-base-digest-no-output"
+          title="Digest 已运行，但还没有可用输出"
+          detail="可以查看任务日志和处理状态；如果任务失败或证据不足，先补齐资料、切片或重试失败任务。"
+          actions={[
+            { label: "查看处理", icon: <TextCursorInput size={15} />, onClick: onOpenProcessing, testId: "knowledge-base-digest-no-output-processing" },
+            { label: "打开 Review", icon: <GitPullRequest size={15} />, onClick: onOpenReview, testId: "knowledge-base-digest-no-output-review" }
+          ]}
+        />
+      ) : null}
+    </section>
+  );
+}
+
 function DigestLogPanel({
   payload,
   isLoading,
@@ -8602,6 +8757,23 @@ function DigestLogPanel({
       })}
     </div>
   );
+}
+
+function digestLogIsComplete(log: NonNullable<DigestLogsResponse["logs"]>[number]) {
+  const status = String(log.status || "").toLowerCase();
+  return status !== "queued" && status !== "running";
+}
+
+function digestLogHasBriefableOutput(log: NonNullable<DigestLogsResponse["logs"]>[number]) {
+  const summary = log.candidate_summary || {};
+  const outputCount =
+    (summary.digest_notes || 0) +
+    (summary.knowledge_claims || 0) +
+    (summary.review_items || 0) +
+    (summary.review_candidates || 0) +
+    (log.digest_notes?.length || 0) +
+    (log.knowledge_claims?.length || 0);
+  return outputCount > 0;
 }
 
 function ChunkPreviewPanel({ payload }: { payload: ChunkingPreviewResponse | null }) {

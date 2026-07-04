@@ -4939,6 +4939,84 @@ button.context-item-main {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
+.kb-digest-panel {
+  max-width: 1180px;
+  margin: 0 auto 12px;
+}
+
+.kb-digest-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+  margin-bottom: 12px;
+}
+
+.kb-digest-hero h2 {
+  margin: 4px 0 5px;
+  color: var(--ink);
+  font-size: 17px;
+  line-height: 1.32;
+  overflow-wrap: anywhere;
+}
+
+.kb-digest-hero p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.kb-digest-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.kb-digest-actions button {
+  min-height: 32px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #fffefa;
+  color: var(--ink);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 10px;
+  font-weight: 750;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.kb-digest-actions button.primary {
+  border-color: rgba(35, 90, 77, 0.22);
+  background: #235a4d;
+  color: #fffefa;
+}
+
+.kb-digest-actions button:hover {
+  border-color: rgba(46, 117, 100, 0.32);
+  background: var(--accent-soft);
+  color: #235a4d;
+}
+
+.kb-digest-actions button.primary:hover {
+  background: #2e7564;
+  color: #fffefa;
+}
+
+.kb-digest-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.kb-digest-metrics {
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+}
+
 .kb-linked-list {
   display: grid;
   gap: 8px;
@@ -8439,6 +8517,18 @@ button.context-item-main {
     grid-template-columns: 1fr;
   }
 
+  .kb-digest-hero {
+    grid-template-columns: 1fr;
+  }
+
+  .kb-digest-actions {
+    justify-content: stretch;
+  }
+
+  .kb-digest-actions button {
+    flex: 1 1 140px;
+  }
+
   .kb-linked-empty-state {
     grid-template-columns: 1fr;
   }
@@ -8512,6 +8602,10 @@ button.context-item-main {
   }
 
   .kb-ask-preflight-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .kb-digest-metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
