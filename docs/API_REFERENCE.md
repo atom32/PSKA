@@ -345,7 +345,9 @@ For a complete seed-and-run scenario, see
 `/console/reviews/data` returns `review_items` for the selected status plus
 `analytics` for the current owner/KB scope, including status counts,
 review-type counts, evidence health, apply-readiness counts, and a
-`by_review_type` status matrix.
+`by_review_type` status matrix. Each review item also includes `remediation`
+with type-specific blockers and available real Review actions, so product UIs
+can explain whether the candidate is ready, blocked, or needs manual judgment.
 
 Approve request:
 

@@ -244,6 +244,10 @@ async function expectReviewCenterHealth(page: Page, fixture: ReviewHealthFixture
   await expect(reviewCard).toContainText(fixture.topic);
   await expect(reviewCard.getByTestId("review-evidence-health")).toBeVisible();
   await expect(reviewCard.getByTestId("review-evidence-health")).toContainText("可审核");
+  const remediation = reviewCard.getByTestId("review-remediation");
+  await expect(remediation).toBeVisible();
+  await expect(remediation).toContainText("处置建议");
+  await expect(remediation).toContainText("批准并应用");
   await expectReviewEvidenceComparison(reviewCard, fixture);
   await expect(reviewCard.getByTestId("review-action-approve-apply")).toBeVisible();
   await reviewCard.getByTestId("review-action-approve-apply").click();

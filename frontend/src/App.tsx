@@ -1860,6 +1860,7 @@ function ReviewCenter({
                     ) : null}
                   </div>
                 ) : null}
+                <ReviewRemediationPanel item={item} />
                 {item.source_refs?.length ? (
                   <>
                     <div className="source-ref-row">
@@ -2054,6 +2055,59 @@ function reviewAnalyticsCount(record: Record<string, number> | undefined, key: s
 
 function reviewAnalyticsNumber(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function ReviewRemediationPanel({ item }: { item: ReviewCenterItem }) {
+  const remediation = item.remediation;
+  if (!remediation) {
+    return null;
+  }
+  const blockers = remediation.blockers || [];
+  const actions = remediation.actions || [];
+  if (!blockers.length && !actions.length && !remediation.summary) {
+    return null;
+  }
+  return (
+    <div className={`review-remediation ${remediation.status || "review"}`} data-testid="review-remediation">
+      <div className="review-remediation-head">
+        <strong>处置建议</strong>
+        <small>{reviewRemediationStatusLabel(remediation.status)}</small>
+      </div>
+      {remediation.summary ? <p>{remediation.summary}</p> : null}
+      {blockers.length ? (
+        <ul className="review-remediation-blockers">
+          {blockers.slice(0, 4).map((blocker) => (
+            <li key={blocker.blocker_id || blocker.label}>
+              <span>{displayText(blocker.label, "待补齐")}</span>
+              <small>{trimText(blocker.detail || "", 120)}</small>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {actions.length ? (
+        <div className="review-remediation-actions">
+          {actions.slice(0, 5).map((action) => (
+            <span className={action.enabled === false ? "disabled" : ""} key={action.action_id || action.label}>
+              {displayText(action.label, action.action_id || "动作")}
+            </span>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function reviewRemediationStatusLabel(status?: string) {
+  if (status === "ready") {
+    return "可执行";
+  }
+  if (status === "blocked") {
+    return "需补齐";
+  }
+  if (status === "resolved") {
+    return "已完成";
+  }
+  return "需判断";
 }
 
 function ReviewSelectionComparison({ items }: { items: ReviewCenterItem[] }) {

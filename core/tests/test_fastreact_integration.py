@@ -2360,18 +2360,25 @@ def test_local_console_review_inbox_summarizes_pending_reviews() -> None:
     assert by_id["rev_profile_ready"]["apply_supported"] is True
     assert by_id["rev_profile_ready"]["apply_ready"] is True
     assert "approve_apply" in by_id["rev_profile_ready"]["recommended_actions"]
+    assert by_id["rev_profile_ready"]["remediation"]["status"] == "ready"
+    assert by_id["rev_profile_ready"]["remediation"]["actions"][1]["action_id"] == "approve_apply"
     assert by_id["rev_profile_missing_source"]["source_ref_status"] == "missing"
     assert by_id["rev_profile_missing_source"]["apply_supported"] is True
     assert by_id["rev_profile_missing_source"]["apply_ready"] is False
     assert "approve_apply" not in by_id["rev_profile_missing_source"]["recommended_actions"]
+    assert by_id["rev_profile_missing_source"]["remediation"]["status"] == "blocked"
+    assert by_id["rev_profile_missing_source"]["remediation"]["blockers"][0]["blocker_id"] == "missing_source_refs"
     assert by_id["rev_conflict"]["apply_supported"] is False
     assert by_id["rev_conflict"]["apply_ready"] is False
+    assert by_id["rev_conflict"]["remediation"]["blockers"][0]["blocker_id"] == "auto_apply_unsupported"
     assert by_id["rev_relationship_incomplete"]["apply_supported"] is True
     assert by_id["rev_relationship_incomplete"]["apply_ready"] is False
     assert "approve_apply" not in by_id["rev_relationship_incomplete"]["recommended_actions"]
+    assert {blocker["blocker_id"] for blocker in by_id["rev_relationship_incomplete"]["remediation"]["blockers"]} >= {"missing_relation_type", "missing_relationship_members"}
     assert by_id["rev_relationship_missing_confidence"]["apply_supported"] is True
     assert by_id["rev_relationship_missing_confidence"]["apply_ready"] is False
     assert "approve_apply" not in by_id["rev_relationship_missing_confidence"]["recommended_actions"]
+    assert by_id["rev_relationship_missing_confidence"]["remediation"]["blockers"][0]["blocker_id"] == "invalid_confidence"
 
 
 def test_local_console_review_actions_use_review_api_and_audit() -> None:

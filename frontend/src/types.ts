@@ -1347,7 +1347,25 @@ export type ReviewCenterItem = {
   apply_supported?: boolean;
   apply_ready?: boolean;
   can_apply_now?: boolean;
+  remediation?: ReviewRemediation;
   application_result?: ReviewApplicationResult;
+};
+
+export type ReviewRemediation = {
+  status?: "ready" | "blocked" | "review" | "resolved" | string;
+  summary?: string;
+  blockers?: Array<{
+    blocker_id?: string;
+    label?: string;
+    detail?: string;
+  }>;
+  actions?: Array<{
+    action_id?: string;
+    label?: string;
+    kind?: string;
+    enabled?: boolean;
+    reason?: string;
+  }>;
 };
 
 export type ReviewCenterResponse = {

@@ -6977,6 +6977,15 @@ def _console_review_item(item: dict[str, Any], *, store: Any | None = None) -> d
         "apply_supported": apply_supported,
         "apply_ready": apply_ready,
         "can_apply_now": status == "approved" and apply_ready,
+        "remediation": _console_review_remediation(
+            review_type=review_type,
+            status=status,
+            source_refs=source_refs,
+            proposal=proposal,
+            apply_supported=apply_supported,
+            apply_ready=apply_ready,
+            actions=actions,
+        ),
     }
     application_result = _console_review_application_result(store, item) if store else None
     if application_result:
@@ -7215,6 +7224,132 @@ def _console_review_apply_ready(review_type: str, source_refs: list[dict[str, An
     if review_type in {"profile_update", "memory_candidate", "low_confidence"}:
         return bool(source_refs)
     return False
+
+
+def _console_review_remediation(
+    *,
+    review_type: str,
+    status: str,
+    source_refs: list[dict[str, Any]],
+    proposal: dict[str, Any],
+    apply_supported: bool,
+    apply_ready: bool,
+    actions: list[str],
+) -> dict[str, Any]:
+    blockers = _console_review_remediation_blockers(
+        review_type=review_type,
+        source_refs=source_refs,
+        proposal=proposal,
+        apply_supported=apply_supported,
+        apply_ready=apply_ready,
+    )
+    action_payloads = [
+        _console_review_remediation_action(action, enabled=True)
+        for action in actions
+    ]
+    if apply_supported and not apply_ready and "inspect_evidence" not in {action.get("action_id") for action in action_payloads}:
+        action_payloads.insert(
+            0,
+            {
+                "action_id": "inspect_evidence",
+                "label": "检查并补齐",
+                "kind": "remediate",
+                "enabled": False,
+                "reason": "blocked_until_remediated",
+            },
+        )
+    if not apply_supported and "manual_decision" not in {action.get("action_id") for action in action_payloads}:
+        action_payloads.insert(
+            0,
+            {
+                "action_id": "manual_decision",
+                "label": "人工判断",
+                "kind": "review",
+                "enabled": True,
+                "reason": "auto_apply_not_supported",
+            },
+        )
+    if status in {"applied", "rejected"}:
+        remediation_status = "resolved"
+    elif blockers:
+        remediation_status = "blocked"
+    elif apply_ready:
+        remediation_status = "ready"
+    else:
+        remediation_status = "review"
+    return {
+        "status": remediation_status,
+        "summary": _console_review_remediation_summary(review_type, remediation_status),
+        "blockers": blockers,
+        "actions": action_payloads,
+    }
+
+
+def _console_review_remediation_blockers(
+    *,
+    review_type: str,
+    source_refs: list[dict[str, Any]],
+    proposal: dict[str, Any],
+    apply_supported: bool,
+    apply_ready: bool,
+) -> list[dict[str, str]]:
+    blockers: list[dict[str, str]] = []
+    if apply_supported and not source_refs and review_type != "share_proposal":
+        blockers.append(
+            {
+                "blocker_id": "missing_source_refs",
+                "label": "缺少证据引用",
+                "detail": "需要可检查的 source_refs 才能写入长期知识。",
+            }
+        )
+    if review_type == "relationship_candidate":
+        if not str(proposal.get("relation_type") or "").strip():
+            blockers.append({"blocker_id": "missing_relation_type", "label": "缺少关系类型", "detail": "需要 relation_type 才能创建 Graph relationship。"})
+        if len(_list_of_dicts(proposal.get("members"))) < 2:
+            blockers.append({"blocker_id": "missing_relationship_members", "label": "关系成员不足", "detail": "至少需要两个 members 才能创建关系。"})
+        try:
+            confidence = float(proposal.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        if not (0 < confidence <= 1):
+            blockers.append({"blocker_id": "invalid_confidence", "label": "置信度无效", "detail": "confidence 需要在 0 到 1 之间。"})
+    if review_type == "profile_update" and not isinstance(proposal.get("profile_delta"), dict):
+        blockers.append({"blocker_id": "missing_profile_delta", "label": "缺少 Profile 更新内容", "detail": "需要 profile_delta 才能应用到用户画像。"})
+    if review_type in {"memory_candidate", "low_confidence"} and not _console_review_memory_text(proposal):
+        blockers.append({"blocker_id": "missing_memory_text", "label": "缺少长期记忆文本", "detail": "需要 memory_candidate 或 text 才能应用到长期记忆。"})
+    if not apply_supported:
+        blockers.append({"blocker_id": "auto_apply_unsupported", "label": "暂无自动应用目标", "detail": "这个 Review 类型目前需要人工批准或拒绝。"})
+    return blockers if not apply_ready else [blocker for blocker in blockers if blocker["blocker_id"] == "auto_apply_unsupported"]
+
+
+def _console_review_memory_text(proposal: dict[str, Any]) -> str:
+    candidate = proposal.get("memory_candidate") if isinstance(proposal.get("memory_candidate"), dict) else {}
+    return str(candidate.get("text") or proposal.get("text") or proposal.get("statement") or "").strip()
+
+
+def _console_review_remediation_action(action: str, *, enabled: bool) -> dict[str, Any]:
+    labels = {
+        "approve": ("批准", "review"),
+        "approve_apply": ("批准并应用", "write"),
+        "reject": ("拒绝", "review"),
+        "snooze": ("稍后处理", "defer"),
+        "restore": ("恢复待审", "review"),
+        "apply": ("应用", "write"),
+    }
+    label, kind = labels.get(action, (action, "review"))
+    return {"action_id": action, "label": label, "kind": kind, "enabled": enabled}
+
+
+def _console_review_remediation_summary(review_type: str, status: str) -> str:
+    if status == "ready":
+        return "证据和结构已就绪，可执行推荐动作。"
+    if status == "blocked":
+        return "先补齐阻塞项，再决定是否写入长期知识。"
+    if status == "resolved":
+        return "这条候选已经完成决策。"
+    if review_type == "conflict":
+        return "需要人工比较冲突证据后批准或拒绝。"
+    return "需要人工审核后再决定。"
 
 
 def _console_review_recommended_action(review_type: str, *, apply_ready: bool) -> str:

@@ -39,7 +39,7 @@ marketplace yet.
 | Today aggregation | Real | Real | Partial | Uses real `/workspace/today/data`; empty real sections should render empty states. |
 | Discovery feed | Real | Real | Partial | Persistent discoveries and score filtering exist; quality still depends on producers and corpus. |
 | Needs Review | Real | Real | Partial | Review APIs and fallback digest review exist; full Review workspace is still evolving. |
-| Review approve/reject/apply | Real | Partial | Partial | Backend supports review actions; Review Center can approve/reject/apply, snooze/restore pending candidates, compare Review source refs in a citation inspector/ReaderPane, compare multiple selected candidates side-by-side, show queue/decision analytics across review types, show decision history across review states, show post-apply lineage with target IDs, retained evidence counts, and Memory/Profile target previews, bulk handle visible pending/approved/snoozed candidates, persist application targets, and jump applied relationship candidates into Graph inspection. Broader type-specific remediation ergonomics are still incomplete. |
+| Review approve/reject/apply | Real | Partial | Partial | Backend supports review actions; Review Center can approve/reject/apply, snooze/restore pending candidates, compare Review source refs in a citation inspector/ReaderPane, compare multiple selected candidates side-by-side, show queue/decision analytics across review types, show type-specific remediation blockers/actions, show decision history across review states, show post-apply lineage with target IDs, retained evidence counts, and Memory/Profile target previews, bulk handle visible pending/approved/snoozed candidates, persist application targets, and jump applied relationship candidates into Graph inspection. Broader automated remediation executors are still incomplete. |
 | Ask PSKA with evidence | Real | Real | Partial | Quick and FastReAct-backed Ask expose citations, source refs, progress, evidence preview, and no-answer diagnostics; answer quality still depends on retrieval/model readiness. |
 | PSKA Brain search | Real | Real | Partial | Uses workspace search and corpus context; recall quality depends on indexing/embeddings. |
 | Corpus browser | Real | Partial | Partial | Backend corpus endpoint exists; frontend uses it in selected panels. |
@@ -63,13 +63,13 @@ empty review queue.
 
 ## Highest Priority Product Gaps
 
-1. Complete remaining Review workspace ergonomics such as richer type-specific
-   remediation actions across review types.
-2. Extend Evidence Wiki beyond gated published pages into richer standalone
+1. Extend Evidence Wiki beyond gated published pages into richer standalone
    Wiki-page workflows and cross-page organization.
-3. Expand SourceAdapter coverage beyond folder/RSS/URL when enterprise
+2. Expand SourceAdapter coverage beyond folder/RSS/URL when enterprise
    connectors become product priority.
-4. Wire durable document/canvas persistence before treating editor/canvas as
+3. Wire durable document/canvas persistence before treating editor/canvas as
    real workspace content.
+4. Add deeper automated Review remediation executors for evidence repair,
+   extraction retry, and structured candidate cleanup.
 5. Continue tuning discovery scoring and digest write-back with real corpus
    acceptance data.
