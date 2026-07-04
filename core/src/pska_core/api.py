@@ -4916,6 +4916,7 @@ class PSKAApi:
         board_metadata = {
             "kind": "evidence_wiki_brief",
             "status": "draft",
+            "publish_status": "draft",
             "review_status": _evidence_brief_review_status(review_items),
             "lineage": lineage,
             **knowledge_base_lineage,
@@ -4953,6 +4954,7 @@ class PSKAApi:
                 "board_id": board.board_id,
                 "title": board.title,
                 "status": "draft",
+                "publish_status": board.metadata.get("publish_status"),
                 "review_status": board.metadata.get("review_status"),
                 "source_refs": refs,
                 "lineage": lineage,

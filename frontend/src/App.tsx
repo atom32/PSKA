@@ -7990,6 +7990,7 @@ function writingBoardKnowledgeScopeLabel(scope: Record<string, unknown>, knowled
 }
 
 type EvidenceBriefLifecycleStatus = "active" | "expired" | "rolled_back";
+type EvidenceBriefPublishStatus = "draft" | "published";
 
 type EvidenceBriefCreatePayload = {
   job_id?: string;
@@ -8041,6 +8042,16 @@ function evidenceBriefLifecycleLabel(status: EvidenceBriefLifecycleStatus) {
     return "已回滚";
   }
   return "有效";
+}
+
+function evidenceBriefPublishStatus(board: WritingBoard): EvidenceBriefPublishStatus {
+  const metadata = evidenceBriefMetadata(board);
+  const publishStatus = displayText(metadata.publish_status || metadata.status, "").toLowerCase();
+  return publishStatus === "published" ? "published" : "draft";
+}
+
+function evidenceBriefPublishLabel(status: EvidenceBriefPublishStatus) {
+  return status === "published" ? "已发布到 Wiki" : "Wiki 草稿";
 }
 
 function evidenceBriefStringList(value: unknown): string[] {
@@ -8492,6 +8503,38 @@ function WritingWorkspace({
     }
   }
 
+  async function markEvidenceBriefPublishStatus(boardToUpdate: WritingBoard, publishStatus: EvidenceBriefPublishStatus) {
+    if (briefActionBoardId) {
+      return;
+    }
+    const now = new Date().toISOString();
+    const metadata = evidenceBriefMetadata(boardToUpdate);
+    const nextMetadata: Record<string, unknown> = {
+      ...metadata,
+      status: publishStatus === "published" ? "published" : "draft",
+      publish_status: publishStatus,
+      publish_updated_at: now
+    };
+    if (publishStatus === "published") {
+      nextMetadata.published_at = now;
+    } else {
+      nextMetadata.unpublished_at = now;
+    }
+    setBriefActionBoardId(boardToUpdate.board_id);
+    try {
+      await patchWritingBoard(serviceToken, boardToUpdate.board_id, { metadata: nextMetadata });
+      setWorkspaceMessage(`Evidence Brief ${publishStatus === "published" ? "已发布到 Wiki" : "已取消发布，回到草稿"}。`);
+      await boardsQuery.refetch();
+      if (activeBoardId === boardToUpdate.board_id) {
+        await boardQuery.refetch();
+      }
+    } catch (error) {
+      setWorkspaceMessage(error instanceof Error ? error.message : "更新 Evidence Brief 发布状态失败。");
+    } finally {
+      setBriefActionBoardId("");
+    }
+  }
+
   async function removeNode(node: WritingNode) {
     if (!activeBoardId) {
       return;
@@ -8856,6 +8899,7 @@ function WritingWorkspace({
             onOpenBoard={openBoard}
             onRegenerate={(item) => void regenerateEvidenceBrief(item)}
             onSetLifecycle={(item, lifecycleStatus) => void markEvidenceBriefLifecycle(item, lifecycleStatus)}
+            onSetPublishStatus={(item, publishStatus) => void markEvidenceBriefPublishStatus(item, publishStatus)}
           />
           <div className="writing-project-list" aria-label="写作项目列表" data-testid="writing-project-list">
             {boards.length ? boards.map((item) => (
@@ -8948,7 +8992,8 @@ function EvidenceBriefLibrary({
   fallbackScope,
   onOpenBoard,
   onRegenerate,
-  onSetLifecycle
+  onSetLifecycle,
+  onSetPublishStatus
 }: {
   boards: WritingBoard[];
   activeBoardId: string;
@@ -8959,6 +9004,7 @@ function EvidenceBriefLibrary({
   onOpenBoard: (boardId: string) => void;
   onRegenerate: (board: WritingBoard) => void;
   onSetLifecycle: (board: WritingBoard, lifecycleStatus: EvidenceBriefLifecycleStatus) => void;
+  onSetPublishStatus: (board: WritingBoard, publishStatus: EvidenceBriefPublishStatus) => void;
 }) {
   const [selectedBriefId, setSelectedBriefId] = useState("");
   const [showInactive, setShowInactive] = useState(false);
@@ -8970,6 +9016,7 @@ function EvidenceBriefLibrary({
   const selectedBrief = visibleBoards.find((item) => item.board_id === selectedBriefId) || visibleBoards[0];
   const inactiveCount = sortedBoards.length - sortedBoards.filter((item) => evidenceBriefLifecycleStatus(item) === "active").length;
   const selectedStatus = selectedBrief ? evidenceBriefLifecycleStatus(selectedBrief) : "active";
+  const selectedPublishStatus = selectedBrief ? evidenceBriefPublishStatus(selectedBrief) : "draft";
   const selectedRefs = selectedBrief ? evidenceBriefSourceRefs(selectedBrief) : [];
   const selectedLineage = selectedBrief ? evidenceBriefLineage(selectedBrief) : {};
   const selectedWarnings = Array.isArray(selectedLineage.warnings) ? selectedLineage.warnings : [];
@@ -8985,6 +9032,11 @@ function EvidenceBriefLibrary({
     }
     setSelectedBriefId(board.board_id);
     onSetLifecycle(board, lifecycleStatus);
+  }
+
+  function handlePublishChange(board: WritingBoard, publishStatus: EvidenceBriefPublishStatus) {
+    setSelectedBriefId(board.board_id);
+    onSetPublishStatus(board, publishStatus);
   }
 
   return (
@@ -9009,6 +9061,7 @@ function EvidenceBriefLibrary({
           <div className="writing-brief-list" aria-label="Evidence Brief 列表">
             {visibleBoards.map((item) => {
               const status = evidenceBriefLifecycleStatus(item);
+              const publishStatus = evidenceBriefPublishStatus(item);
               const scopeLabel = writingBoardKnowledgeScopeLabel(writingBoardKnowledgeScope(item, fallbackScope).scope, knowledgeBases, currentKnowledgeBase);
               return (
                 <button
@@ -9019,7 +9072,10 @@ function EvidenceBriefLibrary({
                   data-testid="writing-brief-card"
                   data-board-id={item.board_id}
                 >
-                  <span className={`writing-brief-status ${status.replace("_", "-")}`}>{evidenceBriefLifecycleLabel(status)}</span>
+                  <span className="writing-brief-status-row">
+                    <span className={`writing-brief-status ${status.replace("_", "-")}`}>{evidenceBriefLifecycleLabel(status)}</span>
+                    <span className={`writing-brief-publish-status ${publishStatus}`}>{evidenceBriefPublishLabel(publishStatus)}</span>
+                  </span>
                   <strong>{item.title || "未命名 Brief"}</strong>
                   <small>{evidenceBriefLineageSummary(item)}</small>
                   <small>{scopeLabel} · {evidenceBriefSourceRefs(item).length} 引用 · {item.updated_at ? formatReviewDate(item.updated_at) : item.board_id}</small>
@@ -9033,9 +9089,14 @@ function EvidenceBriefLibrary({
           {selectedBrief ? (
             <section className="writing-brief-detail" aria-label="Evidence Brief 详情" data-testid="writing-brief-detail">
               <div className="writing-brief-detail-head">
-                <span className={`writing-brief-status ${selectedStatus.replace("_", "-")}`} data-testid="writing-brief-status">
-                  {evidenceBriefLifecycleLabel(selectedStatus)}
-                </span>
+                <div className="writing-brief-status-row">
+                  <span className={`writing-brief-status ${selectedStatus.replace("_", "-")}`} data-testid="writing-brief-status">
+                    {evidenceBriefLifecycleLabel(selectedStatus)}
+                  </span>
+                  <span className={`writing-brief-publish-status ${selectedPublishStatus}`} data-testid="writing-brief-publish-status">
+                    {evidenceBriefPublishLabel(selectedPublishStatus)}
+                  </span>
+                </div>
                 <strong>{selectedBrief.title || "未命名 Brief"}</strong>
                 <small>{selectedScopeLabel} · Review {evidenceBriefReviewStatus(selectedBrief)} · {selectedRefs.length} 引用</small>
               </div>
@@ -9066,6 +9127,17 @@ function EvidenceBriefLibrary({
                 </button>
                 {selectedStatus === "active" ? (
                   <>
+                    {selectedPublishStatus === "published" ? (
+                      <button type="button" onClick={() => handlePublishChange(selectedBrief, "draft")} disabled={selectedBusy} data-testid="writing-brief-unpublish">
+                        <RotateCcw size={14} />
+                        取消发布
+                      </button>
+                    ) : (
+                      <button type="button" onClick={() => handlePublishChange(selectedBrief, "published")} disabled={selectedBusy} data-testid="writing-brief-publish">
+                        <CheckCircle2 size={14} />
+                        发布到 Wiki
+                      </button>
+                    )}
                     <button type="button" onClick={() => handleLifecycleChange(selectedBrief, "expired")} disabled={selectedBusy} data-testid="writing-brief-expire">
                       <AlertTriangle size={14} />
                       过期

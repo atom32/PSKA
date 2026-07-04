@@ -437,7 +437,12 @@ async function expectEvidenceBriefLibrary(page: Page, briefTitle: string, expect
   const detail = library.getByTestId("writing-brief-detail");
   await expect(detail).toContainText(briefTitle);
   await expect(detail.getByTestId("writing-brief-status")).toContainText("有效");
+  await expect(detail.getByTestId("writing-brief-publish-status")).toContainText("Wiki 草稿");
   await expect(detail.getByTestId("writing-brief-regenerate")).toBeEnabled();
+  await detail.getByTestId("writing-brief-publish").click();
+  await expect(detail.getByTestId("writing-brief-publish-status")).toContainText("已发布到 Wiki", { timeout: 45_000 });
+  await detail.getByTestId("writing-brief-unpublish").click();
+  await expect(detail.getByTestId("writing-brief-publish-status")).toContainText("Wiki 草稿", { timeout: 45_000 });
 
   await library.getByTestId("writing-brief-show-inactive").check();
   await detail.getByTestId("writing-brief-expire").click();

@@ -2875,6 +2875,8 @@ def test_evidence_brief_creates_writing_draft_with_lineage_and_refs() -> None:
 
     assert payload["ok"] is True
     assert board["metadata"]["kind"] == "evidence_wiki_brief"
+    assert board["metadata"]["publish_status"] == "draft"
+    assert payload["brief"]["publish_status"] == "draft"
     assert payload["brief"]["review_status"] == "needs_review"
     assert payload["brief"]["lineage"]["digest_note_ids"] == ["dig_brief"]
     assert payload["brief"]["lineage"]["knowledge_claim_ids"] == ["kc_brief"]
