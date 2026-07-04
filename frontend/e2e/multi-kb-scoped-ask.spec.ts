@@ -441,8 +441,10 @@ async function expectEvidenceBriefLibrary(page: Page, briefTitle: string, expect
   await expect(detail.getByTestId("writing-brief-regenerate")).toBeEnabled();
   await detail.getByTestId("writing-brief-publish").click();
   await expect(detail.getByTestId("writing-brief-publish-status")).toContainText("已发布到 Wiki", { timeout: 45_000 });
-  await library.getByTestId("writing-brief-wiki-search-input").fill(expected.alphaSecret);
   const wikiResults = library.getByTestId("writing-brief-wiki-results");
+  await expect(library.getByTestId("writing-brief-wiki-scope")).toContainText("已发布 Wiki");
+  await expect(wikiResults.getByTestId("writing-brief-wiki-result").filter({ hasText: briefTitle }).first()).toBeVisible({ timeout: 45_000 });
+  await library.getByTestId("writing-brief-wiki-search-input").fill(expected.alphaSecret);
   const wikiResult = wikiResults.getByTestId("writing-brief-wiki-result").filter({ hasText: briefTitle }).first();
   await expect(wikiResult).toBeVisible({ timeout: 45_000 });
   await expect(wikiResults).toContainText(expected.alphaSecret);
@@ -452,6 +454,7 @@ async function expectEvidenceBriefLibrary(page: Page, briefTitle: string, expect
   await expect(wikiPage).toContainText(briefTitle, { timeout: 45_000 });
   await expect(wikiPage).toContainText(expected.alphaSecret);
   await expect(wikiPage).not.toContainText(expected.betaSecret);
+  await expect(wikiPage.getByTestId("writing-brief-wiki-page-access")).toContainText("当前用户可见");
   await expect(wikiPage.getByTestId("writing-brief-wiki-page-open")).toBeVisible();
   await detail.getByTestId("writing-brief-unpublish").click();
   await expect(detail.getByTestId("writing-brief-publish-status")).toContainText("Wiki 草稿", { timeout: 45_000 });

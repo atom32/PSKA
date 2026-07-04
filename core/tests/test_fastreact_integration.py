@@ -2927,6 +2927,10 @@ def test_evidence_brief_creates_writing_draft_with_lineage_and_refs() -> None:
     assert search["results"][0]["board"]["board_id"] == board["board_id"]
     assert "Evidence brief drafts must keep citations" in search["results"][0]["snippet"]
     assert search["results"][0]["source_refs"][0]["source_item_id"] == source.source_item_id
+    assert search["results"][0]["access"] == {"visibility": "owner", "tenant_id": "tenant_a", "owner_user_id": "user_primary"}
+    published_list = api.workspace_evidence_wiki_search({"query": "", "knowledge_base_ids": [knowledge_base["knowledge_base_id"]]}, context=context)
+    assert published_list["count"] == 1
+    assert published_list["results"][0]["board"]["board_id"] == board["board_id"]
     page = api.workspace_evidence_wiki_page(board["board_id"], context=context)
     assert page["ok"] is True
     assert page["page"]["board_id"] == board["board_id"]
@@ -2934,6 +2938,7 @@ def test_evidence_brief_creates_writing_draft_with_lineage_and_refs() -> None:
     assert "Evidence brief drafts must keep citations" in page["page"]["body_markdown"]
     assert page["page"]["source_refs"][0]["source_item_id"] == source.source_item_id
     assert page["page"]["lineage"]["review_item_ids"] == ["rev_brief"]
+    assert page["page"]["access"] == {"visibility": "owner", "tenant_id": "tenant_a", "owner_user_id": "user_primary"}
 
 
 def test_writing_ask_scope_uses_connected_node_context_in_quick_trace() -> None:

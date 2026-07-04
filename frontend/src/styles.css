@@ -5010,6 +5010,27 @@ button.context-item-main {
   gap: 8px;
 }
 
+.writing-brief-wiki-results-head {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.writing-brief-wiki-results-head strong {
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.25;
+}
+
+.writing-brief-wiki-results-head small {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+  text-align: right;
+}
+
 .writing-brief-wiki-result {
   width: 100%;
   min-width: 0;

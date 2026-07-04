@@ -8085,6 +8085,20 @@ function evidenceWikiRefLabel(ref: Record<string, unknown>) {
   return displayText(evidenceWikiRefText(ref, "title") || evidenceWikiRefText(ref, "source_item_id") || evidenceWikiRefText(ref, "chunk_id"), "来源");
 }
 
+function evidenceWikiAccessLabel(access?: Record<string, unknown>) {
+  const visibility = displayText(access?.visibility, "owner").toLowerCase();
+  if (visibility === "public") {
+    return "公开可见";
+  }
+  if (visibility === "tenant") {
+    return "当前租户可见";
+  }
+  if (visibility === "shared") {
+    return "共享范围可见";
+  }
+  return "当前用户可见";
+}
+
 function evidenceBriefLineageSummary(board: WritingBoard) {
   const lineage = evidenceBriefLineage(board);
   const parts = [
@@ -8273,6 +8287,7 @@ function WritingWorkspace({
   const [editorMaximized, setEditorMaximized] = useState(false);
   const [briefActionBoardId, setBriefActionBoardId] = useState("");
   const didAutoSelectBoard = useRef(false);
+  const queryClient = useQueryClient();
 
   const boardsQuery = useQuery({
     queryKey: ["writing-boards", serviceToken],
@@ -8505,6 +8520,8 @@ function WritingWorkspace({
       await patchWritingBoard(serviceToken, boardToUpdate.board_id, { metadata: nextMetadata });
       setWorkspaceMessage(`Evidence Brief 已标记为${evidenceBriefLifecycleLabel(lifecycleStatus)}。`);
       await boardsQuery.refetch();
+      await queryClient.invalidateQueries({ queryKey: ["evidence-wiki-search"] });
+      await queryClient.invalidateQueries({ queryKey: ["evidence-wiki-page"] });
       if (activeBoardId === boardToUpdate.board_id) {
         await boardQuery.refetch();
       }
@@ -8527,6 +8544,8 @@ function WritingWorkspace({
       }
       setWorkspaceMessage(`Evidence Brief ${publishStatus === "published" ? "已发布到 Wiki" : "已取消发布，回到草稿"}。`);
       await boardsQuery.refetch();
+      await queryClient.invalidateQueries({ queryKey: ["evidence-wiki-search"] });
+      await queryClient.invalidateQueries({ queryKey: ["evidence-wiki-page"] });
       if (activeBoardId === boardToUpdate.board_id) {
         await boardQuery.refetch();
       }
@@ -9033,10 +9052,11 @@ function EvidenceBriefLibrary({
     ? writingBoardKnowledgeScopeLabel(writingBoardKnowledgeScope(selectedBrief, fallbackScope).scope, knowledgeBases, currentKnowledgeBase)
     : "";
   const selectedBusy = Boolean(selectedBrief && busyBoardId === selectedBrief.board_id);
+  const wikiScopeLabel = writingBoardKnowledgeScopeLabel(fallbackScope.scope, knowledgeBases, currentKnowledgeBase);
   const wikiSearchQuery = useQuery({
     queryKey: ["evidence-wiki-search", serviceToken, fallbackScope.scope, normalizedWikiQuery],
-    queryFn: () => searchEvidenceWiki(serviceToken, { query: normalizedWikiQuery, scope: fallbackScope.scope, limit: 8 }),
-    enabled: Boolean(normalizedWikiQuery),
+    queryFn: () => searchEvidenceWiki(serviceToken, { query: normalizedWikiQuery, scope: fallbackScope.scope, limit: normalizedWikiQuery ? 8 : 6 }),
+    enabled: true,
     retry: 1
   });
   const wikiPageQuery = useQuery({
@@ -9047,12 +9067,7 @@ function EvidenceBriefLibrary({
   });
   const wikiPage = wikiPageQuery.data?.page;
   const wikiPageRefs = wikiPage?.source_refs || [];
-
-  useEffect(() => {
-    if (!normalizedWikiQuery) {
-      setSelectedWikiPageBoardId("");
-    }
-  }, [normalizedWikiQuery]);
+  const wikiResults = wikiSearchQuery.data?.results || [];
 
   function handleOpenWikiPage(board: WritingBoard | undefined) {
     if (!board?.board_id) {
@@ -9110,34 +9125,37 @@ function EvidenceBriefLibrary({
           {wikiSearchQuery.isFetching ? "搜索中" : "搜索"}
         </button>
       </form>
-      {normalizedWikiQuery ? (
-        <div className="writing-brief-wiki-results" data-testid="writing-brief-wiki-results">
-          {wikiSearchQuery.isError ? (
-            <div className="review-empty error-state compact">Evidence Wiki 搜索失败。</div>
-          ) : wikiSearchQuery.isLoading ? (
-            <div className="review-empty compact">正在搜索已发布 Brief...</div>
-          ) : wikiSearchQuery.data?.results?.length ? (
-            wikiSearchQuery.data.results.map((result, index) => {
-              const board = result.board;
-              return (
-                <button
-                  key={board?.board_id || `wiki-result-${index}`}
-                  type="button"
-                  className="writing-brief-wiki-result"
-                  data-testid="writing-brief-wiki-result"
-                  onClick={() => handleOpenWikiPage(board)}
-                >
-                  <span className="writing-brief-publish-status published">已发布到 Wiki</span>
-                  <strong>{board?.title || "未命名 Wiki Brief"}</strong>
-                  <small>{trimText(result.snippet || board?.goal || "", 180)}</small>
-                </button>
-              );
-            })
-          ) : (
-            <div className="review-empty compact">没有匹配的已发布 Brief。</div>
-          )}
+      <div className="writing-brief-wiki-results" data-testid="writing-brief-wiki-results">
+        <div className="writing-brief-wiki-results-head" data-testid="writing-brief-wiki-scope">
+          <strong>{normalizedWikiQuery ? "Wiki 搜索结果" : "已发布 Wiki"}</strong>
+          <small>{normalizedWikiQuery ? `${wikiResults.length} 个匹配` : "当前范围内最新发布"} · {wikiScopeLabel}</small>
         </div>
-      ) : null}
+        {wikiSearchQuery.isError ? (
+          <div className="review-empty error-state compact">Evidence Wiki 搜索失败。</div>
+        ) : wikiSearchQuery.isLoading ? (
+          <div className="review-empty compact">{normalizedWikiQuery ? "正在搜索已发布 Brief..." : "正在读取已发布 Wiki..."}</div>
+        ) : wikiResults.length ? (
+          wikiResults.map((result, index) => {
+            const board = result.board;
+            return (
+              <button
+                key={board?.board_id || `wiki-result-${index}`}
+                type="button"
+                className="writing-brief-wiki-result"
+                data-testid="writing-brief-wiki-result"
+                onClick={() => handleOpenWikiPage(board)}
+              >
+                <span className="writing-brief-publish-status published">已发布到 Wiki</span>
+                <strong>{board?.title || "未命名 Wiki Brief"}</strong>
+                <small>{trimText(result.snippet || board?.goal || "", 180)}</small>
+                <small>{[result.published_at ? formatReviewDate(result.published_at) : "", evidenceWikiAccessLabel(result.access)].filter(Boolean).join(" · ")}</small>
+              </button>
+            );
+          })
+        ) : (
+          <div className="review-empty compact">{normalizedWikiQuery ? "没有匹配的已发布 Brief。" : "当前范围内还没有已发布 Brief。"}</div>
+        )}
+      </div>
       {selectedWikiPageBoardId ? (
         <section className="writing-brief-wiki-page" aria-label="Evidence Wiki 已发布页" data-testid="writing-brief-wiki-page">
           {wikiPageQuery.isError ? (
@@ -9152,8 +9170,8 @@ function EvidenceBriefLibrary({
                 <div>
                   <span className="writing-brief-publish-status published">已发布到 Wiki</span>
                   <h3>{wikiPage.title || wikiPageQuery.data?.board?.title || "未命名 Wiki Brief"}</h3>
-                  <small>
-                    {[wikiPage.published_at ? formatReviewDate(wikiPage.published_at) : "", wikiPage.knowledge_base_names?.join(" / "), `${wikiPageRefs.length} 引用`].filter(Boolean).join(" · ")}
+                  <small data-testid="writing-brief-wiki-page-access">
+                    {[wikiPage.published_at ? formatReviewDate(wikiPage.published_at) : "", wikiPage.knowledge_base_names?.join(" / "), `${wikiPageRefs.length} 引用`, evidenceWikiAccessLabel(wikiPage.access)].filter(Boolean).join(" · ")}
                   </small>
                 </div>
                 <button type="button" onClick={() => selectedWikiPageBoardId && onOpenBoard(selectedWikiPageBoardId)} data-testid="writing-brief-wiki-page-open">

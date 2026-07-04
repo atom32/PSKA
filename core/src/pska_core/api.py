@@ -4704,6 +4704,7 @@ class PSKAApi:
                     "source_refs": source_refs[:6],
                     "lineage": metadata.get("lineage") if isinstance(metadata.get("lineage"), dict) else {},
                     "published_at": metadata.get("published_at") or metadata.get("publish_updated_at"),
+                    "access": _evidence_wiki_access_payload(board),
                 }
             )
             if len(results) >= limit:
@@ -14378,7 +14379,20 @@ def _evidence_wiki_page_payload(board: Any, nodes: list[Any], *, review_gate: di
         "source_refs": _evidence_wiki_board_source_refs(board),
         "lineage": lineage,
         "review_gate": review_gate,
+        "access": _evidence_wiki_access_payload(board),
         "node_ids": [str(getattr(node, "node_id", "") or "") for node in nodes if getattr(node, "node_id", None)],
+    }
+
+
+def _evidence_wiki_access_payload(board: Any) -> dict[str, Any]:
+    metadata = dict(getattr(board, "metadata", {}) or {})
+    visibility = str(metadata.get("visibility") or metadata.get("permission") or metadata.get("access") or "owner").strip().lower()
+    if visibility not in {"owner", "tenant", "shared", "public"}:
+        visibility = "owner"
+    return {
+        "visibility": visibility,
+        "tenant_id": getattr(board, "tenant_id", ""),
+        "owner_user_id": getattr(board, "owner_user_id", ""),
     }
 
 

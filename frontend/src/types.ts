@@ -140,6 +140,7 @@ export type EvidenceWikiSearchResult = {
   source_refs?: Array<Record<string, unknown>>;
   lineage?: Record<string, unknown>;
   published_at?: string | null;
+  access?: Record<string, unknown>;
 };
 
 export type EvidenceWikiSearchResponse = {
@@ -165,6 +166,7 @@ export type EvidenceWikiPage = {
   source_refs?: Array<Record<string, unknown>>;
   lineage?: Record<string, unknown>;
   review_gate?: Record<string, unknown>;
+  access?: Record<string, unknown>;
   node_ids?: string[];
 };
 
