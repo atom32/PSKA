@@ -16,6 +16,7 @@ REVIEW_APPROVED = "approved"
 REVIEW_REJECTED = "rejected"
 REVIEW_APPLIED = "applied"
 REVIEW_EXPIRED = "expired"
+REVIEW_SNOOZED = "snoozed"
 
 TERMINAL_REVIEW_STATUSES = {REVIEW_REJECTED, REVIEW_APPLIED, REVIEW_EXPIRED}
 
@@ -65,6 +66,20 @@ class ReviewService:
     def approve_and_apply(self, review_item_id: str, *, actor_user_id: str, reason: str = "") -> ReviewItem:
         approved = self.approve(review_item_id, actor_user_id=actor_user_id, reason=reason)
         return self.apply(approved.review_item_id, actor_user_id=actor_user_id, reason=reason)
+
+    def snooze(self, review_item_id: str, *, actor_user_id: str, reason: str = "") -> ReviewItem:
+        review_item = self.store.get_review_item(review_item_id)
+        self._require_status(review_item, {REVIEW_PENDING})
+        updated = self.store.update_review_item_status(review_item_id, REVIEW_SNOOZED)
+        self._audit(updated, actor_user_id=actor_user_id, action="review.snooze", decision=REVIEW_SNOOZED, reason=reason)
+        return updated
+
+    def restore(self, review_item_id: str, *, actor_user_id: str, reason: str = "") -> ReviewItem:
+        review_item = self.store.get_review_item(review_item_id)
+        self._require_status(review_item, {REVIEW_SNOOZED})
+        updated = self.store.update_review_item_status(review_item_id, REVIEW_PENDING)
+        self._audit(updated, actor_user_id=actor_user_id, action="review.restore", decision=REVIEW_PENDING, reason=reason)
+        return updated
 
     def expire(self, review_item_id: str, *, actor_user_id: str, reason: str = "") -> ReviewItem:
         review_item = self.store.get_review_item(review_item_id)

@@ -56,7 +56,7 @@ import Table from "@tiptap/extension-table";
 import TableCell from "@tiptap/extension-table-cell";
 import TableHeader from "@tiptap/extension-table-header";
 import TableRow from "@tiptap/extension-table-row";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   analyzeWorkspaceContext,
   acceptDiscovery,
@@ -109,9 +109,11 @@ import {
   recordWorkspaceActivity,
   rejectReviewItem,
   restoreKnowledgeBase,
+  restoreReviewItem,
   retryDigestJob,
   runDigestNow,
   snoozeDiscovery,
+  snoozeReviewItem,
   searchKnowledgeBases,
   syncKnowledgeSources,
   suggestWritingQuestions,
@@ -1500,7 +1502,7 @@ function TodayWorkspace({
   );
 }
 
-type ReviewAction = "approve" | "approve_apply" | "reject" | "apply";
+type ReviewAction = "approve" | "approve_apply" | "reject" | "apply" | "snooze" | "restore";
 type ReviewActionState = string;
 
 function ReviewCenter({
@@ -1524,6 +1526,7 @@ function ReviewCenter({
   const [actions, setActions] = useState<Record<string, ReviewActionState>>({});
   const [selectedReviewIds, setSelectedReviewIds] = useState<Set<string>>(() => new Set());
   const [bulkMessage, setBulkMessage] = useState("");
+  const queryClient = useQueryClient();
   const kbScopedOptions = useMemo(
     () => knowledgeBaseScopedOptions(scopeMode, currentKnowledgeBase, selectedKnowledgeBaseIds),
     [currentKnowledgeBase?.knowledge_base_id, scopeMode, selectedKnowledgeBaseIds]
@@ -1557,6 +1560,12 @@ function ReviewCenter({
     if (action === "apply") {
       return applyReviewItem(serviceToken, item.review_item_id);
     }
+    if (action === "snooze") {
+      return snoozeReviewItem(serviceToken, item.review_item_id);
+    }
+    if (action === "restore") {
+      return restoreReviewItem(serviceToken, item.review_item_id);
+    }
     return approveReviewItem(serviceToken, item.review_item_id, action === "approve_apply");
   }
 
@@ -1564,13 +1573,13 @@ function ReviewCenter({
     mark(item.review_item_id, "处理中");
     try {
       const result = await executeReviewAction(item, action);
-      mark(item.review_item_id, reviewActionStatusLabel(action, result?.application_result?.summary));
+      mark(item.review_item_id, reviewActionStatusLabel(action));
       setSelectedReviewIds((current) => {
         const next = new Set(current);
         next.delete(item.review_item_id);
         return next;
       });
-      await reviewQuery.refetch();
+      await queryClient.invalidateQueries({ queryKey: ["review-center"] });
     } catch {
       mark(item.review_item_id, "操作失败");
     }
@@ -1615,7 +1624,7 @@ function ReviewCenter({
       try {
         const result = await executeReviewAction(item, action);
         succeeded += 1;
-        mark(item.review_item_id, reviewActionStatusLabel(action, result?.application_result?.summary));
+        mark(item.review_item_id, reviewActionStatusLabel(action));
       } catch {
         mark(item.review_item_id, "操作失败");
       }
@@ -1628,7 +1637,7 @@ function ReviewCenter({
       return next;
     });
     setBulkMessage(`已处理 ${succeeded}/${targets.length} 条。`);
-    await reviewQuery.refetch();
+    await queryClient.invalidateQueries({ queryKey: ["review-center"] });
   }
 
   return (
@@ -1663,7 +1672,7 @@ function ReviewCenter({
       </div>
 
       <div className="review-filter" role="tablist" aria-label="Review 状态">
-        {["pending", "approved", "rejected", "applied"].map((value) => (
+        {["pending", "snoozed", "approved", "rejected", "applied"].map((value) => (
           <button
             className={status === value ? "active" : ""}
             data-testid={`review-filter-${value}`}
@@ -1710,7 +1719,28 @@ function ReviewCenter({
                   <X size={14} />
                   批量拒绝
                 </button>
+                <button
+                  data-testid="review-bulk-snooze"
+                  type="button"
+                  disabled={!selectedItems.some((item) => reviewCanRunBulkAction(item, "snooze"))}
+                  onClick={() => void runBulkReviewAction("snooze")}
+                >
+                  <CalendarDays size={14} />
+                  批量稍后
+                </button>
               </>
+            ) : null}
+            {status === "snoozed" ? (
+              <button
+                className="primary"
+                data-testid="review-bulk-restore"
+                type="button"
+                disabled={!selectedItems.some((item) => reviewCanRunBulkAction(item, "restore"))}
+                onClick={() => void runBulkReviewAction("restore")}
+              >
+                <RotateCcw size={14} />
+                批量恢复
+              </button>
             ) : null}
             {status === "approved" ? (
               <button
@@ -1746,7 +1776,7 @@ function ReviewCenter({
             const knowledgeBaseLabel = knowledgeBaseLineageLabel(item);
             const evidenceHealth = reviewItemEvidenceHealth(item);
             const graphTargetNodeId = reviewAppliedGraphNodeId(item);
-            const actionSummary = actions[item.review_item_id] || item.application_result?.summary || item.status || "pending";
+            const actionSummary = actions[item.review_item_id] || reviewActionSummary(item);
             const selectable = reviewBulkSelectable(item, status);
             return (
             <article className="review-center-item" key={item.review_item_id}>
@@ -1851,7 +1881,14 @@ function ReviewCenter({
                     <button className="danger" data-testid="review-action-reject" type="button" onClick={() => runReviewAction(item, "reject")}>
                       拒绝
                     </button>
+                    <button data-testid="review-action-snooze" type="button" onClick={() => runReviewAction(item, "snooze")}>
+                      稍后
+                    </button>
                   </>
+                ) : item.status === "snoozed" ? (
+                  <button className="primary" data-testid="review-action-restore" type="button" onClick={() => runReviewAction(item, "restore")}>
+                    恢复待审
+                  </button>
                 ) : item.can_apply_now ? (
                   <button className="primary" data-testid="review-action-apply" type="button" onClick={() => runReviewAction(item, "apply")}>
                     应用
@@ -1872,17 +1909,44 @@ function ReviewCenter({
   );
 }
 
-function reviewActionStatusLabel(action: ReviewAction, summary?: string) {
-  if (summary) {
-    return summary;
-  }
+function reviewActionStatusLabel(action: ReviewAction) {
   if (action === "reject") {
     return "已拒绝";
   }
   if (action === "apply") {
     return "已应用";
   }
-  return action === "approve_apply" ? "已批准并应用" : "已批准";
+  if (action === "snooze") {
+    return "已稍后";
+  }
+  if (action === "restore") {
+    return "已恢复待审";
+  }
+  if (action === "approve_apply") {
+    return "已批准并应用";
+  }
+  return "已批准";
+}
+
+function reviewActionSummary(item: ReviewCenterItem) {
+  const result = item.application_result;
+  const status = displayText(result?.status || item.status, "pending");
+  if (status === "approved" && result?.applied === false) {
+    return "已批准，可应用";
+  }
+  if (status === "applied") {
+    const targetIds = result?.target_ids || {};
+    if (targetIds.created_hyperedge_id) {
+      return `已应用到 Graph：${trimText(targetIds.created_hyperedge_id, 28)}`;
+    }
+    if (targetIds.agent_memory_id) {
+      return `已应用到记忆：${trimText(targetIds.agent_memory_id, 28)}`;
+    }
+    if (targetIds.profile_card_id) {
+      return `已应用到画像：${trimText(targetIds.profile_card_id, 28)}`;
+    }
+  }
+  return statusLabel(status);
 }
 
 function reviewBulkSelectable(item: ReviewCenterItem, status: string) {
@@ -1891,6 +1955,9 @@ function reviewBulkSelectable(item: ReviewCenterItem, status: string) {
   }
   if (status === "approved") {
     return Boolean(item.can_apply_now);
+  }
+  if (status === "snoozed") {
+    return item.status === "snoozed";
   }
   return false;
 }
@@ -1904,6 +1971,12 @@ function reviewCanRunBulkAction(item: ReviewCenterItem, action: ReviewAction) {
   }
   if (action === "apply") {
     return Boolean(item.can_apply_now);
+  }
+  if (action === "snooze") {
+    return item.status === "pending";
+  }
+  if (action === "restore") {
+    return item.status === "snoozed";
   }
   return false;
 }
@@ -4636,6 +4709,12 @@ function recommendedActionLabel(action?: string) {
   if (action === "inspect_then_approve_or_reject") {
     return "需检查";
   }
+  if (action === "approve_or_reject") {
+    return "待判断";
+  }
+  if (action === "restore") {
+    return "可恢复";
+  }
   return "待处理";
 }
 
@@ -4862,6 +4941,9 @@ function formatSourceAge(value?: string) {
 function statusLabel(status: string) {
   if (status === "pending") {
     return "待审核";
+  }
+  if (status === "snoozed") {
+    return "稍后";
   }
   if (status === "approved") {
     return "已批准";

@@ -72,15 +72,17 @@ test("browser session scoped Ask does not leak citations across knowledge bases"
     createdSourceItemIds.push(alphaSourceItemId, betaSourceItemId);
 
     reviewFixture = await createReviewHealthFixture(page, alpha.knowledge_base_id, marker, createdSourceItemIds);
-    bulkReviewFixtures.push(
-      await createReviewHealthFixture(page, alpha.knowledge_base_id, marker, createdSourceItemIds),
-      await createReviewHealthFixture(page, alpha.knowledge_base_id, marker, createdSourceItemIds)
-    );
 
     await page.goto(frontendUrl, { waitUntil: "domcontentloaded" });
     await openWorkspace(page, "Today");
     await selectCurrentKnowledgeBase(page, alpha.knowledge_base_id);
     await expectTodayReviewHealth(page, reviewFixture);
+
+    const snoozeReviewFixture = await createReviewHealthFixture(page, alpha.knowledge_base_id, marker, createdSourceItemIds);
+    bulkReviewFixtures.push(
+      await createReviewHealthFixture(page, alpha.knowledge_base_id, marker, createdSourceItemIds),
+      await createReviewHealthFixture(page, alpha.knowledge_base_id, marker, createdSourceItemIds)
+    );
 
     const query = `What is the scoped Ask answer for marker ${marker}?`;
     const result = await askViaBrowserSession(page, query, alpha.knowledge_base_id);
@@ -112,6 +114,7 @@ test("browser session scoped Ask does not leak citations across knowledge bases"
       alphaSecret,
       betaSecret
     });
+    await expectReviewSnoozeRestore(page, snoozeReviewFixture);
     await expectReviewBulkReject(page, bulkReviewFixtures);
     await expectReviewCenterHealth(page, reviewFixture);
   } finally {
@@ -243,7 +246,7 @@ async function expectReviewCenterHealth(page: Page, fixture: ReviewHealthFixture
   const appliedCard = page.locator(".review-center-item").filter({ hasText: fixture.reviewItemId }).first();
   await expect(appliedCard).toBeVisible({ timeout: 45_000 });
   await expect(appliedCard).toContainText(fixture.topic);
-  await expect(appliedCard).toContainText(/Created graph relationship|已应用|applied/);
+  await expect(appliedCard).toContainText(/Created graph relationship|已批准并应用|已应用|applied/);
   const openGraph = appliedCard.getByTestId("review-action-open-graph");
   await expect(openGraph).toBeVisible();
   await openGraph.click();
@@ -251,6 +254,30 @@ async function expectReviewCenterHealth(page: Page, fixture: ReviewHealthFixture
   await expect(graphInspector).toBeVisible({ timeout: 60_000 });
   await expect(graphInspector).toContainText(fixture.topic);
   await expect(graphInspector.getByTestId("graph-citation-inspector")).toBeVisible();
+}
+
+async function expectReviewSnoozeRestore(page: Page, fixture: ReviewHealthFixture) {
+  await openWorkspace(page, "Review");
+  await page.getByTestId("review-filter-pending").click();
+  const reviewCard = page.locator(".review-center-item").filter({ hasText: fixture.reviewItemId }).first();
+  await expect(reviewCard).toBeVisible({ timeout: 45_000 });
+  await expect(reviewCard.getByTestId("review-action-snooze")).toBeVisible();
+  await reviewCard.getByTestId("review-action-snooze").click();
+  await expect(page.locator(".review-center-item").filter({ hasText: fixture.reviewItemId })).toHaveCount(0, { timeout: 45_000 });
+
+  await page.getByTestId("review-filter-snoozed").click();
+  const snoozedCard = page.locator(".review-center-item").filter({ hasText: fixture.reviewItemId }).first();
+  await expect(snoozedCard).toBeVisible({ timeout: 45_000 });
+  await expect(snoozedCard).toContainText(fixture.topic);
+  await expect(snoozedCard).toContainText("稍后");
+  await expect(snoozedCard.getByTestId("review-action-restore")).toBeVisible();
+  await snoozedCard.getByTestId("review-action-restore").click();
+  await expect(page.locator(".review-center-item").filter({ hasText: fixture.reviewItemId })).toHaveCount(0, { timeout: 45_000 });
+
+  await page.getByTestId("review-filter-pending").click();
+  const restoredCard = page.locator(".review-center-item").filter({ hasText: fixture.reviewItemId }).first();
+  await expect(restoredCard).toBeVisible({ timeout: 45_000 });
+  await expect(restoredCard.getByTestId("review-action-approve")).toBeVisible();
 }
 
 async function expectReviewBulkReject(page: Page, fixtures: ReviewHealthFixture[]) {
@@ -322,7 +349,10 @@ async function askViaBrowserComposer(
 
   const stableResult = page.getByTestId("ask-result").filter({ hasText: expected.alphaSecret }).last();
   await expect(stableResult).toContainText(expected.alphaSecret);
-  const evidenceInspector = stableResult.getByTestId("ask-evidence-inspector").filter({ hasText: expected.alphaSecret }).first();
+  const alphaSourceRef = stableResult.getByTestId("ask-source-ref").filter({ hasText: expected.alphaSourceItemId }).first();
+  await expect(alphaSourceRef).toBeVisible({ timeout: 45_000 });
+  await alphaSourceRef.click();
+  const evidenceInspector = stableResult.getByTestId("ask-evidence-inspector").first();
   await expect(evidenceInspector).toContainText(expected.alphaSecret);
   await evidenceInspector.getByTestId("open-reader-pane").click();
   await expect(evidenceInspector.getByTestId("reader-pane")).toContainText(expected.alphaSecret);

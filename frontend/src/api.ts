@@ -1588,6 +1588,36 @@ export async function applyReviewItem(serviceToken: PSKAAuth, reviewItemId: stri
   return (await response.json()) as ReviewActionResponse;
 }
 
+export async function snoozeReviewItem(serviceToken: PSKAAuth, reviewItemId: string): Promise<ReviewActionResponse> {
+  const response = await fetch(`/review-items/${encodeURIComponent(reviewItemId)}/snooze`, {
+    method: "POST",
+    headers: headers(serviceToken),
+    body: JSON.stringify({
+      actor_user_id: actorUserId(serviceToken),
+      reason: "Snoozed from PSKA Review Center"
+    })
+  });
+  if (!response.ok) {
+    throw new Error(`snooze review ${response.status}`);
+  }
+  return (await response.json()) as ReviewActionResponse;
+}
+
+export async function restoreReviewItem(serviceToken: PSKAAuth, reviewItemId: string): Promise<ReviewActionResponse> {
+  const response = await fetch(`/review-items/${encodeURIComponent(reviewItemId)}/restore`, {
+    method: "POST",
+    headers: headers(serviceToken),
+    body: JSON.stringify({
+      actor_user_id: actorUserId(serviceToken),
+      reason: "Restored from PSKA Review Center"
+    })
+  });
+  if (!response.ok) {
+    throw new Error(`restore review ${response.status}`);
+  }
+  return (await response.json()) as ReviewActionResponse;
+}
+
 function mapSearchToBrain(data: WorkspaceSearchResponse, trigger: BrainState["lastTrigger"]): Partial<BrainState> {
   const evidence = data.workspace?.evidence;
   const results = data.retrieval?.results || [];

@@ -29,6 +29,32 @@ def test_reject_review_writes_audit_and_does_not_apply_profile() -> None:
     assert events[0].metadata["reason"] == "not now"
 
 
+def test_snoozed_review_can_be_restored_to_pending_with_audit() -> None:
+    store = _store()
+    review = MemoryService(store).propose_profile_update(
+        owner_user_id="user_primary",
+        profile_delta={"timezone": "Asia/Shanghai"},
+        source_refs=[SourceRef(message_id="msg_snooze")],
+        sensitivity="high",
+    )
+
+    service = ReviewService(store)
+    snoozed = service.snooze(review.review_item_id, actor_user_id="user_primary", reason="later")
+    assert snoozed.status == "snoozed"
+    with pytest.raises(ValueError, match="expected pending"):
+        service.approve(review.review_item_id, actor_user_id="user_primary")
+
+    restored = service.restore(review.review_item_id, actor_user_id="user_primary", reason="ready")
+    assert restored.status == "pending"
+    approved = service.approve(review.review_item_id, actor_user_id="user_primary")
+    assert approved.status == "approved"
+    assert [event.decision for event in store.list_audit_events("review_item", review.review_item_id)] == [
+        "snoozed",
+        "pending",
+        "approved",
+    ]
+
+
 def test_profile_update_applies_only_after_approval() -> None:
     store = _store()
     review = MemoryService(store).propose_profile_update(

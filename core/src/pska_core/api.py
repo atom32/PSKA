@@ -772,6 +772,18 @@ class PSKAApi:
         review_item = self.reviews.apply(review_item_id, actor_user_id=actor_user_id, reason=reason)
         return {"review_item": to_jsonable(review_item), "application_result": _review_application_result(self.store, review_item)}
 
+    def snooze_review_item(self, review_item_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        actor_user_id = str(payload.get("actor_user_id") or "user_primary")
+        reason = str(payload.get("reason") or "")
+        review_item = self.reviews.snooze(review_item_id, actor_user_id=actor_user_id, reason=reason)
+        return {"review_item": to_jsonable(review_item), "application_result": _review_application_result(self.store, review_item)}
+
+    def restore_review_item(self, review_item_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        actor_user_id = str(payload.get("actor_user_id") or "user_primary")
+        reason = str(payload.get("reason") or "")
+        review_item = self.reviews.restore(review_item_id, actor_user_id=actor_user_id, reason=reason)
+        return {"review_item": to_jsonable(review_item), "application_result": _review_application_result(self.store, review_item)}
+
     def accept_discovery_item(self, discovery_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         actor_user_id = str(payload.get("actor_user_id") or "user_primary")
         reason = str(payload.get("reason") or "accepted from workspace discovery")
@@ -5866,6 +5878,12 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
             if path.startswith("/review-items/") and path.endswith("/apply"):
                 review_item_id = path.removeprefix("/review-items/").removesuffix("/apply")
                 return self._json(200, self.api.apply_review_item(review_item_id, payload))
+            if path.startswith("/review-items/") and path.endswith("/snooze"):
+                review_item_id = path.removeprefix("/review-items/").removesuffix("/snooze")
+                return self._json(200, self.api.snooze_review_item(review_item_id, payload))
+            if path.startswith("/review-items/") and path.endswith("/restore"):
+                review_item_id = path.removeprefix("/review-items/").removesuffix("/restore")
+                return self._json(200, self.api.restore_review_item(review_item_id, payload))
             if path.startswith("/jobs/") and path.endswith("/retry"):
                 job_id = path.removeprefix("/jobs/").removesuffix("/retry")
                 return self._json(200, self.api.retry_job(job_id, context=context))
@@ -6706,11 +6724,14 @@ def _console_review_item(item: dict[str, Any], *, store: Any | None = None) -> d
     apply_supported = _console_review_apply_supported(review_type, proposal)
     apply_ready = apply_supported and _console_review_apply_ready(review_type, source_refs, proposal)
     status = str(item.get("status") or "")
-    actions = ["approve", "reject"] if status == "pending" else []
+    actions = ["approve", "reject", "snooze"] if status == "pending" else []
     if status == "pending" and apply_ready:
         actions.insert(1, "approve_apply")
     if status == "approved" and apply_ready:
         actions = ["apply"]
+    if status == "snoozed":
+        actions = ["restore"]
+    recommended_action = "restore" if status == "snoozed" else _console_review_recommended_action(review_type, apply_ready=apply_ready)
     payload = {
         "review_item_id": item.get("review_item_id"),
         "owner_user_id": item.get("owner_user_id"),
@@ -6727,7 +6748,7 @@ def _console_review_item(item: dict[str, Any], *, store: Any | None = None) -> d
         "promotion_reason": proposal.get("promotion_reason"),
         "review_eligible": bool(proposal.get("review_eligible")),
         "created_at": item.get("created_at"),
-        "recommended_action": _console_review_recommended_action(review_type, apply_ready=apply_ready),
+        "recommended_action": recommended_action,
         "recommended_actions": actions,
         "apply_supported": apply_supported,
         "apply_ready": apply_ready,
