@@ -434,13 +434,29 @@ async function askViaBrowserComposer(
   const evidenceInspector = stableResult.getByTestId("ask-evidence-inspector").first();
   await expect(evidenceInspector).toContainText(expected.alphaSecret);
   await evidenceInspector.getByTestId("open-reader-pane").click();
-  await expect(evidenceInspector.getByTestId("reader-pane")).toContainText(expected.alphaSecret);
-  await expect(evidenceInspector.getByTestId("reader-highlight").first()).toContainText(expected.alphaSecret);
-  await expect(evidenceInspector.getByTestId("reader-pane")).not.toContainText(expected.betaSecret);
-  await evidenceInspector.getByTestId("ask-from-evidence").click();
+  const readerPane = evidenceInspector.getByTestId("reader-pane");
+  await expect(readerPane).toContainText(expected.alphaSecret);
+  const readerHighlight = readerPane.getByTestId("reader-highlight").first();
+  await expect(readerHighlight).toContainText(expected.alphaSecret);
+  await expect(readerPane).not.toContainText(expected.betaSecret);
+  await selectLocatorText(readerHighlight);
+  await expect(readerPane.getByTestId("reader-ask-selection")).toBeEnabled();
+  await readerPane.getByTestId("reader-ask-selection").click();
   await expect(page.getByTestId("reader-focus-chip")).toBeVisible();
   await expect(page.getByTestId("today-ask-input")).toHaveValue(new RegExp(escapeRegExp(expected.alphaSourceItemId)));
+  await expect(page.getByTestId("today-ask-input")).toHaveValue(new RegExp(escapeRegExp(expected.alphaSecret)));
   await saveAskResultToWriting(page, expected);
+}
+
+async function selectLocatorText(locator: Locator) {
+  await locator.evaluate((element) => {
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    element.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+  });
 }
 
 async function saveAskResultToWriting(page: Page, expected: { marker: string; alphaSecret: string; betaSecret: string }) {

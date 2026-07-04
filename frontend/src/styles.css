@@ -1641,6 +1641,27 @@ button.context-item-main {
   font-weight: 700;
 }
 
+.reader-pane-header button {
+  min-height: 26px;
+  border: 1px solid rgba(35, 90, 77, 0.2);
+  border-radius: 6px;
+  background: #f6fbf7;
+  color: #235a4d;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 750;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.reader-pane-header button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
 .reader-document {
   border-top: 1px solid rgba(35, 90, 77, 0.12);
   padding-top: 8px;

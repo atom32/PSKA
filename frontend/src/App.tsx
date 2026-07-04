@@ -3735,7 +3735,7 @@ function EvidenceWindow({
         </div>
       ) : null}
       {readerStatus === "error" ? <div className="reader-pane-error">{readerError}</div> : null}
-      {reader ? <ReaderPane reader={reader} focusRef={refItem} /> : null}
+      {reader ? <ReaderPane reader={reader} focusRef={refItem} onAskFromSelection={onAskFromEvidence} /> : null}
     </aside>
   );
 }
@@ -3799,7 +3799,17 @@ function citationInspectorRefKey(ref: SearchEvidenceRef, index: number) {
   return searchRefKey(ref) || `ref-${index}`;
 }
 
-function ReaderPane({ reader, focusRef }: { reader: WorkspaceReaderSourceResponse; focusRef: SearchEvidenceRef }) {
+function ReaderPane({
+  reader,
+  focusRef,
+  onAskFromSelection
+}: {
+  reader: WorkspaceReaderSourceResponse;
+  focusRef: SearchEvidenceRef;
+  onAskFromSelection?: (refItem: SearchEvidenceRef) => void;
+}) {
+  const paneRef = useRef<HTMLElement | null>(null);
+  const [selectedText, setSelectedText] = useState("");
   const documents = reader.documents || [];
   const chunks = reader.chunks || [];
   const focusChunkId = focusRef.chunk_id || "";
@@ -3808,12 +3818,39 @@ function ReaderPane({ reader, focusRef }: { reader: WorkspaceReaderSourceRespons
   const documentChunks = chunks.filter((chunk) => !focusDocument?.document_id || chunk.document_id === focusDocument.document_id);
   const sourceTitle = reader.source_item?.title || focusRef.title || reader.source_item?.source_item_id || "原文";
   const documentHighlight = focusDocument?.body ? readerTextHighlight(focusDocument.body, focusRef, { maxChars: 1800, contextChars: 760 }) : null;
+  const canAskSelection = Boolean(onAskFromSelection && selectedText.trim());
+
+  function updateSelection() {
+    setSelectedText(readerSelectedText(paneRef.current));
+  }
+
+  function askSelection() {
+    const text = selectedText.trim();
+    if (!onAskFromSelection || !text) {
+      return;
+    }
+    onAskFromSelection(readerSelectionRef(focusRef, reader, text, focusDocument?.body, sourceTitle));
+  }
+
   return (
-    <section className="reader-pane" aria-label="原文阅读" data-testid="reader-pane">
+    <section
+      className="reader-pane"
+      aria-label="原文阅读"
+      data-testid="reader-pane"
+      ref={paneRef}
+      onMouseUp={updateSelection}
+      onKeyUp={updateSelection}
+    >
       <div className="reader-pane-header">
         <span className="pill">Reader</span>
         <strong>{displayText(sourceTitle, "原文")}</strong>
         <small>{reader.counts?.documents || 0} docs · {reader.counts?.chunks || 0} chunks</small>
+        {onAskFromSelection ? (
+          <button type="button" onClick={askSelection} disabled={!canAskSelection} data-testid="reader-ask-selection">
+            <MessageCircle size={13} />
+            <span>追问选区</span>
+          </button>
+        ) : null}
       </div>
       {focusDocument ? (
         <article className="reader-document">
@@ -3846,6 +3883,50 @@ function ReaderPane({ reader, focusRef }: { reader: WorkspaceReaderSourceRespons
       )}
     </section>
   );
+}
+
+function readerSelectedText(container: HTMLElement | null) {
+  if (!container || typeof window === "undefined") {
+    return "";
+  }
+  const selection = window.getSelection();
+  if (!selection || selection.isCollapsed || !selection.anchorNode || !selection.focusNode) {
+    return "";
+  }
+  if (!container.contains(selection.anchorNode) || !container.contains(selection.focusNode)) {
+    return "";
+  }
+  return trimText(cleanEvidenceSnippet(selection.toString()), 1200);
+}
+
+function readerSelectionRef(
+  focusRef: SearchEvidenceRef,
+  reader: WorkspaceReaderSourceResponse,
+  selectedText: string,
+  documentBody: string | undefined,
+  sourceTitle: string
+): SearchEvidenceRef {
+  const text = trimText(cleanEvidenceSnippet(selectedText), 1200);
+  const body = String(documentBody || "");
+  const start = text && body ? body.indexOf(text) : -1;
+  const sourceWindow = {
+    ...(focusRef.source_window || {}),
+    text,
+    window_policy: "reader_selection",
+    ...(start >= 0 ? { start_char: start, end_char: start + text.length } : {})
+  };
+  return {
+    ...focusRef,
+    title: `${displayText(sourceTitle, "原文")} · 原文选区`,
+    snippet: text,
+    source_window: sourceWindow,
+    source_item_id: focusRef.source_item_id || reader.source_item?.source_item_id,
+    document_id: focusRef.document_id,
+    chunk_id: focusRef.chunk_id,
+    passage_window_id: focusRef.passage_window_id,
+    knowledge_base_ids: focusRef.knowledge_base_ids || reader.source_item?.knowledge_base_ids,
+    knowledge_base_names: focusRef.knowledge_base_names || reader.source_item?.knowledge_base_names
+  };
 }
 
 type ReaderTextHighlight = {
