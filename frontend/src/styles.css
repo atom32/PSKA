@@ -3516,6 +3516,65 @@ button.context-item-main {
   gap: 8px;
 }
 
+.corpus-summary-head {
+  grid-column: 1 / -1;
+  border: 1px solid rgba(49, 95, 124, 0.2);
+  border-radius: 8px;
+  background: rgba(230, 241, 245, 0.62);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  min-height: 54px;
+  padding: 8px 10px;
+}
+
+.corpus-summary-head > div:first-child {
+  min-width: 0;
+}
+
+.corpus-summary-head strong {
+  display: block;
+  color: var(--ink);
+  font-size: 16px;
+  line-height: 1.15;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.corpus-summary-head small {
+  color: #315f7c;
+  font-size: 11px;
+}
+
+.corpus-summary-toggle {
+  border: 1px solid rgba(49, 95, 124, 0.22);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.72);
+  display: inline-flex;
+  padding: 3px;
+}
+
+.corpus-summary-toggle button {
+  height: 28px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #315f7c;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 0 9px;
+  white-space: nowrap;
+}
+
+.corpus-summary-toggle button.active {
+  background: #ffffff;
+  color: var(--ink);
+  box-shadow: 0 1px 4px rgba(38, 34, 24, 0.12);
+}
+
 .corpus-summary span {
   min-height: 68px;
   border: 1px solid var(--line);
@@ -8055,6 +8114,14 @@ button.context-item-main {
 
   .corpus-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .corpus-summary-head {
+    grid-template-columns: 1fr;
+  }
+
+  .corpus-summary-toggle {
+    width: fit-content;
   }
 
   .corpus-operation {

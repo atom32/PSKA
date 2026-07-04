@@ -5784,6 +5784,7 @@ function CorpusWorkspace({
   const [knowledgeBaseDraftDescription, setKnowledgeBaseDraftDescription] = useState("");
   const [knowledgeBaseArchiveConfirm, setKnowledgeBaseArchiveConfirm] = useState(false);
   const [knowledgeBaseTab, setKnowledgeBaseTab] = useState<KnowledgeBaseDetailTab>("sources");
+  const [corpusSummaryMode, setCorpusSummaryMode] = useState<"current" | "all">("current");
   const [uploadDigestAfter, setUploadDigestAfter] = useState(true);
   const [uploadProgress, setUploadProgress] = useState<CorpusUploadProgress>({ phase: "idle" });
   const [documentDeletePreview, setDocumentDeletePreview] = useState<WorkspaceDocumentDeleteResponse | null>(null);
@@ -5914,6 +5915,12 @@ function CorpusWorkspace({
     chunks: currentKnowledgeBaseCounts.chunks ?? corpus?.counts?.chunks_matching ?? corpus?.chunks?.length ?? 0,
     inputSources: sourceSummary?.input_sources?.length ?? sourceSummary?.knowledge_sources?.source_count ?? sourceSummary?.connector_state?.state_count ?? 0
   };
+  const allKnowledgeBaseCounts = { ...aggregateKnowledgeBaseCounts(knowledgeBases), inputSources: counts.inputSources };
+  const allEmbeddingCoverageLabel = aggregateKnowledgeBaseEmbeddingCoverageLabel(knowledgeBases);
+  const summaryCounts = corpusSummaryMode === "all" ? allKnowledgeBaseCounts : counts;
+  const summaryEmbeddingCoverageLabel = corpusSummaryMode === "all" ? allEmbeddingCoverageLabel : embeddingCoverageLabel;
+  const summaryScopeLabel = corpusSummaryMode === "all" ? "全部资料" : currentKnowledgeBase?.name || "当前知识库";
+  const summaryScopeDetail = corpusSummaryMode === "all" ? `${knowledgeBases.filter((knowledgeBase) => knowledgeBase.status !== "archived").length} 个知识库` : "当前知识库";
   const writingBoardsForCurrentKnowledgeBase = useMemo(
     () => writingBoards.filter((board) => writingBoardExplicitKnowledgeBaseIds(board).includes(currentKnowledgeBaseId)),
     [currentKnowledgeBaseId, writingBoards]
@@ -6656,12 +6663,36 @@ function CorpusWorkspace({
             </span>
           </div>
         </div>
-        <div className="corpus-summary" aria-label="资料库摘要">
-          <span><strong>{counts.sources}</strong> 条目</span>
-          <span><strong>{counts.documents}</strong> 原文</span>
-          <span><strong>{counts.chunks}</strong> 检索片段</span>
-          <span><strong>{embeddingCoverageLabel}</strong> 向量覆盖</span>
-          <span><strong>{counts.inputSources}</strong> 高级源</span>
+        <div className="corpus-summary" aria-label="资料库摘要" data-testid="corpus-summary">
+          <div className="corpus-summary-head">
+            <div>
+              <strong>{summaryScopeLabel}</strong>
+              <small>{summaryScopeDetail}</small>
+            </div>
+            <div className="corpus-summary-toggle" role="group" aria-label="资料范围">
+              <button
+                type="button"
+                className={corpusSummaryMode === "current" ? "active" : ""}
+                onClick={() => setCorpusSummaryMode("current")}
+                data-testid="corpus-summary-current"
+              >
+                当前 KB
+              </button>
+              <button
+                type="button"
+                className={corpusSummaryMode === "all" ? "active" : ""}
+                onClick={() => setCorpusSummaryMode("all")}
+                data-testid="corpus-summary-all"
+              >
+                全部资料
+              </button>
+            </div>
+          </div>
+          <span><strong>{summaryCounts.sources}</strong> 条目</span>
+          <span><strong>{summaryCounts.documents}</strong> 原文</span>
+          <span><strong>{summaryCounts.chunks}</strong> 检索片段</span>
+          <span><strong>{summaryEmbeddingCoverageLabel}</strong> 向量覆盖</span>
+          <span><strong>{summaryCounts.inputSources}</strong> 高级源</span>
         </div>
         <div className="corpus-actions">
           <button type="button" onClick={() => void handleToggleKnowledgeBasePin()} disabled={actionRunning || !currentKnowledgeBaseId}>
@@ -8722,6 +8753,37 @@ function knowledgeBaseEmbeddingCoverageLabel(readiness?: KnowledgeBase["readines
     return "-";
   }
   return `${Math.round(Math.max(0, Math.min(1, value)) * 100)}%`;
+}
+
+function aggregateKnowledgeBaseCounts(knowledgeBases: KnowledgeBase[]) {
+  const activeKnowledgeBases = knowledgeBases.filter((knowledgeBase) => knowledgeBase.status !== "archived");
+  return activeKnowledgeBases.reduce(
+    (total, knowledgeBase) => {
+      const counts = knowledgeBase.counts || {};
+      total.sources += knowledgeBaseMetricNumber(counts.source_items);
+      total.documents += knowledgeBaseMetricNumber(counts.documents);
+      total.chunks += knowledgeBaseMetricNumber(counts.chunks);
+      return total;
+    },
+    { sources: 0, documents: 0, chunks: 0, inputSources: activeKnowledgeBases.length }
+  );
+}
+
+function aggregateKnowledgeBaseEmbeddingCoverageLabel(knowledgeBases: KnowledgeBase[]) {
+  const activeKnowledgeBases = knowledgeBases.filter((knowledgeBase) => knowledgeBase.status !== "archived");
+  const totals = activeKnowledgeBases.reduce(
+    (total, knowledgeBase) => {
+      const counts = knowledgeBase.counts || {};
+      total.embedded += knowledgeBaseMetricNumber(counts.embedded_chunks);
+      total.active += knowledgeBaseMetricNumber(counts.active_chunks ?? counts.chunks);
+      return total;
+    },
+    { embedded: 0, active: 0 }
+  );
+  if (totals.active <= 0) {
+    return "-";
+  }
+  return `${Math.round(Math.max(0, Math.min(1, totals.embedded / totals.active)) * 100)}%`;
 }
 
 function knowledgeBaseMetricNumber(value: unknown) {

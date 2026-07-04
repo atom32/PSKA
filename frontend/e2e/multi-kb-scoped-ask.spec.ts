@@ -249,6 +249,14 @@ async function expectTodayReviewHealth(page: Page, fixture: ReviewHealthFixture)
 
 async function expectKnowledgeBaseReadinessPanel(page: Page, knowledgeBaseName: string) {
   await openWorkspace(page, "资料库");
+  const summary = page.getByTestId("corpus-summary");
+  await expect(summary).toContainText(knowledgeBaseName, { timeout: 45_000 });
+  await expect(summary).toContainText("当前知识库");
+  await page.getByTestId("corpus-summary-all").click();
+  await expect(summary).toContainText("全部资料");
+  await expect(summary).toContainText("知识库");
+  await page.getByTestId("corpus-summary-current").click();
+  await expect(summary).toContainText(knowledgeBaseName);
   const panel = page.getByTestId("knowledge-base-readiness-panel");
   await expect(panel).toBeVisible({ timeout: 45_000 });
   await expect(panel).toContainText(knowledgeBaseName);
