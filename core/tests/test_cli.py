@@ -223,6 +223,12 @@ def test_cli_accepts_search_and_smoke() -> None:
         "12",
         "--limit",
         "10",
+        "--tenant-id",
+        "tenant_a",
+        "--owner-user-id",
+        "user_a",
+        "--knowledge-base-id",
+        "kb_a",
     ])
     mcp = build_parser().parse_args(["mcp-server"])
     connector = build_parser().parse_args(["connector-ingest-record", "record.json"])
@@ -306,6 +312,9 @@ def test_cli_accepts_search_and_smoke() -> None:
     assert embed.embedding_base_url == "https://embedding.test/v1"
     assert embed.embedding_timeout_seconds == 12
     assert embed.limit == 10
+    assert embed.tenant_id == "tenant_a"
+    assert embed.owner_user_id == "user_a"
+    assert embed.knowledge_base_id == "kb_a"
     assert mcp.command == "mcp-server"
     assert connector.command == "connector-ingest-record"
     assert str(connector.record) == "record.json"

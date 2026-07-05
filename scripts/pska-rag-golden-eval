@@ -1,0 +1,382 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+
+
+DEFAULT_FIXTURE = Path(__file__).resolve().parents[1] / "evals" / "pska_hikvision_annual_reports_golden.json"
+
+
+@dataclass(slots=True)
+class HttpClient:
+    base_url: str
+    token: str
+    tenant_id: str
+    owner_user_id: str
+    timeout_seconds: float
+
+    def post(self, path: str, payload: dict[str, Any]) -> tuple[dict[str, Any], int]:
+        body = {
+            "tenant_id": self.tenant_id,
+            "owner_user_id": self.owner_user_id,
+            "represented_user_id": self.owner_user_id,
+            "user_id": self.owner_user_id,
+            **payload,
+        }
+        started = time.perf_counter()
+        request = Request(
+            f"{self.base_url.rstrip('/')}{path}",
+            data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+            headers={
+                "authorization": f"Bearer {self.token}",
+                "content-type": "application/json",
+                "x-tenant-id": self.tenant_id,
+                "x-user-id": self.owner_user_id,
+            },
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=self.timeout_seconds) as response:
+                data = json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"{path} HTTP {exc.code}: {detail[:1000]}") from exc
+        except URLError as exc:
+            raise RuntimeError(f"{path} request failed: {exc}") from exc
+        return data, int((time.perf_counter() - started) * 1000)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Run PSKA RAG Golden Eval against the live HTTP service.")
+    parser.add_argument("--fixture", type=Path, default=DEFAULT_FIXTURE)
+    parser.add_argument("--base-url", default=os.getenv("PSKA_URL", "http://127.0.0.1:8765"))
+    parser.add_argument("--service-token", default=os.getenv("PSKA_SERVICE_TOKEN", "local-fastreact-token"))
+    parser.add_argument("--tenant-id", default=None)
+    parser.add_argument("--owner-user-id", default=None)
+    parser.add_argument("--knowledge-base-id", default=None)
+    parser.add_argument("--top-k", type=int, default=None)
+    parser.add_argument("--mode", default=None, help="Search mode label to pass to /workspace/knowledge-bases/search.")
+    parser.add_argument("--timeout-seconds", type=float, default=90.0)
+    parser.add_argument("--skip-ask", action="store_true", help="Only evaluate retrieval ranks; skip /workspace/ask.")
+    parser.add_argument("--format", choices=["json", "text"], default="text")
+    args = parser.parse_args()
+
+    fixture = json.loads(args.fixture.read_text(encoding="utf-8"))
+    tenant_id = args.tenant_id or str(fixture.get("tenant_id") or "tenant_default")
+    owner_user_id = args.owner_user_id or str(fixture.get("owner_user_id") or "user_primary")
+    knowledge_base_id = args.knowledge_base_id or str((fixture.get("knowledge_base") or {}).get("id") or "")
+    if not knowledge_base_id:
+        raise SystemExit("knowledge_base_id is required in fixture or --knowledge-base-id")
+    top_k = max(1, min(int(args.top_k or fixture.get("top_k") or 50), 50))
+    search_mode = str(args.mode or fixture.get("mode") or "hybrid")
+
+    client = HttpClient(
+        base_url=args.base_url,
+        token=args.service_token,
+        tenant_id=tenant_id,
+        owner_user_id=owner_user_id,
+        timeout_seconds=args.timeout_seconds,
+    )
+    cases = [_run_case(client, case, knowledge_base_id=knowledge_base_id, top_k=top_k, search_mode=search_mode, skip_ask=args.skip_ask) for case in fixture.get("cases", [])]
+    report = _summarize(fixture, cases, top_k=top_k, search_mode=search_mode, skipped_ask=args.skip_ask)
+    if args.format == "json":
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        _print_text_report(report)
+    return 0 if report["ok"] else 1
+
+
+def _run_case(
+    client: HttpClient,
+    case: dict[str, Any],
+    *,
+    knowledge_base_id: str,
+    top_k: int,
+    search_mode: str,
+    skip_ask: bool,
+) -> dict[str, Any]:
+    question = str(case["question"])
+    expected = dict(case.get("expected") or {})
+    search, search_ms = client.post(
+        "/workspace/knowledge-bases/search",
+        {
+            "query": question,
+            "knowledge_base_ids": [knowledge_base_id],
+            "top_k": top_k,
+            "mode": search_mode,
+        },
+    )
+    search_rows = _rows_from_search(search)
+    retrieval = _evaluate_retrieval(search_rows, expected)
+    ask_report: dict[str, Any] | None = None
+    if not skip_ask:
+        ask, ask_ms = client.post(
+            "/workspace/ask",
+            {
+                "query": question,
+                "intent": "quick",
+                "skip_intent_classifier": True,
+                "scope": {"mode": "hard", "knowledge_base_ids": [knowledge_base_id]},
+            },
+        )
+        ask_report = _evaluate_ask(ask, expected)
+        ask_report["latency_ms"] = ask_ms
+    return {
+        "id": case.get("id"),
+        "question": question,
+        "search_latency_ms": search_ms,
+        "retrieval": retrieval,
+        "ask": ask_report,
+        "ok": bool(retrieval["ok"] and (ask_report is None or ask_report["ok"])),
+    }
+
+
+def _rows_from_search(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    retrieval = payload.get("retrieval") if isinstance(payload.get("retrieval"), dict) else {}
+    workspace = payload.get("workspace") if isinstance(payload.get("workspace"), dict) else {}
+    evidence = workspace.get("evidence") if isinstance(workspace.get("evidence"), dict) else {}
+    rows = (
+        payload.get("results")
+        or payload.get("citations")
+        or payload.get("source_refs")
+        or retrieval.get("citations")
+        or retrieval.get("source_refs")
+        or evidence.get("citations")
+        or evidence.get("source_refs")
+        or []
+    )
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def _evaluate_retrieval(rows: list[dict[str, Any]], expected: dict[str, Any]) -> dict[str, Any]:
+    forbidden = _forbidden_hits(rows, expected)
+    groups = list(expected.get("evidence_groups") or [])
+    group_reports = [_group_report(rows, group) for group in groups]
+    group_ranks = [report["rank"] for report in group_reports]
+    all_groups_found = all(rank is not None for rank in group_ranks) if groups else True
+    first_complete_rank = max(rank for rank in group_ranks if rank is not None) if all_groups_found and group_ranks else None
+    hit_at = {str(k): bool(first_complete_rank is not None and first_complete_rank <= k) for k in (1, 3, 5, 10, 50)}
+    ok = (not groups or hit_at["5"]) and not forbidden
+    if expected.get("expect_no_answer"):
+        ok = not forbidden
+    return {
+        "ok": ok,
+        "result_count": len(rows),
+        "first_complete_rank": first_complete_rank,
+        "hit_at": hit_at,
+        "groups": group_reports,
+        "forbidden_hits": forbidden,
+        "top_titles": [_title_of(row) for row in rows[:5]],
+    }
+
+
+def _evaluate_ask(payload: dict[str, Any], expected: dict[str, Any]) -> dict[str, Any]:
+    answer = str(payload.get("answer") or "")
+    answer_folded = answer.casefold()
+    answer_contains = [str(item) for item in expected.get("answer_contains") or []]
+    missing_answer = [item for item in answer_contains if item.casefold() not in answer_folded]
+    forbidden_answer = [item for item in expected.get("forbidden_contains") or [] if str(item).casefold() in answer_folded]
+    expect_no_answer = bool(expected.get("expect_no_answer"))
+    no_answer_ok = _looks_like_no_answer(answer) if expect_no_answer else True
+
+    citation_docs = [str(item) for item in expected.get("citation_documents") or []]
+    refs = _source_refs_from_ask(payload)
+    forbidden_citations = _forbidden_hits(refs, expected)
+    relevant_refs = [ref for ref in refs if _matches_any_document(_title_of(ref), citation_docs)]
+    citation_precision = (len(relevant_refs) / len(refs)) if refs else (1.0 if expect_no_answer else 0.0)
+    citation_ok = True
+    if citation_docs and not relevant_refs:
+        citation_ok = False
+    if forbidden_citations:
+        citation_ok = False
+    ok = not missing_answer and not forbidden_answer and no_answer_ok and citation_ok
+    return {
+        "ok": ok,
+        "answer_preview": _compact(answer, 260),
+        "missing_answer_contains": missing_answer,
+        "forbidden_answer_contains": forbidden_answer,
+        "no_answer_ok": no_answer_ok,
+        "citation_count": len(refs),
+        "citation_precision": round(citation_precision, 4),
+        "citation_ok": citation_ok,
+        "citation_titles": [_title_of(ref) for ref in refs[:8]],
+        "forbidden_citation_hits": forbidden_citations,
+    }
+
+
+def _source_refs_from_ask(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    refs: list[dict[str, Any]] = []
+    for key in ("source_refs", "citations"):
+        refs.extend(row for row in payload.get(key, []) if isinstance(row, dict))
+    evidence = payload.get("evidence") if isinstance(payload.get("evidence"), dict) else {}
+    refs.extend(row for row in evidence.get("results", []) if isinstance(row, dict))
+    seen: set[tuple[str, str, str]] = set()
+    unique: list[dict[str, Any]] = []
+    for ref in refs:
+        key = (_title_of(ref), str(ref.get("source_item_id") or ""), _compact(_text_of(ref), 120))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(ref)
+    return unique
+
+
+def _group_report(rows: list[dict[str, Any]], group: dict[str, Any]) -> dict[str, Any]:
+    for index, row in enumerate(rows, start=1):
+        if _row_matches_group(row, group):
+            return {"rank": index, "documents": group.get("documents") or [], "contains": group.get("contains") or [], "title": _title_of(row)}
+    return {"rank": None, "documents": group.get("documents") or [], "contains": group.get("contains") or [], "title": None}
+
+
+def _row_matches_group(row: dict[str, Any], group: dict[str, Any]) -> bool:
+    title = _title_of(row)
+    documents = [str(item) for item in group.get("documents") or []]
+    if documents and not _matches_any_document(title, documents):
+        return False
+    text = f"{title}\n{_text_of(row)}".casefold()
+    return all(str(item).casefold() in text for item in group.get("contains") or [])
+
+
+def _forbidden_hits(rows: list[dict[str, Any]], expected: dict[str, Any]) -> list[dict[str, Any]]:
+    forbidden_docs = [str(item) for item in expected.get("forbidden_documents") or []]
+    forbidden_texts = [str(item) for item in expected.get("forbidden_contains") or []]
+    hits = []
+    for index, row in enumerate(rows, start=1):
+        title = _title_of(row)
+        text = f"{title}\n{_text_of(row)}".casefold()
+        matched_docs = [doc for doc in forbidden_docs if doc.casefold() in title.casefold()]
+        matched_texts = [item for item in forbidden_texts if item.casefold() in text]
+        if matched_docs or matched_texts:
+            hits.append({"rank": index, "title": title, "documents": matched_docs, "contains": matched_texts})
+    return hits
+
+
+def _title_of(row: dict[str, Any]) -> str:
+    for key in ("title", "document_title", "source_title", "source_item_title", "filename", "source_name"):
+        value = row.get(key)
+        if value:
+            return str(value)
+    citation = row.get("citation") if isinstance(row.get("citation"), dict) else {}
+    return _title_of(citation) if citation else ""
+
+
+def _text_of(row: dict[str, Any]) -> str:
+    parts: list[str] = []
+    for key in ("text", "snippet", "content", "preview", "chunk_text", "source_window", "excerpt"):
+        value = row.get(key)
+        if isinstance(value, dict):
+            parts.append(_text_of(value))
+        elif value:
+            parts.append(str(value))
+    citation = row.get("citation") if isinstance(row.get("citation"), dict) else {}
+    if citation:
+        parts.append(_text_of(citation))
+    return "\n".join(part for part in parts if part)
+
+
+def _matches_any_document(title: str, documents: list[str]) -> bool:
+    if not documents:
+        return True
+    folded = title.casefold()
+    return any(document.casefold() in folded for document in documents)
+
+
+def _looks_like_no_answer(answer: str) -> bool:
+    folded = answer.casefold()
+    markers = (
+        "no answer",
+        "no relevant",
+        "not enough evidence",
+        "没有找到",
+        "未找到",
+        "没有足够",
+        "无法根据",
+        "无法回答",
+        "没有检索到",
+    )
+    return any(marker in folded for marker in markers)
+
+
+def _summarize(fixture: dict[str, Any], cases: list[dict[str, Any]], *, top_k: int, search_mode: str, skipped_ask: bool) -> dict[str, Any]:
+    evidence_cases = [case for case in cases if case["retrieval"]["groups"]]
+    answer_cases = [case for case in cases if case.get("ask") is not None]
+    hit_rates = {}
+    for k in (1, 3, 5, 10, 50):
+        if evidence_cases:
+            hit_rates[f"hit_at_{k}"] = round(sum(1 for case in evidence_cases if case["retrieval"]["hit_at"][str(k)]) / len(evidence_cases), 4)
+        else:
+            hit_rates[f"hit_at_{k}"] = None
+    answer_accuracy = round(sum(1 for case in answer_cases if case["ask"]["ok"]) / len(answer_cases), 4) if answer_cases else None
+    citation_precisions = [case["ask"]["citation_precision"] for case in answer_cases if case.get("ask")]
+    citation_precision = round(sum(citation_precisions) / len(citation_precisions), 4) if citation_precisions else None
+    retrieval_ok = all(case["retrieval"]["ok"] for case in cases)
+    ask_ok = True if skipped_ask else all(case.get("ask", {}).get("ok") for case in cases)
+    return {
+        "schema": "pska.rag_golden_eval.report.v1",
+        "name": fixture.get("name"),
+        "ok": bool(retrieval_ok and ask_ok),
+        "search_mode": search_mode,
+        "top_k": top_k,
+        "case_count": len(cases),
+        "metrics": {
+            **hit_rates,
+            "retrieval_ok_rate": round(sum(1 for case in cases if case["retrieval"]["ok"]) / len(cases), 4) if cases else None,
+            "answer_accuracy": answer_accuracy,
+            "citation_precision_avg": citation_precision,
+            "avg_search_latency_ms": round(sum(case["search_latency_ms"] for case in cases) / len(cases), 2) if cases else None,
+            "avg_ask_latency_ms": round(sum(case["ask"]["latency_ms"] for case in answer_cases) / len(answer_cases), 2) if answer_cases else None,
+        },
+        "targets": fixture.get("targets") or {},
+        "cases": cases,
+    }
+
+
+def _print_text_report(report: dict[str, Any]) -> None:
+    metrics = report["metrics"]
+    print(f"{report['name']} [{report['search_mode']}, top_k={report['top_k']}]")
+    print(f"ok: {report['ok']}")
+    print(
+        "metrics: "
+        f"Hit@1={metrics['hit_at_1']} "
+        f"Hit@3={metrics['hit_at_3']} "
+        f"Hit@5={metrics['hit_at_5']} "
+        f"Hit@50={metrics['hit_at_50']} "
+        f"Answer={metrics['answer_accuracy']} "
+        f"CitationPrecision={metrics['citation_precision_avg']}"
+    )
+    print()
+    print("case_id | rank | h@5 | answer | citation_precision | top_titles")
+    print("-" * 110)
+    for case in report["cases"]:
+        retrieval = case["retrieval"]
+        ask = case.get("ask") or {}
+        rank = retrieval["first_complete_rank"] if retrieval["first_complete_rank"] is not None else "-"
+        print(
+            f"{case['id']} | {rank} | {retrieval['hit_at']['5']} | "
+            f"{ask.get('ok', '-') } | {ask.get('citation_precision', '-') } | "
+            f"{', '.join(retrieval.get('top_titles') or [])}"
+        )
+
+
+def _compact(value: str, limit: int) -> str:
+    text = " ".join(str(value or "").split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except KeyboardInterrupt:
+        raise SystemExit(130)
+    except Exception as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        raise SystemExit(2)

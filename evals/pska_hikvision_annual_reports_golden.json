@@ -1,0 +1,180 @@
+{
+  "schema": "pska.rag_golden_eval.v1",
+  "name": "PSKA Hikvision Annual Reports Golden Eval",
+  "description": "A live PSKA RAG evaluation set over one scoped knowledge base containing Hikvision annual reports from 2021 through 2025. The fixture is for generic retrieval quality evaluation only; production code must not special-case these documents, entities, or questions.",
+  "tenant_id": "tenant_graphintell",
+  "owner_user_id": "test_user_3",
+  "knowledge_base": {
+    "id": "kb_528f0b7236934c72ae0de9bc7e815959",
+    "name": "海康威视年报"
+  },
+  "mode": "hybrid",
+  "top_k": 50,
+  "targets": {
+    "hit_at_1": 0.7,
+    "hit_at_3": 0.9,
+    "hit_at_5": 0.95,
+    "citation_precision_avg": 0.95,
+    "answer_accuracy": 0.9
+  },
+  "cases": [
+    {
+      "id": "no_entity_current_kb_2025_revenue",
+      "question": "只根据当前知识库回答：2025年年度报告主要会计数据和财务指标表中的营业收入（元）是多少？请引用来源。",
+      "expected": {
+        "evidence_groups": [
+          {
+            "documents": ["海康威视2025.pdf"],
+            "contains": ["营业收入", "92,507,796,069.94"]
+          }
+        ],
+        "answer_contains": ["92,507,796,069.94"],
+        "citation_documents": ["海康威视2025.pdf"]
+      }
+    },
+    {
+      "id": "entity_2025_revenue",
+      "question": "海康威视2025年年度报告主要会计数据和财务指标表中的营业收入（元）是多少？请引用来源。",
+      "expected": {
+        "evidence_groups": [
+          {
+            "documents": ["海康威视2025.pdf"],
+            "contains": ["营业收入", "92,507,796,069.94"]
+          }
+        ],
+        "answer_contains": ["92,507,796,069.94"],
+        "citation_documents": ["海康威视2025.pdf"]
+      }
+    },
+    {
+      "id": "entity_2024_revenue",
+      "question": "海康威视2024年年度报告主要会计数据和财务指标表中的营业收入（元）是多少？请引用来源。",
+      "expected": {
+        "evidence_groups": [
+          {
+            "documents": ["海康威视2024.pdf"],
+            "contains": ["营业收入", "92,495,525,118.30"]
+          }
+        ],
+        "answer_contains": ["92,495,525,118.30"],
+        "citation_documents": ["海康威视2024.pdf"]
+      }
+    },
+    {
+      "id": "latest_revenue",
+      "question": "当前资料库里最新年度报告的营业收入（元）是多少？请说明年份并引用来源。",
+      "expected": {
+        "evidence_groups": [
+          {
+            "documents": ["海康威视2025.pdf"],
+            "contains": ["2025", "营业收入", "92,507,796,069.94"]
+          }
+        ],
+        "answer_contains": ["2025", "92,507,796,069.94"],
+        "citation_documents": ["海康威视2025.pdf"]
+      }
+    },
+    {
+      "id": "yoy_2024_2025_revenue",
+      "question": "比较海康威视2024年和2025年营业收入，计算2025年相对2024年的变化百分比，只根据资料库回答并引用来源。",
+      "expected": {
+        "evidence_groups": [
+          {
+            "documents": ["海康威视2025.pdf"],
+            "contains": ["92,507,796,069.94", "92,495,525,118.30"]
+          }
+        ],
+        "answer_contains": ["92,507,796,069.94", "92,495,525,118.30", "0.01%"],
+        "citation_documents": ["海康威视2025.pdf", "海康威视2024.pdf"]
+      }
+    },
+    {
+      "id": "trend_2021_2025_revenue",
+      "question": "列出海康威视2021年至2025年年度报告主要会计数据和财务指标表中的营业收入（元），按年份升序回答并引用来源。",
+      "expected": {
+        "evidence_groups": [
+          {
+            "documents": ["海康威视2021.pdf"],
+            "contains": ["81,420,053,539.27"]
+          },
+          {
+            "documents": ["海康威视2022.pdf"],
+            "contains": ["83,166,321,681.14"]
+          },
+          {
+            "documents": ["海康威视2023.pdf"],
+            "contains": ["89,339,856,855.68"]
+          },
+          {
+            "documents": ["海康威视2024.pdf"],
+            "contains": ["92,495,525,118.30"]
+          },
+          {
+            "documents": ["海康威视2025.pdf"],
+            "contains": ["92,507,796,069.94"]
+          }
+        ],
+        "answer_contains": [
+          "81,420,053,539.27",
+          "83,166,321,681.14",
+          "89,339,856,855.68",
+          "92,495,525,118.30",
+          "92,507,796,069.94"
+        ],
+        "citation_documents": [
+          "海康威视2021.pdf",
+          "海康威视2022.pdf",
+          "海康威视2023.pdf",
+          "海康威视2024.pdf",
+          "海康威视2025.pdf"
+        ]
+      }
+    },
+    {
+      "id": "restatement_2023",
+      "question": "海康威视2023年年度报告是否追溯调整或重述以前年度会计数据？原因是什么？请引用来源。",
+      "expected": {
+        "evidence_groups": [
+          {
+            "documents": ["海康威视2023.pdf"],
+            "contains": ["追溯调整", "会计政策变更"]
+          }
+        ],
+        "answer_contains": ["追溯调整", "会计政策变更"],
+        "citation_documents": ["海康威视2023.pdf"]
+      }
+    },
+    {
+      "id": "q4_2025_revenue",
+      "question": "海康威视2025年第四季度营业收入是多少？请引用来源。",
+      "expected": {
+        "evidence_groups": [
+          {
+            "documents": ["海康威视2025.pdf"],
+            "contains": ["第四季度", "营业收入", "26,750,013,612.93"]
+          }
+        ],
+        "answer_contains": ["26,750,013,612.93"],
+        "citation_documents": ["海康威视2025.pdf"]
+      }
+    },
+    {
+      "id": "scope_blocks_default_mock_table",
+      "question": "只根据当前资料库回答：PSKA Mock Large Financial Tables 里的 RowID MOCK-1132 的营业收入是多少？",
+      "expected": {
+        "expect_no_answer": true,
+        "forbidden_contains": ["MOCK-1132", "PSKA Mock Large Financial Tables"],
+        "forbidden_documents": ["PSKA Mock Large Financial Tables"]
+      }
+    },
+    {
+      "id": "scope_blocks_tencent_subject",
+      "question": "只根据当前资料库回答：腾讯2025年营业收入是多少？",
+      "expected": {
+        "expect_no_answer": true,
+        "forbidden_contains": ["腾讯"],
+        "forbidden_documents": ["腾讯"]
+      }
+    }
+  ]
+}

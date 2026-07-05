@@ -112,6 +112,9 @@ def build_parser() -> argparse.ArgumentParser:
     _add_embedding_args(embed_parser, default_provider="bge-m3")
     embed_parser.add_argument("--batch-size", type=int, default=None)
     embed_parser.add_argument("--limit", type=int, default=None)
+    embed_parser.add_argument("--tenant-id", default=None)
+    embed_parser.add_argument("--owner-user-id", default=None)
+    embed_parser.add_argument("--knowledge-base-id", default=None)
 
     ingest_parser = subparsers.add_parser("ingest-payload", help="Ingest a channel payload JSON file")
     ingest_parser.add_argument("payload", type=Path)
@@ -882,9 +885,38 @@ def embed_backfill(args: argparse.Namespace) -> int:
     if provider is None:
         print("Embedding provider is disabled; use --embedding-provider bge-m3", file=sys.stderr)
         return 2
-    report = EmbeddingService(store, provider, batch_size=args.batch_size).backfill_missing(limit=args.limit)
+    service = EmbeddingService(store, provider, batch_size=args.batch_size)
+    scoped_chunks = _scoped_embedding_backfill_chunks(store, args, provider=provider)
+    if scoped_chunks is None:
+        report = service.backfill_missing(limit=args.limit)
+    else:
+        report = service.embed_chunks(scoped_chunks)
     print(dumps(report))
     return 1 if report.failed else 0
+
+
+def _scoped_embedding_backfill_chunks(store: PostgresKnowledgeStore, args: argparse.Namespace, *, provider: Any) -> list[Any] | None:
+    tenant_id = str(getattr(args, "tenant_id", None) or "").strip()
+    owner_user_id = str(getattr(args, "owner_user_id", None) or "").strip()
+    knowledge_base_id = str(getattr(args, "knowledge_base_id", None) or "").strip()
+    if not (tenant_id or owner_user_id or knowledge_base_id):
+        return None
+    if not (tenant_id and owner_user_id and knowledge_base_id):
+        raise ValueError("--tenant-id, --owner-user-id, and --knowledge-base-id are required together for scoped embedding backfill")
+    source_ids = store.list_knowledge_base_source_item_ids({knowledge_base_id}, tenant_id=tenant_id, owner_user_id=owner_user_id)
+    chunks = [
+        chunk
+        for chunk in store.list_chunks_for_sources(source_ids)
+        if chunk.tenant_id == tenant_id
+        and chunk.owner_user_id == owner_user_id
+        and chunk.lifecycle_status == "active"
+        and (
+            chunk.metadata.get("embedding_provider") != provider.provider_name
+            or chunk.metadata.get("embedding_model") != provider.model_name
+        )
+    ]
+    limit = getattr(args, "limit", None)
+    return chunks[: int(limit)] if limit is not None else chunks
 
 
 def ingest_payload(args: argparse.Namespace) -> int:

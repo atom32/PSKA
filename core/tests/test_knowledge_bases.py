@@ -967,6 +967,103 @@ def test_workspace_knowledge_base_search_returns_scoped_attributed_results() -> 
     assert response["knowledge_bases"][0]["knowledge_base_id"] == alpha_kb["knowledge_base_id"]
 
 
+def test_multi_source_hard_scope_filters_without_promoting_source_representatives() -> None:
+    class QueryVectorProvider:
+        provider_name = "fixture"
+        model_name = "fixture"
+        dimensions = 2
+
+        def embed_texts(self, texts: list[str]) -> list[list[float]]:
+            return [[1.0, 0.0] for _ in texts]
+
+    api = _api()
+    api.retrieval = RetrievalService(api.store, ACLService(api.store), embedding_provider=QueryVectorProvider())
+    context = RequestContext()
+    kb = api.create_workspace_knowledge_base({"name": "Scoped retrieval KB"}, context=context)["knowledge_base"]
+    source_a = _source_item("scoped_source_a")
+    source_b = _source_item("scoped_source_b")
+    source_a.title = "Annual report overview A"
+    source_b.title = "Annual report overview B"
+    for item in (source_a, source_b):
+        api.store.upsert_source_item(item)
+        api.store.add_document(
+            Document(
+                document_id=f"doc_{item.source_item_id}",
+                source_item_id=item.source_item_id,
+                owner_user_id=item.owner_user_id,
+                space_id=item.space_id,
+                visibility=item.visibility,
+                visible_team_ids=[],
+                title=item.title,
+                body=item.content_text,
+                tenant_id=item.tenant_id,
+            )
+        )
+        api.store.add_knowledge_base_source_item(
+            KnowledgeBaseSourceItem(
+                knowledge_base_id=kb["knowledge_base_id"],
+                source_item_id=item.source_item_id,
+                owner_user_id=item.owner_user_id,
+                added_by_user_id=item.owner_user_id,
+                tenant_id=item.tenant_id,
+            )
+        )
+    api.store.add_chunk(
+        Chunk(
+            chunk_id="scoped_cover_a",
+            document_id="doc_scoped_source_a",
+            source_item_id=source_a.source_item_id,
+            owner_user_id=source_a.owner_user_id,
+            space_id=source_a.space_id,
+            visibility=source_a.visibility,
+            visible_team_ids=[],
+            text="Annual report overview cover page with repeated overview terms.",
+            embedding=[0.0, 1.0],
+            ordinal=0,
+        )
+    )
+    api.store.add_chunk(
+        Chunk(
+            chunk_id="scoped_target_a",
+            document_id="doc_scoped_source_a",
+            source_item_id=source_a.source_item_id,
+            owner_user_id=source_a.owner_user_id,
+            space_id=source_a.space_id,
+            visibility=source_a.visibility,
+            visible_team_ids=[],
+            text="The sentinel-777 evidence value is 777.88 and should be selected by semantic retrieval.",
+            embedding=[1.0, 0.0],
+            ordinal=1,
+        )
+    )
+    api.store.add_chunk(
+        Chunk(
+            chunk_id="scoped_cover_b",
+            document_id="doc_scoped_source_b",
+            source_item_id=source_b.source_item_id,
+            owner_user_id=source_b.owner_user_id,
+            space_id=source_b.space_id,
+            visibility=source_b.visibility,
+            visible_team_ids=[],
+            text="Annual report overview cover page for another scoped document.",
+            embedding=[0.0, 1.0],
+            ordinal=0,
+        )
+    )
+
+    response = api.workspace_knowledge_base_search(
+        {
+            "query": "annual report overview sentinel-777",
+            "knowledge_base_ids": [kb["knowledge_base_id"]],
+            "top_k": 1,
+        },
+        context=context,
+    )
+
+    assert response["results"][0]["chunk_id"] == "scoped_target_a"
+    assert response["retrieval"]["diagnostics"]["score_debug"]["knowledge_base_scope"]["result_count"] == 1
+
+
 def test_workspace_ask_empty_knowledge_base_reports_scope_diagnostics() -> None:
     api = _api()
     context = RequestContext()

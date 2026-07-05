@@ -240,7 +240,11 @@ class RetrievalService:
         item_by_id = {item.source_item_id: item for item in items}
         query_terms = self._terms(query)
         rank_pool_size = max(top_k, min(len(chunks) or top_k, max(top_k * 4, top_k + 8)))
-        scoped_ranked = self._scoped_source_results(scoped_source_item_ids, chunks, item_by_id, query_terms=query_terms, top_k=rank_pool_size)
+        scoped_ranked = (
+            self._scoped_source_results(scoped_source_item_ids, chunks, item_by_id, query_terms=query_terms, top_k=rank_pool_size)
+            if len(scoped_source_item_ids) == 1
+            else []
+        )
         exact_ranked = self._exact_source_results(query, items, chunks, item_by_id, top_k=rank_pool_size)
         exact_identifier_ranked = self._exact_identifier_results(query, chunks, item_by_id, query_terms=query_terms, top_k=rank_pool_size)
         lexical_ranked, lexical_ranker = self._lexical_ranked_results(query_terms, chunks, item_by_id)

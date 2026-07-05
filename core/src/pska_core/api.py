@@ -12677,7 +12677,7 @@ def _knowledge_base_payload(store: Any, knowledge_base: Any, *, include_source_i
     ]
     documents = [document for document in store.list_documents_for_sources(source_item_ids) if _is_active_lifecycle(document)]
     chunks = [chunk for chunk in store.list_chunks_for_sources(source_item_ids) if _is_active_lifecycle(chunk)]
-    embedded_chunks = [chunk for chunk in chunks if getattr(chunk, "embedding", None)]
+    embedded_chunks = [chunk for chunk in chunks if getattr(chunk, "embedding", None) or _knowledge_base_embedding_label(chunk)]
     embedding_models = sorted(
         {
             _knowledge_base_embedding_label(chunk)
