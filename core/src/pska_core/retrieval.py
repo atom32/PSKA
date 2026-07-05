@@ -43,6 +43,12 @@ _SENSITIVE_TERMS = {
     "银行",
     "医疗",
 }
+_RETRIEVAL_MODE_ALIASES = {
+    "bm25": "lexical",
+    "embedding": "vector",
+    "keyword": "lexical",
+    "semantic": "vector",
+}
 
 
 def _default_graph_embedding_linking(embedding_provider: EmbeddingProvider | None) -> bool:
@@ -66,6 +72,14 @@ def _env_bool(name: str) -> bool | None:
     if normalized in {"0", "false", "no", "off"}:
         return False
     return None
+
+
+def _normalize_retrieval_mode(value: str | None) -> str:
+    normalized = str(value or "hybrid").strip().lower().replace("-", "_")
+    normalized = _RETRIEVAL_MODE_ALIASES.get(normalized, normalized)
+    if normalized in {"hybrid", "lexical", "vector"}:
+        return normalized
+    return "hybrid"
 
 
 @dataclass(slots=True)
@@ -129,6 +143,7 @@ class RetrievalService:
         top_k: int = 5,
         source_item_ids: set[str] | None = None,
         scope_mode: str = "soft",
+        retrieval_mode: str = "hybrid",
     ) -> RetrievalResponse:
         visible_items = self.acl.filter_visible_items(
             user,
@@ -151,6 +166,7 @@ class RetrievalService:
             user=user,
             represented_user_id=represented_user_id,
             top_k=top_k,
+            retrieval_mode=retrieval_mode,
         )
         citations = [result.citation for result in ranked]
         visible_team_ids = sorted(self.acl.visible_team_ids_for_user(represented_user_id or user.user_id, tenant_id=user.tenant_id))
@@ -221,6 +237,7 @@ class RetrievalService:
                 "scope_mode": "hard" if hard_scope else "soft",
                 "scope_source_items": len(scoped_source_item_ids),
                 "scope_leak_prevention": hard_scope,
+                "retrieval_mode": _normalize_retrieval_mode(retrieval_mode),
                 **rank_debug,
             },
         )
@@ -236,24 +253,44 @@ class RetrievalService:
         user: User,
         represented_user_id: str | None,
         top_k: int,
+        retrieval_mode: str,
     ) -> tuple[list[RetrievalResult], dict[str, Any]]:
+        normalized_mode = _normalize_retrieval_mode(retrieval_mode)
+        lexical_enabled = normalized_mode in {"hybrid", "lexical"}
+        vector_requested = normalized_mode in {"hybrid", "vector"}
         item_by_id = {item.source_item_id: item for item in items}
         query_terms = self._terms(query)
         rank_pool_size = max(top_k, min(len(chunks) or top_k, max(top_k * 4, top_k + 8)))
         scoped_ranked = (
             self._scoped_source_results(scoped_source_item_ids, chunks, item_by_id, query_terms=query_terms, top_k=rank_pool_size)
-            if len(scoped_source_item_ids) == 1
+            if normalized_mode in {"hybrid", "lexical"} and len(scoped_source_item_ids) == 1
             else []
         )
-        exact_ranked = self._exact_source_results(query, items, chunks, item_by_id, top_k=rank_pool_size)
-        exact_identifier_ranked = self._exact_identifier_results(query, chunks, item_by_id, query_terms=query_terms, top_k=rank_pool_size)
-        lexical_ranked, lexical_ranker = self._lexical_ranked_results(query_terms, chunks, item_by_id)
+        exact_ranked = (
+            self._exact_source_results(query, items, chunks, item_by_id, top_k=rank_pool_size)
+            if lexical_enabled
+            else []
+        )
+        exact_identifier_ranked = (
+            self._exact_identifier_results(query, chunks, item_by_id, query_terms=query_terms, top_k=rank_pool_size)
+            if lexical_enabled
+            else []
+        )
+        anchor_overlap_ranked = (
+            self._anchor_overlap_results(query, chunks, item_by_id, top_k=rank_pool_size)
+            if normalized_mode == "hybrid"
+            else []
+        )
+        if lexical_enabled:
+            lexical_ranked, lexical_ranker = self._lexical_ranked_results(query_terms, chunks, item_by_id)
+        else:
+            lexical_ranked, lexical_ranker = [], "disabled"
 
         vector_ranked: list[RetrievalResult] = []
-        vector_enabled = self.embedding_provider is not None
+        vector_enabled = vector_requested and self.embedding_provider is not None
         vector_error = None
         query_embedding: list[float] | None = None
-        if self.embedding_provider:
+        if vector_enabled and self.embedding_provider:
             try:
                 query_embedding = self.embedding_provider.embed_texts([query])[0]
                 for chunk, vector_score in self.store.vector_search_chunks(source_ids, query_embedding, top_k=max(top_k * 4, 20)):
@@ -266,6 +303,7 @@ class RetrievalService:
                 vector_error = f"{type(exc).__name__}: {exc}"
 
         combined = self._merge_exact_then_rrf([*exact_ranked, *exact_identifier_ranked], lexical_ranked, vector_ranked, top_k=rank_pool_size)
+        combined = self._merge_scored_candidates(anchor_overlap_ranked, combined, top_k=rank_pool_size)
         combined = self._merge_priority_results(scoped_ranked, combined, top_k=rank_pool_size)
         combined = self._add_query_intent_candidates(query, combined, lexical_ranked, item_by_id, chunks, top_k=rank_pool_size)
         self._apply_query_intent_boosts(query, combined, item_by_id)
@@ -284,20 +322,27 @@ class RetrievalService:
         )
         self._apply_query_intent_boosts(query, combined, item_by_id)
         self._annotate_result_sources(combined)
-        self._apply_rank_quality_boosts(combined, item_by_id, reference_time=_latest_source_time(items))
-        self._apply_query_focused_snippets(query, combined, chunks)
+        stage1_candidate_count = len(combined)
+        self._apply_lightweight_evidence_rerank(query, combined, chunks, item_by_id, reference_time=_latest_source_time(items))
         combined = sorted(combined, key=lambda result: result.score, reverse=True)[:top_k]
+        for rank, result in enumerate(combined, start=1):
+            result.score_debug["stage2_rank"] = float(rank)
         return combined, {
+            "retrieval_mode": normalized_mode,
             "scoped_source_items": len(scoped_source_item_ids),
             "scoped_candidates": len(scoped_ranked),
             "exact_candidates": len(exact_ranked),
             "exact_identifier_candidates": len(exact_identifier_ranked),
+            "anchor_overlap_candidates": len(anchor_overlap_ranked),
             "lexical_candidates": len(lexical_ranked),
             "lexical_ranker": lexical_ranker,
             "vector_enabled": vector_enabled,
+            "vector_requested": vector_requested,
             "vector_candidates": len(vector_ranked),
             "vector_error": vector_error,
             "embedding_model": self.embedding_provider.model_name if self.embedding_provider else None,
+            "stage1_candidate_count": stage1_candidate_count,
+            "stage2_reranker": "lightweight_evidence",
             **graph_rank_debug,
         }
 
@@ -410,6 +455,57 @@ class RetrievalService:
             if len(results) >= top_k:
                 break
         return results
+
+    def _anchor_overlap_results(
+        self,
+        query: str,
+        chunks: list[Chunk],
+        item_by_id: dict[str, SourceItem],
+        *,
+        top_k: int,
+    ) -> list[RetrievalResult]:
+        anchors = _snippet_anchor_terms(query)
+        if not anchors:
+            return []
+        chunks_by_document: dict[str, list[Chunk]] = {}
+        for chunk in chunks:
+            chunks_by_document.setdefault(chunk.document_id, []).append(chunk)
+        for document_chunks in chunks_by_document.values():
+            document_chunks.sort(key=lambda chunk: int(chunk.ordinal or 0))
+        candidates: list[RetrievalResult] = []
+        asks_for_value = _query_seeks_numeric_answer(query)
+        for chunk in chunks:
+            item = item_by_id.get(chunk.source_item_id)
+            if item is None:
+                continue
+            context_text = self._chunk_text_with_table_header(chunk, chunks_by_document.get(chunk.document_id, []))
+            haystack = f"{item.title}\n{context_text}"
+            coverage = _anchor_coverage(anchors, haystack)
+            hit_count = _anchor_hit_count(anchors, haystack)
+            if coverage < 0.28 and hit_count < 3:
+                continue
+            score = 0.16 + min(coverage * 0.05, 0.05) + min(hit_count * 0.004, 0.024)
+            if asks_for_value and _text_has_numeric_evidence(context_text):
+                score += 0.018
+            if _looks_like_tabular_evidence(context_text):
+                score += 0.012
+            candidates.append(
+                self._result_for_chunk(
+                    chunk,
+                    item,
+                    score,
+                    {
+                        "anchor_overlap": coverage,
+                        "anchor_hit_count": float(hit_count),
+                        "lexical": 0.0,
+                        "vector": 0.0,
+                    },
+                )
+            )
+        candidates.sort(key=lambda result: (result.score, result.score_debug.get("anchor_hit_count", 0.0)), reverse=True)
+        for rank, result in enumerate(candidates[:top_k], start=1):
+            result.score_debug["anchor_overlap_rank"] = float(rank)
+        return candidates[:top_k]
 
     def _result_for_chunk(self, chunk: Chunk, item: SourceItem, score: float, score_debug: dict[str, float]) -> RetrievalResult:
         score_debug = {**score_debug, "chunk_ordinal": float(chunk.ordinal)}
@@ -556,6 +652,27 @@ class RetrievalService:
             if len(merged) >= top_k:
                 break
         return merged
+
+    def _merge_scored_candidates(
+        self,
+        additions: list[RetrievalResult],
+        combined: list[RetrievalResult],
+        *,
+        top_k: int,
+    ) -> list[RetrievalResult]:
+        if not additions:
+            return combined[:top_k]
+        by_id = {result.result_id: result for result in combined}
+        for addition in additions:
+            existing = by_id.get(addition.result_id)
+            if existing is None:
+                by_id[addition.result_id] = addition
+                continue
+            if addition.score > existing.score:
+                existing.score = addition.score
+            for key, value in addition.score_debug.items():
+                existing.score_debug[key] = max(existing.score_debug.get(key, 0.0), value)
+        return sorted(by_id.values(), key=lambda result: result.score, reverse=True)[:top_k]
 
     def _add_query_intent_candidates(
         self,
@@ -719,6 +836,48 @@ class RetrievalService:
             result.score_debug["source_authority"] = authority
             result.score_debug["quality_boost"] = boost
         results.sort(key=lambda result: result.score, reverse=True)
+
+    def _apply_lightweight_evidence_rerank(
+        self,
+        query: str,
+        results: list[RetrievalResult],
+        chunks: list[Chunk],
+        item_by_id: dict[str, SourceItem],
+        *,
+        reference_time: datetime | None,
+    ) -> None:
+        for rank, result in enumerate(sorted(results, key=lambda item: item.score, reverse=True), start=1):
+            result.score_debug["stage1_rank"] = float(rank)
+            result.score_debug["stage1_score"] = result.score
+        self._apply_rank_quality_boosts(results, item_by_id, reference_time=reference_time)
+        self._apply_query_focused_snippets(query, results, chunks)
+        self._apply_evidence_relevance_scores(query, results)
+        for result in results:
+            stage1_score = float(result.score_debug.get("stage1_score", result.score))
+            result.score_debug["stage2_evidence_delta"] = result.score - stage1_score
+        results.sort(key=lambda result: result.score, reverse=True)
+
+    def _apply_evidence_relevance_scores(self, query: str, results: list[RetrievalResult]) -> None:
+        anchors = _snippet_anchor_terms(query)
+        if not anchors:
+            return
+        asks_for_value = _query_seeks_numeric_answer(query)
+        for result in results:
+            text = f"{result.title}\n{result.snippet}"
+            coverage = _anchor_coverage(anchors, text)
+            if coverage <= 0:
+                continue
+            boost = min(coverage * 0.018, 0.018)
+            if coverage >= 0.75:
+                boost += 0.018
+            if asks_for_value and coverage >= 0.45 and _text_has_numeric_evidence(result.snippet):
+                boost += 0.018
+            if coverage >= 0.45 and _looks_like_tabular_evidence(result.snippet):
+                boost += 0.012
+            boost = min(boost, 0.055)
+            result.score += boost
+            result.score_debug["stage2_anchor_coverage"] = coverage
+            result.score_debug["stage2_evidence_score"] = boost
 
     def _apply_query_focused_snippets(self, query: str, results: list[RetrievalResult], chunks: list[Chunk]) -> None:
         chunk_by_id = {chunk.chunk_id: chunk for chunk in chunks}
@@ -1530,12 +1689,24 @@ def _query_metric_phrases(query: str) -> list[str]:
 def _query_document_years(query: str) -> set[str]:
     text = str(query or "")
     years: set[str] = set()
+    raw_years = re.findall(r"(?<!\d)(20\d{2})(?!\d)", text)
+    if len(set(raw_years)) >= 2:
+        years.update(raw_years)
+    for start, end in re.findall(r"(?<!\d)(20\d{2})(?!\d)\s*(?:年)?\s*(?:至|到|-|~|—|–|through|to)\s*(?<!\d)(20\d{2})(?!\d)\s*(?:年)?", text, flags=re.IGNORECASE):
+        start_year = int(start)
+        end_year = int(end)
+        if start_year > end_year:
+            start_year, end_year = end_year, start_year
+        if end_year - start_year <= 20:
+            years.update(str(year) for year in range(start_year, end_year + 1))
     for match in re.finditer(r"(?<!\d)(20\d{2})(?!\d)\s*年(?:度)?\s*(?:年度报告|年报|报告)", text):
         years.add(match.group(1))
     for match in re.finditer(r"(?<!\d)(20\d{2})(?!\d)[^\n。！？?]{0,20}\bannual\s+report\b", text, flags=re.IGNORECASE):
         years.add(match.group(1))
     for match in re.finditer(r"\bannual\s+report\b[^\n。！？?]{0,20}(?<!\d)(20\d{2})(?!\d)", text, flags=re.IGNORECASE):
         years.add(match.group(1))
+    if len(set(raw_years)) == 1 and any(marker in text for marker in ("年报", "年度报告", "报告", "季度", "年度", "最新")):
+        years.add(raw_years[0])
     return years
 
 
@@ -1688,9 +1859,14 @@ def _snippet_anchor_terms(query: str) -> list[str]:
         "columns",
         "please",
         "answer",
+        "多少",
+        "是什么",
+        "是多少",
         "相关",
         "问题",
         "回答",
+        "引用",
+        "来源",
         "最后",
         "最后一页",
         "第一页",
@@ -1703,11 +1879,26 @@ def _snippet_anchor_terms(query: str) -> list[str]:
     seen: set[str] = set()
     for term in raw_terms:
         term = term.strip(" _-")
-        if len(term) < 2 or term in stopwords or term in seen:
-            continue
-        seen.add(term)
-        anchors.append(term)
+        candidates = _anchor_term_candidates(term)
+        for candidate in candidates:
+            if len(candidate) < 2 or candidate in stopwords or candidate in seen:
+                continue
+            seen.add(candidate)
+            anchors.append(candidate)
     return sorted(anchors, key=lambda value: (bool(re.search(r"\d", value)), len(value)), reverse=True)[:24]
+
+
+def _anchor_term_candidates(term: str) -> list[str]:
+    if not re.fullmatch(r"[\u4e00-\u9fff]+", term) or len(term) <= 4:
+        return [term]
+    cleaned = re.sub(r"(?:请|回答|引用|来源|根据|基于|是多少|是什么|多少|哪个|哪些|一下)", " ", term)
+    segments = [segment for segment in re.findall(r"[\u4e00-\u9fff]{2,}", cleaned) if segment]
+    candidates = [term, *segments]
+    for segment in segments:
+        for ngram_size in (4, 3, 2):
+            if len(segment) >= ngram_size:
+                candidates.extend(segment[index : index + ngram_size] for index in range(len(segment) - ngram_size + 1))
+    return list(dict.fromkeys(candidates))
 
 
 def _focused_table_snippet(text: str, anchors: list[str], *, max_chars: int) -> str:
@@ -1805,6 +1996,68 @@ def _line_has_anchor(line: str, anchors: list[str]) -> bool:
 def _focused_snippet_query_coverage(snippet: str, terms: list[str]) -> int:
     folded = str(snippet or "").casefold()
     return sum(1 for term in set(terms) if term.casefold() in folded)
+
+
+def _anchor_coverage(anchors: list[str], text: str) -> float:
+    normalized_text = _normalize_metric_phrase(text)
+    if not anchors or not normalized_text:
+        return 0.0
+    normalized_anchors = [anchor for anchor in (_normalize_metric_phrase(anchor) for anchor in anchors) if anchor]
+    if not normalized_anchors:
+        return 0.0
+    hits = sum(1 for anchor in dict.fromkeys(normalized_anchors) if anchor in normalized_text)
+    return hits / len(set(normalized_anchors))
+
+
+def _anchor_hit_count(anchors: list[str], text: str) -> int:
+    normalized_text = _normalize_metric_phrase(text)
+    if not anchors or not normalized_text:
+        return 0
+    normalized_anchors = [anchor for anchor in (_normalize_metric_phrase(anchor) for anchor in anchors) if anchor]
+    return sum(1 for anchor in dict.fromkeys(normalized_anchors) if anchor in normalized_text)
+
+
+def _query_seeks_numeric_answer(query: str) -> bool:
+    folded = str(query or "").casefold()
+    return bool(
+        any(
+            marker in folded
+            for marker in (
+                "amount",
+                "count",
+                "how many",
+                "how much",
+                "number",
+                "percentage",
+                "rate",
+                "ratio",
+                "value",
+                "多少",
+                "几",
+                "数值",
+                "金额",
+                "百分比",
+                "比例",
+            )
+        )
+        or re.search(r"(?:是多少|为多少|有多少|几何|几%)", folded)
+    )
+
+
+def _text_has_numeric_evidence(text: str) -> bool:
+    return bool(re.search(r"(?<!\w)[+-]?\d{1,3}(?:,\d{3})+(?:\.\d+)?%?(?!\w)|(?<!\w)[+-]?\d+\.\d+%?(?!\w)", str(text or "")))
+
+
+def _looks_like_tabular_evidence(text: str) -> bool:
+    value = str(text or "")
+    if "|" in value:
+        return True
+    numeric_rows = 0
+    for line in value.splitlines() or [value]:
+        if len(re.findall(r"(?<!\w)[+-]?\d{1,3}(?:,\d{3})+(?:\.\d+)?%?(?!\w)|(?<!\w)[+-]?\d+\.\d+%?(?!\w)", line)) >= 3:
+            numeric_rows += 1
+    table_markers = r"单位|unit|quarter|季度|amount|value|metric|total|合计|项目|数值|金额|rate|ratio|比例"
+    return numeric_rows > 0 and bool(re.search(table_markers, value, flags=re.IGNORECASE))
 
 
 def _validation_table_penalty(snippet: str, query: str) -> float:
@@ -1962,6 +2215,8 @@ def _primary_result_source(score_debug: dict[str, float]) -> str:
         return "exact_source"
     if score_debug.get("exact_identifier", 0.0) > 0:
         return "exact_identifier"
+    if score_debug.get("anchor_overlap", 0.0) > 0:
+        return "anchor_overlap"
     if score_debug.get("vector_rank", 0.0) > 0 or score_debug.get("vector", 0.0) > 0:
         return "vector"
     if score_debug.get("graph_expansion", 0.0) > 0 or (

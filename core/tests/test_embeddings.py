@@ -37,6 +37,21 @@ class FakeEmbeddingProvider:
         return vectors
 
 
+class ModeEmbeddingProvider:
+    provider_name = "mode-test"
+    model_name = "mode-test-model"
+    dimensions = 3
+
+    def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        vectors: list[list[float]] = []
+        for text in texts:
+            if "query_vector" in text or "semantic-target" in text:
+                vectors.append([1.0, 0.0, 0.0])
+            else:
+                vectors.append([0.0, 1.0, 0.0])
+        return vectors
+
+
 def _store() -> InMemoryKnowledgeStore:
     store = InMemoryKnowledgeStore()
     store.add_user(User("user_primary", "primary", UserRole.ADMIN))
@@ -300,6 +315,26 @@ def test_retrieval_uses_vector_results_when_lexical_has_no_match() -> None:
     assert response.results[0].score_debug["vector_rank"] == 1.0
 
 
+def test_retrieval_mode_can_isolate_lexical_and_vector_candidates() -> None:
+    store = _store()
+    ingest = IngestService(store, embedding_provider=ModeEmbeddingProvider())
+    ingest.ingest_channel_payload(_payload("semantic-note", "semantic-target carries the meaning only."))
+    ingest.ingest_channel_payload(_payload("literal-note", "literal-token appears as a keyword only."))
+    user = store.get_user("user_primary")
+    retrieval = RetrievalService(store, ACLService(store), embedding_provider=ModeEmbeddingProvider())
+
+    lexical = retrieval.search("query_vector literal-token", user, top_k=1, retrieval_mode="lexical")
+    vector = retrieval.search("query_vector literal-token", user, top_k=2, retrieval_mode="vector")
+
+    assert lexical.results[0].title == "literal-note"
+    assert lexical.score_debug["retrieval_mode"] == "lexical"
+    assert lexical.score_debug["vector_enabled"] is False
+    assert vector.score_debug["retrieval_mode"] == "vector"
+    assert vector.score_debug["lexical_ranker"] == "disabled"
+    semantic = next(result for result in vector.results if result.title == "semantic-note")
+    assert semantic.score_debug["vector_rank"] == 1.0
+
+
 def test_retrieval_prefers_exact_url_and_title_matches() -> None:
     store = _store()
     ingest = IngestService(store)
@@ -419,6 +454,26 @@ def test_retrieval_carries_neighbor_table_header_for_mid_table_row_chunks() -> N
     assert response.results[0].result_id == "chk_txn_attachment_1"
     assert "LoanBookBorrowerId" in response.results[0].snippet
     assert "BOR-TXC-HLD-1376" in response.results[0].snippet
+
+
+def test_lightweight_evidence_rerank_scores_numeric_anchor_coverage() -> None:
+    store = _store()
+    _add_chunked_source(
+        store,
+        "numeric_report",
+        "numeric-report-2025.pdf",
+        [
+            "2025 metric-alpha overview metric-alpha metric-alpha metric-alpha with many background mentions.",
+            "单位：元\n第一季度 第二季度 第三季度 第四季度\nmetric-alpha 10.00 20.00 30.00 40.00",
+        ],
+    )
+    user = store.get_user("user_primary")
+
+    response = RetrievalService(store, ACLService(store)).search("2025 第四季度 metric-alpha 是多少", user, top_k=1)
+
+    assert response.results[0].result_id == "chk_numeric_report_1"
+    assert response.results[0].score_debug["stage2_anchor_coverage"] >= 0.75
+    assert response.results[0].score_debug["stage2_evidence_score"] > 0
 
 
 def test_retrieval_adds_tail_chunk_for_last_page_queries() -> None:

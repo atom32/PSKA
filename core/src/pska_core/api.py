@@ -651,6 +651,7 @@ class PSKAApi:
                 top_k=int(payload.get("top_k") or 5),
                 source_item_ids=_retrieval_source_item_ids_arg(scoped_source_item_ids, scope_mode=scope_mode),
                 scope_mode=scope_mode,
+                retrieval_mode=str(payload.get("retrieval_mode") or "hybrid"),
             )
         )
         result["scope_applied"] = _ask_scope_applied(scope, ask_intent="kb_search")
@@ -1843,8 +1844,9 @@ class PSKAApi:
                     top_k=int(payload.get("top_k") or 5),
                     source_item_ids=_retrieval_source_item_ids_arg(scoped_source_item_ids, scope_mode=scope_mode),
                     scope_mode=scope_mode,
+                    retrieval_mode=str(payload.get("retrieval_mode") or "hybrid"),
                 )
-                fallback_retrieval = _console_search_summary(to_jsonable(fallback))
+                fallback_retrieval = _console_search_summary(to_jsonable(fallback), include_debug=_truthy(payload.get("include_debug")))
                 return {
                     "ok": False,
                     "mode": "agentic",
@@ -1869,7 +1871,7 @@ class PSKAApi:
                     },
                 }
             retrieval_payload = result.get("retrieval") if isinstance(result.get("retrieval"), dict) else {}
-            result["retrieval"] = _console_search_summary(retrieval_payload)
+            result["retrieval"] = _console_search_summary(retrieval_payload, include_debug=_truthy(payload.get("include_debug")))
             if payload.get("capture"):
                 captured = capture_agent_conversation(
                     self.store,
@@ -1901,13 +1903,14 @@ class PSKAApi:
             top_k=int(payload.get("top_k") or 5),
             source_item_ids=_retrieval_source_item_ids_arg(scoped_source_item_ids, scope_mode=scope_mode),
             scope_mode=scope_mode,
+            retrieval_mode=str(payload.get("retrieval_mode") or "hybrid"),
         )
         return {
             "ok": True,
             "mode": "direct",
             "requires_agentic_service_online": False,
             "query": query,
-            "retrieval": _console_search_summary(to_jsonable(response)),
+            "retrieval": _console_search_summary(to_jsonable(response), include_debug=_truthy(payload.get("include_debug"))),
             "scope_applied": _ask_scope_applied(scope, ask_intent="kb_search"),
         }
 
@@ -1959,6 +1962,7 @@ class PSKAApi:
             **payload,
             "query": query,
             "mode": "direct",
+            "retrieval_mode": _workspace_search_retrieval_mode(payload),
             "scope": scope,
             "knowledge_base_ids": _knowledge_base_ids_from_scope(scope),
             "top_k": max(1, min(int(payload.get("top_k") or 8), 50)),
@@ -2907,6 +2911,7 @@ class PSKAApi:
             top_k=top_k,
             source_item_ids=_retrieval_source_item_ids_arg(scoped_source_item_ids, scope_mode=scope_mode),
             scope_mode=scope_mode,
+            retrieval_mode="hybrid",
         )
         retrieval = _console_search_summary(to_jsonable(retrieval_result))
         retrieval = _ask_hydrate_retrieval_source_windows(
@@ -4623,6 +4628,7 @@ class PSKAApi:
             user,
             represented_user_id=represented_user_id,
             top_k=int(payload.get("top_k") or 5),
+            retrieval_mode=str(payload.get("retrieval_mode") or "hybrid"),
         )
         retrieval = _console_search_summary(to_jsonable(response))
         diagnostics = retrieval.get("diagnostics") if isinstance(retrieval.get("diagnostics"), dict) else {}
@@ -7632,24 +7638,27 @@ def _console_review_recommended_action(review_type: str, *, apply_ready: bool) -
     return "approve_or_reject"
 
 
-def _console_search_summary(payload: dict[str, Any]) -> dict[str, Any]:
+def _console_search_summary(payload: dict[str, Any], *, include_debug: bool = False) -> dict[str, Any]:
     score_debug = payload.get("score_debug") if isinstance(payload.get("score_debug"), dict) else {}
     payload_diagnostics = payload.get("diagnostics") if isinstance(payload.get("diagnostics"), dict) else {}
     diagnostics = score_debug.get("diagnostics") if isinstance(score_debug.get("diagnostics"), dict) else payload_diagnostics
+    results: list[dict[str, Any]] = []
+    for result in _list_of_dicts(payload.get("results")):
+        result_payload = {
+            "source_item_id": _console_result_ref(result, "source_item_id"),
+            "document_id": _console_result_ref(result, "document_id"),
+            "chunk_id": _console_result_ref(result, "chunk_id"),
+            "title": result.get("title"),
+            "snippet": _ask_clean_evidence_text(result.get("snippet")) if result.get("snippet") else result.get("snippet"),
+            "score": result.get("score"),
+            "citation": _console_citation(result.get("citation")),
+        }
+        if include_debug and isinstance(result.get("score_debug"), dict):
+            result_payload["score_debug"] = to_jsonable(result.get("score_debug"))
+        results.append(result_payload)
     return {
         "request_user_id": payload.get("request_user_id"),
-        "results": [
-            {
-                "source_item_id": _console_result_ref(result, "source_item_id"),
-                "document_id": _console_result_ref(result, "document_id"),
-                "chunk_id": _console_result_ref(result, "chunk_id"),
-                "title": result.get("title"),
-                "snippet": _ask_clean_evidence_text(result.get("snippet")) if result.get("snippet") else result.get("snippet"),
-                "score": result.get("score"),
-                "citation": _console_citation(result.get("citation")),
-            }
-            for result in _list_of_dicts(payload.get("results"))
-        ],
+        "results": results,
         "citations": [_console_citation(citation) for citation in _list_of_dicts(payload.get("citations"))],
         "graph_paths": [_console_graph_path(path) for path in _list_of_dicts(payload.get("graph_paths"))],
         "diagnostics": {
@@ -12296,6 +12305,16 @@ def _scope_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if source_item_ids:
         scope["source_item_ids"] = sorted(set([*_string_list(scope.get("source_item_ids")), *source_item_ids]))
     return scope
+
+
+def _workspace_search_retrieval_mode(payload: dict[str, Any]) -> str:
+    explicit = str(payload.get("retrieval_mode") or payload.get("search_mode") or "").strip().lower()
+    if explicit:
+        return explicit
+    mode = str(payload.get("mode") or "").strip().lower()
+    if mode in {"bm25", "embedding", "hybrid", "keyword", "lexical", "semantic", "vector"}:
+        return mode
+    return "hybrid"
 
 
 def _knowledge_base_ids_from_payload(payload: dict[str, Any]) -> list[str]:

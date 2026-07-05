@@ -64,7 +64,7 @@ def main() -> int:
     parser.add_argument("--owner-user-id", default=None)
     parser.add_argument("--knowledge-base-id", default=None)
     parser.add_argument("--top-k", type=int, default=None)
-    parser.add_argument("--mode", default=None, help="Search mode label to pass to /workspace/knowledge-bases/search.")
+    parser.add_argument("--mode", default=None, help="Retrieval mode: hybrid, bm25/lexical, or embedding/vector.")
     parser.add_argument("--timeout-seconds", type=float, default=90.0)
     parser.add_argument("--skip-ask", action="store_true", help="Only evaluate retrieval ranks; skip /workspace/ask.")
     parser.add_argument("--format", choices=["json", "text"], default="text")
@@ -112,7 +112,9 @@ def _run_case(
             "query": question,
             "knowledge_base_ids": [knowledge_base_id],
             "top_k": top_k,
-            "mode": search_mode,
+            "mode": "hard",
+            "retrieval_mode": search_mode,
+            "include_debug": True,
         },
     )
     search_rows = _rows_from_search(search)
@@ -233,8 +235,25 @@ def _source_refs_from_ask(payload: dict[str, Any]) -> list[dict[str, Any]]:
 def _group_report(rows: list[dict[str, Any]], group: dict[str, Any]) -> dict[str, Any]:
     for index, row in enumerate(rows, start=1):
         if _row_matches_group(row, group):
-            return {"rank": index, "documents": group.get("documents") or [], "contains": group.get("contains") or [], "title": _title_of(row)}
-    return {"rank": None, "documents": group.get("documents") or [], "contains": group.get("contains") or [], "title": None}
+            debug = row.get("score_debug") if isinstance(row.get("score_debug"), dict) else {}
+            return {
+                "rank": index,
+                "stage1_rank": debug.get("stage1_rank"),
+                "stage2_delta": debug.get("stage2_evidence_delta"),
+                "stage2_score": debug.get("stage2_evidence_score"),
+                "documents": group.get("documents") or [],
+                "contains": group.get("contains") or [],
+                "title": _title_of(row),
+            }
+    return {
+        "rank": None,
+        "stage1_rank": None,
+        "stage2_delta": None,
+        "stage2_score": None,
+        "documents": group.get("documents") or [],
+        "contains": group.get("contains") or [],
+        "title": None,
+    }
 
 
 def _row_matches_group(row: dict[str, Any], group: dict[str, Any]) -> bool:
@@ -349,19 +368,24 @@ def _print_text_report(report: dict[str, Any]) -> None:
         f"Hit@1={metrics['hit_at_1']} "
         f"Hit@3={metrics['hit_at_3']} "
         f"Hit@5={metrics['hit_at_5']} "
+        f"Hit@10={metrics['hit_at_10']} "
         f"Hit@50={metrics['hit_at_50']} "
         f"Answer={metrics['answer_accuracy']} "
         f"CitationPrecision={metrics['citation_precision_avg']}"
     )
     print()
-    print("case_id | rank | h@5 | answer | citation_precision | top_titles")
-    print("-" * 110)
+    print("case_id | rank | stage1 | stage2_delta | h@5 | answer | citation_precision | top_titles")
+    print("-" * 130)
     for case in report["cases"]:
         retrieval = case["retrieval"]
         ask = case.get("ask") or {}
         rank = retrieval["first_complete_rank"] if retrieval["first_complete_rank"] is not None else "-"
+        first_group = next((group for group in retrieval.get("groups") or [] if group.get("rank") == retrieval["first_complete_rank"]), {})
+        stage1_rank = first_group.get("stage1_rank") or "-"
+        stage2_delta = first_group.get("stage2_delta")
+        stage2_delta_display = "-" if stage2_delta is None else round(float(stage2_delta), 4)
         print(
-            f"{case['id']} | {rank} | {retrieval['hit_at']['5']} | "
+            f"{case['id']} | {rank} | {stage1_rank} | {stage2_delta_display} | {retrieval['hit_at']['5']} | "
             f"{ask.get('ok', '-') } | {ask.get('citation_precision', '-') } | "
             f"{', '.join(retrieval.get('top_titles') or [])}"
         )
