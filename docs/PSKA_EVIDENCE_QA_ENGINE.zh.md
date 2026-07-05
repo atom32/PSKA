@@ -340,12 +340,14 @@ UI 不需要暴露全部内部字段，但应能回答三个问题：
 
 ## Near-term Work
 
-建议 Phase 1 收尾顺序：
+建议 Phase 1 收尾顺序不是继续堆新规则，而是先固定架构契约：
 
-1. 将 `evidence_check` validation 也 registry 化。
-2. 将各 pipeline audit 适配到统一 envelope。
-3. 给 Ask response 增加 stage timeline。
-4. 在 Golden Eval 中加入 Citation Precision、Selected Span Precision、Answer Pipeline outcome。
-5. 设计 `EvidenceRecord` 数据结构，逐步替换跨层散落的 dict 传递。
+1. 维持 `Retrieval -> Evidence Scoring -> Evidence Validation -> Citation Selection -> Answer Pipeline` 的 Phase 1 stage boundary。
+2. 将 `evidence_check` validation 也 registry 化。
+3. 将各 pipeline audit 适配到统一 envelope。
+4. 给 Ask response 增加 stage timeline。
+5. 在 Golden Eval 中加入 Citation Precision、Selected Span Precision、Answer Pipeline outcome。
+6. 设计 `EvidenceRecord` 数据结构，逐步替换跨层散落的 dict 传递。
+7. 用 RFC 推进 Multi-evidence Composition，而不是通过 retrieval rule 解决趋势题或比较题。
 
-这五步完成后，PSKA 的 Quick Ask 可以被定义为一条完整、可解释、可审计、可回归的企业级问答链路。
+这些收尾项完成后，PSKA 的 Quick Ask 可以被定义为一条完整、可解释、可审计、可回归的企业级问答链路。

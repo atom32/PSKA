@@ -24,6 +24,8 @@
 
 - [Architecture](ARCHITECTURE.md)：当前系统形态、source-centric 数据流、discovery 规则和 scheduler 行为。
 - [Evidence-driven QA Engine](PSKA_EVIDENCE_QA_ENGINE.zh.md)：Ask/RAG 的 Retrieval → Evidence → Citation → Answer 流水线、audit schema、timeline 和回归策略。
+- [Architecture Decision Records](adr/README.md)：已经接受的工程决策，用来约束后续 PSKA 改动。
+- [RFC 0002: Multi-evidence Composition](rfcs/0002-multi-evidence-composition.md)：Phase 2 Evidence Set、趋势/比较问答和 composition 边界草案。
 - [API Reference](API_REFERENCE.md)：Workspace、CLI 和 integrations 使用的 HTTP endpoint。
 - [Feature Reality Check](FEATURE_REALITY_CHECK.md)：已实现、部分实现和 design-only 能力边界。
 - [WeKnora 核心覆盖验收](WEKNORA_COVERAGE.zh.md)：多租户核心替代能力、E2E 脚本和竞品对照验收口径。
