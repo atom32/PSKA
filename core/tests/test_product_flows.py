@@ -665,6 +665,34 @@ def test_unrelated_question_returns_no_answer_instead_of_random_citations() -> N
     assert answer["evidence_check"]["query_anchors"]
 
 
+def test_quick_ask_returns_citation_selection_audit() -> None:
+    api = _api()
+    api.create_text_source(
+        {
+            "title": "Citation selection memo",
+            "text": "citationselectkeyword exactvalue42 appears in selected evidence for citation selection.",
+            "digest_mode": "manual",
+        }
+    )
+
+    answer = api.workspace_ask(
+        {
+            "query": "What mentions citationselectkeyword exactvalue42?",
+            "intent": "quick",
+            "top_k": 5,
+        }
+    )
+
+    assert answer["answer_type"] == "kb_answer"
+    selection = answer["evidence_check"]["citation_selection"]
+    assert selection["pipeline"] == "deterministic_citation_selection"
+    assert selection["selected_count"] == len(answer["citations"])
+    assert answer["evidence"]["citation_selection"]["selected_count"] == len(answer["citations"])
+    assert answer["citations"][0]["citation_selection"]["selected_span"]
+    feature_names = {feature["name"] for feature in answer["citations"][0]["citation_selection"]["features"]}
+    assert "anchor_coverage" in feature_names
+
+
 def test_linking_digest_creates_topic_paths_and_delete_marks_supports() -> None:
     api = _api()
     first = api.create_text_source(

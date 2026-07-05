@@ -23,6 +23,7 @@ from pska_core.agent_capture import capture_agent_conversation
 from pska_core.agentic_service import PSKA_QA_SKILL, AgenticServiceError, build_agentic_service_client, normalize_agentic_event_response
 from pska_core.auth import AuthError, RequestContext, authenticate_headers, context_from_headers, service_token_required
 from pska_core.candidates import CandidateWriteService
+from pska_core.citation_pipeline import CitationSelectionContext, CitationSelectionPipeline
 from pska_core.config import (
     DEFAULT_DATABASE_URL,
     DEFAULT_FILES_MAX_BYTES,
@@ -2930,6 +2931,7 @@ class PSKAApi:
         )
         evidence = _ask_evidence_from_retrieval(retrieval)
         evidence_check = _ask_verify_evidence(query=rewrite_query, evidence=evidence, scope=scope, ask_intent=ask_intent)
+        evidence_check = _ask_select_citations(query=rewrite_query, evidence_check=evidence_check)
         evidence = _ask_apply_evidence_check(evidence, evidence_check)
         retrieval = _ask_apply_evidence_check_to_retrieval(retrieval, evidence_check)
         steps.append(_ask_quick_read_step(sequence=len(steps) + 1, evidence=evidence, started_at=started_at))
@@ -8632,25 +8634,70 @@ def _ask_verify_evidence(
     }
 
 
+def _ask_select_citations(
+    *,
+    query: str,
+    evidence_check: dict[str, Any],
+    max_citations: int = 6,
+) -> dict[str, Any]:
+    used = _list_of_dicts(evidence_check.get("used_citations"))
+    selection = CitationSelectionPipeline().select(
+        used,
+        CitationSelectionContext(
+            query=query,
+            query_terms=tuple(_string_list(evidence_check.get("query_terms"))),
+            anchor_terms=tuple(_string_list(evidence_check.get("query_anchors"))),
+            max_citations=max_citations,
+        ),
+    )
+    dropped = [
+        *_list_of_dicts(evidence_check.get("dropped_citations")),
+        *selection.dropped,
+    ]
+    status = str(evidence_check.get("status") or "insufficient")
+    if status == "supported" and not selection.selected:
+        status = "insufficient"
+    selected = {
+        **evidence_check,
+        "status": status,
+        "used_citations": selection.selected,
+        "dropped_citations": dropped,
+        "citation_selection": selection.audit,
+        "supporting_citation_count": len(selection.selected),
+        "dropped_citation_count": len(dropped),
+    }
+    if status != "supported" and used and not selection.selected:
+        reasons = list(selected.get("no_answer_reasons") or [])
+        reasons.append("no_citations_selected")
+        selected["no_answer_reasons"] = list(dict.fromkeys(reasons))
+    return selected
+
+
 def _ask_apply_evidence_check(evidence: dict[str, Any], evidence_check: dict[str, Any]) -> dict[str, Any]:
     filtered = dict(evidence)
     used = _list_of_dicts(evidence_check.get("used_citations"))
     used_keys = {_ask_citation_key(ref) for ref in used}
+    used_source_ids_without_windows = {
+        str(ref.get("source_item_id") or "")
+        for ref in used
+        if str(ref.get("source_item_id") or "") and not _ask_citation_has_specific_window(ref)
+    }
     filtered["citations"] = used
     filtered["source_refs"] = used
     filtered["dropped_citations"] = _list_of_dicts(evidence_check.get("dropped_citations"))
+    filtered["citation_selection"] = evidence_check.get("citation_selection") or {}
     if used_keys:
-        used_source_ids = {str(ref.get("source_item_id") or "") for ref in used}
         filtered["results"] = [
             result
             for result in _list_of_dicts(evidence.get("results"))
             if _ask_citation_key(result.get("citation") if isinstance(result.get("citation"), dict) else result) in used_keys
-            or str(result.get("source_item_id") or "") in used_source_ids
+            or str(result.get("source_item_id") or "") in used_source_ids_without_windows
         ]
         filtered["source_windows"] = [
             window
             for window in _list_of_dicts(evidence.get("source_windows"))
-            if _ask_citation_key(window) in used_keys or str(window.get("source_item_id") or "") in used_source_ids
+            if _ask_citation_key(window) in used_keys
+            or str(window.get("source_item_id") or "") in used_source_ids_without_windows
         ]
     else:
         filtered["results"] = []
@@ -8664,24 +8711,34 @@ def _ask_apply_evidence_check_to_retrieval(retrieval: dict[str, Any], evidence_c
     filtered = dict(retrieval)
     used = _list_of_dicts(evidence_check.get("used_citations"))
     used_keys = {_ask_citation_key(ref) for ref in used}
+    used_source_ids_without_windows = {
+        str(ref.get("source_item_id") or "")
+        for ref in used
+        if str(ref.get("source_item_id") or "") and not _ask_citation_has_specific_window(ref)
+    }
     if used_keys:
-        used_source_ids = {str(ref.get("source_item_id") or "") for ref in used}
         filtered["results"] = [
             result
             for result in _list_of_dicts(retrieval.get("results"))
             if _ask_citation_key(result.get("citation") if isinstance(result.get("citation"), dict) else result) in used_keys
-            or str(result.get("source_item_id") or "") in used_source_ids
+            or str(result.get("source_item_id") or "") in used_source_ids_without_windows
         ]
         filtered["source_windows"] = [
             window
             for window in _list_of_dicts(retrieval.get("source_windows"))
-            if _ask_citation_key(window) in used_keys or str(window.get("source_item_id") or "") in used_source_ids
+            if _ask_citation_key(window) in used_keys
+            or str(window.get("source_item_id") or "") in used_source_ids_without_windows
         ]
     else:
         filtered["results"] = []
         filtered["source_windows"] = []
     filtered["citations"] = used
+    filtered["citation_selection"] = evidence_check.get("citation_selection") or {}
     return filtered
+
+
+def _ask_citation_has_specific_window(ref: dict[str, Any]) -> bool:
+    return bool(str(ref.get("chunk_id") or ref.get("passage_window_id") or "").strip())
 
 
 def _ask_citation_key(ref: dict[str, Any]) -> tuple[str, str, str]:
@@ -10862,6 +10919,7 @@ def _ask_deep_response(
         scope={"source_item_ids": scope_applied.get("source_item_ids") or [], "mode": scope_applied.get("mode") or "soft"},
         ask_intent=ask_intent,
     )
+    evidence_check = _ask_select_citations(query=rewrite_query, evidence_check=evidence_check)
     evidence = _ask_apply_evidence_check(evidence, evidence_check)
     answer_type = "deep_answer"
     if evidence_check.get("status") != "supported":
