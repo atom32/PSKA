@@ -78,6 +78,7 @@
 
 - `npm run build` 通过。
 - `PYTHONPATH=..:.:src pytest -q tests/test_knowledge_bases.py -k reader` 通过。
+- `npm run e2e:multi-kb-ask -- --list` 通过，确认真实浏览器 e2e spec 可发现且不会在 discovery 阶段要求本地密码。
 - `npm run e2e:multi-kb-ask` 通过，使用 AuthNode/Gateway browser session 覆盖多 KB hard scope、ReaderPane 高亮、source-focused follow-up、Ask -> Writing Brief、Evidence Brief Library Wiki page content/taxonomy edits and revision restore、Evidence Brief Library 生命周期/重新生成、Graph Ask 健康摘要、Graph Ask -> Writing evidence、Graph selected node -> Writing evidence、Review evidence comparison/ReaderPane、Review candidate comparison、Review snooze/restore、Review 批量拒绝、Review approve/apply、applied lineage 和 applied relationship -> Graph inspection；临时 alpha/beta/review/graph/writing 数据清理后无残留。
 - `npm run e2e:writing -- --list` 通过，确认 Writing browser e2e spec 可发现；该 spec 已覆盖 Writing 健康指示与持久化质量信号。
 - `./scripts/pska-phase1-multikb-release-gate` 通过，覆盖 PSKA core `494 passed`、frontend build、FastReAct contracts `75 passed`、PSKA/FastReAct `git diff --check`。
