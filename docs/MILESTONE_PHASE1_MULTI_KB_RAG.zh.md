@@ -64,6 +64,15 @@
 - 不同 tenant/user 的 KB 不互相可见。
 - API 基础 CRUD 通过 in-memory 测试。
 
+## Review Gate
+
+新增检索、问答、证据治理或资料库管理逻辑进入评审时，必须先回答：
+
+- 新增逻辑是否依赖具体行业、公司、文档类型、样例语料或题型？如果是，必须改写为通用能力，或明确证明它只是 prompt example。
+- 可以在 Prompt 中用例子帮助模型理解，但 Pipeline 不允许硬编码题型、行业、公司、文档模板或 benchmark shortcut。
+- 能否抽象为 `Policy`、`Validator`、`Prompt Pattern`、retrieval/rerank/chunking/ACL/readiness 机制？能抽象时优先沉淀为可组合机制。
+- 新增能力应配通用测试语料；测试名称和断言不能绑定单一公司、单一文档或单一问法。
+
 ## 第一阶段交付顺序
 
 1. 模型、迁移、store。
@@ -96,5 +105,8 @@
 - 真实测试清理：上述 smoke 通过 API hard delete + 精确 SQL residue check 清理临时数据，`knowledge_bases, knowledge_sources, source_items, documents, chunks, passage_windows` 残留计数为 `0,0,0,0,0,0`。
 - 发布门禁脚本：`scripts/pska-phase1-multikb-release-gate` 默认跑非 LLM/非浏览器检查；`--include-browser-e2e` 和 `--include-fastreact-smoke` 才进入真实 UI 或真实 DeepSeek/FastReAct/PSKA MCP 链路。
 - 默认发布门禁：2026-07-04 复跑 `./scripts/pska-phase1-multikb-release-gate` 通过，覆盖 PSKA core `490 passed`、frontend build、FastReAct contracts `75 passed`、PSKA/FastReAct `git diff --check`。
+- 资料库管理验收：2026-07-05 使用 `tenant_graphintell / test_user` 跑 `kbmgmt_1783229147597`，覆盖 KB create/edit/pin、upload 入库、跨 KB link、membership delete、move、archive/restore、当前 KB Ask hard scope、多租户隔离。Beta KB 最终显示 3 个 active 资料、3 个 chunks；跨租户使用 `tenant_default / user_primary` 查询同一 KB id 返回 fail-closed `403`，未泄露 positive evidence。
+- 浏览器验收：同一轮在 gateway UI 中确认临时 Alpha/Beta KB 出现在资料库页，Beta 详情页显示 readiness、3 个资料条目和对应 chunks；当前 KB Ask 对 linked upload token 返回 `ACCEPT KB Beta ... / hard scope / 1 KB / 3 Sources` 与 citation。归档/恢复 UI 中发现“恢复成功后 current selection 回到 fallback 默认库”的刷新顺序问题，已修复并用 `uirestore_1783229610715` 复测通过。
+- 验收限制：当前浏览器控制接口不能选择本地文件，因此文件选择动作未自动化；本轮 upload 使用真实 `/workspace/sources/upload` JSON direct-text 路径验证入库、chunk、KB membership 与引用语义，UI 侧确认上传控件可见。当前本地配置 `embedding.provider=disabled`，本轮不把向量覆盖率作为通过项。
 
 发布说明已整理到 `docs/RELEASE_PHASE1_MULTI_KB_RAG.zh.md`。下一步优先按需复跑真实 UI / 真实 FastReAct smoke，并准备提交/PR。

@@ -6248,14 +6248,14 @@ function CorpusWorkspace({
         description: newKnowledgeBaseDescription.trim() || undefined
       });
       const knowledgeBaseId = payload.knowledge_base?.knowledge_base_id || "";
-      if (knowledgeBaseId) {
-        onKnowledgeBaseChange(knowledgeBaseId);
-      }
       setNewKnowledgeBaseName("");
       setNewKnowledgeBaseDescription("");
       setOperationStatus(payload.ok === false ? "error" : "success");
       setOperationMessage(payload.ok === false ? payload.error || "创建知识库失败。" : `知识库已创建：${payload.knowledge_base?.name || name}。`);
       await refetchKnowledgeBaseLists();
+      if (payload.ok !== false && knowledgeBaseId) {
+        onKnowledgeBaseChange(knowledgeBaseId);
+      }
     } catch (error) {
       setOperationStatus("error");
       setOperationMessage(error instanceof Error ? error.message : "创建知识库失败。");
@@ -6368,12 +6368,12 @@ function CorpusWorkspace({
     try {
       const payload = await restoreKnowledgeBase(serviceToken, knowledgeBaseId);
       const restoredId = payload.knowledge_base?.knowledge_base_id || knowledgeBaseId;
-      if (payload.ok !== false && restoredId) {
-        onKnowledgeBaseChange(restoredId);
-      }
       setOperationStatus(payload.ok === false ? "error" : "success");
       setOperationMessage(payload.ok === false ? payload.error || "恢复知识库失败。" : `知识库已恢复：${payload.knowledge_base?.name || archived?.name || "知识库"}。`);
       await refetchKnowledgeBaseLists();
+      if (payload.ok !== false && restoredId) {
+        onKnowledgeBaseChange(restoredId);
+      }
       await Promise.all([corpusQuery.refetch(), documentsQuery.refetch(), digestLogsQuery.refetch()]);
     } catch (error) {
       setOperationStatus("error");
