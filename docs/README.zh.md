@@ -23,6 +23,7 @@
 ## 架构与 API
 
 - [Architecture](ARCHITECTURE.md)：当前系统形态、source-centric 数据流、discovery 规则和 scheduler 行为。
+- [Phases](PHASES.md)：Phase 0/1/2/3 一页总览和 Phase 1 baseline。
 - [Evidence-driven QA Engine](PSKA_EVIDENCE_QA_ENGINE.zh.md)：Ask/RAG 的 Retrieval → Evidence → Citation → Answer 流水线、audit schema、timeline 和回归策略。
 - [Architecture Decision Records](adr/README.md)：已经接受的工程决策，用来约束后续 PSKA 改动。
 - [RFC 0002: Multi-evidence Composition](rfcs/0002-multi-evidence-composition.md)：Phase 2 Evidence Set、趋势/比较问答和 composition 边界草案。

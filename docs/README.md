@@ -29,6 +29,7 @@ Directory-level material packs can opt into source collection ingest with
 ## Architecture And API
 
 - [Architecture](ARCHITECTURE.md): current system shape, source-centric flow, discovery invariants, and scheduler behavior.
+- [Phases](PHASES.md): one-page Phase 0/1/2/3 map and Phase 1 baseline.
 - [Evidence-driven QA Engine](PSKA_EVIDENCE_QA_ENGINE.zh.md): Chinese architecture note for the Retrieval → Evidence → Citation → Answer pipeline, audit schema, timeline, and regression strategy.
 - [Architecture Decision Records](adr/README.md): accepted engineering decisions that constrain future PSKA changes.
 - [RFC 0002: Multi-evidence Composition](rfcs/0002-multi-evidence-composition.md): draft Phase 2 design for Evidence Sets, comparison/trend QA, and composition boundaries.
