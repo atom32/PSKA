@@ -10,7 +10,14 @@ from pska_core.enums import UserRole, Visibility
 from pska_core.ingest import IngestService
 from pska_core.models import Chunk, Document, SourceItem, TeamMembership, User
 from pska_core.offline_index import OfflineIndexService
-from pska_core.retrieval import RetrievalService
+from pska_core.retrieval import (
+    EvidenceScoreContext,
+    EvidenceScorePipeline,
+    EvidenceScoreSignal,
+    EvidenceScorer,
+    RetrievalResult,
+    RetrievalService,
+)
 from pska_core.store import InMemoryKnowledgeStore
 
 
@@ -456,7 +463,7 @@ def test_retrieval_carries_neighbor_table_header_for_mid_table_row_chunks() -> N
     assert "BOR-TXC-HLD-1376" in response.results[0].snippet
 
 
-def test_lightweight_evidence_rerank_scores_numeric_anchor_coverage() -> None:
+def test_deterministic_evidence_scoring_scores_numeric_anchor_coverage() -> None:
     store = _store()
     _add_chunked_source(
         store,
@@ -472,8 +479,35 @@ def test_lightweight_evidence_rerank_scores_numeric_anchor_coverage() -> None:
     response = RetrievalService(store, ACLService(store)).search("2025 第四季度 metric-alpha 是多少", user, top_k=1)
 
     assert response.results[0].result_id == "chk_numeric_report_1"
-    assert response.results[0].score_debug["stage2_anchor_coverage"] >= 0.75
-    assert response.results[0].score_debug["stage2_evidence_score"] > 0
+    assert response.results[0].score_debug["evidence_scoring_anchor_coverage"] >= 0.75
+    assert response.results[0].score_debug["evidence_scoring_positive_score"] > 0
+
+
+def test_evidence_score_pipeline_accepts_registered_scorers() -> None:
+    class ConstantScorer(EvidenceScorer):
+        name = "custom_signal"
+
+        def score(self, result, context, features):
+            return EvidenceScoreSignal(self.name, 0.01)
+
+    pipeline = EvidenceScorePipeline(scorers=[ConstantScorer()])
+    result = RetrievalResult(
+        result_id="chunk-1",
+        source_item_id="source-1",
+        source="manual",
+        title="Generic source",
+        snippet="Generic evidence",
+        score=0.0,
+        citation={},
+    )
+
+    outcome = pipeline.score(
+        result,
+        EvidenceScoreContext(query="generic question", anchors=(), asks_for_numeric_answer=False),
+    )
+
+    assert outcome.score == 0.01
+    assert outcome.debug["evidence_scoring_custom_signal"] == 0.01
 
 
 def test_retrieval_adds_tail_chunk_for_last_page_queries() -> None:

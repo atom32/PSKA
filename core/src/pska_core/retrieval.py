@@ -114,6 +114,163 @@ class RetrievalResponse:
     score_debug: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True, slots=True)
+class EvidenceScoreContext:
+    query: str
+    anchors: tuple[str, ...]
+    asks_for_numeric_answer: bool
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceScoreFeatures:
+    snippet: str
+    text: str
+    anchor_coverage: float
+    has_numeric_evidence: bool
+    looks_tabular: bool
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceScoreSignal:
+    name: str
+    score: float
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceScoreOutcome:
+    score: float
+    positive_score: float
+    debug: dict[str, float]
+
+
+class EvidenceScorer:
+    name = "base"
+
+    def score(
+        self,
+        result: RetrievalResult,
+        context: EvidenceScoreContext,
+        features: EvidenceScoreFeatures,
+    ) -> EvidenceScoreSignal | None:
+        raise NotImplementedError
+
+
+class AnchorCoverageScorer(EvidenceScorer):
+    name = "anchor_coverage_score"
+
+    def score(
+        self,
+        result: RetrievalResult,
+        context: EvidenceScoreContext,
+        features: EvidenceScoreFeatures,
+    ) -> EvidenceScoreSignal | None:
+        if features.anchor_coverage <= 0:
+            return None
+        score = min(features.anchor_coverage * 0.018, 0.018)
+        if features.anchor_coverage >= 0.75:
+            score += 0.018
+        return EvidenceScoreSignal(self.name, score)
+
+
+class NumericEvidenceScorer(EvidenceScorer):
+    name = "numeric_evidence_score"
+
+    def score(
+        self,
+        result: RetrievalResult,
+        context: EvidenceScoreContext,
+        features: EvidenceScoreFeatures,
+    ) -> EvidenceScoreSignal | None:
+        if not context.asks_for_numeric_answer:
+            return None
+        if features.anchor_coverage < 0.45 or not features.has_numeric_evidence:
+            return None
+        return EvidenceScoreSignal(self.name, 0.018)
+
+
+class TableEvidenceScorer(EvidenceScorer):
+    name = "table_evidence_score"
+
+    def score(
+        self,
+        result: RetrievalResult,
+        context: EvidenceScoreContext,
+        features: EvidenceScoreFeatures,
+    ) -> EvidenceScoreSignal | None:
+        if features.anchor_coverage < 0.45 or not features.looks_tabular:
+            return None
+        return EvidenceScoreSignal(self.name, 0.012)
+
+
+class ValidationTablePenaltyScorer(EvidenceScorer):
+    name = "validation_table_penalty"
+
+    def score(
+        self,
+        result: RetrievalResult,
+        context: EvidenceScoreContext,
+        features: EvidenceScoreFeatures,
+    ) -> EvidenceScoreSignal | None:
+        penalty = _validation_table_penalty(features.snippet, context.query)
+        if not penalty:
+            return None
+        return EvidenceScoreSignal(self.name, -penalty)
+
+
+class EvidenceScorePipeline:
+    name = "deterministic_evidence_scoring"
+
+    def __init__(self, scorers: list[EvidenceScorer] | None = None, *, positive_score_cap: float = 0.055) -> None:
+        self.scorers = scorers or [
+            AnchorCoverageScorer(),
+            NumericEvidenceScorer(),
+            TableEvidenceScorer(),
+            ValidationTablePenaltyScorer(),
+        ]
+        self.positive_score_cap = positive_score_cap
+
+    def score(self, result: RetrievalResult, context: EvidenceScoreContext) -> EvidenceScoreOutcome:
+        features = self._features(result, context)
+        debug: dict[str, float] = {}
+        if features.anchor_coverage:
+            debug["evidence_scoring_anchor_coverage"] = features.anchor_coverage
+            debug["stage2_anchor_coverage"] = features.anchor_coverage
+
+        positive_score = 0.0
+        negative_score = 0.0
+        for scorer in self.scorers:
+            signal = scorer.score(result, context, features)
+            if signal is None or signal.score == 0:
+                continue
+            debug[f"evidence_scoring_{signal.name}"] = signal.score
+            if signal.score > 0:
+                positive_score += signal.score
+            else:
+                negative_score += signal.score
+                if signal.name == "validation_table_penalty":
+                    debug["validation_table_penalty"] = abs(signal.score)
+
+        positive_score = min(positive_score, self.positive_score_cap)
+        score = positive_score + negative_score
+        if positive_score:
+            debug["evidence_scoring_positive_score"] = positive_score
+            debug["stage2_evidence_score"] = positive_score
+        if score:
+            debug["evidence_scoring_score"] = score
+        return EvidenceScoreOutcome(score=score, positive_score=positive_score, debug=debug)
+
+    def _features(self, result: RetrievalResult, context: EvidenceScoreContext) -> EvidenceScoreFeatures:
+        text = f"{result.title}\n{result.snippet}"
+        anchor_coverage = _anchor_coverage(list(context.anchors), text)
+        return EvidenceScoreFeatures(
+            snippet=result.snippet,
+            text=text,
+            anchor_coverage=anchor_coverage,
+            has_numeric_evidence=_text_has_numeric_evidence(result.snippet),
+            looks_tabular=_looks_like_tabular_evidence(result.snippet),
+        )
+
+
 class RetrievalService:
     """Hybrid retrieval: ACL, lexical/vector RRF, and request-scoped graph-aware expansion."""
 
@@ -128,6 +285,7 @@ class RetrievalService:
         self.store = store
         self.acl = acl
         self.embedding_provider = embedding_provider
+        self.evidence_score_pipeline = EvidenceScorePipeline()
         self.graph_embedding_linking = (
             _default_graph_embedding_linking(embedding_provider)
             if graph_embedding_linking is None
@@ -323,7 +481,13 @@ class RetrievalService:
         self._apply_query_intent_boosts(query, combined, item_by_id)
         self._annotate_result_sources(combined)
         stage1_candidate_count = len(combined)
-        self._apply_lightweight_evidence_rerank(query, combined, chunks, item_by_id, reference_time=_latest_source_time(items))
+        self._apply_deterministic_evidence_scoring(
+            query,
+            combined,
+            chunks,
+            item_by_id,
+            reference_time=_latest_source_time(items),
+        )
         combined = sorted(combined, key=lambda result: result.score, reverse=True)[:top_k]
         for rank, result in enumerate(combined, start=1):
             result.score_debug["stage2_rank"] = float(rank)
@@ -342,7 +506,7 @@ class RetrievalService:
             "vector_error": vector_error,
             "embedding_model": self.embedding_provider.model_name if self.embedding_provider else None,
             "stage1_candidate_count": stage1_candidate_count,
-            "stage2_reranker": "lightweight_evidence",
+            "evidence_scoring_pipeline": self.evidence_score_pipeline.name,
             **graph_rank_debug,
         }
 
@@ -837,7 +1001,7 @@ class RetrievalService:
             result.score_debug["quality_boost"] = boost
         results.sort(key=lambda result: result.score, reverse=True)
 
-    def _apply_lightweight_evidence_rerank(
+    def _apply_deterministic_evidence_scoring(
         self,
         query: str,
         results: list[RetrievalResult],
@@ -851,33 +1015,26 @@ class RetrievalService:
             result.score_debug["stage1_score"] = result.score
         self._apply_rank_quality_boosts(results, item_by_id, reference_time=reference_time)
         self._apply_query_focused_snippets(query, results, chunks)
-        self._apply_evidence_relevance_scores(query, results)
+        self._apply_evidence_policy_scores(query, results)
         for result in results:
             stage1_score = float(result.score_debug.get("stage1_score", result.score))
-            result.score_debug["stage2_evidence_delta"] = result.score - stage1_score
+            delta = result.score - stage1_score
+            result.score_debug["evidence_scoring_delta"] = delta
+            result.score_debug["stage2_evidence_delta"] = delta
         results.sort(key=lambda result: result.score, reverse=True)
 
-    def _apply_evidence_relevance_scores(self, query: str, results: list[RetrievalResult]) -> None:
-        anchors = _snippet_anchor_terms(query)
-        if not anchors:
-            return
-        asks_for_value = _query_seeks_numeric_answer(query)
+    def _apply_evidence_policy_scores(self, query: str, results: list[RetrievalResult]) -> None:
+        context = EvidenceScoreContext(
+            query=query,
+            anchors=tuple(_snippet_anchor_terms(query)),
+            asks_for_numeric_answer=_query_seeks_numeric_answer(query),
+        )
         for result in results:
-            text = f"{result.title}\n{result.snippet}"
-            coverage = _anchor_coverage(anchors, text)
-            if coverage <= 0:
-                continue
-            boost = min(coverage * 0.018, 0.018)
-            if coverage >= 0.75:
-                boost += 0.018
-            if asks_for_value and coverage >= 0.45 and _text_has_numeric_evidence(result.snippet):
-                boost += 0.018
-            if coverage >= 0.45 and _looks_like_tabular_evidence(result.snippet):
-                boost += 0.012
-            boost = min(boost, 0.055)
-            result.score += boost
-            result.score_debug["stage2_anchor_coverage"] = coverage
-            result.score_debug["stage2_evidence_score"] = boost
+            outcome = self.evidence_score_pipeline.score(result, context)
+            if outcome.debug:
+                result.score_debug.update(outcome.debug)
+            if outcome.score:
+                result.score += outcome.score
 
     def _apply_query_focused_snippets(self, query: str, results: list[RetrievalResult], chunks: list[Chunk]) -> None:
         chunk_by_id = {chunk.chunk_id: chunk for chunk in chunks}
@@ -904,10 +1061,6 @@ class RetrievalService:
                 result.score += boost
                 result.score_debug["focused_snippet_query_coverage"] = float(coverage)
                 result.score_debug["focused_snippet_boost"] = boost
-            validation_penalty = _validation_table_penalty(snippet, query)
-            if validation_penalty:
-                result.score -= validation_penalty
-                result.score_debug["validation_table_penalty"] = validation_penalty
         results.sort(key=lambda result: result.score, reverse=True)
 
     def _chunk_text_with_table_header(self, chunk: Chunk, document_chunks: list[Chunk]) -> str:
