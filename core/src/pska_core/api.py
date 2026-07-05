@@ -21,6 +21,7 @@ from psycopg.types.json import Jsonb
 from pska_core.acl import ACLService
 from pska_core.agent_capture import capture_agent_conversation
 from pska_core.agentic_service import PSKA_QA_SKILL, AgenticServiceError, build_agentic_service_client, normalize_agentic_event_response
+from pska_core.answer_pipeline import AnswerCandidate, AnswerPipeline, AnswerPipelineContext, required_answer_values
 from pska_core.auth import AuthError, RequestContext, authenticate_headers, context_from_headers, service_token_required
 from pska_core.candidates import CandidateWriteService
 from pska_core.citation_pipeline import CitationSelectionContext, CitationSelectionPipeline
@@ -2936,6 +2937,7 @@ class PSKAApi:
         retrieval = _ask_apply_evidence_check_to_retrieval(retrieval, evidence_check)
         steps.append(_ask_quick_read_step(sequence=len(steps) + 1, evidence=evidence, started_at=started_at))
         final_synthesis: dict[str, Any] | None = None
+        answer_pipeline_audit: dict[str, Any]
         if evidence_check.get("status") == "supported":
             deterministic_answer = _ask_quick_answer(query, retrieval, ask_intent=ask_intent)
             final_synthesis = self._workspace_ask_quick_agentic_synthesis(
@@ -2948,21 +2950,69 @@ class PSKAApi:
                 represented_user_id=represented_user_id,
                 session_id=session_id,
             )
-            answer = str((final_synthesis or {}).get("answer") or "").strip() or deterministic_answer
-            if _ask_should_use_deterministic_coverage_guard(query, answer, deterministic_answer, ask_intent=ask_intent):
+            candidates = []
+            agentic_answer = str((final_synthesis or {}).get("answer") or "").strip()
+            if agentic_answer:
+                candidates.append(
+                    AnswerCandidate(
+                        answer=agentic_answer,
+                        answer_type="kb_answer",
+                        owner=str((final_synthesis or {}).get("owner") or "fastreact_agentic_service"),
+                        priority=0,
+                        metadata={"source": "agentic_synthesis"},
+                    )
+                )
+            candidates.append(
+                AnswerCandidate(
+                    answer=deterministic_answer,
+                    answer_type="kb_answer",
+                    owner="deterministic_fallback",
+                    priority=10,
+                    metadata={"source": "deterministic_extraction", "validate_raw_evidence_listing": False},
+                )
+            )
+            answer_decision = AnswerPipeline().decide(
+                candidates,
+                AnswerPipelineContext(
+                    query=query,
+                    ask_intent=ask_intent,
+                    evidence_status=str(evidence_check.get("status") or ""),
+                    required_values=required_answer_values(query, deterministic_answer, ask_intent=ask_intent),
+                    reject_raw_evidence_listing=ask_intent == "writing",
+                ),
+            )
+            answer_pipeline_audit = answer_decision.audit
+            if answer_decision.owner == "deterministic_fallback" and agentic_answer:
                 final_synthesis = {
                     **(final_synthesis or {}),
                     "status": "fallback",
                     "owner": "deterministic_fallback",
-                    "reason": "agentic_synthesis_missing_evidence_values",
-                    "agentic_answer": answer,
+                    "reason": _ask_answer_pipeline_fallback_reason(answer_pipeline_audit),
+                    "agentic_answer": agentic_answer,
                 }
-                answer = deterministic_answer
+            answer = answer_decision.answer
             answer = _ask_polish_quick_supported_answer(answer, ask_intent=ask_intent)
-            answer_type = "kb_answer"
+            answer_type = answer_decision.answer_type
         else:
-            answer = _ask_no_answer_from_evidence_check(query, evidence_check)
-            answer_type = "no_answer"
+            answer_decision = AnswerPipeline().decide(
+                [
+                    AnswerCandidate(
+                        answer=_ask_no_answer_from_evidence_check(query, evidence_check),
+                        answer_type="no_answer",
+                        owner="no_answer_policy",
+                        priority=0,
+                        metadata={"reasons": list(evidence_check.get("no_answer_reasons") or [])},
+                    )
+                ],
+                AnswerPipelineContext(
+                    query=query,
+                    ask_intent=ask_intent,
+                    evidence_status=str(evidence_check.get("status") or ""),
+                ),
+            )
+            answer_pipeline_audit = answer_decision.audit
+            answer = answer_decision.answer
+            answer_type = answer_decision.answer_type
         answer_detail = "已完成证据归纳和引用校验。"
         if final_synthesis and final_synthesis.get("status") == "succeeded":
             answer_detail = "已由 agentic service 基于通过校验的证据归纳成回答。"
@@ -3010,6 +3060,7 @@ class PSKAApi:
                 "used": evidence["citations"],
                 "dropped": _list_of_dicts(evidence_check.get("dropped_citations")),
             },
+            "answer_pipeline": answer_pipeline_audit,
             "evidence_check": evidence_check,
             "evidence_claims": list(evidence_check.get("evidence_claims") or []),
             "no_answer_reasons": list(evidence_check.get("no_answer_reasons") or []),
@@ -3022,6 +3073,7 @@ class PSKAApi:
                 "retrieval_owner": "pska",
                 "retrieval": retrieval,
                 "final_synthesis": final_synthesis or {"status": "not_attempted"},
+                "answer_pipeline": answer_pipeline_audit,
                 "diagnostics": retrieval.get("diagnostics") if isinstance(retrieval.get("diagnostics"), dict) else {},
                 "evidence_check": evidence_check,
             },
@@ -9290,41 +9342,15 @@ def _ask_polish_quick_supported_answer(answer: str, *, ask_intent: str) -> str:
     return text
 
 
-def _ask_should_use_deterministic_coverage_guard(query: str, answer: str, deterministic_answer: str, *, ask_intent: str = "kb_search") -> bool:
-    if not answer.strip() or not deterministic_answer.strip():
-        return False
-    if ask_intent == "writing" and _ask_answer_looks_like_raw_evidence_listing(answer):
-        return True
-    if ask_intent == "writing" and _ask_query_requests_preserved_numbers(query):
-        answer_text = answer.casefold()
-        return any(value.casefold() not in answer_text for value in _ask_numeric_values(deterministic_answer))
-    if not _ask_query_requests_multiple_values(query):
-        return False
-    answer_text = answer.casefold()
-    for value in _ask_numeric_values(deterministic_answer):
-        if value.casefold() not in answer_text:
-            return True
-    return False
-
-
-def _ask_query_requests_preserved_numbers(query: str) -> bool:
-    text = str(query or "").casefold()
-    return any(marker in text for marker in ("保留数字", "保留数值", "保留具体数字", "preserve numbers", "keep numbers", "include numbers"))
-
-
-def _ask_answer_looks_like_raw_evidence_listing(answer: str) -> bool:
-    text = str(answer or "").strip()
-    if not text:
-        return False
-    if "当前资料支持以下结论" in text:
-        return True
-    if text.count(" / ") >= 3:
-        return True
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    if len(lines) >= 4 and lines[0].startswith(("关键结论", "结论")):
-        short_fact_lines = sum(1 for line in lines[1:] if len(line) <= 180 and re.search(r"\d|=| is |为|：|:", line, flags=re.IGNORECASE))
-        return short_fact_lines >= 3
-    return False
+def _ask_answer_pipeline_fallback_reason(audit: dict[str, Any]) -> str:
+    for candidate in _list_of_dicts(audit.get("candidates")):
+        if candidate.get("status") != "rejected":
+            continue
+        for validation in _list_of_dicts(candidate.get("validations")):
+            reason = str(validation.get("reason") or "").strip()
+            if reason:
+                return reason
+    return "answer_pipeline_selected_deterministic_fallback"
 
 
 def _ask_quick_writing_answer(query: str, facts: list[str]) -> str:

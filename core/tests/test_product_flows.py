@@ -663,6 +663,7 @@ def test_unrelated_question_returns_no_answer_instead_of_random_citations() -> N
     assert answer["citations"] == []
     assert answer["no_answer_reasons"]
     assert answer["evidence_check"]["query_anchors"]
+    assert answer["answer_pipeline"]["selected_owner"] == "no_answer_policy"
 
 
 def test_quick_ask_returns_citation_selection_audit() -> None:
@@ -691,6 +692,9 @@ def test_quick_ask_returns_citation_selection_audit() -> None:
     assert answer["citations"][0]["citation_selection"]["selected_span"]
     feature_names = {feature["name"] for feature in answer["citations"][0]["citation_selection"]["features"]}
     assert "anchor_coverage" in feature_names
+    assert answer["answer_pipeline"]["pipeline"] == "deterministic_answer_pipeline"
+    assert answer["answer_pipeline"]["selected_owner"] == "deterministic_fallback"
+    assert answer["trace"]["answer_pipeline"]["selected_owner"] == answer["answer_pipeline"]["selected_owner"]
 
 
 def test_linking_digest_creates_topic_paths_and_delete_marks_supports() -> None:
