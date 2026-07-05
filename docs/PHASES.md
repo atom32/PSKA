@@ -21,6 +21,8 @@ architecture details live in [Architecture](ARCHITECTURE.md), decisions live in
 Phase 1 answered the question: can PSKA support a trustworthy, scoped,
 evidence-driven RAG foundation?
 
+Release notes: [v0.1.0 Phase 1 Evidence QA Engine](RELEASE_V0_1_PHASE1.zh.md).
+
 The frozen Phase 1 pipeline is:
 
 ```text

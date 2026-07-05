@@ -7,6 +7,7 @@
 - [根 README](../README.zh.md)：多租户开发入口、服务地图、身份 headers、source/digest/Ask 工作流和验证命令。
 - [Developer Quickstart](DEVELOPER_QUICKSTART.md)：开发栈启动、首次配置、cold-start 检查和 FastReAct 联动。
 - [发布、初始化与 FastReAct 指南](RELEASE_INIT_FASTREACT_GUIDE.zh.md)：本地初始化、日常启动和真实 FastReAct 联调流程。
+- [v0.1.0 Phase 1 Release Notes](RELEASE_V0_1_PHASE1.zh.md)：Evidence QA Engine 的 Phase 1 基线、浏览器验收、tags 和延期项说明。
 - [配置约定](CONFIGURATION_CONTRACT.zh.md)：PSKA、FastReAct、AuthNode 的配置文件位置、启动入口和兼容字段。
 
 ## 日常使用

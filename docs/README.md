@@ -10,6 +10,7 @@ historical planning notes.
   identity headers, source/digest/Ask workflow, and verification commands.
 - [Developer Quickstart](DEVELOPER_QUICKSTART.md): one-command dev stack, first-time setup, cold-start checks, and FastReAct integration.
 - [Release, Init, and FastReAct Guide](RELEASE_INIT_FASTREACT_GUIDE.zh.md): Chinese operational guide for local release/init and real FastReAct linkage.
+- [v0.1.0 Phase 1 Release Notes](RELEASE_V0_1_PHASE1.zh.md): Chinese release baseline notes for the Evidence QA Engine, browser validation, tags, and deferred work.
 - [Phase 1 Multi-KB RAG Release Notes](RELEASE_PHASE1_MULTI_KB_RAG.zh.md): Chinese release candidate notes, verification commands, and scope boundaries for the multi-knowledge-base RAG foundation.
 - [Configuration Contract](CONFIGURATION_CONTRACT.zh.md): Chinese reference for PSKA, FastReAct, and AuthNode config locations, startup entry points, and compatibility fields.
 
