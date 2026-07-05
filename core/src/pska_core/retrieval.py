@@ -462,8 +462,17 @@ class RetrievalService:
         chunks: list[Chunk],
         item_by_id: dict[str, SourceItem],
     ) -> tuple[list[RetrievalResult], str]:
+        chunks_by_document: dict[str, list[Chunk]] = {}
+        for chunk in chunks:
+            chunks_by_document.setdefault(chunk.document_id, []).append(chunk)
+        for document_chunks in chunks_by_document.values():
+            document_chunks.sort(key=lambda chunk: int(chunk.ordinal or 0))
         documents = [
-            self._terms(f"{item_by_id[chunk.source_item_id].title} {chunk.text} {item_by_id[chunk.source_item_id].url or ''}")
+            self._terms(
+                f"{item_by_id[chunk.source_item_id].title} "
+                f"{self._chunk_text_with_table_header(chunk, chunks_by_document.get(chunk.document_id, []))} "
+                f"{item_by_id[chunk.source_item_id].url or ''}"
+            )
             for chunk in chunks
         ]
         bm25_scores = _bm25_scores(documents, query_terms)
@@ -736,6 +745,10 @@ class RetrievalService:
                 result.score += boost
                 result.score_debug["focused_snippet_query_coverage"] = float(coverage)
                 result.score_debug["focused_snippet_boost"] = boost
+            validation_penalty = _validation_table_penalty(snippet, query)
+            if validation_penalty:
+                result.score -= validation_penalty
+                result.score_debug["validation_table_penalty"] = validation_penalty
         results.sort(key=lambda result: result.score, reverse=True)
 
     def _chunk_text_with_table_header(self, chunk: Chunk, document_chunks: list[Chunk]) -> str:
@@ -1792,6 +1805,46 @@ def _line_has_anchor(line: str, anchors: list[str]) -> bool:
 def _focused_snippet_query_coverage(snippet: str, terms: list[str]) -> int:
     folded = str(snippet or "").casefold()
     return sum(1 for term in set(terms) if term.casefold() in folded)
+
+
+def _validation_table_penalty(snippet: str, query: str) -> float:
+    if "|" not in str(snippet or ""):
+        return 0.0
+    query_folded = str(query or "").casefold()
+    validation_intent_terms = {
+        "actual",
+        "check",
+        "expected",
+        "status",
+        "validate",
+        "validation",
+        "verification",
+        "verify",
+        "实际",
+        "校验",
+        "核对",
+        "验证",
+        "预期",
+        "状态",
+    }
+    if any(term in query_folded for term in validation_intent_terms):
+        return 0.0
+    for line in str(snippet or "").splitlines():
+        if not _is_table_content_line(line):
+            continue
+        cells = [cell.casefold() for cell in _table_cells(line) if cell.strip()]
+        if len(cells) < 3:
+            continue
+        has_expected = any("expected" in cell or "预期" in cell for cell in cells)
+        has_actual = any("actual" in cell or "实际" in cell for cell in cells)
+        has_status = any("status" in cell or "状态" in cell for cell in cells)
+        has_check = any(
+            any(token in cell for token in ("check", "validate", "validation", "verify", "校验", "核对", "验证"))
+            for cell in cells
+        )
+        if has_expected and has_actual and (has_status or has_check):
+            return 0.04
+    return 0.0
 
 
 def _line_anchor_score(line: str, anchors: list[str]) -> int:
