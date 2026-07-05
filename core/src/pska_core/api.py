@@ -8313,6 +8313,14 @@ def _ask_evidence_terms(text: str) -> list[str]:
         "有没有",
         "找到",
         "证据",
+        "只根据",
+        "根据",
+        "只回答",
+        "文件名",
+        "报告",
+        "年报",
+        "年度报告",
+        "年",
     }
     terms: list[str] = []
     seen: set[str] = set()
@@ -8391,6 +8399,14 @@ def _ask_query_anchor_terms(query: str, terms: list[str] | None = None) -> list[
         "当前",
         "系统",
         "证据",
+        "只根据",
+        "根据",
+        "请",
+        "只回答",
+        "文件名",
+        "报告",
+        "年报",
+        "年度报告",
         "找到",
         "是否",
         "有没有",
@@ -8502,6 +8518,63 @@ def _ask_query_mentions_structural_marker(normalized_query: str, marker: str) ->
         pattern = r"\s+".join(re.escape(part) for part in parts) if parts else re.escape(marker)
         return re.search(rf"(?<![a-z0-9]){pattern}(?![a-z0-9])", normalized_query) is not None
     return marker in normalized_query
+
+
+def _ask_anchor_term_supported(term: str, *, query_terms: list[str], evidence_terms: set[str], folded_text: str) -> bool:
+    normalized = str(term or "").strip().casefold()
+    if not normalized:
+        return False
+    if normalized in evidence_terms or normalized in folded_text:
+        return True
+    return len(_ask_compound_anchor_hit_parts(normalized, query_terms=query_terms, evidence_terms=evidence_terms, folded_text=folded_text)) >= 2
+
+
+def _ask_compound_anchor_hit_parts(term: str, *, query_terms: list[str], evidence_terms: set[str], folded_text: str) -> list[str]:
+    if not re.fullmatch(r"[\u4e00-\u9fff]{4,}", term):
+        return []
+    generic = {
+        "当前",
+        "资料",
+        "资料库",
+        "知识库",
+        "文档",
+        "报告",
+        "年报",
+        "年度报告",
+        "回答",
+        "问题",
+        "证据",
+        "引用",
+        "来源",
+        "文件名",
+    }
+    candidates: list[tuple[int, int, str]] = []
+    seen: set[str] = set()
+    for raw in query_terms:
+        candidate = str(raw or "").strip().casefold()
+        if candidate in seen or candidate == term or candidate in generic:
+            continue
+        if not re.fullmatch(r"[\u4e00-\u9fff]{2,}", candidate):
+            continue
+        start = term.find(candidate)
+        if start < 0:
+            continue
+        if candidate not in evidence_terms and candidate not in folded_text:
+            continue
+        seen.add(candidate)
+        candidates.append((start, start + len(candidate), candidate))
+    selected: list[tuple[int, int, str]] = []
+    for start, end, candidate in sorted(candidates, key=lambda item: (item[1] - item[0], -item[0]), reverse=True):
+        if any(not (end <= other_start or start >= other_end) for other_start, other_end, _ in selected):
+            continue
+        selected.append((start, end, candidate))
+    selected.sort(key=lambda item: item[0])
+    if not selected or selected[0][0] != 0:
+        return []
+    covered = sum(end - start for start, end, _ in selected)
+    if covered / max(len(term), 1) < 0.8:
+        return []
+    return [candidate for _, _, candidate in selected]
 
 
 def _text_has_negated_label(text: str, label: str) -> bool:
@@ -8622,8 +8695,16 @@ def _ask_verify_evidence(
         evidence_terms = set(_ask_evidence_terms(check_text))
         structural_hits = _ask_structural_evidence_hits(query, check_text)
         support_hits = [term for term in query_terms if term in evidence_terms or term in folded_check_text]
-        anchor_hits = [term for term in anchor_terms if term in evidence_terms or term in folded_check_text]
-        required_anchor_hits = [term for term in required_anchor_terms if term in evidence_terms or term in folded_check_text]
+        anchor_hits = [
+            term
+            for term in anchor_terms
+            if _ask_anchor_term_supported(term, query_terms=query_terms, evidence_terms=evidence_terms, folded_text=folded_check_text)
+        ]
+        required_anchor_hits = [
+            term
+            for term in required_anchor_terms
+            if _ask_anchor_term_supported(term, query_terms=query_terms, evidence_terms=evidence_terms, folded_text=folded_check_text)
+        ]
         if structural_hits:
             support_hits.extend(hit for hit in structural_hits if hit not in support_hits)
             anchor_hits.extend(hit for hit in structural_hits if hit not in anchor_hits)

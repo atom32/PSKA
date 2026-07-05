@@ -1331,6 +1331,66 @@ def test_ask_evidence_check_accepts_structural_contact_anchors() -> None:
     assert check["used_citations"][0]["support_hits"][-2:] == ["url", "phone"]
 
 
+def test_ask_evidence_check_accepts_split_cjk_compound_anchor_without_cross_subject_leak() -> None:
+    evidence = {
+        "results": [
+            {
+                "source_item_id": "src_target_report",
+                "chunk_id": "chk_target",
+                "title": "星辰科技2025.pdf",
+                "snippet": "星辰科技 2025 年年度报告 主要会计数据 营业收入（元） 92,507,796,069.94",
+                "source_window": {
+                    "source_item_id": "src_target_report",
+                    "document_id": "doc_target_report",
+                    "chunk_id": "chk_target",
+                    "title": "星辰科技2025.pdf",
+                    "text": "星辰科技 2025 年年度报告 主要会计数据 营业收入（元） 92,507,796,069.94",
+                },
+            },
+            {
+                "source_item_id": "src_other_report",
+                "chunk_id": "chk_other",
+                "title": "其他科技2025.pdf",
+                "snippet": "其他科技 2025 年年度报告 主要会计数据 营业收入（元） 123.00",
+                "source_window": {
+                    "source_item_id": "src_other_report",
+                    "document_id": "doc_other_report",
+                    "chunk_id": "chk_other",
+                    "title": "其他科技2025.pdf",
+                    "text": "其他科技 2025 年年度报告 主要会计数据 营业收入（元） 123.00",
+                },
+            },
+        ],
+        "citations": [
+            {
+                "source_item_id": "src_target_report",
+                "document_id": "doc_target_report",
+                "chunk_id": "chk_target",
+                "title": "星辰科技2025.pdf",
+            },
+            {
+                "source_item_id": "src_other_report",
+                "document_id": "doc_other_report",
+                "chunk_id": "chk_other",
+                "title": "其他科技2025.pdf",
+            },
+        ],
+        "source_windows": [],
+    }
+
+    check = _ask_verify_evidence(
+        query="只根据当前知识库回答：2025年星辰科技营业收入（元）是多少？请只回答数值，并引用文件名。",
+        evidence=evidence,
+        scope={},
+        ask_intent="kb_search",
+    )
+
+    assert check["status"] == "supported"
+    assert check["query_anchors"] == ["星辰科技营业收入"]
+    assert [item["source_item_id"] for item in check["used_citations"]] == ["src_target_report"]
+    assert {item["source_item_id"]: item["drop_reason"] for item in check["dropped_citations"]} == {"src_other_report": "missing_query_anchor"}
+
+
 def test_ask_quick_answer_prioritizes_structured_contact_values() -> None:
     answer = _ask_quick_answer(
         "年报最后一页的联系电话和网址是什么？",
