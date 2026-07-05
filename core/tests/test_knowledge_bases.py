@@ -881,6 +881,46 @@ def test_workspace_ask_knowledge_base_scope_filters_rag_evidence() -> None:
     assert "selected_scope_empty" in empty_intersection["quality_signals"]["flags"]
 
 
+def test_workspace_ask_knowledge_base_scope_does_not_mix_conflicting_table_answers() -> None:
+    api = _api()
+    context = RequestContext()
+    alpha_kb = api.create_workspace_knowledge_base({"name": "Alpha Metrics"}, context=context)["knowledge_base"]
+    beta_kb = api.create_workspace_knowledge_base({"name": "Beta Metrics"}, context=context)["knowledge_base"]
+    alpha = api.create_text_source(
+        {
+            "title": "Alpha metrics table",
+            "text": "| Metric | 2025 |\n| --- | --- |\n| Revenue_million | 111.00 |",
+            "knowledge_base_id": alpha_kb["knowledge_base_id"],
+            "digest_mode": "manual",
+        },
+        context=context,
+    )
+    beta = api.create_text_source(
+        {
+            "title": "Beta metrics table",
+            "text": "| Metric | 2025 |\n| --- | --- |\n| Revenue_million | 222.00 |",
+            "knowledge_base_id": beta_kb["knowledge_base_id"],
+            "digest_mode": "manual",
+        },
+        context=context,
+    )
+
+    response = api.workspace_ask(
+        {
+            "query": "Revenue_million 是多少？",
+            "intent": "kb_search",
+            "skip_intent_classifier": True,
+            "scope": {"knowledge_base_ids": [alpha_kb["knowledge_base_id"]]},
+        },
+        context=context,
+    )
+
+    assert "111.00" in response["answer"]
+    assert "222.00" not in response["answer"]
+    assert {result["source_item_id"] for result in response["evidence"]["results"]} == set(alpha["source_item_ids"])
+    assert beta["source_item_ids"][0] not in {ref["source_item_id"] for ref in response["source_refs"]}
+
+
 def test_workspace_knowledge_base_search_returns_scoped_attributed_results() -> None:
     api = _api()
     context = RequestContext()

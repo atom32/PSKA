@@ -473,6 +473,41 @@ def test_ask_quick_plain_pdf_table_selects_requested_year_column() -> None:
     assert "92,507,796,069.94" not in answer
 
 
+def test_ask_quick_answer_calculates_year_over_year_metric_change_from_tables() -> None:
+    retrieval = {
+        "results": [
+            {
+                "source_item_id": "src_report_2025",
+                "title": "annual-report-2025.pdf",
+                "snippet": (
+                    "六、主要会计数据和财务指标 2025 年 2024 年 本年比上年 增减 2023 年 "
+                    "营业收入（元） 92,507,796,069.94 92,495,525,118.30 0.01% 89,341,177,610.40 "
+                    "归属于上市公司股东的净利润（元） 14,195,371,894.42 11,977,327,023.54 18.52%"
+                ),
+            },
+            {
+                "source_item_id": "src_report_2024",
+                "title": "annual-report-2024.pdf",
+                "snippet": (
+                    "六、主要会计数据和财务指标 2024 年 2023 年 2022 年 "
+                    "营业收入（元） 92,495,525,118.30 89,341,177,610.40 83,166,321,001.88 "
+                    "归属于上市公司股东的净利润（元） 11,977,327,023.54 14,107,726,276.26 12,837,343,999.33"
+                ),
+            },
+        ]
+    }
+
+    answer = _ask_quick_answer(
+        "比较 2024 和 2025 年营业收入（元）变化百分比，请给出两个年份数值和变化率。",
+        retrieval,
+    )
+
+    assert "2024 = 92,495,525,118.30" in answer
+    assert "2025 = 92,507,796,069.94" in answer
+    assert "2025较2024变化 = 0.01%" in answer
+    assert "差额 12,270,951.64" in answer
+
+
 def test_ask_quick_extracts_requested_columns_from_matching_wide_table_row() -> None:
     retrieval = {
         "results": [
@@ -975,6 +1010,199 @@ def test_retrieval_prefers_matching_report_year_source() -> None:
 
     assert response.results[0].source_item_id == "src_report_2024"
     assert response.results[0].score_debug["document_year_match"] > 0
+
+
+def test_retrieval_prioritizes_latest_report_source_when_query_requests_latest() -> None:
+    store = InMemoryKnowledgeStore()
+    store.add_user(User("user_primary", "primary", UserRole.ADMIN))
+    for year, source_item_id, document_id, chunk_id, revenue in [
+        ("2023", "src_latest_report_2023", "doc_latest_report_2023", "chk_latest_report_2023", "89,341,177,610.40"),
+        ("2024", "src_latest_report_2024", "doc_latest_report_2024", "chk_latest_report_2024", "92,495,525,118.30"),
+        ("2025", "src_latest_report_2025", "doc_latest_report_2025", "chk_latest_report_2025", "92,507,796,069.94"),
+    ]:
+        store.upsert_source_item(
+            SourceItem(
+                source_item_id=source_item_id,
+                source_channel="upload",
+                record_type="file",
+                source_id=f"annual-report-{year}.pdf",
+                owner_user_id="user_primary",
+                space_id="private_primary",
+                visibility=Visibility.PRIVATE,
+                visible_team_ids=[],
+                title=f"annual-report-{year}.pdf",
+                url=None,
+                content_text=f"{year} annual report",
+                content_hash=f"hash_latest_report_{year}",
+            )
+        )
+        store.add_document(
+            Document(
+                document_id=document_id,
+                source_item_id=source_item_id,
+                owner_user_id="user_primary",
+                space_id="private_primary",
+                visibility=Visibility.PRIVATE,
+                visible_team_ids=[],
+                title=f"annual-report-{year}.pdf",
+                body=f"{year} annual report body",
+            )
+        )
+        store.add_chunk(
+            Chunk(
+                chunk_id=chunk_id,
+                document_id=document_id,
+                source_item_id=source_item_id,
+                owner_user_id="user_primary",
+                space_id="private_primary",
+                visibility=Visibility.PRIVATE,
+                visible_team_ids=[],
+                text=f"六、主要会计数据和财务指标 {year} 年 营业收入（元） {revenue}",
+                ordinal=10,
+            )
+        )
+
+    user = store.get_user("user_primary", tenant_id="tenant_default")
+    response = RetrievalService(store, ACLService(store)).search(
+        "最新的营业收入（元）是多少？",
+        user,
+        represented_user_id="user_primary",
+        top_k=1,
+    )
+
+    assert response.results[0].source_item_id == "src_latest_report_2025"
+    assert response.results[0].score_debug["latest_document_year_match"] > 0
+
+
+def test_workspace_ask_quick_compares_metric_across_year_sources() -> None:
+    api = _api()
+    for year, source_item_id, document_id, chunk_id, revenue in [
+        ("2024", "src_compare_report_2024", "doc_compare_report_2024", "chk_compare_report_2024", "92,495,525,118.30"),
+        ("2025", "src_compare_report_2025", "doc_compare_report_2025", "chk_compare_report_2025", "92,507,796,069.94"),
+    ]:
+        api.store.upsert_source_item(
+            SourceItem(
+                source_item_id=source_item_id,
+                source_channel="upload",
+                record_type="file",
+                source_id=f"annual-report-{year}.pdf",
+                owner_user_id="user_primary",
+                space_id="private_primary",
+                visibility=Visibility.PRIVATE,
+                visible_team_ids=[],
+                title=f"annual-report-{year}.pdf",
+                url=None,
+                content_text=f"{year} annual report",
+                content_hash=f"hash_compare_report_{year}",
+            )
+        )
+        api.store.add_document(
+            Document(
+                document_id=document_id,
+                source_item_id=source_item_id,
+                owner_user_id="user_primary",
+                space_id="private_primary",
+                visibility=Visibility.PRIVATE,
+                visible_team_ids=[],
+                title=f"annual-report-{year}.pdf",
+                body=f"{year} annual report body",
+            )
+        )
+        api.store.add_chunk(
+            Chunk(
+                chunk_id=chunk_id,
+                document_id=document_id,
+                source_item_id=source_item_id,
+                owner_user_id="user_primary",
+                space_id="private_primary",
+                visibility=Visibility.PRIVATE,
+                visible_team_ids=[],
+                text=f"六、主要会计数据和财务指标 {year} 年 营业收入（元） {revenue}",
+                ordinal=10,
+            )
+        )
+
+    response = api.workspace_ask(
+        {
+            "query": "比较 2024 和 2025 年营业收入（元）变化百分比，请给出两个年份数值和变化率。",
+            "intent": "kb_search",
+            "skip_intent_classifier": True,
+            "top_k": 4,
+        }
+    )
+
+    assert "2024 = 92,495,525,118.30" in response["answer"]
+    assert "2025 = 92,507,796,069.94" in response["answer"]
+    assert "2025较2024变化 = 0.01%" in response["answer"]
+    assert {"src_compare_report_2024", "src_compare_report_2025"}.issubset(
+        {result["source_item_id"] for result in response["evidence"]["results"]}
+    )
+
+
+def test_workspace_ask_comparison_requires_requested_subject_anchor() -> None:
+    api = _api()
+    rows = [
+        ("AlphaCorp", "2024", "src_alpha_report_2024", "doc_alpha_report_2024", "chk_alpha_report_2024", "1,000.00"),
+        ("AlphaCorp", "2025", "src_alpha_report_2025", "doc_alpha_report_2025", "chk_alpha_report_2025", "1,250.00"),
+        ("OtherCorp", "2025", "src_other_report_2025", "doc_other_report_2025", "chk_other_report_2025", "9,999.00"),
+    ]
+    for company, year, source_item_id, document_id, chunk_id, revenue in rows:
+        api.store.upsert_source_item(
+            SourceItem(
+                source_item_id=source_item_id,
+                source_channel="upload",
+                record_type="file",
+                source_id=f"{company}-annual-report-{year}.pdf",
+                owner_user_id="user_primary",
+                space_id="private_primary",
+                visibility=Visibility.PRIVATE,
+                visible_team_ids=[],
+                title=f"{company} annual-report-{year}.pdf",
+                url=None,
+                content_text=f"{company} {year} annual report",
+                content_hash=f"hash_{company}_{year}",
+            )
+        )
+        api.store.add_document(
+            Document(
+                document_id=document_id,
+                source_item_id=source_item_id,
+                owner_user_id="user_primary",
+                space_id="private_primary",
+                visibility=Visibility.PRIVATE,
+                visible_team_ids=[],
+                title=f"{company} annual-report-{year}.pdf",
+                body=f"{company} {year} annual report body",
+            )
+        )
+        api.store.add_chunk(
+            Chunk(
+                chunk_id=chunk_id,
+                document_id=document_id,
+                source_item_id=source_item_id,
+                owner_user_id="user_primary",
+                space_id="private_primary",
+                visibility=Visibility.PRIVATE,
+                visible_team_ids=[],
+                text=f"{company} annual report table {year} Revenue_million {revenue}",
+                ordinal=10,
+            )
+        )
+
+    response = api.workspace_ask(
+        {
+            "query": "比较 AlphaCorp2024年和2025年年度报告表中的 Revenue_million 变化百分比，请给出两个年份数值和变化率。",
+            "intent": "kb_search",
+            "skip_intent_classifier": True,
+            "top_k": 6,
+        }
+    )
+
+    assert "2024 = 1,000.00" in response["answer"]
+    assert "2025 = 1,250.00" in response["answer"]
+    assert "2025较2024变化 = 25.00%" in response["answer"]
+    assert "9,999.00" not in response["answer"]
+    assert "src_other_report_2025" not in {ref["source_item_id"] for ref in response["source_refs"]}
 
 
 def test_mcp_read_evidence_context_focuses_wide_table_chunk() -> None:

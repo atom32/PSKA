@@ -8215,6 +8215,23 @@ def _ask_evidence_terms(text: str) -> list[str]:
         "介绍",
         "说明",
         "分析",
+        "比较",
+        "对比",
+        "计算",
+        "变化",
+        "变化率",
+        "增长率",
+        "变动率",
+        "百分比",
+        "同比",
+        "环比",
+        "数值",
+        "年份",
+        "两个",
+        "给出",
+        "精确",
+        "引用",
+        "来源",
         "当前",
         "系统",
         "资料",
@@ -8261,6 +8278,33 @@ def _ask_evidence_terms(text: str) -> list[str]:
 
 
 def _ask_query_anchor_terms(query: str, terms: list[str] | None = None) -> list[str]:
+    if _ask_query_requests_year_comparison(query):
+        anchors: list[str] = []
+        seen: set[str] = set()
+
+        def add_anchor(value: str) -> None:
+            normalized = str(value or "").strip().casefold()
+            if len(normalized) < 2 or normalized in seen:
+                return
+            seen.add(normalized)
+            anchors.append(normalized)
+
+        for year in _ask_requested_value_years(query):
+            add_anchor(year)
+        for label in _ask_requested_comparison_fact_labels(query):
+            add_anchor(label)
+            add_anchor(re.sub(r"\([^)]*\)|（[^）]*）", "", label).strip())
+        label_keys = {_ask_normalized_table_label(anchor) for anchor in anchors}
+        for term in _ask_evidence_terms(query):
+            normalized_label = _ask_normalized_table_label(term)
+            if term in {"比较", "对比", "变化", "变化率", "百分比", "增长率", "同比", "环比", "数值", "年份"}:
+                continue
+            if normalized_label and any(normalized_label in key or key in normalized_label for key in label_keys if key):
+                continue
+            add_anchor(term)
+        if anchors:
+            return anchors[:8]
+
     generic_terms = {
         "can",
         "could",
@@ -8309,6 +8353,59 @@ def _ask_query_anchor_terms(query: str, terms: list[str] | None = None) -> list[
             continue
         specific.append(term)
     return specific[:8]
+
+
+def _ask_required_query_anchor_terms(query: str, anchor_terms: list[str]) -> list[str]:
+    if not _ask_query_requests_year_comparison(query):
+        return []
+    subject_terms = _ask_comparison_subject_anchor_terms(query)
+    if subject_terms:
+        return subject_terms[:4]
+    return []
+
+
+def _ask_comparison_subject_anchor_terms(query: str) -> list[str]:
+    text = str(query or "")
+    first_year = re.search(r"(?<!\d)20\d{2}(?!\d)", text)
+    if not first_year:
+        return []
+    prefix = text[: first_year.start()]
+    if "：" in prefix or ":" in prefix:
+        prefix = re.split(r"[:：]", prefix)[-1]
+    for marker in ("比较", "对比", "计算", "请", "根据", "只根据", "当前", "知识库", "回答"):
+        prefix = prefix.replace(marker, " ")
+    generic = {
+        "只根据",
+        "只根",
+        "根据",
+        "当前",
+        "知识库",
+        "资料",
+        "文档",
+        "报告",
+        "年报",
+        "年度报告",
+        "主要会计数据",
+        "会计数据",
+        "财务指标",
+        "指标表中",
+        "引用来源",
+    }
+    required: list[str] = []
+    seen: set[str] = set()
+    for term in _ask_evidence_terms(prefix):
+        normalized = str(term or "").strip().casefold()
+        if not normalized or normalized in generic:
+            continue
+        if re.fullmatch(r"\d+(?:\.\d+)?", normalized):
+            continue
+        if any(marker in normalized for marker in ("报告", "年报", "资料", "文档", "表中", "数据", "指标", "引用", "来源")):
+            continue
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        required.append(normalized)
+    return required[:4]
 
 
 def _ask_structural_evidence_hits(query: str, text: str) -> list[str]:
@@ -8404,6 +8501,7 @@ def _ask_verify_evidence(
     hard_scope = scope_mode == "hard"
     query_terms = _ask_evidence_terms(query)
     anchor_terms = _ask_query_anchor_terms(query, query_terms)
+    required_anchor_terms = _ask_required_query_anchor_terms(query, anchor_terms)
     text_by_key: dict[tuple[str, str], str] = {}
     window_by_key: dict[tuple[str, str], dict[str, Any]] = {}
     windows_by_source: dict[str, list[dict[str, Any]]] = {}
@@ -8462,10 +8560,14 @@ def _ask_verify_evidence(
         structural_hits = _ask_structural_evidence_hits(query, check_text)
         support_hits = [term for term in query_terms if term in evidence_terms or term in folded_check_text]
         anchor_hits = [term for term in anchor_terms if term in evidence_terms or term in folded_check_text]
+        required_anchor_hits = [term for term in required_anchor_terms if term in evidence_terms or term in folded_check_text]
         if structural_hits:
             support_hits.extend(hit for hit in structural_hits if hit not in support_hits)
             anchor_hits.extend(hit for hit in structural_hits if hit not in anchor_hits)
         if ask_intent != "doc_only":
+            if required_anchor_terms and not required_anchor_hits:
+                dropped.append({**citation, "drop_reason": "missing_required_query_anchor", "query_anchors": required_anchor_terms[:8]})
+                continue
             if anchor_terms and not anchor_hits:
                 dropped.append({**citation, "drop_reason": "missing_query_anchor", "query_anchors": anchor_terms[:8]})
                 continue
@@ -8511,6 +8613,7 @@ def _ask_verify_evidence(
         "scope_mode": scope_mode,
         "query_terms": query_terms,
         "query_anchors": anchor_terms,
+        "required_query_anchors": required_anchor_terms,
         "used_citations": used,
         "dropped_citations": dropped,
         "evidence_claims": evidence_claims,
@@ -8718,7 +8821,22 @@ def _ask_query_terms(query: str) -> list[str]:
         "深入分析",
         "深入",
         "分析",
+        "比较",
+        "对比",
+        "计算",
+        "变化",
+        "变化率",
+        "增长率",
+        "变动率",
+        "百分比",
+        "同比",
+        "环比",
+        "数值",
+        "年份",
         "给出",
+        "引用",
+        "来源",
+        "精确",
         "可引用",
     }
     for chunk in re.findall(r"[\u4e00-\u9fff]+", text):
@@ -9065,6 +9183,9 @@ def _ask_quick_answer(query: str, retrieval: dict[str, Any], *, ask_intent: str 
             facts = _ask_clean_facts_from_results(results[:1], limit=6)
         if facts:
             return _ask_quick_writing_answer(query, facts)
+    facts = _ask_table_comparison_facts_from_results(query, results, limit=4)
+    if facts:
+        return f"关键结论：{'；'.join(facts)}。"
     facts = _ask_table_field_facts_from_results(query, results, limit=12)
     if facts and _ask_query_requests_only_values(query):
         return "\n".join(facts)
@@ -9382,6 +9503,281 @@ def _ask_positive_query_segment(query: str) -> str:
 def _ask_query_requests_only_values(query: str) -> bool:
     folded = str(query or "").casefold()
     return any(marker in folded for marker in ("只输出", "仅输出", "only output", "return only", "just output"))
+
+
+def _ask_table_comparison_facts_from_results(query: str, results: list[dict[str, Any]], *, limit: int) -> list[str]:
+    if not _ask_query_requests_year_comparison(query):
+        return []
+    years = _ask_requested_value_years(query)
+    if len(years) < 2:
+        return []
+    labels = _ask_requested_comparison_fact_labels(query)
+    if not labels:
+        labels = _ask_requested_fact_labels(query)
+    labels = labels or _ask_metric_labels_from_results(results, limit=1)
+    if not labels:
+        return []
+    facts: list[str] = []
+    for label in labels[:limit]:
+        values_by_year = _ask_year_values_for_label_from_results(label, results, years=years)
+        selected_years = [year for year in years if year in values_by_year]
+        if len(selected_years) < 2:
+            continue
+        base_year, target_year = _ask_comparison_base_target_years(selected_years)
+        base_value = values_by_year.get(base_year)
+        target_value = values_by_year.get(target_year)
+        base_number = _ask_parse_table_number(base_value)
+        target_number = _ask_parse_table_number(target_value)
+        if base_number is None or target_number is None or base_number == 0:
+            continue
+        delta = target_number - base_number
+        change_pct = (delta / base_number) * 100
+        ordered_values = "，".join(f"{year} = {values_by_year[year]}" for year in selected_years)
+        facts.append(
+            f"{label}：{ordered_values}，{target_year}较{base_year}变化 = {_ask_format_percentage(change_pct)}"
+            f"（差额 {_ask_format_plain_number(delta)}）"
+        )
+        if len(facts) >= limit:
+            break
+    return facts
+
+
+def _ask_query_requests_year_comparison(query: str) -> bool:
+    text = str(query or "").casefold()
+    if len(_ask_requested_value_years(text)) < 2:
+        return False
+    markers = (
+        "比较",
+        "对比",
+        "变化",
+        "变动",
+        "增长",
+        "下降",
+        "增减",
+        "同比",
+        "环比",
+        "变化率",
+        "变化百分比",
+        "增长率",
+        "change",
+        "compare",
+        "comparison",
+        "growth",
+        "increase",
+        "decrease",
+        "percent",
+        "percentage",
+        "rate",
+    )
+    return any(marker in text for marker in markers)
+
+
+def _ask_requested_comparison_fact_labels(query: str) -> list[str]:
+    segment = _ask_question_core_segment(_ask_positive_query_segment(query))
+    segment = re.split(r"[，,。；;!?！？]", segment, maxsplit=1)[0]
+    segment = re.sub(r"(?<!\d)20\d{2}(?!\d)\s*年(?:度)?", " ", segment)
+    segment = re.sub(
+        r"\b(?:compare|comparison|between|and|vs|versus|with|from|to|change|growth|increase|decrease|percentage|percent|rate|value|values|amount|amounts)\b",
+        " ",
+        segment,
+        flags=re.IGNORECASE,
+    )
+    comparison_markers = (
+        "比较",
+        "对比",
+        "计算",
+        "请给出",
+        "给出",
+        "两个年份",
+        "年份",
+        "数值",
+        "金额",
+        "分别",
+        "之间",
+        "相对",
+        "较",
+        "比",
+        "和",
+        "与",
+        "的",
+        "变化百分比",
+        "变化率",
+        "增长率",
+        "变动率",
+        "百分比",
+        "百分",
+        "同比",
+        "环比",
+        "增减",
+        "变化",
+        "增长",
+        "下降",
+    )
+    for marker in sorted(comparison_markers, key=len, reverse=True):
+        segment = segment.replace(marker, " ")
+    segment = re.sub(r"[:：/、|]+", " ", segment)
+    segment = re.sub(r"\s+", " ", segment).strip(" \t\r\n'\"“”‘’[]【】{}<>《》:：")
+    if not segment:
+        return []
+    labels: list[str] = []
+    seen: set[str] = set()
+    for raw_part in re.split(r"\s{2,}|[，,、;；/]+", segment):
+        label = _ask_clean_requested_fact_label(raw_part)
+        if not label:
+            continue
+        key = label.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        labels.append(label)
+    if not labels:
+        label = _ask_clean_requested_fact_label(segment)
+        if label:
+            labels.append(label)
+    return labels[:4]
+
+
+def _ask_metric_labels_from_results(results: list[dict[str, Any]], *, limit: int) -> list[str]:
+    labels: list[str] = []
+    seen: set[str] = set()
+    for text in _ask_result_text_candidates(results):
+        for headers, rows in _ask_markdown_tables(text):
+            label_columns = _ask_table_label_column_indexes(headers)
+            for row in rows:
+                for index in label_columns:
+                    if index >= len(headers):
+                        continue
+                    label = str(row.get(headers[index]) or "").strip()
+                    if not label or not re.search(r"[A-Za-z0-9\u4e00-\u9fff]", label):
+                        continue
+                    key = _ask_normalized_table_label(label)
+                    if not key or key in seen:
+                        continue
+                    seen.add(key)
+                    labels.append(label)
+                    if len(labels) >= limit:
+                        return labels
+        for candidate in _ask_plain_text_table_candidates(text):
+            match = re.search(r"([\u4e00-\u9fffA-Za-z][\u4e00-\u9fffA-Za-z0-9（）()/%_ -]{1,48})\s+\d[\d,]*(?:\.\d+)?", candidate)
+            if not match:
+                continue
+            label = match.group(1).strip()
+            key = _ask_normalized_table_label(label)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            labels.append(label)
+            if len(labels) >= limit:
+                return labels
+    return labels
+
+
+def _ask_year_values_for_label_from_results(label: str, results: list[dict[str, Any]], *, years: list[str]) -> dict[str, str]:
+    values_by_year: dict[str, str] = {}
+    for text in _ask_result_text_candidates(results):
+        for headers, rows in _ask_markdown_tables(text):
+            values_by_year.update(_ask_year_values_for_label_from_markdown_table(label, headers, rows, years=years))
+            if all(year in values_by_year for year in years):
+                return values_by_year
+        for candidate in _ask_plain_text_table_candidates(text):
+            values_by_year.update(_ask_year_values_for_label_from_plain_candidate(label, candidate, years=years))
+            if all(year in values_by_year for year in years):
+                return values_by_year
+    return values_by_year
+
+
+def _ask_year_values_for_label_from_markdown_table(
+    label: str,
+    headers: list[str],
+    rows: list[dict[str, str]],
+    *,
+    years: list[str],
+) -> dict[str, str]:
+    label_columns = _ask_table_label_column_indexes(headers)
+    values_by_year: dict[str, str] = {}
+    year_indexes: dict[str, int] = {}
+    for year in years:
+        for index, header in enumerate(headers):
+            if index in label_columns:
+                continue
+            folded = str(header or "").casefold()
+            header_digits = "".join(re.findall(r"\d+", folded))
+            if year in folded or header_digits == year:
+                year_indexes[year] = index
+                break
+    if not year_indexes:
+        return values_by_year
+    for row in rows:
+        row_cells = [str(row.get(header) or "").strip() for header in headers]
+        if _ask_matching_row_label_index(label, row_cells, label_columns) is None:
+            continue
+        for year, index in year_indexes.items():
+            if year in values_by_year or index >= len(row_cells):
+                continue
+            value = row_cells[index].strip()
+            if value and re.search(r"\d", value):
+                values_by_year[year] = value
+        break
+    return values_by_year
+
+
+def _ask_year_values_for_label_from_plain_candidate(label: str, candidate: str, *, years: list[str]) -> dict[str, str]:
+    if _ask_plain_label_match_span(candidate, label) is None:
+        return {}
+    header_years = _ask_plain_year_headers_before_label(candidate, label)
+    if not header_years:
+        return {}
+    values = _ask_numeric_values(_ask_text_after_label(candidate, label))
+    values = [value for value in values if value not in set(header_years)]
+    values = _ask_filter_non_metric_values_for_label(label, values)
+    by_header_year = {year: values[index] for index, year in enumerate(header_years) if index < len(values)}
+    return {year: by_header_year[year] for year in years if year in by_header_year}
+
+
+def _ask_filter_non_metric_values_for_label(label: str, values: list[str]) -> list[str]:
+    if _ask_label_expects_percentage(label):
+        return values
+    return [value for value in values if "%" not in value]
+
+
+def _ask_label_expects_percentage(label: str) -> bool:
+    folded = str(label or "").casefold()
+    return any(marker in folded for marker in ("%", "pct", "percentage", "ratio", "margin", "率", "比例", "占比"))
+
+
+def _ask_comparison_base_target_years(years: list[str]) -> tuple[str, str]:
+    numeric_years = [year for year in years if re.fullmatch(r"20\d{2}", year)]
+    if len(numeric_years) >= 2:
+        ordered = sorted(numeric_years)
+        return ordered[0], ordered[-1]
+    return years[0], years[-1]
+
+
+def _ask_parse_table_number(value: str | None) -> float | None:
+    if not value:
+        return None
+    text = str(value).strip().replace(",", "")
+    match = re.search(r"-?\d+(?:\.\d+)?", text)
+    if not match:
+        return None
+    try:
+        number = float(match.group(0))
+    except ValueError:
+        return None
+    if "%" in text:
+        return number / 100.0
+    return number
+
+
+def _ask_format_percentage(value: float) -> str:
+    return f"{value:.2f}%"
+
+
+def _ask_format_plain_number(value: float) -> str:
+    formatted = f"{value:,.2f}"
+    if formatted == "-0.00":
+        return "0.00"
+    return formatted
 
 
 def _ask_plain_label_value_facts_from_results(query: str, results: list[dict[str, Any]], *, limit: int) -> list[str]:

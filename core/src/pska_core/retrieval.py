@@ -649,8 +649,7 @@ class RetrievalService:
                 item = item_by_id.get(result.source_item_id)
                 if item is None:
                     continue
-                source_text = f"{item.title} {item.source_id} {item.url or ''}".casefold()
-                source_years = set(re.findall(r"(?<!\d)(20\d{2})(?!\d)", source_text))
+                source_years = set(_source_document_years(item))
                 if source_years.intersection(document_years):
                     boost = 0.08
                     result.score += boost
@@ -659,6 +658,22 @@ class RetrievalService:
                     penalty = 0.03
                     result.score -= penalty
                     result.score_debug["document_year_mismatch_penalty"] = penalty
+        elif _query_requests_latest(query):
+            latest_year = _latest_document_year(item_by_id.values())
+            if latest_year:
+                for result in results:
+                    item = item_by_id.get(result.source_item_id)
+                    if item is None:
+                        continue
+                    source_years = set(_source_document_years(item))
+                    if latest_year in source_years:
+                        boost = 0.07
+                        result.score += boost
+                        result.score_debug["latest_document_year_match"] = boost
+                    elif source_years:
+                        penalty = 0.02
+                        result.score -= penalty
+                        result.score_debug["latest_document_year_mismatch_penalty"] = penalty
         if not _spreadsheet_query_intent(query):
             return
         for result in results:
@@ -1505,6 +1520,35 @@ def _query_document_years(query: str) -> set[str]:
     for match in re.finditer(r"\bannual\s+report\b[^\n。！？?]{0,20}(?<!\d)(20\d{2})(?!\d)", text, flags=re.IGNORECASE):
         years.add(match.group(1))
     return years
+
+
+def _query_requests_latest(query: str) -> bool:
+    text = str(query or "").casefold()
+    return any(marker in text for marker in ("最新", "最近", "最新的", "latest", "most recent", "newest"))
+
+
+def _source_document_years(item: SourceItem) -> list[str]:
+    metadata = item.metadata or {}
+    text = " ".join(
+        str(value or "")
+        for value in (
+            item.title,
+            item.source_id,
+            item.url or "",
+            metadata.get("filename"),
+            metadata.get("path"),
+        )
+    )
+    return list(dict.fromkeys(re.findall(r"(?<!\d)(20\d{2})(?!\d)", text)))
+
+
+def _latest_document_year(items: Any) -> str | None:
+    years: list[str] = []
+    for item in items:
+        years.extend(_source_document_years(item))
+    if not years:
+        return None
+    return max(years)
 
 
 def _metric_phrase_match_score(phrases: list[str], text: str) -> int:
