@@ -8696,7 +8696,7 @@ def _ask_query_terms(query: str) -> list[str]:
         seen.add(term)
         terms.append(term)
 
-    for term in re.findall(r"[a-z][a-z0-9_-]*", text):
+    for term in re.findall(r"[a-z0-9]+(?:[-_][a-z0-9]+)+|[a-z][a-z0-9_-]*|(?<!\d)\d{2,}(?!\d)", text):
         add(term)
 
     chinese_stopwords = {
@@ -9069,6 +9069,10 @@ def _ask_quick_answer(query: str, retrieval: dict[str, Any], *, ask_intent: str 
     if facts and _ask_query_requests_only_values(query):
         return "\n".join(facts)
     if not facts:
+        facts = _ask_table_row_label_facts_from_results(query, results, limit=12)
+    if not facts:
+        facts = _ask_plain_label_value_facts_from_results(query, results, limit=12)
+    if not facts:
         facts = _ask_structured_facts_from_results(query, results, limit=6)
     if not facts:
         facts = _ask_requested_label_value_facts_from_results(query, results, limit=6)
@@ -9343,11 +9347,21 @@ def _ask_is_markdown_separator(cells: list[str]) -> bool:
 
 
 def _ask_requested_table_fields(query: str, headers: list[str]) -> list[str]:
-    segment = _ask_output_field_segment(query) or query
-    fields = [header for header in headers if _ask_text_mentions_identifier(segment, header)]
-    if fields:
-        return fields
-    return [header for header in headers if _ask_text_mentions_identifier(query, header)]
+    positive_query = _ask_positive_query_segment(query)
+    segments = [
+        segment
+        for segment in (
+            _ask_output_field_segment(query),
+            _ask_question_core_segment(positive_query),
+            positive_query,
+        )
+        if str(segment or "").strip()
+    ]
+    for segment in segments:
+        fields = [header for header in headers if _ask_text_mentions_identifier(segment, header)]
+        if fields:
+            return fields
+    return []
 
 
 def _ask_output_field_segment(query: str) -> str:
@@ -9368,6 +9382,279 @@ def _ask_positive_query_segment(query: str) -> str:
 def _ask_query_requests_only_values(query: str) -> bool:
     folded = str(query or "").casefold()
     return any(marker in folded for marker in ("只输出", "仅输出", "only output", "return only", "just output"))
+
+
+def _ask_plain_label_value_facts_from_results(query: str, results: list[dict[str, Any]], *, limit: int) -> list[str]:
+    labels = _ask_requested_fact_labels(query)
+    if not labels:
+        return []
+    if not _ask_query_requests_plain_numeric_label_values(query, labels):
+        return []
+    facts_by_label: dict[str, str] = {}
+    query_years = _ask_requested_value_years(query)
+    query_year_set = set(query_years)
+    for text in _ask_result_text_candidates(results):
+        candidates = _ask_plain_text_table_candidates(text)
+        for label in labels:
+            key = label.casefold()
+            if key in facts_by_label:
+                continue
+            label_norm = _ask_normalized_table_label(label)
+            if not label_norm:
+                continue
+            for candidate in candidates:
+                candidate_norm = _ask_normalized_table_label(candidate)
+                if label_norm not in candidate_norm:
+                    continue
+                value_text = _ask_text_after_label(candidate, label)
+                if not value_text:
+                    continue
+                values = _ask_numeric_values(value_text)
+                values = [value for value in values if value not in query_year_set]
+                if not values:
+                    continue
+                value = _ask_select_plain_table_value(candidate, label, values, query_years)
+                facts_by_label[key] = f"{label} = {value}"
+                break
+        if len(facts_by_label) >= min(len(labels), limit):
+            break
+    facts: list[str] = []
+    for label in labels:
+        fact = facts_by_label.get(label.casefold())
+        if fact:
+            facts.append(fact)
+        if len(facts) >= limit:
+            break
+    return facts
+
+
+def _ask_requested_value_years(query: str) -> list[str]:
+    core_segment = _ask_question_core_segment(str(query or ""))
+    years = list(dict.fromkeys(re.findall(r"(?<!\d)(20\d{2})(?!\d)", core_segment)))
+    if years:
+        return years
+    return list(dict.fromkeys(re.findall(r"(?<!\d)(20\d{2})(?!\d)", str(query or ""))))
+
+
+def _ask_select_plain_table_value(candidate: str, label: str, values: list[str], query_years: list[str]) -> str:
+    if len(values) <= 1 or not query_years:
+        return values[0]
+    header_years = _ask_plain_year_headers_before_label(candidate, label)
+    for year in query_years:
+        if year not in header_years:
+            continue
+        index = header_years.index(year)
+        if index < len(values):
+            return values[index]
+    return values[0]
+
+
+def _ask_plain_year_headers_before_label(candidate: str, label: str) -> list[str]:
+    span = _ask_plain_label_match_span(candidate, label)
+    if span is None:
+        return []
+    before = str(candidate or "")[: span[0]]
+    years = re.findall(r"(?<!\d)(20\d{2})(?!\d)", before)
+    return list(dict.fromkeys(years[-6:]))
+
+
+def _ask_query_requests_plain_numeric_label_values(query: str, labels: list[str]) -> bool:
+    folded = str(query or "").casefold()
+    if any(
+        marker in folded
+        for marker in (
+            "多少",
+            "数值",
+            "数字",
+            "金额",
+            "精确数字",
+            "精确数值",
+            "exact number",
+            "exact value",
+            "amount",
+            "numeric value",
+        )
+    ):
+        return True
+    if re.search(r"\bhow\s+(?:much|many)\b", folded):
+        return True
+    unit_pattern = re.compile(r"(?:\([^)]*(?:元|股|%|pct|usd|rmb|cny|million|mm|ms|s)[^)]*\)|（[^）]*(?:元|股|%|pct|usd|rmb|cny|million|mm|ms|s)[^）]*）)", re.IGNORECASE)
+    return any(unit_pattern.search(str(label or "")) for label in labels)
+
+
+def _ask_plain_text_table_candidates(text: str) -> list[str]:
+    raw_lines = [line.strip() for line in str(text or "").splitlines() if line.strip()]
+    lines: list[str] = []
+    for line in raw_lines:
+        if re.fullmatch(r"[-:| ]{5,}", line):
+            continue
+        lines.append(line)
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for index, line in enumerate(lines):
+        for span in (1, 2, 3):
+            if index + span > len(lines):
+                continue
+            candidate = " ".join(lines[index : index + span]).strip()
+            if not candidate or candidate in seen:
+                continue
+            seen.add(candidate)
+            candidates.append(candidate)
+    cleaned = _ask_clean_evidence_text(text)
+    if cleaned and cleaned not in seen:
+        candidates.append(cleaned)
+    return candidates
+
+
+def _ask_text_after_label(text: str, label: str) -> str:
+    source = str(text or "")
+    span = _ask_plain_label_match_span(source, label)
+    if span is not None:
+        return source[span[1] :]
+    return ""
+
+
+def _ask_plain_label_match_span(text: str, label: str) -> tuple[int, int] | None:
+    source = str(text or "")
+    variants = [str(label or "").strip()]
+    without_unit = re.sub(r"\([^)]*\)|（[^）]*）", "", variants[0]).strip()
+    if without_unit and without_unit not in variants:
+        variants.append(without_unit)
+    folded = source.casefold()
+    for variant in variants:
+        if not variant:
+            continue
+        start = 0
+        needle = variant.casefold()
+        while True:
+            index = folded.find(needle, start)
+            if index < 0:
+                break
+            end = index + len(variant)
+            if _ask_plain_label_boundary_ok(source, index, end):
+                return (index, end)
+            start = index + max(len(variant), 1)
+    return None
+
+
+def _ask_plain_label_boundary_ok(source: str, start: int, end: int) -> bool:
+    if start > 0 and re.match(r"[A-Za-z0-9_\u4e00-\u9fff]", source[start - 1] or ""):
+        return False
+    if end < len(source) and re.match(r"[A-Za-z_\u4e00-\u9fff]", source[end] or ""):
+        return False
+    return True
+
+
+def _ask_table_row_label_facts_from_results(query: str, results: list[dict[str, Any]], *, limit: int) -> list[str]:
+    labels = _ask_requested_fact_labels(query)
+    if not labels:
+        return []
+    facts_by_label: dict[str, str] = {}
+    for text in _ask_result_text_candidates(results):
+        for headers, rows in _ask_markdown_tables(text):
+            label_columns = _ask_table_label_column_indexes(headers)
+            value_columns = _ask_requested_table_value_indexes(query, headers, label_columns=label_columns)
+            for row in rows:
+                row_cells = [str(row.get(header) or "").strip() for header in headers]
+                for label in labels:
+                    key = label.casefold()
+                    if key in facts_by_label:
+                        continue
+                    label_index = _ask_matching_row_label_index(label, row_cells, label_columns)
+                    if label_index is None:
+                        continue
+                    value = _ask_row_label_value(row_cells, label_index=label_index, value_columns=value_columns)
+                    if not value:
+                        continue
+                    label_text = row_cells[label_index] or label
+                    facts_by_label[key] = f"{label_text} = {value}"
+                if len(facts_by_label) >= min(len(labels), limit):
+                    break
+        if len(facts_by_label) >= min(len(labels), limit):
+            break
+    facts: list[str] = []
+    seen: set[str] = set()
+    for label in labels:
+        fact = facts_by_label.get(label.casefold())
+        if not fact:
+            continue
+        normalized = re.sub(r"\s+", " ", fact).strip().casefold()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        facts.append(fact)
+        if len(facts) >= limit:
+            break
+    return facts
+
+
+def _ask_table_label_column_indexes(headers: list[str]) -> list[int]:
+    generic = {"项目", "指标", "名称", "科目", "item", "metric", "name", "label", "field"}
+    indexes = [index for index, header in enumerate(headers) if _ask_normalized_table_label(header) in generic]
+    if indexes:
+        return indexes
+    return list(range(min(2, len(headers))))
+
+
+def _ask_requested_table_value_indexes(query: str, headers: list[str], *, label_columns: list[int]) -> list[int]:
+    folded_query = str(query or "").casefold()
+    years = list(dict.fromkeys(re.findall(r"(?<!\d)(20\d{2})(?!\d)", folded_query)))
+    indexes: list[int] = []
+    for year in years:
+        for index, header in enumerate(headers):
+            if index in label_columns:
+                continue
+            folded_header = str(header or "").casefold()
+            header_digits = "".join(re.findall(r"\d+", folded_header))
+            if year in folded_header or header_digits == year:
+                indexes.append(index)
+    return list(dict.fromkeys(indexes))
+
+
+def _ask_matching_row_label_index(label: str, row_cells: list[str], label_columns: list[int]) -> int | None:
+    for index in label_columns:
+        if index >= len(row_cells):
+            continue
+        if _ask_table_label_matches(label, row_cells[index]):
+            return index
+    for index, cell in enumerate(row_cells):
+        if _ask_table_label_matches(label, cell):
+            return index
+    return None
+
+
+def _ask_table_label_matches(left: str, right: str) -> bool:
+    left_norm = _ask_normalized_table_label(left)
+    right_norm = _ask_normalized_table_label(right)
+    if not left_norm or not right_norm:
+        return False
+    return left_norm == right_norm or left_norm in right_norm or right_norm in left_norm
+
+
+def _ask_normalized_table_label(value: str) -> str:
+    text = str(value or "").casefold()
+    text = re.sub(r"\([^)]*\)|（[^）]*）", "", text)
+    text = re.sub(r"[\s_\-:/：、,，.。;；|]+", "", text)
+    return text
+
+
+def _ask_row_label_value(row_cells: list[str], *, label_index: int, value_columns: list[int]) -> str:
+    candidates = value_columns or [index for index in range(len(row_cells)) if index != label_index]
+    for index in candidates:
+        if index >= len(row_cells) or index == label_index:
+            continue
+        value = row_cells[index].strip()
+        if not value or _ask_table_label_matches(value, row_cells[label_index]):
+            continue
+        if re.search(r"\d", value):
+            return value
+    for index in candidates:
+        if index >= len(row_cells) or index == label_index:
+            continue
+        value = row_cells[index].strip()
+        if value:
+            return value
+    return ""
 
 
 def _ask_requested_label_value_facts_from_results(query: str, results: list[dict[str, Any]], *, limit: int) -> list[str]:
@@ -9437,22 +9724,42 @@ def _ask_question_core_segment(text: str) -> str:
         if index >= 0:
             segment = segment[:index]
             break
-    for marker in ("里的", "中的", "的"):
+    if "：" in segment or ":" in segment:
+        prefix, _, suffix = re.split(r"([:：])", segment, maxsplit=1)
+        if suffix.strip() and any(marker in prefix for marker in ("回答", "请", "问题", "question", "answer")):
+            segment = suffix.strip()
+    scope_marker = re.search(r"(?:表中|报告中|年报中|资料中|文档中|知识库中|附件中|文件中|中)[,，:：]?\s*(.+)$", segment)
+    if scope_marker and scope_marker.group(1).strip():
+        segment = scope_marker.group(1).strip()
+    row_selector = re.search(r"(?:这一行|该行|对应行|匹配行|target\s+row)\s*的\s*(.+)$", segment, flags=re.IGNORECASE)
+    if row_selector and row_selector.group(1).strip():
+        return row_selector.group(1).strip()
+    id_selector = re.search(r"(?:row\s*id|rowid|行号|编号)[^，,。?？]*的\s*(.+)$", segment, flags=re.IGNORECASE)
+    if id_selector and id_selector.group(1).strip():
+        return id_selector.group(1).strip()
+    for marker in ("里的", "中的"):
         index = segment.rfind(marker)
         if index >= 0 and len(segment) - index <= 120:
             candidate = segment[index + len(marker) :]
             if candidate.strip():
                 segment = candidate
                 break
+    leading_scope = re.match(
+        r"^\s*(?:\d{4}\s*年(?:度)?|[^、，,;；]{1,80}(?:报告|年报|表格|表|资料|文档|知识库|附件|文件))的\s*(.+)$",
+        segment,
+    )
+    if leading_scope and leading_scope.group(1).strip():
+        segment = leading_scope.group(1).strip()
     return segment
 
 
 def _ask_clean_requested_fact_label(value: str) -> str:
-    label = str(value or "").strip(" \t\r\n'\"“”‘’()（）[]【】{}<>《》:：")
+    label = str(value or "").strip(" \t\r\n'\"“”‘’[]【】{}<>《》:：")
     label = re.sub(r"^(?:请问|请|帮我|告诉我|基于|根据|按照|在|从)\s*", "", label)
+    label = re.sub(r"^(?:\d{4}\s*年(?:度)?|20\d{2})\s*的?", "", label)
     label = re.sub(r"(?:是什么|是多少|有哪些|多少|为何|为什么|吗|呢)$", "", label).strip()
     label = re.sub(r"\b(?:what is|what are|which is|which are|please|show me|tell me)\b", "", label, flags=re.IGNORECASE).strip()
-    label = re.sub(r"\s+", " ", label).strip(" \t\r\n'\"“”‘’()（）[]【】{}<>《》:：")
+    label = re.sub(r"\s+", " ", label).strip(" \t\r\n'\"“”‘’[]【】{}<>《》:：")
     if not label or len(label) > 64:
         return ""
     if _ask_generic_requested_fact_label(label):
@@ -9503,6 +9810,8 @@ def _ask_best_matching_table_row(query: str, headers: list[str], rows: list[dict
     best: dict[str, str] | None = None
     best_score = 0
     for row in rows:
+        if _ask_table_row_looks_like_header(headers, row):
+            continue
         row_values = [str(row.get(header) or "") for header in headers]
         row_text = " ".join(row_values).casefold()
         score = 0
@@ -9514,6 +9823,17 @@ def _ask_best_matching_table_row(query: str, headers: list[str], rows: list[dict
             best = row
             best_score = score
     return best if best_score > 0 else None
+
+
+def _ask_table_row_looks_like_header(headers: list[str], row: dict[str, str]) -> bool:
+    if not headers:
+        return False
+    matches = 0
+    for header in headers:
+        value = str(row.get(header) or "").strip()
+        if value and _ask_normalized_table_label(value) == _ask_normalized_table_label(header):
+            matches += 1
+    return matches >= max(2, len(headers) // 2)
 
 
 def _ask_table_query_tokens(text: str) -> list[str]:
@@ -9808,9 +10128,14 @@ def _ask_source_window_for_result(
     body = str(getattr(document, "body", "") or "") if document is not None else str(getattr(item, "content_text", "") or "")
     anchor_text = str(getattr(chunk, "text", "") or ref.get("snippet") or "")
     if chunk is not None and anchor_text.strip():
-        text = query_focused_evidence_snippet(anchor_text, query, max_chars=max_chars)
-        if not text:
-            text = _ask_neighbor_chunk_window(source_chunks, anchor_chunk=chunk, max_chars=max_chars)
+        anchored_text = _ask_source_window_with_table_header(anchor_text, anchor_chunk=chunk, source_chunks=source_chunks, max_chars=max_chars)
+        if anchored_text != anchor_text.strip():
+            text = anchored_text
+        else:
+            text = query_focused_evidence_snippet(anchored_text, query, max_chars=max_chars)
+            if not text:
+                text = _ask_neighbor_chunk_window(source_chunks, anchor_chunk=chunk, max_chars=max_chars)
+        text = _ask_source_window_with_table_header(text, anchor_chunk=chunk, source_chunks=source_chunks, max_chars=max_chars)
         start = 0
         end = len(text)
         policy = "retrieved_chunk_focused"
@@ -9851,14 +10176,24 @@ def _ask_source_window_for_result(
 def _ask_best_chunk_for_window(chunks: list[Any], *, query: str, fallback_snippet: str) -> Any | None:
     if not chunks:
         return None
-    anchors = [term.casefold() for term in _ask_query_terms(query)]
+    anchors = list(
+        dict.fromkeys(
+            [
+                *[term.casefold() for term in _ask_query_terms(query)],
+                *[term.casefold() for term in _ask_query_anchor_terms(query, _ask_evidence_terms(query))],
+            ]
+        )
+    )
+    numeric_values = [value.casefold() for value in _ask_numeric_values(query)[:12]]
     fallback = _ask_clean_evidence_text(fallback_snippet).casefold()
 
-    def score(chunk: Any) -> tuple[int, int]:
+    def score(chunk: Any) -> tuple[int, int, int, int]:
         text = str(getattr(chunk, "text", "") or "").casefold()
         anchor_score = sum(1 for anchor in anchors if anchor and anchor in text)
+        numeric_score = sum(1 for value in numeric_values if value and value in text)
         fallback_score = 1 if fallback and fallback[:80] in text else 0
-        return (anchor_score + fallback_score, -int(getattr(chunk, "ordinal", 0) or 0))
+        table_score = 1 if "|" in text and (anchor_score or numeric_score) else 0
+        return (numeric_score * 4 + anchor_score + fallback_score, table_score, numeric_score, -int(getattr(chunk, "ordinal", 0) or 0))
 
     return max(chunks, key=score)
 
@@ -9917,6 +10252,62 @@ def _ask_neighbor_chunk_window(chunks: list[Any], *, anchor_chunk: Any | None, m
             selected.append(ordered[right])
             right += 1
     return "\n\n".join(str(getattr(chunk, "text", "") or "") for chunk in selected)[:max_chars].strip()
+
+
+def _ask_source_window_with_table_header(text: str, *, anchor_chunk: Any, source_chunks: list[Any], max_chars: int) -> str:
+    body = str(text or "").strip()
+    if not body or "|" not in body or _ask_text_has_markdown_table_header(body):
+        return body
+    header = _ask_nearest_previous_markdown_table_header(anchor_chunk, source_chunks)
+    if not header or not _ask_text_has_markdown_row_with_cell_count(body, len(_ask_markdown_cells(header))):
+        return body
+    combined = f"{header}\n{body}"
+    return combined[:max_chars].strip()
+
+
+def _ask_text_has_markdown_table_header(text: str) -> bool:
+    lines = [line.strip() for line in str(text or "").splitlines() if line.strip()]
+    for index, line in enumerate(lines):
+        if "|" not in line:
+            continue
+        if index + 1 < len(lines) and _ask_is_markdown_separator_line(lines[index + 1]):
+            return True
+    return False
+
+
+def _ask_nearest_previous_markdown_table_header(anchor_chunk: Any, source_chunks: list[Any]) -> str:
+    anchor_ordinal = int(getattr(anchor_chunk, "ordinal", 0) or 0)
+    previous = [chunk for chunk in source_chunks if int(getattr(chunk, "ordinal", 0) or 0) < anchor_ordinal]
+    for chunk in sorted(previous, key=lambda value: int(getattr(value, "ordinal", 0) or 0), reverse=True):
+        header = _ask_first_markdown_table_header_line(str(getattr(chunk, "text", "") or ""))
+        if header:
+            return header
+    return ""
+
+
+def _ask_first_markdown_table_header_line(text: str) -> str:
+    lines = [line.strip() for line in str(text or "").splitlines() if line.strip()]
+    for index, line in enumerate(lines):
+        if "|" not in line:
+            continue
+        if index + 1 < len(lines) and _ask_is_markdown_separator_line(lines[index + 1]):
+            return line
+    return ""
+
+
+def _ask_is_markdown_separator_line(line: str) -> bool:
+    cells = [cell.strip() for cell in _ask_markdown_cells(line) if cell.strip()]
+    return len(cells) >= 2 and all(re.fullmatch(r":?-{2,}:?", cell) for cell in cells)
+
+
+def _ask_text_has_markdown_row_with_cell_count(text: str, cell_count: int) -> bool:
+    if cell_count <= 0:
+        return False
+    for line in str(text or "").splitlines():
+        line = line.strip()
+        if "|" in line and len(_ask_markdown_cells(line)) == cell_count:
+            return True
+    return False
 
 
 def _ask_clean_facts_from_results(results: list[dict[str, Any]], *, limit: int) -> list[str]:
@@ -10025,6 +10416,7 @@ def _ask_deep_response(
             owner_user_id=owner_user_id,
         )
     evidence = _ask_evidence_from_retrieval(retrieval)
+    answer = str(agentic.get("answer") or "").strip()
     declared_source_refs = _ask_source_ref_dicts(agentic.get("source_refs"), string_field="source_item_id")
     declared_citation_refs = _ask_source_ref_dicts(agentic.get("citations"), string_field="title")
     declared_refs = declared_source_refs or declared_citation_refs
@@ -10033,7 +10425,13 @@ def _ask_deep_response(
         *_list_of_dicts(evidence.get("citations")),
     ]
     raw_refs = declared_refs or fallback_refs
-    refs, dropped_refs = _ask_validate_source_refs(raw_refs, store=store, tenant_id=tenant_id, owner_user_id=owner_user_id)
+    refs, dropped_refs = _ask_validate_source_refs(
+        raw_refs,
+        store=store,
+        tenant_id=tenant_id,
+        owner_user_id=owner_user_id,
+        query="\n".join(part for part in (rewrite_query, answer) if part),
+    )
     if refs:
         ref_evidence = _ask_source_refs_as_evidence(
             refs,
@@ -10060,7 +10458,6 @@ def _ask_deep_response(
         ask_intent=ask_intent,
     )
     evidence = _ask_apply_evidence_check(evidence, evidence_check)
-    answer = str(agentic.get("answer") or "").strip()
     answer_type = "deep_answer"
     if evidence_check.get("status") != "supported":
         answer = _ask_no_answer_from_evidence_check(query, evidence_check)
@@ -10953,6 +11350,7 @@ def _ask_validate_source_refs(
     store: Any,
     tenant_id: str,
     owner_user_id: str,
+    query: str = "",
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     if not refs:
         return [], []
@@ -10967,11 +11365,13 @@ def _ask_validate_source_refs(
         if str(getattr(item, "title", "") or "").strip()
     }
     chunks_by_id = {}
-    first_chunk_by_source: dict[str, Any] = {}
+    chunks_by_source: dict[str, list[Any]] = {}
     if allowed_items:
         for chunk in store.list_chunks_for_sources(set(allowed_items)):
             chunks_by_id[getattr(chunk, "chunk_id", "")] = chunk
-            first_chunk_by_source.setdefault(getattr(chunk, "source_item_id", ""), chunk)
+            chunks_by_source.setdefault(getattr(chunk, "source_item_id", ""), []).append(chunk)
+    for source_chunks in chunks_by_source.values():
+        source_chunks.sort(key=lambda chunk: int(getattr(chunk, "ordinal", 0) or 0))
     kept: list[dict[str, Any]] = []
     dropped: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -10989,13 +11389,23 @@ def _ask_validate_source_refs(
             dropped.append({"source_item_id": source_item_id, "reason": "tenant_or_owner_mismatch"})
             continue
         chunk_id = str(ref.get("chunk_id") or "").strip()
-        chunk = chunks_by_id.get(chunk_id) or first_chunk_by_source.get(source_item_id)
+        source_chunks = chunks_by_source.get(source_item_id) or []
+        chunk = chunks_by_id.get(chunk_id)
+        if chunk is None and source_chunks:
+            chunk = _ask_best_chunk_for_window(
+                source_chunks,
+                query=query,
+                fallback_snippet=" ".join(str(ref.get(key) or "") for key in ("snippet", "title")),
+            )
         hydrated = {
             **ref,
             "source_item_id": source_item_id,
             "title": ref.get("title") or getattr(item, "title", None),
             "url": ref.get("url") or getattr(item, "url", None),
         }
+        if chunk is not None:
+            hydrated["document_id"] = ref.get("document_id") or getattr(chunk, "document_id", None)
+            hydrated["chunk_id"] = ref.get("chunk_id") or getattr(chunk, "chunk_id", None)
         if not hydrated.get("snippet"):
             snippet_source = getattr(chunk, "text", None) if chunk else getattr(item, "content_text", "")
             hydrated["snippet"] = _ask_clean_evidence_text(str(snippet_source or ""))[:260]

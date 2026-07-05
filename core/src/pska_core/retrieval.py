@@ -242,6 +242,7 @@ class RetrievalService:
         rank_pool_size = max(top_k, min(len(chunks) or top_k, max(top_k * 4, top_k + 8)))
         scoped_ranked = self._scoped_source_results(scoped_source_item_ids, chunks, item_by_id, query_terms=query_terms, top_k=rank_pool_size)
         exact_ranked = self._exact_source_results(query, items, chunks, item_by_id, top_k=rank_pool_size)
+        exact_identifier_ranked = self._exact_identifier_results(query, chunks, item_by_id, query_terms=query_terms, top_k=rank_pool_size)
         lexical_ranked, lexical_ranker = self._lexical_ranked_results(query_terms, chunks, item_by_id)
 
         vector_ranked: list[RetrievalResult] = []
@@ -260,9 +261,9 @@ class RetrievalService:
                 query_embedding = None
                 vector_error = f"{type(exc).__name__}: {exc}"
 
-        combined = self._merge_exact_then_rrf(exact_ranked, lexical_ranked, vector_ranked, top_k=rank_pool_size)
+        combined = self._merge_exact_then_rrf([*exact_ranked, *exact_identifier_ranked], lexical_ranked, vector_ranked, top_k=rank_pool_size)
         combined = self._merge_priority_results(scoped_ranked, combined, top_k=rank_pool_size)
-        combined = self._add_query_intent_candidates(query, combined, lexical_ranked, item_by_id, top_k=rank_pool_size)
+        combined = self._add_query_intent_candidates(query, combined, lexical_ranked, item_by_id, chunks, top_k=rank_pool_size)
         self._apply_query_intent_boosts(query, combined, item_by_id)
         combined = sorted(combined, key=lambda result: result.score, reverse=True)[:rank_pool_size]
         combined, graph_rank_debug = self._graph_augmented_rank(
@@ -286,6 +287,7 @@ class RetrievalService:
             "scoped_source_items": len(scoped_source_item_ids),
             "scoped_candidates": len(scoped_ranked),
             "exact_candidates": len(exact_ranked),
+            "exact_identifier_candidates": len(exact_identifier_ranked),
             "lexical_candidates": len(lexical_ranked),
             "lexical_ranker": lexical_ranker,
             "vector_enabled": vector_enabled,
@@ -329,6 +331,40 @@ class RetrievalService:
             if chunk.source_item_id in exact_source_ids
         ]
         return exact_results[:top_k]
+
+    def _exact_identifier_results(
+        self,
+        query: str,
+        chunks: list[Chunk],
+        item_by_id: dict[str, SourceItem],
+        *,
+        query_terms: list[str],
+        top_k: int,
+    ) -> list[RetrievalResult]:
+        identifiers = _query_exact_identifiers(query)
+        if not identifiers:
+            return []
+        candidates: list[RetrievalResult] = []
+        for chunk in chunks:
+            item = item_by_id.get(chunk.source_item_id)
+            if item is None:
+                continue
+            haystack = f"{item.title}\n{chunk.text}\n{item.url or ''}".casefold()
+            matched = [identifier for identifier in identifiers if identifier in haystack]
+            if not matched:
+                continue
+            lexical = self._lexical_score(query_terms, self._terms(f"{item.title} {chunk.text} {item.url or ''}"))
+            score = 1.5 + len(matched) * 0.08 + min(lexical, 1.0) * 0.05
+            candidates.append(
+                self._result_for_chunk(
+                    chunk,
+                    item,
+                    score,
+                    {"exact_identifier": float(len(matched)), "lexical": lexical, "vector": 0.0},
+                )
+            )
+        candidates.sort(key=lambda result: (result.score, -result.score_debug.get("chunk_ordinal", 0.0)), reverse=True)
+        return candidates[:top_k]
 
     def _scoped_source_results(
         self,
@@ -514,11 +550,34 @@ class RetrievalService:
         combined: list[RetrievalResult],
         lexical_ranked: list[RetrievalResult],
         item_by_id: dict[str, SourceItem],
+        chunks: list[Chunk],
         *,
         top_k: int,
     ) -> list[RetrievalResult]:
         seen = {result.result_id for result in combined}
         additions: list[RetrievalResult] = []
+        chunk_by_id = {chunk.chunk_id: chunk for chunk in chunks}
+        metric_phrases = _query_metric_phrases(query)
+        if metric_phrases:
+            metric_ranked: list[tuple[float, RetrievalResult]] = []
+            for result in lexical_ranked:
+                chunk = chunk_by_id.get(result.result_id)
+                if chunk is None:
+                    continue
+                match_score = _metric_phrase_match_score(metric_phrases, chunk.text)
+                if match_score <= 0:
+                    continue
+                boost = 0.05 + min(match_score * 0.01, 0.08)
+                result.score += boost
+                result.score_debug["metric_phrase_match"] = float(match_score)
+                result.score_debug["metric_phrase_boost"] = boost
+                metric_ranked.append((match_score, result))
+            metric_ranked.sort(key=lambda item: (item[0], item[1].score), reverse=True)
+            for _match_score, result in metric_ranked[: max(1, min(3, top_k))]:
+                if result.result_id in seen:
+                    continue
+                additions.append(result)
+                seen.add(result.result_id)
         if _spreadsheet_query_intent(query):
             for result in lexical_ranked:
                 if result.result_id in seen:
@@ -584,6 +643,22 @@ class RetrievalService:
         results: list[RetrievalResult],
         item_by_id: dict[str, SourceItem],
     ) -> None:
+        document_years = _query_document_years(query)
+        if document_years:
+            for result in results:
+                item = item_by_id.get(result.source_item_id)
+                if item is None:
+                    continue
+                source_text = f"{item.title} {item.source_id} {item.url or ''}".casefold()
+                source_years = set(re.findall(r"(?<!\d)(20\d{2})(?!\d)", source_text))
+                if source_years.intersection(document_years):
+                    boost = 0.08
+                    result.score += boost
+                    result.score_debug["document_year_match"] = boost
+                elif source_years:
+                    penalty = 0.03
+                    result.score -= penalty
+                    result.score_debug["document_year_mismatch_penalty"] = penalty
         if not _spreadsheet_query_intent(query):
             return
         for result in results:
@@ -1373,6 +1448,84 @@ def _normalize_exact(value: str) -> str:
     return value.strip().lower()
 
 
+def _query_exact_identifiers(query: str) -> list[str]:
+    identifiers: list[str] = []
+    seen: set[str] = set()
+    for match in re.finditer(r"\b[a-z][a-z0-9]{1,}(?:[-_][a-z0-9]{2,})+\b|\b[a-z]{2,}\d{2,}[a-z0-9_-]*\b", str(query or ""), flags=re.IGNORECASE):
+        identifier = match.group(0).strip("._-").casefold()
+        if len(identifier) < 5 or identifier in seen or not re.search(r"\d", identifier):
+            continue
+        seen.add(identifier)
+        identifiers.append(identifier)
+    return identifiers[:12]
+
+
+def _query_metric_phrases(query: str) -> list[str]:
+    segment = str(query or "")
+    for marker in ("分别是什么", "分别是多少", "是什么", "是多少", "有哪些", "多少", "吗", "?", "？"):
+        index = segment.find(marker)
+        if index >= 0:
+            segment = segment[:index]
+            break
+    if "：" in segment or ":" in segment:
+        parts = re.split(r"[:：]", segment, maxsplit=1)
+        if len(parts) == 2 and any(marker in parts[0] for marker in ("回答", "请", "问题", "question", "answer")):
+            segment = parts[1]
+    scope_marker = re.search(r"(?:表中|报告中|年报中|资料中|文档中|知识库中|附件中|文件中|中)[,，:：]?\s*(.+)$", segment)
+    if scope_marker and scope_marker.group(1).strip():
+        segment = scope_marker.group(1).strip()
+    normalized = re.sub(r"\b(?:and|plus|or)\b", "、", segment, flags=re.IGNORECASE)
+    normalized = normalized.replace("以及", "、").replace("及", "、").replace("和", "、")
+    normalized = re.sub(r"[,，/;；\n]+", "、", normalized)
+    phrases: list[str] = []
+    seen: set[str] = set()
+    for raw_part in normalized.split("、"):
+        phrase = re.sub(r"^(?:请问|请|帮我|告诉我|基于|根据|按照|在|从)\s*", "", raw_part.strip())
+        phrase = re.sub(r"^(?:\d{4}\s*年(?:度)?|20\d{2})\s*的?", "", phrase)
+        phrase = phrase.strip(" \t\r\n'\"“”‘’[]【】{}<>《》:：")
+        normalized_phrase = _normalize_metric_phrase(phrase)
+        if len(normalized_phrase) < 3 or normalized_phrase in seen:
+            continue
+        if normalized_phrase in {"资料", "信息", "内容", "答案", "结论", "结果", "字段", "数字", "数值"}:
+            continue
+        seen.add(normalized_phrase)
+        phrases.append(phrase)
+        if len(phrases) >= 8:
+            break
+    return phrases
+
+
+def _query_document_years(query: str) -> set[str]:
+    text = str(query or "")
+    years: set[str] = set()
+    for match in re.finditer(r"(?<!\d)(20\d{2})(?!\d)\s*年(?:度)?\s*(?:年度报告|年报|报告)", text):
+        years.add(match.group(1))
+    for match in re.finditer(r"(?<!\d)(20\d{2})(?!\d)[^\n。！？?]{0,20}\bannual\s+report\b", text, flags=re.IGNORECASE):
+        years.add(match.group(1))
+    for match in re.finditer(r"\bannual\s+report\b[^\n。！？?]{0,20}(?<!\d)(20\d{2})(?!\d)", text, flags=re.IGNORECASE):
+        years.add(match.group(1))
+    return years
+
+
+def _metric_phrase_match_score(phrases: list[str], text: str) -> int:
+    normalized_text = _normalize_metric_phrase(text)
+    if not normalized_text:
+        return 0
+    score = 0
+    for phrase in phrases:
+        normalized_phrase = _normalize_metric_phrase(phrase)
+        if not normalized_phrase or normalized_phrase not in normalized_text:
+            continue
+        score += max(2, min(len(normalized_phrase) // 3, 8))
+    return score
+
+
+def _normalize_metric_phrase(value: str) -> str:
+    text = str(value or "").casefold()
+    text = re.sub(r"\([^)]*\)|（[^）]*）", "", text)
+    return re.sub(r"[\s_\-:/：、,，.。;；|\"'“”‘’]+", "", text)
+
+
 def _spreadsheet_query_intent(query: str) -> bool:
     terms = {term.casefold() for term in re.findall(r"[\w\u4e00-\u9fff]+", query)}
     return bool(
@@ -1538,7 +1691,7 @@ def _text_has_table_header(text: str) -> bool:
     for index, line in enumerate(lines):
         if not _is_table_content_line(line):
             continue
-        if index + 1 < len(lines) and re.fullmatch(r"\s*\|?[\s:|-]+\|?\s*", lines[index + 1]):
+        if index + 1 < len(lines) and _is_markdown_separator_line(lines[index + 1]):
             return True
     return False
 
@@ -1557,10 +1710,15 @@ def _first_table_header_line(text: str) -> str:
     for index, line in enumerate(lines):
         if not _is_table_content_line(line):
             continue
-        has_separator = index + 1 < len(lines) and re.fullmatch(r"\s*\|?[\s:|-]+\|?\s*", lines[index + 1])
+        has_separator = index + 1 < len(lines) and _is_markdown_separator_line(lines[index + 1])
         if has_separator:
             return line
     return ""
+
+
+def _is_markdown_separator_line(line: str) -> bool:
+    cells = [cell.strip() for cell in _table_cells(line) if cell.strip()]
+    return len(cells) >= 2 and all(re.fullmatch(r":?-{2,}:?", cell) for cell in cells)
 
 
 def _text_has_table_row_with_cell_count(text: str, cell_count: int) -> bool:
@@ -1701,6 +1859,8 @@ def _primary_result_source(score_debug: dict[str, float]) -> str:
         return "scope"
     if score_debug.get("exact_source", 0.0) > 0:
         return "exact_source"
+    if score_debug.get("exact_identifier", 0.0) > 0:
+        return "exact_identifier"
     if score_debug.get("vector_rank", 0.0) > 0 or score_debug.get("vector", 0.0) > 0:
         return "vector"
     if score_debug.get("graph_expansion", 0.0) > 0 or (

@@ -29,6 +29,7 @@ from pska_core.api import (
     _ask_route_intent,
     _ask_retrieval_from_agentic_trace,
     _ask_structural_evidence_hits,
+    _ask_validate_source_refs,
     _ask_verify_evidence,
 )
 from pska_core.auth import context_from_headers
@@ -352,6 +353,157 @@ def test_ask_quick_clean_evidence_removes_inline_frontmatter_and_headings() -> N
     assert "a / b" in cleaned
 
 
+def test_ask_quick_extracts_row_label_financial_table_values_by_year() -> None:
+    retrieval = {
+        "results": [
+            {
+                "source_item_id": "src_financial_report",
+                "title": "annual-report.pdf",
+                "snippet": (
+                    "| 项目 | 2025年 | 2024年 |\n"
+                    "| --- | --- | --- |\n"
+                    "| 营业收入（元） | 92,507,796,069.94 | 92,495,525,118.30 |\n"
+                    "| 归属于上市公司股东的净利润（元） | 14,195,371,894.42 | 11,977,327,023.54 |\n"
+                    "| 基本每股收益（元/股） | 1.546 | 1.297 |"
+                ),
+            }
+        ]
+    }
+
+    answer = _ask_quick_answer(
+        "2025年的营业收入（元）、归属于上市公司股东的净利润（元）、基本每股收益（元/股）分别是多少？",
+        retrieval,
+    )
+
+    assert "营业收入（元） = 92,507,796,069.94" in answer
+    assert "归属于上市公司股东的净利润（元） = 14,195,371,894.42" in answer
+    assert "基本每股收益（元/股） = 1.546" in answer
+    assert "11,977,327,023.54" not in answer
+
+
+def test_ask_quick_extracts_plain_pdf_table_values_by_label() -> None:
+    retrieval = {
+        "results": [
+            {
+                "source_item_id": "src_pdf_report",
+                "title": "annual-report.pdf",
+                "snippet": (
+                    "六、主要会计数据和财务指标 公司是否需追溯调整或重述以前年度会计数据 □ 是 √ 否 "
+                    "2025 年 2024 年 本年比上年 增减 2023 年 "
+                    "营业收入（元） 92,507,796,069.94 92,495,525,118.30 0.01% 89,341,177,610.40 "
+                    "归属于上市公司股东的净利润（元） 14,195,371,894.42 11,977,327,023.54 18.52% 14,108,439,648.97 "
+                    "经营活动产生的现金流量净额 25,339,411,083.10 13,264,092,022.73 91.04%"
+                ),
+            }
+        ]
+    }
+
+    answer = _ask_quick_answer(
+        "只根据当前知识库回答：海康威视2025年年度报告“主要会计数据和财务指标”表中，2025年营业收入（元）、归属于上市公司股东的净利润（元）、经营活动产生的现金流量净额（元）分别是多少？请给出精确数字。",
+        retrieval,
+    )
+
+    assert "营业收入（元） = 92,507,796,069.94" in answer
+    assert "归属于上市公司股东的净利润（元） = 14,195,371,894.42" in answer
+    assert "经营活动产生的现金流量净额（元） = 25,339,411,083.10" in answer
+    assert "92,495,525,118.30" not in answer
+
+
+def test_ask_quick_plain_pdf_table_ignores_partial_label_matches() -> None:
+    retrieval = {
+        "results": [
+            {
+                "source_item_id": "src_pdf_report",
+                "title": "annual-report.pdf",
+                "snippet": (
+                    "公司研发投入情况 2025 年 2024 年 变动比例 "
+                    "研发投入占营业收入比例 12.70% 12.83% -0.13% "
+                    "5、现金流 单位：元 项目 2025 年 2024 年 同比增减 "
+                    "经营活动产生的现金流量净额 25,339,411,083.10 13,264,092,022.73 91.04%"
+                ),
+            },
+            {
+                "source_item_id": "src_pdf_report",
+                "title": "annual-report.pdf",
+                "snippet": (
+                    "六、主要会计数据和财务指标 2025 年 2024 年 本年比上年 增减 2023 年 "
+                    "营业收入（元） 92,507,796,069.94 92,495,525,118.30 0.01% 89,341,177,610.40 "
+                    "归属于上市公司股东的净利润（元） 14,195,371,894.42 11,977,327,023.54 18.52% 14,107,726,276.26 "
+                    "经营活动产生的现金流量净额（元） 25,339,411,083.10 13,264,092,022.73 91.04%"
+                ),
+            },
+        ]
+    }
+
+    answer = _ask_quick_answer(
+        "只根据当前知识库回答：2025年营业收入（元）、归属于上市公司股东的净利润（元）、经营活动产生的现金流量净额（元）分别是多少？请给出精确数字。",
+        retrieval,
+    )
+
+    assert "营业收入（元） = 92,507,796,069.94" in answer
+    assert "归属于上市公司股东的净利润（元） = 14,195,371,894.42" in answer
+    assert "经营活动产生的现金流量净额（元） = 25,339,411,083.10" in answer
+    assert "营业收入（元） = 12.70%" not in answer
+
+
+def test_ask_quick_plain_pdf_table_selects_requested_year_column() -> None:
+    retrieval = {
+        "results": [
+            {
+                "source_item_id": "src_pdf_report",
+                "title": "annual-report.pdf",
+                "snippet": (
+                    "六、主要会计数据和财务指标 2025 年 2024 年 本年比上年 增减 2023 年 "
+                    "营业收入（元） 92,507,796,069.94 92,495,525,118.30 0.01% 89,341,177,610.40 "
+                    "归属于上市公司股东的净利润（元） 14,195,371,894.42 11,977,327,023.54 18.52% 14,107,726,276.26 "
+                    "经营活动产生的现金流量净额（元） 25,339,411,083.10 13,264,092,022.73 91.04%"
+                ),
+            }
+        ]
+    }
+
+    answer = _ask_quick_answer(
+        "只根据当前知识库回答：2025年年度报告表中，2024年营业收入（元）、归属于上市公司股东的净利润（元）、经营活动产生的现金流量净额（元）分别是多少？请给出精确数字。",
+        retrieval,
+    )
+
+    assert "营业收入（元） = 92,495,525,118.30" in answer
+    assert "归属于上市公司股东的净利润（元） = 11,977,327,023.54" in answer
+    assert "经营活动产生的现金流量净额（元） = 13,264,092,022.73" in answer
+    assert "92,507,796,069.94" not in answer
+
+
+def test_ask_quick_extracts_requested_columns_from_matching_wide_table_row() -> None:
+    retrieval = {
+        "results": [
+            {
+                "source_item_id": "src_mock_table",
+                "title": "mock-large-table.md",
+                "snippet": (
+                    "| RowID | Year | Quarter | Segment | Region | Revenue_million | GrossMargin_pct | OperatingProfit_million | InventoryDays | R&D_million | FreeCashFlow_million |\n"
+                    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"
+                    "| MOCK-1010 | 2025 | Q4 | Robotics | Americas | 100.00 | 10.00 | 10.00 | 30 | 5.00 | 8.00 |\n"
+                    "| MOCK-1132 | 2025 | Q4 | Robotics | Europe | 1816.00 | 34.15 | 610.56 | 62 | 125.80 | 406.50 |"
+                ),
+            }
+        ]
+    }
+
+    answer = _ask_quick_answer(
+        "在表中，2025 年 Q4、Segment=Robotics、Region=Europe 这一行的 Revenue_million、GrossMargin_pct、OperatingProfit_million、InventoryDays、R&D_million、FreeCashFlow_million 各是多少？",
+        retrieval,
+    )
+
+    assert "Revenue_million = 1816.00" in answer
+    assert "GrossMargin_pct = 34.15" in answer
+    assert "OperatingProfit_million = 610.56" in answer
+    assert "InventoryDays = 62" in answer
+    assert "R&D_million = 125.80" in answer
+    assert "FreeCashFlow_million = 406.50" in answer
+    assert "Year = 2025" not in answer
+    assert "Region = Europe" not in answer
+
+
 def test_ask_source_window_uses_retrieved_chunk_for_large_table_rows() -> None:
     store = InMemoryKnowledgeStore()
     store.add_user(User("user_primary", "primary", UserRole.ADMIN))
@@ -429,6 +581,400 @@ def test_ask_source_window_uses_retrieved_chunk_for_large_table_rows() -> None:
     assert "654.32" in window_text
     assert "CHK-TXC-1376-4812" in window_text
     assert "BOR-FIRST" not in window_text
+
+
+def test_ask_source_window_adds_previous_table_header_for_split_rows() -> None:
+    store = InMemoryKnowledgeStore()
+    store.add_user(User("user_primary", "primary", UserRole.ADMIN))
+    source_item_id = "src_split_table"
+    document_id = "doc_split_table"
+    store.upsert_source_item(
+        SourceItem(
+            source_item_id=source_item_id,
+            source_channel="upload",
+            record_type="file",
+            source_id="split-table.md",
+            owner_user_id="user_primary",
+            space_id="private_primary",
+            visibility=Visibility.PRIVATE,
+            visible_team_ids=[],
+            title="split-table.md",
+            url=None,
+            content_text="split table body",
+            content_hash="hash_split_table",
+        )
+    )
+    store.add_document(
+        Document(
+            document_id=document_id,
+            source_item_id=source_item_id,
+            owner_user_id="user_primary",
+            space_id="private_primary",
+            visibility=Visibility.PRIVATE,
+            visible_team_ids=[],
+            title="split-table.md",
+            body="split table body",
+        )
+    )
+    store.add_chunk(
+        Chunk(
+            chunk_id="chk_split_header",
+            document_id=document_id,
+            source_item_id=source_item_id,
+            owner_user_id="user_primary",
+            space_id="private_primary",
+            visibility=Visibility.PRIVATE,
+            visible_team_ids=[],
+            text=(
+                "| RowID | Year | Quarter | Segment | Region | Revenue_million | GrossMargin_pct | OperatingProfit_million | InventoryDays | R&D_million | FreeCashFlow_million |\n"
+                "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"
+            ),
+            ordinal=1,
+        )
+    )
+    store.add_chunk(
+        Chunk(
+            chunk_id="chk_split_target",
+            document_id=document_id,
+            source_item_id=source_item_id,
+            owner_user_id="user_primary",
+            space_id="private_primary",
+            visibility=Visibility.PRIVATE,
+            visible_team_ids=[],
+            text=(
+                "| MOCK-1131 | 2025 | Q4 | Robotics | Domestic West | 1799.00 | 34.40 | 609.26 | 59 | 125.80 | 402.47 |\n"
+                "| MOCK-1132 | 2025 | Q4 | Robotics | Europe | 1816.00 | 34.15 | 610.56 | 62 | 125.80 | 406.50 |"
+            ),
+            ordinal=100,
+        )
+    )
+    retrieval = {
+        "results": [
+            {
+                "source_item_id": source_item_id,
+                "document_id": document_id,
+                "chunk_id": "chk_split_target",
+                "title": "split-table.md",
+                "snippet": "| MOCK-1132 | 2025 | Q4 | Robotics | Europe |",
+                "citation": {"source_item_id": source_item_id, "chunk_id": "chk_split_target", "title": "split-table.md"},
+            }
+        ],
+        "citations": [{"source_item_id": source_item_id, "chunk_id": "chk_split_target", "title": "split-table.md"}],
+    }
+
+    query = "RowID MOCK-1132 这一行的 Revenue_million、GrossMargin_pct、OperatingProfit_million、InventoryDays、R&D_million、FreeCashFlow_million 分别是多少？只输出字段=值。"
+    hydrated = _ask_hydrate_retrieval_source_windows(
+        store,
+        retrieval,
+        query=query,
+        tenant_id="tenant_default",
+        owner_user_id="user_primary",
+    )
+    answer = _ask_quick_answer(query, hydrated)
+
+    assert "Revenue_million = 1816.00" in answer
+    assert "GrossMargin_pct = 34.15" in answer
+    assert "OperatingProfit_million = 610.56" in answer
+    assert "InventoryDays = 62" in answer
+    assert "R&D_million = 125.80" in answer
+    assert "FreeCashFlow_million = 406.50" in answer
+    assert "MOCK-1131" not in answer
+
+
+def test_ask_validate_source_only_refs_selects_relevant_chunk() -> None:
+    store = InMemoryKnowledgeStore()
+    store.add_user(User("user_primary", "primary", UserRole.ADMIN))
+    source_item_id = "src_annual_report"
+    document_id = "doc_annual_report"
+    store.upsert_source_item(
+        SourceItem(
+            source_item_id=source_item_id,
+            source_channel="upload",
+            record_type="file",
+            source_id="annual-report.pdf",
+            owner_user_id="user_primary",
+            space_id="private_primary",
+            visibility=Visibility.PRIVATE,
+            visible_team_ids=[],
+            title="annual-report.pdf",
+            url=None,
+            content_text="annual report",
+            content_hash="hash_annual_report",
+        )
+    )
+    store.add_document(
+        Document(
+            document_id=document_id,
+            source_item_id=source_item_id,
+            owner_user_id="user_primary",
+            space_id="private_primary",
+            visibility=Visibility.PRIVATE,
+            visible_team_ids=[],
+            title="annual-report.pdf",
+            body="annual report body",
+        )
+    )
+    store.add_chunk(
+        Chunk(
+            chunk_id="chk_report_toc",
+            document_id=document_id,
+            source_item_id=source_item_id,
+            owner_user_id="user_primary",
+            space_id="private_primary",
+            visibility=Visibility.PRIVATE,
+            visible_team_ids=[],
+            text="目录 公司简介 重要提示",
+            ordinal=0,
+        )
+    )
+    store.add_chunk(
+        Chunk(
+            chunk_id="chk_report_metrics",
+            document_id=document_id,
+            source_item_id=source_item_id,
+            owner_user_id="user_primary",
+            space_id="private_primary",
+            visibility=Visibility.PRIVATE,
+            visible_team_ids=[],
+            text=(
+                "| 项目 | 2025年 |\n"
+                "| 营业收入（元） | 92,507,796,069.94 |\n"
+                "| 归属于上市公司股东的净利润（元） | 14,195,371,894.42 |"
+            ),
+            ordinal=8,
+        )
+    )
+
+    refs, dropped = _ask_validate_source_refs(
+        [{"source_item_id": source_item_id, "title": "annual-report.pdf"}],
+        store=store,
+        tenant_id="tenant_default",
+        owner_user_id="user_primary",
+        query="2025 营业收入 92,507,796,069.94 归属于上市公司股东的净利润 14,195,371,894.42",
+    )
+
+    assert dropped == []
+    assert refs[0]["chunk_id"] == "chk_report_metrics"
+    assert "92,507,796,069.94" in refs[0]["snippet"]
+
+
+def test_retrieval_prioritizes_exact_table_identifiers() -> None:
+    store = InMemoryKnowledgeStore()
+    store.add_user(User("user_primary", "primary", UserRole.ADMIN))
+    source_item_id = "src_exact_table"
+    document_id = "doc_exact_table"
+    store.upsert_source_item(
+        SourceItem(
+            source_item_id=source_item_id,
+            source_channel="manual",
+            record_type="note",
+            source_id="exact-table",
+            owner_user_id="user_primary",
+            space_id="private_primary",
+            visibility=Visibility.PRIVATE,
+            visible_team_ids=[],
+            title="exact table",
+            url=None,
+            content_text="large exact table",
+            content_hash="hash_exact_table",
+        )
+    )
+    store.add_document(
+        Document(
+            document_id=document_id,
+            source_item_id=source_item_id,
+            owner_user_id="user_primary",
+            space_id="private_primary",
+            visibility=Visibility.PRIVATE,
+            visible_team_ids=[],
+            title="exact table",
+            body="exact table body",
+        )
+    )
+    store.add_chunk(
+        Chunk(
+            chunk_id="chk_exact_noise",
+            document_id=document_id,
+            source_item_id=source_item_id,
+            owner_user_id="user_primary",
+            space_id="private_primary",
+            visibility=Visibility.PRIVATE,
+            visible_team_ids=[],
+            text="Robotics Europe Q4 Revenue_million GrossMargin_pct repeated summary without the target row id.",
+            ordinal=1,
+        )
+    )
+    store.add_chunk(
+        Chunk(
+            chunk_id="chk_exact_target",
+            document_id=document_id,
+            source_item_id=source_item_id,
+            owner_user_id="user_primary",
+            space_id="private_primary",
+            visibility=Visibility.PRIVATE,
+            visible_team_ids=[],
+            text="| RowID | Year | Quarter | Segment | Region | Revenue_million |\n| MOCK-1132 | 2025 | Q4 | Robotics | Europe | 1816.00 |",
+            ordinal=2,
+        )
+    )
+
+    user = store.get_user("user_primary", tenant_id="tenant_default")
+    response = RetrievalService(store, ACLService(store)).search(
+        "RowID MOCK-1132 Revenue_million 是多少？",
+        user,
+        represented_user_id="user_primary",
+        top_k=1,
+    )
+
+    assert response.results[0].result_id == "chk_exact_target"
+    assert response.results[0].score_debug["exact_identifier"] == 1.0
+
+
+def test_retrieval_prioritizes_complete_metric_table_chunks() -> None:
+    store = InMemoryKnowledgeStore()
+    store.add_user(User("user_primary", "primary", UserRole.ADMIN))
+    source_item_id = "src_metric_table"
+    document_id = "doc_metric_table"
+    store.upsert_source_item(
+        SourceItem(
+            source_item_id=source_item_id,
+            source_channel="upload",
+            record_type="file",
+            source_id="annual-report.pdf",
+            owner_user_id="user_primary",
+            space_id="private_primary",
+            visibility=Visibility.PRIVATE,
+            visible_team_ids=[],
+            title="annual-report.pdf",
+            url=None,
+            content_text="annual report",
+            content_hash="hash_metric_table",
+        )
+    )
+    store.add_document(
+        Document(
+            document_id=document_id,
+            source_item_id=source_item_id,
+            owner_user_id="user_primary",
+            space_id="private_primary",
+            visibility=Visibility.PRIVATE,
+            visible_team_ids=[],
+            title="annual-report.pdf",
+            body="annual report body",
+        )
+    )
+    store.add_chunk(
+        Chunk(
+            chunk_id="chk_metric_noise",
+            document_id=document_id,
+            source_item_id=source_item_id,
+            owner_user_id="user_primary",
+            space_id="private_primary",
+            visibility=Visibility.PRIVATE,
+            visible_team_ids=[],
+            text=(
+                "海康威视 2025 年年度报告 主要会计数据 财务指标 2025 年 2024 年 "
+                "研发投入占营业收入比例 12.70% 12.83% -0.13% "
+                "主要会计数据 财务指标 年度报告 营业收入"
+            ),
+            ordinal=81,
+        )
+    )
+    store.add_chunk(
+        Chunk(
+            chunk_id="chk_metric_target",
+            document_id=document_id,
+            source_item_id=source_item_id,
+            owner_user_id="user_primary",
+            space_id="private_primary",
+            visibility=Visibility.PRIVATE,
+            visible_team_ids=[],
+            text=(
+                "六、主要会计数据和财务指标 2025 年 2024 年 本年比上年 增减 2023 年 "
+                "营业收入（元） 92,507,796,069.94 92,495,525,118.30 0.01% 89,341,177,610.40 "
+                "归属于上市公司股东的净利润（元） 14,195,371,894.42 11,977,327,023.54 18.52% 14,107,726,276.26 "
+                "经营活动产生的现金流量净额（元） 25,339,411,083.10 13,264,092,022.73 91.04%"
+            ),
+            ordinal=9,
+        )
+    )
+
+    user = store.get_user("user_primary", tenant_id="tenant_default")
+    response = RetrievalService(store, ACLService(store)).search(
+        "只根据当前知识库回答：海康威视2025年年度报告主要会计数据和财务指标表中，2025年营业收入（元）、归属于上市公司股东的净利润（元）、经营活动产生的现金流量净额（元）分别是多少？",
+        user,
+        represented_user_id="user_primary",
+        top_k=1,
+    )
+
+    assert response.results[0].result_id == "chk_metric_target"
+    assert response.results[0].score_debug["metric_phrase_match"] > 0
+
+
+def test_retrieval_prefers_matching_report_year_source() -> None:
+    store = InMemoryKnowledgeStore()
+    store.add_user(User("user_primary", "primary", UserRole.ADMIN))
+    for year, source_item_id, document_id, chunk_id, revenue in [
+        ("2025", "src_report_2025", "doc_report_2025", "chk_report_2025", "92,507,796,069.94"),
+        ("2024", "src_report_2024", "doc_report_2024", "chk_report_2024", "92,495,525,118.30"),
+    ]:
+        store.upsert_source_item(
+            SourceItem(
+                source_item_id=source_item_id,
+                source_channel="upload",
+                record_type="file",
+                source_id=f"annual-report-{year}.pdf",
+                owner_user_id="user_primary",
+                space_id="private_primary",
+                visibility=Visibility.PRIVATE,
+                visible_team_ids=[],
+                title=f"annual-report-{year}.pdf",
+                url=None,
+                content_text=f"{year} annual report",
+                content_hash=f"hash_report_{year}",
+            )
+        )
+        store.add_document(
+            Document(
+                document_id=document_id,
+                source_item_id=source_item_id,
+                owner_user_id="user_primary",
+                space_id="private_primary",
+                visibility=Visibility.PRIVATE,
+                visible_team_ids=[],
+                title=f"annual-report-{year}.pdf",
+                body=f"{year} annual report body",
+            )
+        )
+        store.add_chunk(
+            Chunk(
+                chunk_id=chunk_id,
+                document_id=document_id,
+                source_item_id=source_item_id,
+                owner_user_id="user_primary",
+                space_id="private_primary",
+                visibility=Visibility.PRIVATE,
+                visible_team_ids=[],
+                text=(
+                    f"六、主要会计数据和财务指标 {year} 年 2023 年 "
+                    f"营业收入（元） {revenue} 89,341,177,610.40 "
+                    "归属于上市公司股东的净利润（元） 11,977,327,023.54 14,107,726,276.26 "
+                    "经营活动产生的现金流量净额（元） 13,264,092,022.73 16,622,209,721.05"
+                ),
+                ordinal=10,
+            )
+        )
+
+    user = store.get_user("user_primary", tenant_id="tenant_default")
+    response = RetrievalService(store, ACLService(store)).search(
+        "只根据当前知识库回答：2024年年度报告主要会计数据和财务指标表中，2024年营业收入（元）是多少？",
+        user,
+        represented_user_id="user_primary",
+        top_k=1,
+    )
+
+    assert response.results[0].source_item_id == "src_report_2024"
+    assert response.results[0].score_debug["document_year_match"] > 0
 
 
 def test_mcp_read_evidence_context_focuses_wide_table_chunk() -> None:
