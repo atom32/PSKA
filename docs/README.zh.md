@@ -23,6 +23,7 @@
 ## 架构与 API
 
 - [Architecture](ARCHITECTURE.md)：当前系统形态、source-centric 数据流、discovery 规则和 scheduler 行为。
+- [Evidence-driven QA Engine](PSKA_EVIDENCE_QA_ENGINE.zh.md)：Ask/RAG 的 Retrieval → Evidence → Citation → Answer 流水线、audit schema、timeline 和回归策略。
 - [API Reference](API_REFERENCE.md)：Workspace、CLI 和 integrations 使用的 HTTP endpoint。
 - [Feature Reality Check](FEATURE_REALITY_CHECK.md)：已实现、部分实现和 design-only 能力边界。
 - [WeKnora 核心覆盖验收](WEKNORA_COVERAGE.zh.md)：多租户核心替代能力、E2E 脚本和竞品对照验收口径。

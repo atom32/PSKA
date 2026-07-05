@@ -34,6 +34,13 @@ flowchart TD
   O --> P["Workspace Brain / Search / Today"]
 ```
 
+Ask/RAG is now treated as a dedicated evidence-driven QA pipeline rather than
+a single retrieval-plus-prompt step. See
+[PSKA Evidence-driven QA Engine](PSKA_EVIDENCE_QA_ENGINE.zh.md) for the
+Retrieval -> Evidence Scoring -> Evidence Validation -> Citation Selection ->
+Answer Pipeline architecture, audit schema, timeline proposal, and regression
+strategy.
+
 ## Source Model
 
 The user-facing concept is `Knowledge Source`: a folder, archive inbox, or

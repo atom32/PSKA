@@ -29,6 +29,7 @@ Directory-level material packs can opt into source collection ingest with
 ## Architecture And API
 
 - [Architecture](ARCHITECTURE.md): current system shape, source-centric flow, discovery invariants, and scheduler behavior.
+- [Evidence-driven QA Engine](PSKA_EVIDENCE_QA_ENGINE.zh.md): Chinese architecture note for the Retrieval → Evidence → Citation → Answer pipeline, audit schema, timeline, and regression strategy.
 - [API Reference](API_REFERENCE.md): HTTP endpoints used by the workspace, CLI, and integrations.
 - [Feature Reality Check](FEATURE_REALITY_CHECK.md): what is shipped, partial, or design-only.
 - [Phase 1 Multi-KB RAG Milestone](MILESTONE_PHASE1_MULTI_KB_RAG.zh.md): Chinese milestone and acceptance evidence for one-account-many-knowledge-bases.
