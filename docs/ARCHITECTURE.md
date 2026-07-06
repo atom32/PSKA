@@ -1,7 +1,7 @@
 # PSKA Architecture
 
 Status: current architecture contract on `tenant`
-Last reviewed: 2026-07-05
+Last reviewed: 2026-07-06
 
 This document is the high-level contract for PSKA's current system shape. It
 is intentionally paired with the more detailed
@@ -45,11 +45,19 @@ flowchart TD
 ```
 
 Ask/RAG is now treated as a dedicated evidence-driven QA pipeline rather than
-a single retrieval-plus-prompt step. See
-[PSKA Evidence-driven QA Engine](PSKA_EVIDENCE_QA_ENGINE.zh.md) for the
-Retrieval -> Evidence Scoring -> Evidence Validation -> Citation Selection ->
-Answer Pipeline architecture, audit schema, timeline proposal, and regression
-strategy.
+a single retrieval-plus-prompt step. Phase 1 froze the Retrieval -> Evidence
+Scoring -> Evidence Validation -> Citation Selection -> Answer Pipeline
+contract. Phase 2 adds Evidence Composition between Citation Selection and
+Answer Pipeline so multi-document, temporal, graph, and tool-assisted reasoning
+can operate on Evidence Sets instead of TopK chunks. See
+[PSKA Evidence-driven QA Engine](PSKA_EVIDENCE_QA_ENGINE.zh.md) and
+[RFC 0002](rfcs/0002-multi-evidence-composition.md) for the detailed stage
+contracts, audit schema, timeline proposal, and regression strategy.
+
+FastReAct owns the agentic loop. PSKA should not introduce a parallel planner
+or long-running reasoning loop; it prepares scoped Evidence Sets, exposes
+stateless/auditable tools, and validates FastReAct output through the existing
+evidence, citation, and answer contracts.
 
 ## Source Model
 
@@ -159,6 +167,7 @@ instead of silently reporting an empty review queue.
 | `retrieval.py` | Lexical/vector/graph candidate retrieval, hybrid merge, evidence scoring pipeline, diagnostics |
 | `embeddings.py` | Embedding providers, including local BGE-M3 integration |
 | `citation_pipeline.py` | Citation selection, feature contribution audit, selected spans |
+| `evidence_composition.py` | Phase 2 Evidence Set construction from selected citations, slot coverage, composition audit |
 | `answer_pipeline.py` | Answer candidate validation, final answer owner selection, no-answer/fallback audit |
 | `jobs.py` | Durable jobs, leases, retries |
 | `candidates.py` | Candidate write-back from digest/agent workers |

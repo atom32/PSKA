@@ -796,9 +796,9 @@ Inquiry Graph 比线性 chat 更适合组织长文、报告和研究 brief。
 
 ## 13. 近期执行建议
 
-当前 `tenant` 分支已经完成 Phase 1 发布候选并进入 Phase 2 开工：DB/API/store、前端 KB rail/scope picker、documents membership 管理、Ask/Digest/Review/Graph/Writing 的 KB scope 传递，以及真实迁移/scoped Ask smoke 都已有落地。额外地，真实 `~/FastReAct` + PSKA HTTP MCP + DeepSeek smoke 已验证 deep Ask 会把选中 KB hard scope 注入 PSKA MCP tool calls，未选 KB 不进入答案或 trace。Phase 2 第一条切片已经把 Ask citation inspector 与 source-focused follow-up 接到 Today/Ask composer。接下来建议立刻做三件事：
+当前 `tenant` 分支已经完成 Phase 1 发布候选并进入后续产品切片：DB/API/store、前端 KB rail/scope picker、documents membership 管理、Ask/Digest/Review/Graph/Writing 的 KB scope 传递，以及真实迁移/scoped Ask smoke 都已有落地。额外地，真实 `~/FastReAct` + PSKA HTTP MCP + DeepSeek smoke 已验证 deep Ask 会把选中 KB hard scope 注入 PSKA MCP tool calls，未选 KB 不进入答案或 trace。Reader/Ask 产品切片已经把 Ask citation inspector 与 source-focused follow-up 接到 Today/Ask composer。接下来建议立刻做三件事：
 
-1. 把 `docs/MILESTONE_PHASE2_READER_ASK.zh.md` 作为 Phase 2 验收包主文档，继续补 ReaderPane、原文定位和 citation 复用。
+1. 把 `docs/MILESTONE_READER_ASK_PRODUCT_SLICE.zh.md` 作为 Reader/Ask 产品切片验收包主文档，继续补 ReaderPane、原文定位和 citation 复用。
 2. 把 CitationInspector 复用到 Graph/Writing 的引用展示，保证所有证据入口共享同一种 citation 坐标语义。
 3. 继续跑真实浏览器 scoped Ask 验收，确认从 citation 追问时 `source_item_ids` hard scope 不被 UI 或对话 API 丢失。
 

@@ -39,6 +39,7 @@ from pska_core.connectors import connector_state_from_mapping, connector_record_
 from pska_core.discovery import DISCOVERY_TODAY_SCORE_THRESHOLD, DiscoveryService
 from pska_core.embeddings import EmbeddingConfig, build_embedding_provider
 from pska_core.enums import ReviewType, UserRole, Visibility
+from pska_core.evidence_composition import EvidenceCompositionContext, EvidenceCompositionPipeline, evidence_set_to_dict
 from pska_core.extraction import ExtractionService
 from pska_core.fastreact_protocol import compact_trace_for_context
 from pska_core.files_connector import extract_text_from_bytes, scan_files
@@ -2933,6 +2934,7 @@ class PSKAApi:
         evidence = _ask_evidence_from_retrieval(retrieval)
         evidence_check = _ask_verify_evidence(query=rewrite_query, evidence=evidence, scope=scope, ask_intent=ask_intent)
         evidence_check = _ask_select_citations(query=rewrite_query, evidence_check=evidence_check)
+        evidence_check = _ask_compose_evidence_set(query=rewrite_query, evidence_check=evidence_check, evidence=evidence)
         evidence = _ask_apply_evidence_check(evidence, evidence_check)
         retrieval = _ask_apply_evidence_check_to_retrieval(retrieval, evidence_check)
         steps.append(_ask_quick_read_step(sequence=len(steps) + 1, evidence=evidence, started_at=started_at))
@@ -2946,6 +2948,7 @@ class PSKAApi:
                 ask_intent=ask_intent,
                 evidence=evidence,
                 evidence_check=evidence_check,
+                evidence_set=evidence_check.get("evidence_set") if isinstance(evidence_check.get("evidence_set"), dict) else {},
                 user=user,
                 represented_user_id=represented_user_id,
                 session_id=session_id,
@@ -3060,6 +3063,7 @@ class PSKAApi:
                 "used": evidence["citations"],
                 "dropped": _list_of_dicts(evidence_check.get("dropped_citations")),
             },
+            "evidence_set": evidence_check.get("evidence_set") or {},
             "answer_pipeline": answer_pipeline_audit,
             "evidence_check": evidence_check,
             "evidence_claims": list(evidence_check.get("evidence_claims") or []),
@@ -3074,6 +3078,8 @@ class PSKAApi:
                 "retrieval": retrieval,
                 "final_synthesis": final_synthesis or {"status": "not_attempted"},
                 "answer_pipeline": answer_pipeline_audit,
+                "evidence_composition": evidence_check.get("evidence_composition") or {},
+                "evidence_set": evidence_check.get("evidence_set") or {},
                 "diagnostics": retrieval.get("diagnostics") if isinstance(retrieval.get("diagnostics"), dict) else {},
                 "evidence_check": evidence_check,
             },
@@ -3094,13 +3100,21 @@ class PSKAApi:
         ask_intent: str,
         evidence: dict[str, Any],
         evidence_check: dict[str, Any],
+        evidence_set: dict[str, Any],
         user: Any,
         represented_user_id: str,
         session_id: str | None,
     ) -> dict[str, Any] | None:
         if not hasattr(self.agentic_service, "search"):
             return {"status": "fallback", "owner": "deterministic_fallback", "reason": "agentic_service_unavailable"}
-        prompt = _ask_quick_synthesis_prompt(query=query, rewrite_query=rewrite_query, ask_intent=ask_intent, evidence=evidence, evidence_check=evidence_check)
+        prompt = _ask_quick_synthesis_prompt(
+            query=query,
+            rewrite_query=rewrite_query,
+            ask_intent=ask_intent,
+            evidence=evidence,
+            evidence_check=evidence_check,
+            evidence_set=evidence_set,
+        )
         try:
             agentic = self._agentic_service_search(
                 prompt,
@@ -8806,6 +8820,39 @@ def _ask_select_citations(
     return selected
 
 
+def _ask_compose_evidence_set(
+    *,
+    query: str,
+    evidence_check: dict[str, Any],
+    evidence: dict[str, Any] | None = None,
+    max_records: int = 8,
+) -> dict[str, Any]:
+    composition = EvidenceCompositionPipeline().compose(
+        _list_of_dicts(evidence_check.get("used_citations")),
+        EvidenceCompositionContext(
+            query=query,
+            query_terms=tuple(_string_list(evidence_check.get("query_terms"))),
+            anchor_terms=tuple(_string_list(evidence_check.get("query_anchors"))),
+            max_records=max_records,
+        ),
+        graph_paths=_list_of_dicts((evidence or {}).get("graph_paths")) if evidence else [],
+    )
+    evidence_set = evidence_set_to_dict(composition.evidence_set)
+    composed = {
+        **evidence_check,
+        "evidence_set": evidence_set,
+        "evidence_composition": composition.audit,
+    }
+    if str(evidence_check.get("status") or "") == "supported" and composition.evidence_set.status in {"empty", "incomplete"}:
+        reasons = list(composed.get("no_answer_reasons") or [])
+        if composition.evidence_set.status == "empty":
+            reasons.append("empty_evidence_set")
+        else:
+            reasons.append("evidence_set_missing_required_slots")
+        composed["no_answer_reasons"] = list(dict.fromkeys(reasons))
+    return composed
+
+
 def _ask_apply_evidence_check(evidence: dict[str, Any], evidence_check: dict[str, Any]) -> dict[str, Any]:
     filtered = dict(evidence)
     used = _list_of_dicts(evidence_check.get("used_citations"))
@@ -8819,6 +8866,8 @@ def _ask_apply_evidence_check(evidence: dict[str, Any], evidence_check: dict[str
     filtered["source_refs"] = used
     filtered["dropped_citations"] = _list_of_dicts(evidence_check.get("dropped_citations"))
     filtered["citation_selection"] = evidence_check.get("citation_selection") or {}
+    filtered["evidence_set"] = evidence_check.get("evidence_set") or {}
+    filtered["evidence_composition"] = evidence_check.get("evidence_composition") or {}
     if used_keys:
         filtered["results"] = [
             result
@@ -8867,6 +8916,8 @@ def _ask_apply_evidence_check_to_retrieval(retrieval: dict[str, Any], evidence_c
         filtered["source_windows"] = []
     filtered["citations"] = used
     filtered["citation_selection"] = evidence_check.get("citation_selection") or {}
+    filtered["evidence_set"] = evidence_check.get("evidence_set") or {}
+    filtered["evidence_composition"] = evidence_check.get("evidence_composition") or {}
     return filtered
 
 
@@ -9479,8 +9530,12 @@ def _ask_quick_synthesis_prompt(
     ask_intent: str,
     evidence: dict[str, Any],
     evidence_check: dict[str, Any],
+    evidence_set: dict[str, Any] | None = None,
 ) -> str:
-    evidence_items = _ask_quick_synthesis_evidence_items(evidence)
+    evidence_set = evidence_set if isinstance(evidence_set, dict) else {}
+    evidence_items = _ask_quick_synthesis_evidence_items_from_evidence_set(evidence_set)
+    if not evidence_items:
+        evidence_items = _ask_quick_synthesis_evidence_items(evidence)
     payload = {
         "question": query,
         "rewrite_query": rewrite_query,
@@ -9491,7 +9546,7 @@ def _ask_quick_synthesis_prompt(
         },
         "ask_intent": ask_intent,
         "evidence_claims": list(evidence_check.get("evidence_claims") or [])[:8],
-        "evidence": evidence_items,
+        "evidence_set": _ask_compact_evidence_set_for_prompt(evidence_set, evidence_items),
     }
     writing_instruction = ""
     if ask_intent == "writing":
@@ -9504,7 +9559,8 @@ def _ask_quick_synthesis_prompt(
         "You are PSKA's quick-answer final synthesizer. You are called through the agentic service, "
         "but this is not a research loop. Do not call tools, do not retrieve, and do not use outside knowledge.\n"
         f"{writing_instruction}"
-        "Use only the evidence JSON below, which PSKA already filtered by ACL, scope, and citation support. "
+        "Use only the Evidence Set JSON below, which PSKA already filtered by ACL, scope, citation support, "
+        "and evidence composition. "
         "Answer the user's question in natural human language, not as raw evidence snippets. Preserve exact "
         "numbers, units, entity names, dates, row identifiers, and table field values from the evidence. "
         "Every explicitly requested field/value that appears in evidence_claims must be represented in the answer. "
@@ -9515,8 +9571,48 @@ def _ask_quick_synthesis_prompt(
         "sentence when the question asks for a single value or fact; otherwise use at most three short "
         "sentences or three bullets. Do not repeat the user's question, explain PSKA internals, or add "
         "generic caveats when the evidence check is supported.\n\n"
-        f"Evidence JSON: {json.dumps(payload, ensure_ascii=False)}"
+        f"Evidence Set JSON: {json.dumps(payload, ensure_ascii=False)}"
     )
+
+
+def _ask_quick_synthesis_evidence_items_from_evidence_set(evidence_set: dict[str, Any]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for record in _list_of_dicts(evidence_set.get("records"))[:8]:
+        citation = record.get("citation") if isinstance(record.get("citation"), dict) else {}
+        metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
+        text = str(record.get("selected_span") or record.get("text") or "").strip()
+        if not text:
+            continue
+        items.append(
+            {
+                "ref": f"E{len(items) + 1}",
+                "record_id": record.get("record_id"),
+                "source_type": record.get("source_type"),
+                "title": citation.get("title") or metadata.get("title"),
+                "source_item_id": citation.get("source_item_id"),
+                "document_id": citation.get("document_id"),
+                "chunk_id": citation.get("chunk_id") or citation.get("passage_window_id"),
+                "text": _ask_clean_evidence_text(text)[:1200],
+            }
+        )
+    return items
+
+
+def _ask_compact_evidence_set_for_prompt(evidence_set: dict[str, Any], evidence_items: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "schema": evidence_set.get("schema") or "pska.evidence_set.v1",
+        "evidence_set_id": evidence_set.get("evidence_set_id"),
+        "status": evidence_set.get("status"),
+        "records": evidence_items,
+        "slots": _list_of_dicts(evidence_set.get("slots"))[:12],
+        "missing_slots": list(evidence_set.get("missing_slots") or [])[:12],
+        "conflicts": list(evidence_set.get("conflicts") or [])[:6],
+        "audit": {
+            "record_count": ((evidence_set.get("audit") or {}).get("record_count") if isinstance(evidence_set.get("audit"), dict) else None),
+            "slot_count": ((evidence_set.get("audit") or {}).get("slot_count") if isinstance(evidence_set.get("audit"), dict) else None),
+            "source_type_counts": ((evidence_set.get("audit") or {}).get("source_type_counts") if isinstance(evidence_set.get("audit"), dict) else {}),
+        },
+    }
 
 
 def _ask_quick_synthesis_evidence_items(evidence: dict[str, Any]) -> list[dict[str, Any]]:
@@ -11027,6 +11123,7 @@ def _ask_deep_response(
         ask_intent=ask_intent,
     )
     evidence_check = _ask_select_citations(query=rewrite_query, evidence_check=evidence_check)
+    evidence_check = _ask_compose_evidence_set(query=rewrite_query, evidence_check=evidence_check, evidence=evidence)
     evidence = _ask_apply_evidence_check(evidence, evidence_check)
     answer_type = "deep_answer"
     if evidence_check.get("status") != "supported":
@@ -11038,6 +11135,8 @@ def _ask_deep_response(
         "retrieval_owner": "fastreact_pska_mcp",
         "tool_policy": tool_policy or _ask_read_tool_policy(scope_applied, allowed_tools=allowed_tools),
         "tool_profile": ASK_READ_TOOL_PROFILE,
+        "evidence_composition": evidence_check.get("evidence_composition") or {},
+        "evidence_set": evidence_check.get("evidence_set") or {},
         "evidence_check": evidence_check,
     }
     agent_steps = _ask_agent_steps_from_events(trace.get("events") if isinstance(trace.get("events"), list) else [])
@@ -11075,6 +11174,7 @@ def _ask_deep_response(
             "used": evidence["citations"],
             "dropped": _list_of_dicts(evidence_check.get("dropped_citations")),
         },
+        "evidence_set": evidence_check.get("evidence_set") or {},
         "evidence_check": evidence_check,
         "evidence_claims": list(evidence_check.get("evidence_claims") or []),
         "no_answer_reasons": list(evidence_check.get("no_answer_reasons") or []),

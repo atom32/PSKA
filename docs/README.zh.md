@@ -27,7 +27,8 @@
 - [Phases](PHASES.md)：Phase 0/1/2/3 一页总览和 Phase 1 baseline。
 - [Evidence-driven QA Engine](PSKA_EVIDENCE_QA_ENGINE.zh.md)：Ask/RAG 的 Retrieval → Evidence → Citation → Answer 流水线、audit schema、timeline 和回归策略。
 - [Architecture Decision Records](adr/README.md)：已经接受的工程决策，用来约束后续 PSKA 改动。
-- [RFC 0002: Multi-evidence Composition](rfcs/0002-multi-evidence-composition.md)：Phase 2 Evidence Set、趋势/比较问答和 composition 边界草案。
+- [RFC 0002: Multi-evidence Composition](rfcs/0002-multi-evidence-composition.md)：Phase 2 Evidence Set、趋势/比较问答和 composition 边界。
+- [Reader/Ask 产品切片里程碑](MILESTONE_READER_ASK_PRODUCT_SLICE.zh.md)：citation inspection、source-focused follow-up 和 ReaderPane 工作；这是可复用产品切片，不是整体产品 Phase 2 路线。
 - [API Reference](API_REFERENCE.md)：Workspace、CLI 和 integrations 使用的 HTTP endpoint。
 - [Feature Reality Check](FEATURE_REALITY_CHECK.md)：已实现、部分实现和 design-only 能力边界。
 - [WeKnora 核心覆盖验收](WEKNORA_COVERAGE.zh.md)：多租户核心替代能力、E2E 脚本和竞品对照验收口径。

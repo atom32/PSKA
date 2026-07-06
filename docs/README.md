@@ -33,11 +33,11 @@ Directory-level material packs can opt into source collection ingest with
 - [Phases](PHASES.md): one-page Phase 0/1/2/3 map and Phase 1 baseline.
 - [Evidence-driven QA Engine](PSKA_EVIDENCE_QA_ENGINE.zh.md): Chinese architecture note for the Retrieval → Evidence → Citation → Answer pipeline, audit schema, timeline, and regression strategy.
 - [Architecture Decision Records](adr/README.md): accepted engineering decisions that constrain future PSKA changes.
-- [RFC 0002: Multi-evidence Composition](rfcs/0002-multi-evidence-composition.md): draft Phase 2 design for Evidence Sets, comparison/trend QA, and composition boundaries.
+- [RFC 0002: Multi-evidence Composition](rfcs/0002-multi-evidence-composition.md): Phase 2 design for Evidence Sets, comparison/trend QA, and composition boundaries.
 - [API Reference](API_REFERENCE.md): HTTP endpoints used by the workspace, CLI, and integrations.
 - [Feature Reality Check](FEATURE_REALITY_CHECK.md): what is shipped, partial, or design-only.
 - [Phase 1 Multi-KB RAG Milestone](MILESTONE_PHASE1_MULTI_KB_RAG.zh.md): Chinese milestone and acceptance evidence for one-account-many-knowledge-bases.
-- [Phase 2 Reader/Ask Milestone](MILESTONE_PHASE2_READER_ASK.zh.md): Chinese milestone for citation inspection, source-focused follow-up, and ReaderPane work.
+- [Reader/Ask Product Slice Milestone](MILESTONE_READER_ASK_PRODUCT_SLICE.zh.md): Chinese milestone for citation inspection, source-focused follow-up, and ReaderPane work; this is a reusable product slice, not the overall Phase 2 roadmap.
 - [WeKnora Core Coverage Acceptance](WEKNORA_COVERAGE.zh.md): Chinese
   multi-tenant coverage checklist, E2E script, and competitor comparison bar.
 - [Telemetry Design](TELEMETRY.md): design-only telemetry notes.

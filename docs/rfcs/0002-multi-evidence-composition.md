@@ -1,8 +1,8 @@
 # RFC 0002: Multi-evidence Composition
 
-Status: Draft
+Status: Implementation kickoff
 Phase: 2
-Date: 2026-07-05
+Date: 2026-07-06
 
 ## Problem
 
@@ -47,11 +47,16 @@ User Query
   -> Candidate Retrieval
   -> Evidence Scoring
   -> Evidence Validation
-  -> Evidence Set Builder
-  -> Citation Selection per Evidence Set member
+  -> Citation Selection
+  -> Evidence Composition
   -> Answer Pipeline with composition validators
   -> Final Answer
 ```
+
+Evidence Composition consumes the selected Citation Set, not TopK chunks. This
+keeps Retrieval responsible for candidate generation, Citation Selection
+responsible for selected spans, and Answer Pipeline responsible for final
+answer ownership.
 
 ## Core Data Structures
 
@@ -76,6 +81,27 @@ User Query
 - calculation inputs
 - audit timeline
 
+The initial implementation lives in `core/src/pska_core/evidence_composition.py`.
+It introduces:
+
+- `EvidenceCompositionPipeline`
+- `EvidenceCompositionContext`
+- `EvidenceRecord`
+- `EvidenceSlot`
+- `EvidenceSet`
+- registry-style slot extractors and validators
+
+The first production hook runs after Citation Selection and before Answer
+Pipeline. It is intentionally conservative: it composes and audits evidence
+sets, detects generic temporal/version slots, records missing slot coverage,
+and passes the composed set to FastReAct quick synthesis. It does not compute
+answers or bypass Answer Pipeline.
+
+FastReAct remains the only agentic loop owner. PSKA must not add a competing
+planner, re-planner, memory loop, or autonomous research loop inside this
+pipeline. PSKA prepares Evidence Sets, exposes stateless/auditable MCP tools,
+and validates FastReAct output through Citation Selection and Answer Pipeline.
+
 ## Recognition
 
 The first implementation should detect multi-evidence need with generic
@@ -96,8 +122,8 @@ Phase 1 remains valid for single-evidence questions. Multi-evidence
 composition adds an optional Evidence Set stage after validation and before
 final answer ownership.
 
-Existing Citation Selection can be reused per EvidenceRecord. Answer Pipeline
-should gain validators that understand Evidence Sets, such as:
+Existing Citation Selection is reused before Evidence Composition. Answer
+Pipeline should gain validators that understand Evidence Sets, such as:
 
 - required slot coverage
 - numeric consistency

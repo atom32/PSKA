@@ -1,6 +1,12 @@
-# 里程碑：Phase 2 搜读问一体化
+# 里程碑：Reader/Ask 产品切片
 
-本里程碑承接 Phase 1 多知识库 RAG 底座。目标是把 Ask 的引用从“可见 citation”升级为“可检查、可回到原文、可基于原文继续追问”的读问闭环。
+本里程碑承接 Phase 1 多知识库 RAG 底座。它是一个 Reader/Ask 产品切片，
+不是整体产品路线里的 Phase 2。整体 Phase 2 的计划来源是
+[PSKA Phases](PHASES.md) 和 [RFC 0002: Multi-evidence Composition](rfcs/0002-multi-evidence-composition.md)。
+
+本切片目标是把 Ask 的引用从“可见 citation”升级为“可检查、可回到原文、
+可基于原文继续追问”的读问闭环。这些能力仍然有用，并作为 Phase 2 Evidence
+Composition 的产品层支撑能力复用。
 
 ## 范围
 
@@ -22,7 +28,7 @@
 
 ## 当前进度
 
-截至当前实现，Phase 2 已开始落地第一条产品切片：
+截至当前实现，该 Reader/Ask 产品切片已落地：
 
 - Ask 结果中的 `EvidenceWindow` 已升级为 citation inspector，展示 citation 坐标、KB 归属、source window policy、score、原文字符范围、URL 和原文窗口。
 - 新增 `GET /workspace/reader/source`，按 `source_item_id` 返回当前用户可见且 KB scope 覆盖的 source、documents、chunks、passage windows 和 `scope_applied`。

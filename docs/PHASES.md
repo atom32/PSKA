@@ -1,7 +1,7 @@
 # PSKA Phases
 
 Status: current roadmap index on `tenant`
-Last reviewed: 2026-07-05
+Last reviewed: 2026-07-06
 
 This page is the one-page phase map for PSKA. It is intentionally short:
 architecture details live in [Architecture](ARCHITECTURE.md), decisions live in
@@ -13,7 +13,7 @@ architecture details live in [Architecture](ARCHITECTURE.md), decisions live in
 | --- | --- | --- | --- |
 | Phase 0 | Proof of Concept | Closed | Pre-multitenant RAG and ingest experiments |
 | Phase 1 | Evidence QA Engine | Frozen | Architecture: `4d6308b6`, `v0.1.0-phase1-freeze`; acceptance: `3b0949e7`, `v0.1.0-phase1` |
-| Phase 2 | Evidence Composition | RFC | [RFC 0002: Multi-evidence Composition](rfcs/0002-multi-evidence-composition.md) |
+| Phase 2 | Evidence Composition & Agentic Reasoning | Implementation kickoff | [RFC 0002: Multi-evidence Composition](rfcs/0002-multi-evidence-composition.md) |
 | Phase 3 | Agent Workflow | Not started | Future RFC |
 
 ## Phase 1: Evidence QA Engine
@@ -66,12 +66,40 @@ capability being complete.
 | Multi-evidence Composition | Phase 2 | Evidence Set and composition validators. |
 | Deep Ask Workflow | Phase 2 | Bounded research loops on top of Evidence Composition. |
 | Heavy Reranker | Future | Optional stage implementation after measured retrieval/ranking need. |
-| Graph Retrieval | Future | Retrieval extension that must still return evidence/citation audit. |
+| Graph Retrieval | Phase 2 | Evidence source extension that must enter the same Evidence Set and Answer Pipeline. |
 
-## Phase 2: Evidence Composition
+## Phase 2: Evidence Composition & Agentic Reasoning
 
-Phase 2 should not be framed as "Deep Ask first." The core problem is how
-multiple evidence records become one trustworthy answer.
+Phase 2 starts from the stable `v0.1.0-phase1` baseline. It should not be
+framed as retrieval tuning, a new chatbot, a new prompt, or a new planner. The
+core problem is how multiple evidence records become one trustworthy answer.
+
+The Phase 1 architecture contract remains active:
+
+```text
+Retrieval
+  -> Evidence Scoring
+  -> Evidence Validation
+  -> Citation Selection
+  -> Answer Pipeline
+```
+
+Phase 2 adds one stage between Citation Selection and Answer Pipeline:
+
+```text
+Retrieval
+  -> Evidence Scoring
+  -> Evidence Validation
+  -> Citation Selection
+  -> Evidence Composition
+  -> Answer Pipeline
+```
+
+Evidence Composition consumes a Citation Set, not TopK chunks, and produces an
+Evidence Set for Answer Pipeline and FastReAct synthesis. New capabilities must
+enter through extension points, registries, policies, validators, or prompt
+patterns. They must not recouple Retrieval, Citation Selection, and Answer
+Pipeline.
 
 Phase 2 asks:
 
@@ -80,9 +108,27 @@ Phase 2 asks:
 - how should citations cover every value used in a comparison or calculation?
 - how does Answer Pipeline consume composed evidence without changing Phase 1
   retrieval responsibilities?
+- how do document, table, and graph evidence join one Evidence Set?
+- how does FastReAct reason over an Evidence Set without owning retrieval,
+  citation, answer validation, or memory?
 
 Trend, comparison, aggregation, conflict, and version-aware questions belong
 here. They should not be solved by adding domain-specific retrieval rules.
+
+FastReAct owns the agentic loop in Phase 2. PSKA must not grow a parallel
+planner/re-planner or long-running agent loop. PSKA's responsibility is to
+prepare scoped Evidence Sets, expose stateless/auditable tools, and validate
+the resulting citations and answers through the existing pipeline.
+
+### Phase 2 Deliverables
+
+1. Evidence Composition Pipeline.
+2. Evidence Set data structure.
+3. FastReAct integration through Evidence Set input.
+4. Graph Retrieval as a unified evidence source.
+5. Multi-document regression evaluation.
+
+Memory is out of scope for this phase.
 
 ## Phase 3: Agent Workflow
 
