@@ -74,6 +74,8 @@ elif expr == "frontend_port":
     print(config.startup.frontend.port)
 elif expr == "frontend_url":
     print(f"http://{config.startup.frontend.host}:{config.startup.frontend.port}/")
+elif expr == "frontend_public_url":
+    print(config.startup.frontend.public_url or "")
 elif expr == "service_client_url":
     host = config.service.host
     if host in {"", "0.0.0.0", "::", "[::]"}:
@@ -244,9 +246,15 @@ if [[ "$(config_value startup_frontend)" == "true" ]]; then
       echo "Building PSKA frontend for gateway mode..."
       (cd "$ROOT/frontend" && npm run build)
       echo "Starting PSKA gateway frontend..."
+      GATEWAY_PUBLIC_URL="$(config_value frontend_public_url)"
+      GATEWAY_PUBLIC_URL_ARGS=()
+      if [[ -n "$GATEWAY_PUBLIC_URL" ]]; then
+        GATEWAY_PUBLIC_URL_ARGS=(--public-url "$GATEWAY_PUBLIC_URL")
+      fi
       "$ROOT/scripts/pska" --config "$CONFIG" gateway \
         --host "$FRONTEND_HOST" \
         --port "$FRONTEND_PORT" \
+        "${GATEWAY_PUBLIC_URL_ARGS[@]}" \
         --pska-url "$(config_value service_client_url)" &
       FRONTEND_PID=$!
     else

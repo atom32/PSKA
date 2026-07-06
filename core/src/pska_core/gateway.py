@@ -6,7 +6,6 @@ from collections.abc import Mapping
 import hashlib
 import hmac
 import html
-from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -50,6 +49,7 @@ IDENTITY_HEADERS = {"authorization"}
 class GatewayConfig:
     host: str = "127.0.0.1"
     port: int = 8080
+    public_url: str | None = None
     frontend_dist: Path = DEFAULT_FRONTEND_DIST
     pska_url: str = "http://127.0.0.1:8765"
     authnode_url: str = "http://127.0.0.1:8788"
@@ -65,7 +65,6 @@ class GatewayConfig:
     default_user_key: str = "pska:user_primary"
     authnode_browser_login: bool = True
     authnode_logout: bool = True
-    local_authnode_catalog_login: bool = True
     callback_jwt_secret: str | None = None
     callback_jwt_issuer: str | None = None
     callback_jwt_audience: str | None = DEFAULT_PSKA_AUDIENCE
@@ -76,6 +75,7 @@ class GatewayConfig:
         return cls(
             host=os.getenv("PSKA_GATEWAY_HOST", "127.0.0.1"),
             port=_int_env("PSKA_GATEWAY_PORT", 8080),
+            public_url=_optional_url_env("PSKA_GATEWAY_PUBLIC_URL") or _optional_url_env("PSKA_PUBLIC_URL"),
             frontend_dist=Path(os.getenv("PSKA_GATEWAY_FRONTEND_DIST", str(DEFAULT_FRONTEND_DIST))).expanduser(),
             pska_url=os.getenv("PSKA_GATEWAY_PSKA_URL", "http://127.0.0.1:8765").rstrip("/"),
             authnode_url=(os.getenv("PSKA_GATEWAY_AUTHNODE_URL") or os.getenv("AUTHNODE_URL") or "http://127.0.0.1:8788").rstrip("/"),
@@ -91,7 +91,6 @@ class GatewayConfig:
             default_user_key=os.getenv("PSKA_GATEWAY_DEFAULT_USER_KEY", "pska:user_primary"),
             authnode_browser_login=_bool_env("PSKA_GATEWAY_AUTHNODE_BROWSER_LOGIN", True),
             authnode_logout=_bool_env("PSKA_GATEWAY_AUTHNODE_LOGOUT", True),
-            local_authnode_catalog_login=_bool_env("PSKA_GATEWAY_LOCAL_AUTHNODE_CATALOG_LOGIN", True),
             callback_jwt_secret=os.getenv("PSKA_GATEWAY_AUTH_JWT_SECRET")
             or os.getenv("PSKA_AUTH_JWT_SECRET")
             or os.getenv("AUTHNODE_JWT_SECRET")
@@ -106,6 +105,7 @@ class GatewayConfig:
         return GatewayConfig(
             host=self.host,
             port=self.port,
+            public_url=self.public_url,
             frontend_dist=self.frontend_dist,
             pska_url=self.pska_url,
             authnode_url=self.authnode_url,
@@ -121,7 +121,6 @@ class GatewayConfig:
             default_user_key=self.default_user_key,
             authnode_browser_login=self.authnode_browser_login,
             authnode_logout=self.authnode_logout,
-            local_authnode_catalog_login=self.local_authnode_catalog_login,
             callback_jwt_secret=self.callback_jwt_secret,
             callback_jwt_issuer=self.callback_jwt_issuer,
             callback_jwt_audience=self.callback_jwt_audience,
@@ -402,8 +401,45 @@ def authnode_logout_redirect(config: GatewayConfig, *, return_to: str) -> str:
     return f"{_authnode_browser_base_url(config)}/logout?{urlencode(params)}"
 
 
+def authnode_login_url(
+    config: GatewayConfig,
+    *,
+    return_to: str,
+    next_path: str = "/",
+    user_key: str | None = None,
+    tenant_id: str | None = None,
+) -> str:
+    params = {
+        "target": DEFAULT_PSKA_AUDIENCE,
+        "return_to": return_to,
+        "next": _safe_next(next_path),
+        "user_key": user_key or config.default_user_key,
+        "tenant_id": tenant_id or config.default_tenant_id,
+    }
+    return f"{_authnode_browser_base_url(config)}/login?{urlencode(params)}"
+
+
 def _authnode_browser_base_url(config: GatewayConfig) -> str:
     return (config.authnode_browser_url or config.authnode_url).rstrip("/")
+
+
+def gateway_external_url(config: GatewayConfig, headers: Mapping[str, str], path: str) -> str:
+    public_url = (config.public_url or "").strip()
+    if public_url:
+        return f"{public_url.rstrip('/')}/{path.lstrip('/')}"
+    forwarded = _forwarded_header_values(_header_value(headers, "Forwarded"))
+    proto = (
+        forwarded.get("proto")
+        or _first_header_token(_header_value(headers, "X-Forwarded-Proto"))
+        or ("https" if config.cookie_secure else "http")
+    )
+    host = (
+        forwarded.get("host")
+        or _first_header_token(_header_value(headers, "X-Forwarded-Host"))
+        or _header_value(headers, "Host")
+        or _bind_host_authority(config.host, config.port)
+    )
+    return f"{proto}://{host}{path}"
 
 
 def proxy_request_headers(incoming: Mapping[str, str], session: Mapping[str, Any], config: GatewayConfig) -> dict[str, str]:
@@ -521,74 +557,29 @@ class PSKAGatewayHandler(BaseHTTPRequestHandler):
         session = self._session()
         if session is not None:
             return self._redirect(next_path, 302)
-        if self.config.authnode_browser_login and not _truthy(_first(query.get("local"))):
-            return self._redirect(self._authnode_login_url(query, next_path), 302)
-        user_key = html.escape(_first(query.get("user_key")) or self.config.default_user_key)
-        tenant_id = html.escape(_first(query.get("tenant_id")) or self.config.default_tenant_id)
-        escaped_next = html.escape(next_path, quote=True)
-        body = f"""<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>PSKA Login</title>
-  <style>
-    :root {{ color-scheme: light; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }}
-    body {{ margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f6f5f0; color: #171717; }}
-    main {{ width: min(420px, calc(100vw - 32px)); border: 1px solid #d9d6cc; border-radius: 8px; background: #fffefa; padding: 28px; box-shadow: 0 18px 50px rgba(28, 31, 35, 0.10); }}
-    h1 {{ margin: 0 0 8px; font-size: 24px; letter-spacing: 0; }}
-    p {{ margin: 0 0 22px; color: #666; line-height: 1.5; }}
-    label {{ display: grid; gap: 8px; margin: 16px 0; font-size: 13px; color: #555; }}
-    input {{ height: 40px; border: 1px solid #cbc7ba; border-radius: 7px; padding: 0 12px; font: inherit; }}
-    button {{ width: 100%; height: 42px; margin-top: 8px; border: 0; border-radius: 7px; background: #1f5f55; color: white; font-weight: 700; cursor: pointer; }}
-  </style>
-</head>
-<body>
-  <main>
-    <h1>PSKA</h1>
-    <p>通过 AuthNode 签发短期 PSKA 身份，本页只用于本地和网关开发流程。</p>
-    <form method="post" action="/login">
-      <input type="hidden" name="next" value="{escaped_next}">
-      <label>Tenant <input name="tenant_id" value="{tenant_id}" autocomplete="organization" required></label>
-      <label>User key <input name="user_key" value="{user_key}" autocomplete="username" required></label>
-      <button type="submit">进入工作台</button>
-    </form>
-  </main>
-</body>
-</html>"""
-        return self._html(200, body)
+        if not self.config.authnode_browser_login:
+            return self._html(
+                503,
+                "<h1>AuthNode browser login is disabled</h1>"
+                "<p>PSKA Gateway does not provide its own login form. Enable AuthNode browser login or put PSKA behind a trusted AuthNode/OIDC ingress.</p>",
+            )
+        return self._redirect(self._authnode_login_url(query, next_path), 302)
 
     def _login_submit(self) -> None:
         form = self._read_form()
         next_path = _safe_next(_first(form.get("next")) or "/")
-        user_key = (_first(form.get("user_key")) or "").strip()
-        tenant_id = (_first(form.get("tenant_id")) or "").strip()
-        if not user_key or not tenant_id:
-            return self._html(400, "<h1>Missing tenant_id or user_key</h1>")
-        if self.config.authnode_admin_token:
-            try:
-                token_data = request_authnode_token(self.config, user_key=user_key, tenant_id=tenant_id)
-                session = session_from_token_response(token_data, requested_user_key=user_key, requested_tenant_id=tenant_id)
-            except GatewayError as exc:
-                return self._html(502, f"<h1>AuthNode token request failed</h1><p>{html.escape(str(exc))}</p>")
-        elif self.config.local_authnode_catalog_login:
-            try:
-                user = request_authnode_public_user(self.config, user_key=user_key, tenant_id=tenant_id)
-                session = session_from_public_user(
-                    user,
-                    requested_user_key=user_key,
-                    requested_tenant_id=tenant_id,
-                    ttl_seconds=self.config.token_ttl_seconds,
-                )
-            except GatewayError as exc:
-                return self._html(502, f"<h1>AuthNode local login failed</h1><p>{html.escape(str(exc))}</p>")
-        else:
+        if not self.config.authnode_browser_login:
             return self._html(
                 503,
-                "<h1>Gateway login is not configured</h1>"
-                "<p>Use an upstream AuthNode/OIDC login in production, configure AuthNode callback, or enable local AuthNode catalog login.</p>",
+                "<h1>AuthNode browser login is disabled</h1>"
+                "<p>PSKA Gateway does not issue browser login sessions directly.</p>",
             )
-        return self._set_session_and_redirect(session, next_path)
+        query = {
+            "next": [next_path],
+            "user_key": [(_first(form.get("user_key")) or self.config.default_user_key).strip()],
+            "tenant_id": [(_first(form.get("tenant_id")) or self.config.default_tenant_id).strip()],
+        }
+        return self._redirect(self._authnode_login_url(query, next_path), 303)
 
     def _set_session_and_redirect(self, session: Mapping[str, Any], next_path: str) -> None:
         cookie_value = encode_session(session, str(self.config.session_secret))
@@ -599,20 +590,16 @@ class PSKAGatewayHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def _authnode_login_url(self, query: Mapping[str, list[str]], next_path: str) -> str:
-        return_to = self._external_url("/auth/callback")
-        params = {
-            "target": DEFAULT_PSKA_AUDIENCE,
-            "return_to": return_to,
-            "next": next_path,
-            "user_key": _first(query.get("user_key")) or self.config.default_user_key,
-            "tenant_id": _first(query.get("tenant_id")) or self.config.default_tenant_id,
-        }
-        return f"{_authnode_browser_base_url(self.config)}/login?{urlencode(params)}"
+        return authnode_login_url(
+            self.config,
+            return_to=self._external_url("/auth/callback"),
+            next_path=next_path,
+            user_key=_first(query.get("user_key")),
+            tenant_id=_first(query.get("tenant_id")),
+        )
 
     def _external_url(self, path: str) -> str:
-        proto = self.headers.get("X-Forwarded-Proto") or ("https" if self.config.cookie_secure else "http")
-        host = self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or f"{self.config.host}:{self.config.port}"
-        return f"{proto}://{host}{path}"
+        return gateway_external_url(self.config, self.headers, path)
 
     def _logout(self) -> None:
         location = authnode_logout_redirect(self.config, return_to=self._external_url("/login"))
@@ -866,6 +853,35 @@ def _first(values: list[str] | None) -> str | None:
     return values[0] if values else None
 
 
+def _first_header_token(value: str) -> str:
+    return value.split(",", 1)[0].strip()
+
+
+def _forwarded_header_values(value: str) -> dict[str, str]:
+    first_entry = value.split(",", 1)[0].strip()
+    if not first_entry:
+        return {}
+    result: dict[str, str] = {}
+    for item in first_entry.split(";"):
+        if "=" not in item:
+            continue
+        key, raw = item.split("=", 1)
+        key = key.strip().lower()
+        if key not in {"host", "proto"}:
+            continue
+        result[key] = raw.strip().strip('"')
+    return result
+
+
+def _bind_host_authority(host: str, port: int) -> str:
+    authority = host.strip() or "localhost"
+    if authority in {"0.0.0.0", "::", "[::]"}:
+        authority = "localhost"
+    if ":" in authority and not authority.startswith("["):
+        authority = f"[{authority}]"
+    return f"{authority}:{port}"
+
+
 def _header_value(headers: Mapping[str, str], name: str) -> str:
     value = headers.get(name)
     if value:
@@ -919,10 +935,6 @@ def _bool_env(name: str, default: bool) -> bool:
 def _optional_url_env(name: str) -> str | None:
     value = (os.getenv(name) or "").strip()
     return value.rstrip("/") or None
-
-
-def _truthy(value: str | None) -> bool:
-    return bool(value and value.strip().lower() in {"1", "true", "yes", "on"})
 
 
 def _normalized_user_id(claims: Mapping[str, Any], *, fallback: str) -> str:

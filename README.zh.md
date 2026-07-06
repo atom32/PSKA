@@ -69,10 +69,14 @@ npm install
     "enabled": true,
     "mode": "gateway",
     "host": "0.0.0.0",
-    "port": 5173
+    "port": 5173,
+    "public_url": "http://127.0.0.1:5173"
   }
 }
 ```
+
+`host` 是监听地址；`public_url` 是浏览器实际访问的 PSKA Gateway 入口，
+AuthNode callback 会使用这个地址。LAN/Ingress 测试时应改成用户真实打开的 URL。
 
 然后启动 AuthNode 和 PSKA：
 

@@ -20,11 +20,13 @@ from pska_core.api import (
     PSKARequestHandler,
     _ask_agent_steps_from_events,
     _ask_answer_quality_flags,
+    _ask_answer_from_agentic_synthesis,
     _ask_clean_evidence_text,
     _ask_hydrate_retrieval_source_windows,
     _ask_is_stream_done_event,
     _ask_public_trace_event,
     _ask_query_terms,
+    _ask_requested_fact_labels,
     _ask_quick_answer,
     _ask_route_intent,
     _ask_retrieval_from_agentic_trace,
@@ -1710,7 +1712,7 @@ def test_workspace_ask_quick_uses_agentic_final_synthesis_without_tools() -> Non
             return {
                 "answer": json.dumps(
                     {
-                        "answer": "海康威视 2024 年营业收入为 92,495,525,118.30 元，约 924.96 亿元；该数值来自已校验证据中的营业收入（元）字段。"
+                        "answer": "星辰项目 2024 年可用率为 99.95%；该数值来自已校验证据中的可用率字段。"
                     },
                     ensure_ascii=False,
                 ),
@@ -1730,11 +1732,11 @@ def test_workspace_ask_quick_uses_agentic_final_synthesis_without_tools() -> Non
             "owner_user_id": "user_primary",
             "space_id": "private_primary",
             "visibility": "private",
-            "title": "海康威视2024年报",
+            "title": "星辰项目2024运行报告",
             "content": {
                 "text": (
-                    "海康威视2024年营业收入多少元。营业收入构成 4 单位：亿元 PBG 134.67。"
-                    "主要会计数据和财务指标：营业收入（元） 92,495,525,118.30。"
+                    "星辰项目2024年可用率是多少。背景指标 4 仅用于说明。"
+                    "运行指标：可用率 99.95%。"
                 )
             },
         }
@@ -1742,20 +1744,63 @@ def test_workspace_ask_quick_uses_agentic_final_synthesis_without_tools() -> Non
 
     response = api.workspace_ask(
         {
-            "query": "海康威视2024年营业收入多少元？",
+            "query": "星辰项目2024年可用率是多少？",
             "intent": "quick",
             "session_id": "quick-synthesis-session",
         }
     )
 
-    assert response["answer"].startswith("海康威视 2024 年营业收入为")
-    assert "营业收入构成 4" not in response["answer"]
+    assert response["answer"].startswith("星辰项目 2024 年可用率为")
+    assert "背景指标 4" not in response["answer"]
     assert response["route"]["final_synthesis_owner"] == "fastreact_agentic_service"
     assert response["trace"]["final_synthesis"]["status"] == "succeeded"
     assert service.calls[0]["max_iterations"] == 1
     assert service.calls[0]["skills"] == []
     assert service.calls[0]["tool_policy"] == {"mode": "none"}
     assert service.calls[0]["session_id"] == "quick-synthesis-session"
+
+
+def test_workspace_ask_quick_accepts_plain_text_agentic_synthesis() -> None:
+    class PlainTextQuickSynthesisService:
+        def search(self, query, user, *, represented_user_id=None, max_iterations=3, skills=None, tool_policy=None, session_id=None):
+            return {
+                "answer": "星辰项目 2024 年可用率为 99.95%。",
+                "trace": {},
+                "agentic_service": {"provider": "test", "adapter": "synthesis"},
+            }
+
+    api = _api()
+    api.agentic_service = PlainTextQuickSynthesisService()
+    IngestService(api.store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "quick-plain-synthesis-report",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "星辰项目2024运行报告",
+            "content": {"text": "运行指标：可用率 99.95%。"},
+        }
+    )
+
+    response = api.workspace_ask({"query": "星辰项目2024年可用率是多少？", "intent": "quick"})
+
+    assert response["answer"].startswith("星辰项目 2024 年可用率为")
+    assert response["route"]["final_synthesis_owner"] == "fastreact_agentic_service"
+    assert response["trace"]["final_synthesis"]["status"] == "succeeded"
+
+
+def test_workspace_ask_quick_rejects_tool_like_agentic_synthesis() -> None:
+    assert _ask_answer_from_agentic_synthesis('<tool_call name="search">Searching indexed evidence</tool_call>') == ""
+    assert _ask_answer_from_agentic_synthesis("I'll search the indexed evidence and then retrieve more context.") == ""
+    assert _ask_answer_from_agentic_synthesis("The user request appears truncated; I cannot determine the specific query or task.") == ""
+
+
+def test_requested_fact_label_normalizes_context_prefix_before_year() -> None:
+    assert _ask_requested_fact_labels("星辰项目2025年可用率是多少？") == ["可用率"]
+    assert _ask_requested_fact_labels("Project Atlas 2025 uptime?") == ["uptime"]
 
 
 def test_workspace_ask_conversation_stream_marks_run_failed_when_closed() -> None:
@@ -4216,6 +4261,50 @@ def test_workspace_ask_deep_reports_mcp_tool_errors_in_no_answer_diagnostics() -
     assert "ConnectionResetError" in by_dimension["mcp"]["detail"]
 
 
+def test_workspace_ask_deep_marks_fastreact_stopped_as_incomplete() -> None:
+    class StoppedAgenticService:
+        def ready(self):
+            return {"ok": True, "provider": "test", "adapter": "fake"}
+
+        def search_event_stream(
+            self,
+            query,
+            user,
+            *,
+            represented_user_id=None,
+            max_iterations=3,
+            skills=None,
+            tool_policy=None,
+            session_id=None,
+        ):
+            yield {"type": "session_start", "content": query, "session_id": session_id or "stopped", "event_id": "stop:0"}
+            yield {
+                "type": "session_end",
+                "content": "[STOPPED] Task stopped due to maximum iteration limit (12).",
+                "session_id": session_id or "stopped",
+                "event_id": "stop:1",
+            }
+
+    api = _api()
+    api.agentic_service = StoppedAgenticService()
+
+    payload = api.workspace_ask(
+        {
+            "query": "请深入分析当前资料。",
+            "intent": "deep",
+            "user_id": "user_primary",
+            "represented_user_id": "user_primary",
+        }
+    )
+
+    assert payload["ok"] is False
+    assert payload["answer_type"] == "no_answer"
+    assert "没有完成" in payload["answer"]
+    assert "agentic_runtime_control_signal" in payload["no_answer_reasons"]
+    assert payload["trace"]["agentic_runtime"]["status"] == "stopped"
+    assert payload["trace"]["agentic_runtime"]["control_signal"] == "[STOPPED]"
+
+
 def test_workspace_ask_quick_marks_raw_dump_answers_as_needing_review() -> None:
     api = _api()
     payload = {
@@ -4309,13 +4398,19 @@ def test_workspace_ask_deep_uses_fastreact_readonly_tool_policy() -> None:
         ],
     }
     assert payload["route"]["tool_profile"] == "ask_read"
+    assert payload["route"]["agentic_budget"] == {
+        "soft_iteration_budget": 4,
+        "hard_max_iterations": 12,
+    }
     assert payload["answer"] == "Fake external agentic answer."
     assert [step["phase"] for step in payload["agent_steps"][:4]] == ["understand", "think", "search", "read"]
     assert payload["timing"]["time_to_first_agent_event_ms"] >= 0
     call = api.agentic_service.calls[0]
     assert call["skills"] == ["pska_answer_with_citations"]
+    assert call["max_iterations"] == 12
     assert call["tool_policy"] == payload["route"]["tool_policy"]
     assert call["session_id"] == "ask-session-1"
+    assert "Soft iteration budget: aim to finish within 4" in call["query"]
     assert "User question: 请分析 Atlas reporting" in call["query"]
 
 

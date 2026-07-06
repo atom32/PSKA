@@ -419,6 +419,7 @@ class FrontendConfig:
     host: str = "127.0.0.1"
     port: int = 5173
     mode: str = "gateway"
+    public_url: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> "FrontendConfig":
@@ -428,6 +429,7 @@ class FrontendConfig:
             host=str(data.get("host") or "127.0.0.1"),
             port=int(data.get("port") or 5173),
             mode=str(data.get("mode") or "gateway").strip().lower(),
+            public_url=_optional_url(data.get("public_url")),
         )
 
 
@@ -629,6 +631,21 @@ class PSKAConfig:
             ),
             workspace=WorkspaceConfig(
                 root=expand_path(os.getenv("PSKA_WORKSPACE_ROOT")) if os.getenv("PSKA_WORKSPACE_ROOT") else base.workspace.root,
+            ),
+            startup=StartupConfig(
+                bootstrap=base.startup.bootstrap,
+                backend=base.startup.backend,
+                frontend=FrontendConfig(
+                    enabled=base.startup.frontend.enabled,
+                    host=os.getenv("PSKA_FRONTEND_HOST") or base.startup.frontend.host,
+                    port=int(os.getenv("PSKA_FRONTEND_PORT")) if os.getenv("PSKA_FRONTEND_PORT") else base.startup.frontend.port,
+                    mode=os.getenv("PSKA_FRONTEND_MODE") or base.startup.frontend.mode,
+                    public_url=_optional_url(
+                        os.getenv("PSKA_FRONTEND_PUBLIC_URL")
+                        or os.getenv("PSKA_GATEWAY_PUBLIC_URL")
+                        or base.startup.frontend.public_url
+                    ),
+                ),
             ),
         )
 

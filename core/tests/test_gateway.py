@@ -6,9 +6,11 @@ from typing import Any
 from pska_core import gateway
 from pska_core.gateway import (
     GatewayConfig,
+    authnode_login_url,
     authnode_logout_redirect,
     decode_session,
     encode_session,
+    gateway_external_url,
     _iter_streaming_response_chunks,
     _is_event_stream_headers,
     _is_streaming_api_path,
@@ -176,6 +178,60 @@ def test_gateway_redirects_use_public_authnode_browser_url(monkeypatch) -> None:
     assert (
         authnode_logout_redirect(config, return_to="http://pska.test/login")
         == "http://authnode.public/logout?return_to=http%3A%2F%2Fpska.test%2Flogin"
+    )
+
+
+def test_gateway_login_url_uses_configured_authnode_base() -> None:
+    config = GatewayConfig(
+        authnode_url="http://authnode.internal",
+        authnode_browser_url="https://login.example.test",
+        default_user_key="pska:default",
+        default_tenant_id="tenant_default",
+    )
+
+    assert (
+        authnode_login_url(
+            config,
+            return_to="https://pska.example.test/auth/callback",
+            next_path="/workspace?tab=ask",
+            user_key="pska:alice",
+            tenant_id="tenant_acme",
+        )
+        == "https://login.example.test/login?target=pska&return_to=https%3A%2F%2Fpska.example.test%2Fauth%2Fcallback&next=%2Fworkspace%3Ftab%3Dask&user_key=pska%3Aalice&tenant_id=tenant_acme"
+    )
+
+
+def test_gateway_external_url_prefers_configured_public_url() -> None:
+    config = GatewayConfig(host="127.0.0.1", port=5173, public_url="https://pska.example.test/app")
+
+    assert (
+        gateway_external_url(
+            config,
+            {"Host": "127.0.0.1:5173", "X-Forwarded-Host": "wrong.example.test", "X-Forwarded-Proto": "http"},
+            "/auth/callback",
+        )
+        == "https://pska.example.test/app/auth/callback"
+    )
+
+
+def test_gateway_external_url_uses_forwarded_headers_before_bind_host() -> None:
+    config = GatewayConfig(host="127.0.0.1", port=5173)
+
+    assert (
+        gateway_external_url(
+            config,
+            {"Forwarded": "for=10.0.0.12;proto=https;host=pska.forwarded.test"},
+            "/auth/callback",
+        )
+        == "https://pska.forwarded.test/auth/callback"
+    )
+    assert (
+        gateway_external_url(
+            config,
+            {"X-Forwarded-Proto": "https", "X-Forwarded-Host": "pska.proxy.test", "Host": "127.0.0.1:5173"},
+            "/auth/callback",
+        )
+        == "https://pska.proxy.test/auth/callback"
     )
 
 

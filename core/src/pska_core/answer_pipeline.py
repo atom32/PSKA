@@ -83,12 +83,41 @@ class RawEvidenceListingValidator(AnswerValidator):
         return AnswerValidation(self.name, passed, "" if passed else "raw_evidence_listing")
 
 
+class RuntimeControlSignalValidator(AnswerValidator):
+    name = "runtime_control_signal"
+
+    def validate(self, candidate: AnswerCandidate, context: AnswerPipelineContext) -> AnswerValidation:
+        passed = not _answer_looks_like_runtime_control_signal(candidate.answer)
+        return AnswerValidation(self.name, passed, "" if passed else "runtime_control_signal")
+
+
+class RuntimeArtifactValidator(AnswerValidator):
+    name = "runtime_artifact"
+
+    def validate(self, candidate: AnswerCandidate, context: AnswerPipelineContext) -> AnswerValidation:
+        passed = not _answer_looks_like_runtime_artifact(candidate.answer)
+        return AnswerValidation(self.name, passed, "" if passed else "runtime_artifact")
+
+
+class TaskMismatchValidator(AnswerValidator):
+    name = "task_mismatch"
+
+    def validate(self, candidate: AnswerCandidate, context: AnswerPipelineContext) -> AnswerValidation:
+        if str(candidate.answer_type or "") == "no_answer" or str(context.evidence_status or "") != "supported":
+            return AnswerValidation(self.name, True)
+        passed = not _answer_looks_like_task_mismatch(candidate.answer)
+        return AnswerValidation(self.name, passed, "" if passed else "task_mismatch")
+
+
 class AnswerPipeline:
     name = "deterministic_answer_pipeline"
 
     def __init__(self, validators: list[AnswerValidator] | None = None) -> None:
         self.validators = validators or [
             NonEmptyAnswerValidator(),
+            RuntimeControlSignalValidator(),
+            RuntimeArtifactValidator(),
+            TaskMismatchValidator(),
             RequiredValueCoverageValidator(),
             RawEvidenceListingValidator(),
         ]
@@ -189,7 +218,7 @@ def _query_requests_preserved_numbers(query: str) -> bool:
 
 def _query_requests_multiple_values(query: str) -> bool:
     text = str(query or "")
-    if any(marker in text for marker in ["、", ",", "，", "/", "以及", "分别"]):
+    if any(marker in text for marker in ["、", "/", "以及", "分别"]):
         return True
     return bool(re.search(r"\b(?:and|plus)\b", text, flags=re.IGNORECASE)) or "和" in text
 
@@ -229,3 +258,63 @@ def _answer_looks_like_raw_evidence_listing(answer: str) -> bool:
         if len(line) <= 180 and re.search(r"\d|=| is |为|：|:", line, flags=re.IGNORECASE)
     )
     return short_fact_lines >= 3
+
+
+def _answer_looks_like_runtime_control_signal(answer: str) -> bool:
+    text = str(answer or "").strip()
+    if not text:
+        return False
+    first_line = text.splitlines()[0].strip().upper()
+    return first_line.startswith(("[STOPPED]", "[ERROR]", "[CANCELLED]", "[CANCELED]", "[INJECTED]"))
+
+
+def _answer_looks_like_runtime_artifact(answer: str) -> bool:
+    text = str(answer or "").strip()
+    if not text:
+        return False
+    lowered = text.casefold()
+    procedural_markers = (
+        "i'll search",
+        "i will search",
+        "let me search",
+        "searching the",
+        "checking index status",
+        "proceeding with search",
+        "proceeding with retrieval",
+        "我要搜索",
+        "我将搜索",
+        "正在搜索",
+        "开始检索",
+        "继续检索",
+    )
+    if any(marker in lowered for marker in procedural_markers):
+        return True
+    if re.fullmatch(r"<[A-Za-z][A-Za-z0-9_.:-]*\b[^>]*>.*</[A-Za-z][A-Za-z0-9_.:-]*>", text, flags=re.DOTALL):
+        return True
+    first_line = text.splitlines()[0].strip()
+    return bool(re.match(r"^<[/]?(?:tool|mcp|function|call|[A-Za-z0-9_]*_[A-Za-z0-9_]+)\b", first_line, flags=re.IGNORECASE))
+
+
+def _answer_looks_like_task_mismatch(answer: str) -> bool:
+    text = str(answer or "").strip().casefold()
+    if not text:
+        return False
+    markers = (
+        "request appears truncated",
+        "query appears truncated",
+        "question appears truncated",
+        "cannot determine the specific query",
+        "cannot determine the query",
+        "cannot determine the task",
+        "cannot identify the question",
+        "unable to determine the query",
+        "unable to identify the question",
+        "no specific query",
+        "no user query",
+        "没有明确的问题",
+        "无法判断具体问题",
+        "无法确定具体问题",
+        "无法识别问题",
+        "请求似乎被截断",
+    )
+    return any(marker in text for marker in markers)

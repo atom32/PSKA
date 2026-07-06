@@ -84,10 +84,15 @@ For login-protected multi-tenant browser testing, set the frontend mode to
     "enabled": true,
     "mode": "gateway",
     "host": "0.0.0.0",
-    "port": 5173
+    "port": 5173,
+    "public_url": "http://127.0.0.1:5173"
   }
 }
 ```
+
+`host` is the bind address; `public_url` is the browser-facing PSKA Gateway URL
+used for AuthNode callbacks. Set it to the LAN/ingress URL when testing off the
+local machine.
 
 Then start AuthNode and PSKA:
 

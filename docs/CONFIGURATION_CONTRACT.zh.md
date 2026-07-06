@@ -25,7 +25,10 @@ PSKA 的开发验证必须使用 PSKA 仓库的 `./start.sh`，因为它会按 `
 | PSKA gateway/frontend | `http://127.0.0.1:5173` | 生产式前端入口；`/login` 由 gateway 跳 AuthNode |
 | FastReAct daemon | `http://127.0.0.1:18741` | Agentic Ask / digest 执行 |
 
-如果 PSKA 登录只停在 `http://127.0.0.1:5173/login`，通常说明当前跑的是 Vite/dev frontend，或者 gateway 被配置为本地 token-broker 模式。只有 PSKA gateway 且 `PSKA_GATEWAY_AUTHNODE_BROWSER_LOGIN=true` 时，`/login` 才会跳到 AuthNode：
+如果 PSKA 登录只停在 `http://127.0.0.1:5173/login`，通常说明当前跑的是
+Vite/dev frontend、AuthNode browser login 被关闭，或者 AuthNode browser URL
+配置不可达。只有 PSKA gateway 且 `PSKA_GATEWAY_AUTHNODE_BROWSER_LOGIN=true`
+时，`/login` 才会跳到 AuthNode：
 
 ```text
 http://127.0.0.1:8788/login?target=pska&return_to=...
@@ -34,6 +37,9 @@ http://127.0.0.1:8788/login?target=pska&return_to=...
 Docker 部署中不要把浏览器跳转地址写成容器内服务名。保持
 `PSKA_GATEWAY_AUTHNODE_URL=http://authnode:8788` 给服务端调用，同时设置
 `PSKA_GATEWAY_AUTHNODE_BROWSER_URL=http://<public-host>:8788` 给用户浏览器。
+同理，PSKA gateway 的 callback 地址应来自 `PSKA_GATEWAY_PUBLIC_URL`
+或 `.pska/config.json` 的 `startup.frontend.public_url`；`host: 0.0.0.0`
+只是监听地址，不应出现在浏览器 URL 中。
 
 ## 配置文件位置
 

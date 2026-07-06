@@ -104,6 +104,10 @@ ASK_INTENTS = {
 }
 ASK_RETRIEVAL_INTENTS = {"kb_search", "doc_only", "follow_up", "graph_research", "writing"}
 ASK_NON_RETRIEVAL_INTENTS = {"greeting", "chitchat", "product_help", "clarification"}
+ASK_DEEP_DEFAULT_SOFT_ITERATION_BUDGET = 4
+ASK_DEEP_MAX_SOFT_ITERATION_BUDGET = 8
+ASK_DEEP_DEFAULT_HARD_MAX_ITERATIONS = 12
+ASK_DEEP_MAX_HARD_ITERATIONS = 24
 
 PROMPT_PROFILE_TYPES = {"ask", "digest", "review", "writing"}
 DEFAULT_PROMPT_PROFILE_CONFIGS: dict[str, dict[str, Any]] = {
@@ -2206,13 +2210,19 @@ class PSKAApi:
         selected_intent = str(understand.get("selected_intent") or "quick")
         if selected_intent == "deep":
             tool_policy = _ask_read_tool_policy(understand.get("scope_applied") if isinstance(understand.get("scope_applied"), dict) else {})
+            soft_iteration_budget, hard_max_iterations = _ask_deep_iteration_limits(payload)
             try:
-                deep_query = _ask_deep_query(query=query, surface=surface, scope={**scope, "understand": understand})
+                deep_query = _ask_deep_query(
+                    query=query,
+                    surface=surface,
+                    scope={**scope, "understand": understand},
+                    soft_iteration_budget=soft_iteration_budget,
+                )
                 deep = self._workspace_ask_deep_agentic(
                     deep_query,
                     user,
                     represented_user_id=represented_user_id,
-                    max_iterations=max(1, min(int(payload.get("max_iterations") or 4), 8)),
+                    max_iterations=hard_max_iterations,
                     skills=[PSKA_QA_SKILL],
                     tool_policy=tool_policy,
                     session_id=session_id,
@@ -2231,6 +2241,8 @@ class PSKAApi:
                         allowed_tools=ASK_READ_ONLY_TOOLS,
                         tool_policy=tool_policy,
                         store=self.store,
+                        soft_iteration_budget=soft_iteration_budget,
+                        hard_max_iterations=hard_max_iterations,
                     )
                 )
             except AgenticServiceError as exc:
@@ -2432,6 +2444,7 @@ class PSKAApi:
             return
 
         tool_policy = _ask_read_tool_policy(understand.get("scope_applied") if isinstance(understand.get("scope_applied"), dict) else {})
+        soft_iteration_budget, hard_max_iterations = _ask_deep_iteration_limits(payload)
         route = {
             "intent": str(understand.get("intent") or "kb_search"),
             "requested_intent": intent,
@@ -2447,6 +2460,10 @@ class PSKAApi:
             "scope_applied": understand.get("scope_applied") or {},
             "understand": understand,
             "intent_contract": understand.get("intent_contract") if isinstance(understand.get("intent_contract"), dict) else {},
+            "agentic_budget": {
+                "soft_iteration_budget": soft_iteration_budget,
+                "hard_max_iterations": hard_max_iterations,
+            },
         }
         yield ("route", {"route": route, "timing": {}})
         raw_events: list[dict[str, Any]] = []
@@ -2468,10 +2485,15 @@ class PSKAApi:
                 yield ("agent_step", {"step": step, "timing": timing})
         try:
             event_stream = self.agentic_service.search_event_stream(
-                _ask_deep_query(query=query, surface=surface, scope={**scope, "understand": understand}),
+                _ask_deep_query(
+                    query=query,
+                    surface=surface,
+                    scope={**scope, "understand": understand},
+                    soft_iteration_budget=soft_iteration_budget,
+                ),
                 user,
                 represented_user_id=represented_user_id,
-                max_iterations=max(1, min(int(payload.get("max_iterations") or 4), 8)),
+                max_iterations=hard_max_iterations,
                 skills=[PSKA_QA_SKILL],
                 tool_policy=tool_policy,
                 session_id=session_id,
@@ -2557,6 +2579,8 @@ class PSKAApi:
             allowed_tools=ASK_READ_ONLY_TOOLS,
             tool_policy=tool_policy,
             store=self.store,
+            soft_iteration_budget=soft_iteration_budget,
+            hard_max_iterations=hard_max_iterations,
         )
         final_payload["agent_steps"] = agent_steps or _ask_agent_steps_from_events(raw_events)
         final_payload["timing"]["time_to_first_agent_event_ms"] = time_to_first_agent_event_ms
@@ -9266,8 +9290,9 @@ def _ask_quick_read_step(*, sequence: int, evidence: dict[str, Any], started_at:
     )
 
 
-def _ask_deep_query(*, query: str, surface: str, scope: dict[str, Any]) -> str:
+def _ask_deep_query(*, query: str, surface: str, scope: dict[str, Any], soft_iteration_budget: int = ASK_DEEP_DEFAULT_SOFT_ITERATION_BUDGET) -> str:
     scope_text = json.dumps(scope or {}, ensure_ascii=False)
+    soft_iteration_budget = max(1, int(soft_iteration_budget or ASK_DEEP_DEFAULT_SOFT_ITERATION_BUDGET))
     return (
         "Answer this PSKA knowledge question for a user-facing Ask PSKA surface.\n"
         "Use only PSKA read-only retrieval tools exposed in this run. The ask_read profile may include "
@@ -9283,6 +9308,10 @@ def _ask_deep_query(*, query: str, surface: str, scope: dict[str, Any]) -> str:
         "when relationships or conflicts matter, inspect pska_digest_context for prior digests, claims, "
         "risks, and open questions when useful, and only then decide whether a targeted follow-up search "
         "is needed. Stop when evidence is sufficient, no new evidence appears, or the iteration budget is reached.\n"
+        f"Soft iteration budget: aim to finish within {soft_iteration_budget} reasoning/tool iterations. "
+        "This is a planning budget, not an instruction to withhold an answer. If evidence is already sufficient, "
+        "answer immediately; if the budget is almost exhausted, summarize the best supported conclusion and explicit gaps "
+        "instead of starting another broad search.\n"
         "Return JSON with keys answer, citations, source_refs, retrieval, and trace. The answer must be "
         "Chinese by default, conclusion-first, useful as report evidence, and grounded in citations when "
         "PSKA returns evidence. If evidence is insufficient, say what is missing.\n\n"
@@ -9290,6 +9319,31 @@ def _ask_deep_query(*, query: str, surface: str, scope: dict[str, Any]) -> str:
         f"Scope: {scope_text}\n"
         f"User question: {query}"
     )
+
+
+def _ask_deep_iteration_limits(payload: Mapping[str, Any]) -> tuple[int, int]:
+    soft = _positive_int_from_any(payload.get("soft_iteration_budget"))
+    if soft is None:
+        soft = _positive_int_from_any(payload.get("iteration_budget"))
+    if soft is None:
+        soft = _positive_int_from_any(payload.get("max_iterations"))
+    if soft is None:
+        soft = ASK_DEEP_DEFAULT_SOFT_ITERATION_BUDGET
+    soft = max(1, min(soft, ASK_DEEP_MAX_SOFT_ITERATION_BUDGET))
+
+    hard = _positive_int_from_any(payload.get("hard_max_iterations"))
+    if hard is None:
+        hard = max(soft + 4, ASK_DEEP_DEFAULT_HARD_MAX_ITERATIONS)
+    hard = max(soft + 1, min(hard, ASK_DEEP_MAX_HARD_ITERATIONS))
+    return soft, hard
+
+
+def _positive_int_from_any(value: Any) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
 
 
 def _ask_query_with_scope(query: str, scope: dict[str, Any]) -> str:
@@ -9505,7 +9559,7 @@ def _ask_trim_sentence_punctuation(value: str) -> str:
 
 def _ask_query_requests_multiple_values(query: str) -> bool:
     text = str(query or "")
-    if any(marker in text for marker in ["、", ",", "，", "/", "以及", "分别"]):
+    if any(marker in text for marker in ["、", "/", "以及", "分别"]):
         return True
     return bool(re.search(r"\b(and|plus)\b", text, flags=re.IGNORECASE)) or "和" in text
 
@@ -9558,6 +9612,8 @@ def _ask_quick_synthesis_prompt(
     return (
         "You are PSKA's quick-answer final synthesizer. You are called through the agentic service, "
         "but this is not a research loop. Do not call tools, do not retrieve, and do not use outside knowledge.\n"
+        "Tools are disabled for this request. Never emit tool calls, XML/tool tags, MCP calls, function-call markup, "
+        "or descriptions of searching/retrieving; produce only the final answer JSON.\n"
         f"{writing_instruction}"
         "Use only the Evidence Set JSON below, which PSKA already filtered by ACL, scope, citation support, "
         "and evidence composition. "
@@ -9648,13 +9704,97 @@ def _ask_quick_synthesis_evidence_items(evidence: dict[str, Any]) -> list[dict[s
 
 
 def _ask_answer_from_agentic_synthesis(value: Any) -> str:
-    parsed = _ask_json_object_from_text(str(value or ""))
+    text = str(value or "").strip()
+    parsed = _ask_json_object_from_text(text)
     if not isinstance(parsed, dict):
-        return ""
+        answer = _ask_plain_agentic_synthesis_answer(text)
+        return answer if len(answer) >= 2 else ""
     answer = str(parsed.get("answer") or "").strip()
+    if not answer:
+        answer = _ask_plain_agentic_synthesis_answer(text)
     if len(answer) < 2:
         return ""
     return answer
+
+
+def _ask_plain_agentic_synthesis_answer(text: str) -> str:
+    answer = str(text or "").strip()
+    if not answer or _ask_runtime_control_signal(answer) or _ask_runtime_artifact_signal(answer) or _ask_task_mismatch_signal(answer):
+        return ""
+    fence = re.fullmatch(r"```(?:json|JSON|text|TEXT)?\s*(.*?)\s*```", answer, flags=re.DOTALL)
+    if fence:
+        answer = fence.group(1).strip()
+    if answer.startswith("{") and answer.endswith("}"):
+        return ""
+    if answer.lower().startswith(("error:", "invalid json")):
+        return ""
+    return answer
+
+
+def _ask_runtime_control_signal(answer: str) -> str:
+    text = str(answer or "").strip()
+    if not text:
+        return ""
+    first_line = text.splitlines()[0].strip()
+    upper = first_line.upper()
+    for signal in ("[STOPPED]", "[ERROR]", "[CANCELLED]", "[CANCELED]", "[INJECTED]"):
+        if upper.startswith(signal):
+            return signal
+    return ""
+
+
+def _ask_runtime_artifact_signal(answer: str) -> str:
+    text = str(answer or "").strip()
+    if not text:
+        return ""
+    lowered = text.casefold()
+    procedural_markers = (
+        "i'll search",
+        "i will search",
+        "let me search",
+        "searching the",
+        "checking index status",
+        "proceeding with search",
+        "proceeding with retrieval",
+        "我要搜索",
+        "我将搜索",
+        "正在搜索",
+        "开始检索",
+        "继续检索",
+    )
+    if any(marker in lowered for marker in procedural_markers):
+        return "procedural_runtime_artifact"
+    if re.fullmatch(r"<[A-Za-z][A-Za-z0-9_.:-]*\b[^>]*>.*</[A-Za-z][A-Za-z0-9_.:-]*>", text, flags=re.DOTALL):
+        return "xml_like_runtime_artifact"
+    first_line = text.splitlines()[0].strip()
+    if re.match(r"^<[/]?(?:tool|mcp|function|call|[A-Za-z0-9_]*_[A-Za-z0-9_]+)\b", first_line, flags=re.IGNORECASE):
+        return "tool_like_runtime_artifact"
+    return ""
+
+
+def _ask_task_mismatch_signal(answer: str) -> str:
+    text = str(answer or "").strip().casefold()
+    if not text:
+        return ""
+    markers = (
+        "request appears truncated",
+        "query appears truncated",
+        "question appears truncated",
+        "cannot determine the specific query",
+        "cannot determine the query",
+        "cannot determine the task",
+        "cannot identify the question",
+        "unable to determine the query",
+        "unable to identify the question",
+        "no specific query",
+        "no user query",
+        "没有明确的问题",
+        "无法判断具体问题",
+        "无法确定具体问题",
+        "无法识别问题",
+        "请求似乎被截断",
+    )
+    return "task_mismatch" if any(marker in text for marker in markers) else ""
 
 
 def _ask_table_field_facts_from_results(query: str, results: list[dict[str, Any]], *, limit: int) -> list[str]:
@@ -10421,6 +10561,8 @@ def _ask_question_core_segment(text: str) -> str:
 def _ask_clean_requested_fact_label(value: str) -> str:
     label = str(value or "").strip(" \t\r\n'\"“”‘’[]【】{}<>《》:：")
     label = re.sub(r"^(?:请问|请|帮我|告诉我|基于|根据|按照|在|从)\s*", "", label)
+    label = re.sub(r"^[^、，,;；/]{0,80}?(?:19|20)\d{2}\s*年(?:度)?的?", "", label)
+    label = re.sub(r"^[A-Za-z][A-Za-z0-9_. -]{0,80}\s+(?:19|20)\d{2}\s+", "", label)
     label = re.sub(r"^(?:\d{4}\s*年(?:度)?|20\d{2})\s*的?", "", label)
     label = re.sub(r"(?:是什么|是多少|有哪些|多少|为何|为什么|吗|呢)$", "", label).strip()
     label = re.sub(r"\b(?:what is|what are|which is|which are|please|show me|tell me)\b", "", label, flags=re.IGNORECASE).strip()
@@ -11057,6 +11199,8 @@ def _ask_deep_response(
     allowed_tools: list[str],
     tool_policy: dict[str, Any] | None = None,
     store: Any,
+    soft_iteration_budget: int | None = None,
+    hard_max_iterations: int | None = None,
 ) -> dict[str, Any]:
     understand = understand or _ask_understand_payload(
         query=query,
@@ -11082,6 +11226,7 @@ def _ask_deep_response(
         )
     evidence = _ask_evidence_from_retrieval(retrieval)
     answer = str(agentic.get("answer") or "").strip()
+    runtime_signal = _ask_runtime_control_signal(answer)
     declared_source_refs = _ask_source_ref_dicts(agentic.get("source_refs"), string_field="source_item_id")
     declared_citation_refs = _ask_source_ref_dicts(agentic.get("citations"), string_field="title")
     declared_refs = declared_source_refs or declared_citation_refs
@@ -11126,7 +11271,23 @@ def _ask_deep_response(
     evidence_check = _ask_compose_evidence_set(query=rewrite_query, evidence_check=evidence_check, evidence=evidence)
     evidence = _ask_apply_evidence_check(evidence, evidence_check)
     answer_type = "deep_answer"
-    if evidence_check.get("status") != "supported":
+    ok = True
+    if runtime_signal:
+        ok = False
+        answer = (
+            "Deep Ask 本次没有完成：FastReAct 返回了运行时停止信号，说明长链路分析没有形成可审计的最终回答。"
+            "可以缩小问题范围，或在修复 agentic loop 后重试。"
+        )
+        answer_type = "no_answer"
+        evidence_check = {
+            **evidence_check,
+            "status": "insufficient",
+            "no_answer_reasons": [
+                *_string_list(evidence_check.get("no_answer_reasons")),
+                "agentic_runtime_control_signal",
+            ],
+        }
+    elif evidence_check.get("status") != "supported":
         answer = _ask_no_answer_from_evidence_check(query, evidence_check)
         answer_type = "no_answer"
     trace = {
@@ -11135,6 +11296,14 @@ def _ask_deep_response(
         "retrieval_owner": "fastreact_pska_mcp",
         "tool_policy": tool_policy or _ask_read_tool_policy(scope_applied, allowed_tools=allowed_tools),
         "tool_profile": ASK_READ_TOOL_PROFILE,
+        "agentic_budget": {
+            "soft_iteration_budget": soft_iteration_budget,
+            "hard_max_iterations": hard_max_iterations,
+        },
+        "agentic_runtime": {
+            "status": "stopped" if runtime_signal else "completed",
+            "control_signal": runtime_signal,
+        },
         "evidence_composition": evidence_check.get("evidence_composition") or {},
         "evidence_set": evidence_check.get("evidence_set") or {},
         "evidence_check": evidence_check,
@@ -11145,7 +11314,7 @@ def _ask_deep_response(
     trace = _ask_public_trace(trace)
     elapsed_ms = _elapsed_ms(started_at)
     return {
-        "ok": True,
+        "ok": ok,
         "query": query,
         "intent": ask_intent,
         "rewrite_query": rewrite_query,
@@ -11160,6 +11329,10 @@ def _ask_deep_response(
             "requires_agentic_service_online": True,
             "tool_policy": tool_policy or _ask_read_tool_policy(scope_applied, allowed_tools=allowed_tools),
             "tool_profile": ASK_READ_TOOL_PROFILE,
+            "agentic_budget": {
+                "soft_iteration_budget": soft_iteration_budget,
+                "hard_max_iterations": hard_max_iterations,
+            },
             "routing_owner": "pska_planner",
             "query_terms": _ask_query_terms(rewrite_query),
             "rewrite_query": rewrite_query,

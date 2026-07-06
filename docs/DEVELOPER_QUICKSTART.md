@@ -50,10 +50,15 @@ For the normal login-protected local entrypoint, use gateway mode on port
     "enabled": true,
     "mode": "gateway",
     "host": "0.0.0.0",
-    "port": 5173
+    "port": 5173,
+    "public_url": "http://127.0.0.1:5173"
   }
 }
 ```
+
+`host` is the bind address. `public_url` is the browser-facing gateway URL used
+as the AuthNode callback origin. For LAN or Docker testing, set `public_url` to
+the URL users actually open.
 
 Start AuthNode from its own repository, then start PSKA from this repository:
 
@@ -80,10 +85,11 @@ tokens, and PSKA JWTs remain server-side.
 
 AuthNode Local IAM can be initialized with `python -m authnode iam init
 --seed-config`. AuthNode local dev login remains available at AuthNode
-`/login?local=1`, and the old PSKA gateway token-broker path remains available
-at PSKA `/login?local=1` only for debugging. Production should use AuthNode
-Local IAM, AuthNode/OIDC, or a trusted ingress to perform user login, while PSKA
-runs with JWT or trusted-header authentication.
+`/login?local=1`. PSKA Gateway does not provide its own browser login form or
+token-broker path; it redirects to AuthNode and only handles the AuthNode
+callback/session boundary. Production should use AuthNode Local IAM,
+AuthNode/OIDC, or a trusted ingress to perform user login, while PSKA runs with
+JWT or trusted-header authentication.
 
 See `docs/ENTERPRISE_AUTH_GATEWAY.zh.md` for the full AuthNode/PSKA/FastReAct
 identity flow. Use `"mode": "vite"` only when you explicitly want frontend hot

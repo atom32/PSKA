@@ -201,6 +201,7 @@ def build_parser() -> argparse.ArgumentParser:
     gateway_parser = subparsers.add_parser("gateway", help="Start PSKA frontend/auth gateway")
     gateway_parser.add_argument("--host", default=None)
     gateway_parser.add_argument("--port", type=int, default=None)
+    gateway_parser.add_argument("--public-url", default=None)
     gateway_parser.add_argument("--frontend-dist", type=Path, default=None)
     gateway_parser.add_argument("--pska-url", default=None)
     gateway_parser.add_argument("--authnode-url", default=None)
@@ -215,7 +216,6 @@ def build_parser() -> argparse.ArgumentParser:
     gateway_parser.add_argument("--default-tenant-id", default=None)
     gateway_parser.add_argument("--default-user-key", default=None)
     gateway_parser.add_argument("--authnode-browser-login", action=argparse.BooleanOptionalAction, default=None)
-    gateway_parser.add_argument("--local-authnode-catalog-login", action=argparse.BooleanOptionalAction, default=None)
 
     local_daemon_parser = subparsers.add_parser("local-daemon", help="Run or inspect the local PSKA service supervisor")
     local_daemon_parser.add_argument("action", choices=["run", "status", "config-check", "supervisor-config"], nargs="?", default="run")
@@ -587,6 +587,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         gateway_config = GatewayConfig(
             host=args.host or env_gateway.host,
             port=args.port or env_gateway.port,
+            public_url=(args.public_url or env_gateway.public_url or "").rstrip("/") or None,
             frontend_dist=(args.frontend_dist or env_gateway.frontend_dist).expanduser(),
             pska_url=(args.pska_url or env_gateway.pska_url).rstrip("/"),
             authnode_url=(args.authnode_url or env_gateway.authnode_url).rstrip("/"),
@@ -604,9 +605,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             authnode_browser_login=env_gateway.authnode_browser_login
             if args.authnode_browser_login is None
             else bool(args.authnode_browser_login),
-            local_authnode_catalog_login=env_gateway.local_authnode_catalog_login
-            if args.local_authnode_catalog_login is None
-            else bool(args.local_authnode_catalog_login),
             callback_jwt_secret=env_gateway.callback_jwt_secret,
             callback_jwt_issuer=env_gateway.callback_jwt_issuer,
             callback_jwt_audience=env_gateway.callback_jwt_audience,

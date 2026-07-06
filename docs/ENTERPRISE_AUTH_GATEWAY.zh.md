@@ -108,9 +108,9 @@ AuthNode Local IAM 可用 `python -m authnode iam init --seed-config` 初始化�
 AuthNode local dev 登录仍可通过 `GET /login?local=1` 使用；E2E 应使用
 tenant/user/password 登录本地模式，不再使用旧的 `identity` POST shortcut。
 
-旧的本地 token-broker 表单仍可通过 `/login?local=1` 使用，并且需要
-`AUTHNODE_ADMIN_TOKEN` 或 `PSKA_GATEWAY_AUTHNODE_ADMIN_TOKEN`。它只用于调试
-AuthNode `/v1/token`，不推荐作为日常登录路径。
+PSKA gateway 不再提供自己的本地 token-broker 登录表单。即使是本地开发，
+浏览器登录也应由 AuthNode `/login` 或 AuthNode `/login?local=1` 完成；
+PSKA 只处理 AuthNode 回调、HttpOnly session 和后端代理。
 
 如果后端仍运行在旧的 `service_token` 模式，gateway 可以临时使用服务端 token 代理：
 
@@ -139,11 +139,12 @@ FastReAct 凭据和 AuthNode/tenant 上下文，浏览器不接触 FastReAct ser
 | 变量 | 用途 |
 | --- | --- |
 | `PSKA_GATEWAY_HOST` / `PSKA_GATEWAY_PORT` | Gateway 监听地址 |
+| `PSKA_GATEWAY_PUBLIC_URL` / `PSKA_PUBLIC_URL` | Gateway 对浏览器暴露的公开入口；用于 AuthNode `return_to` callback；未设置时使用代理头或当前 request Host |
 | `PSKA_GATEWAY_FRONTEND_DIST` | 已构建前端目录，默认 `frontend/dist` |
 | `PSKA_GATEWAY_PSKA_URL` | PSKA 后端 URL，默认 `http://127.0.0.1:8765` |
 | `PSKA_GATEWAY_AUTHNODE_URL` / `AUTHNODE_URL` | Gateway 服务端访问 AuthNode 的 URL；Docker 内通常是 `http://authnode:8788` |
 | `PSKA_GATEWAY_AUTHNODE_BROWSER_URL` / `AUTHNODE_BROWSER_URL` | 浏览器跳转到 AuthNode 登录/登出的外部 URL；未设置时回退到 `PSKA_GATEWAY_AUTHNODE_URL` |
-| `PSKA_GATEWAY_AUTHNODE_ADMIN_TOKEN` / `AUTHNODE_ADMIN_TOKEN` | 仅本地 token-broker 使用；生产不应要求 PSKA 持有 |
+| `PSKA_GATEWAY_AUTHNODE_ADMIN_TOKEN` / `AUTHNODE_ADMIN_TOKEN` | 仅服务端调试 AuthNode token API 时使用；浏览器登录不应要求 PSKA 持有 |
 | `PSKA_GATEWAY_AUTHNODE_BROWSER_LOGIN` | 是否把 `/login` 重定向到 AuthNode browser login，默认 `true` |
 | `PSKA_GATEWAY_AUTHNODE_LOGOUT` | `/logout` 清 session 后是否联动 AuthNode/Keycloak logout，默认 `true` |
 | `PSKA_GATEWAY_SESSION_SECRET` | 签名浏览器 session cookie；生产必须设置 |
@@ -155,14 +156,19 @@ Docker 或远端部署时，内部服务名和浏览器可访问地址通常不�
 AuthNode URL 给 code exchange/token 请求，同时显式设置浏览器 URL：
 
 ```yaml
+PSKA_GATEWAY_PUBLIC_URL: https://pska.${PUBLIC_HOST}
 PSKA_GATEWAY_AUTHNODE_URL: http://authnode:8788
 PSKA_GATEWAY_AUTHNODE_BROWSER_URL: http://${PUBLIC_HOST:-127.0.0.1}:${AUTHNODE_PORT:-8788}
 PSKA_GATEWAY_AUTHNODE_BROWSER_LOGIN: "true"
-PSKA_GATEWAY_LOCAL_AUTHNODE_CATALOG_LOGIN: "false"
 ```
 
-如果暂时只做本地 smoke test，可以把 `PSKA_GATEWAY_AUTHNODE_BROWSER_LOGIN`
-设为 `"false"`，并通过 `/login?local=1` 使用 gateway 的本地 token-broker 表单。
+如果从 `.pska/config.json` 启动，也可以在 `startup.frontend.public_url`
+写入同一个公开入口。`startup.frontend.host` 只表示监听地址，不能被当作浏览器
+callback 地址。
+
+本地 smoke test 也应走 AuthNode browser login。若把
+`PSKA_GATEWAY_AUTHNODE_BROWSER_LOGIN` 设为 `"false"`，PSKA gateway `/login`
+会拒绝浏览器登录，而不是退回自己的表单。
 
 ## 安全边界
 
@@ -171,7 +177,7 @@ PSKA_GATEWAY_LOCAL_AUTHNODE_CATALOG_LOGIN: "false"
 - Keycloak 只负责真实登录和用户目录；AuthNode 负责 OIDC 校验与 tenant/user/role claim normalization。
 - Gateway 不是身份源，不存密码，不做组织管理。
 - 强多租户要求 PSKA 后端运行在 `PSKA_AUTH_MODE=jwt` 或受保护 ingress 下的 `trusted_headers`，不能把公网用户可达的 `service_token + X-PSKA-*` headers 当作租户认证。
-- `/login?local=1` token-broker 只能做 smoke test；它不能替代用户交互式登录，也不能作为生产租户边界。
+- PSKA `/login` 只能跳转 AuthNode；PSKA 不提供密码、注册、组织管理或本地 token-broker 登录。
 - Browser 不能直接拿 AuthNode admin token、PSKA service token 或 FastReAct service token。
 - Gateway 的 `/auth/session` 只返回 tenant/user/roles/groups 等摘要，不返回 JWT。
 - PSKA 不能信任公网直连传入的 `X-PSKA-*` 头；这些头只在 AuthNode/gateway/loopback 受信任边界内有效。
