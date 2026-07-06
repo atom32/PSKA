@@ -35,7 +35,7 @@
     "model": "deepseek-v4-flash",
     "temperature": 0.3,
     "top_p": 0.9,
-    "max_tokens": 4096
+    "max_tokens": null
   },
   "embedding": {
     "provider": "disabled",
