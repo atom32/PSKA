@@ -45,7 +45,7 @@ from pska_core.fastreact_protocol import compact_trace_for_context
 from pska_core.files_connector import extract_text_from_bytes, scan_files
 from pska_core.importers.twitter_zip import TwitterZipImporter
 from pska_core.ingest import IngestService, postgres_safe_json, postgres_safe_text
-from pska_core.jobs import DIGEST_VIA_FASTREACT, JobService
+from pska_core.jobs import DIGEST_VIA_FASTREACT, EMBED_BACKFILL, JobService
 from pska_core.knowledge_sources import KnowledgeSourceService, knowledge_source_id
 from pska_core.memory import MemoryService
 from pska_core.mcp_server import MCPServer, PROTOCOL_VERSION
@@ -1717,6 +1717,9 @@ class PSKAApi:
         stale_running: list[dict[str, Any]] = []
         digest_backlog_jobs = 0
         digest_backlog_source_items: set[str] = set()
+        embedding_backlog_jobs = 0
+        embedding_backlog_source_items: set[str] = set()
+        embedding_backlog_knowledge_bases: set[str] = set()
         now = datetime.now(UTC)
         for job in jobs:
             by_status[job.status] = by_status.get(job.status, 0) + 1
@@ -1726,6 +1729,12 @@ class PSKAApi:
             if job.job_type == DIGEST_VIA_FASTREACT and job.status in {"queued", "running"}:
                 digest_backlog_jobs += 1
                 digest_backlog_source_items.update(_job_source_item_ids(job))
+            if job.job_type == EMBED_BACKFILL and job.status in {"queued", "running"}:
+                embedding_backlog_jobs += 1
+                embedding_backlog_source_items.update(_job_source_item_ids(job))
+                knowledge_base_id = str((job.payload or {}).get("knowledge_base_id") or "").strip()
+                if knowledge_base_id:
+                    embedding_backlog_knowledge_bases.add(knowledge_base_id)
             if job.status == "running" and job.leased_until and _as_aware(job.leased_until) < now:
                 stale_running.append(
                     {
@@ -1762,6 +1771,11 @@ class PSKAApi:
                 "digest_backlog": {
                     "jobs": digest_backlog_jobs,
                     "source_items": len(digest_backlog_source_items),
+                },
+                "embedding_backlog": {
+                    "jobs": embedding_backlog_jobs,
+                    "source_items": len(embedding_backlog_source_items),
+                    "knowledge_bases": len(embedding_backlog_knowledge_bases),
                 },
             }
         }
@@ -2966,6 +2980,11 @@ class PSKAApi:
         answer_pipeline_audit: dict[str, Any]
         if evidence_check.get("status") == "supported":
             deterministic_answer = _ask_quick_answer(query, retrieval, ask_intent=ask_intent)
+            support_terms = _ask_answer_support_terms(
+                query=query,
+                evidence_check=evidence_check,
+                deterministic_answer=deterministic_answer,
+            )
             final_synthesis = self._workspace_ask_quick_agentic_synthesis(
                 query=query,
                 rewrite_query=rewrite_query,
@@ -2986,7 +3005,11 @@ class PSKAApi:
                         answer_type="kb_answer",
                         owner=str((final_synthesis or {}).get("owner") or "fastreact_agentic_service"),
                         priority=0,
-                        metadata={"source": "agentic_synthesis"},
+                        metadata={
+                            "source": "agentic_synthesis",
+                            "validate_support_term_coverage": True,
+                            "support_terms": list(support_terms),
+                        },
                     )
                 )
             candidates.append(
@@ -3005,6 +3028,7 @@ class PSKAApi:
                     ask_intent=ask_intent,
                     evidence_status=str(evidence_check.get("status") or ""),
                     required_values=required_answer_values(query, deterministic_answer, ask_intent=ask_intent),
+                    support_terms=support_terms,
                     reject_raw_evidence_listing=ask_intent == "writing",
                 ),
             )
@@ -9537,6 +9561,48 @@ def _ask_answer_pipeline_fallback_reason(audit: dict[str, Any]) -> str:
             if reason:
                 return reason
     return "answer_pipeline_selected_deterministic_fallback"
+
+
+def _ask_answer_support_terms(*, query: str, evidence_check: dict[str, Any], deterministic_answer: str) -> tuple[str, ...]:
+    generic = {
+        "关键",
+        "结论",
+        "关键结论",
+        "根据",
+        "当前",
+        "资料",
+        "当前资料",
+        "支持",
+        "回答",
+        "问题",
+        "source",
+        "sources",
+        "evidence",
+        "answer",
+    }
+    terms: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: Any) -> None:
+        term = str(value or "").strip().casefold()
+        if len(term) < 2 or term in generic or term in seen:
+            return
+        if re.fullmatch(r"\d+(?:[.,]\d+)*", term):
+            return
+        seen.add(term)
+        terms.append(term)
+
+    for citation in _list_of_dicts(evidence_check.get("used_citations")):
+        for term in _string_list(citation.get("support_hits")):
+            add(term)
+    for term in _string_list(evidence_check.get("query_anchors")):
+        add(term)
+    for term in _ask_evidence_terms(deterministic_answer):
+        add(term)
+    if not terms:
+        for term in _ask_evidence_terms(query):
+            add(term)
+    return tuple(terms[:16])
 
 
 def _ask_quick_writing_answer(query: str, facts: list[str]) -> str:

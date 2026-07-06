@@ -8,7 +8,7 @@ from pska_core.enums import UserRole
 from pska_core.embeddings import EmbeddingConfig
 from pska_core.ingest import IngestService
 from pska_core.jobs import DIGEST_VIA_FASTREACT, EMBED_BACKFILL, EXTRACT_ALL, FULL_REPORT, IMPORT_TWITTER_ZIPS, JobService
-from pska_core.models import User, utc_now
+from pska_core.models import KnowledgeBase, KnowledgeBaseSourceItem, User, utc_now
 from pska_core.store import InMemoryKnowledgeStore
 from tests.fakes import FakeLLM, extraction_response
 
@@ -238,6 +238,77 @@ def test_embed_backfill_job_uses_global_embedding_config_when_payload_omits_prov
     chunk = next(iter(store.chunks.values()))
     assert chunk.embedding == [1.0, 0.0, 1.0]
     assert chunk.metadata["embedding_provider"] == "fake-bge"
+
+
+def test_embed_backfill_job_can_scope_to_knowledge_base() -> None:
+    store = _store()
+    alpha = IngestService(store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "alpha-embed-note",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "Alpha embed note",
+            "content": {"text": "Alpha scoped embedding should be processed."},
+        }
+    )
+    beta = IngestService(store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "beta-embed-note",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "Beta embed note",
+            "content": {"text": "Beta scoped embedding should remain pending."},
+        }
+    )
+    store.upsert_knowledge_base(KnowledgeBase("kb_alpha_embed", "user_primary", "Alpha KB"))
+    store.upsert_knowledge_base(KnowledgeBase("kb_beta_embed", "user_primary", "Beta KB"))
+    store.add_knowledge_base_source_item(
+        KnowledgeBaseSourceItem(
+            knowledge_base_id="kb_alpha_embed",
+            source_item_id=alpha.source_item_id,
+            owner_user_id="user_primary",
+            added_by_user_id="user_primary",
+        )
+    )
+    store.add_knowledge_base_source_item(
+        KnowledgeBaseSourceItem(
+            knowledge_base_id="kb_beta_embed",
+            source_item_id=beta.source_item_id,
+            owner_user_id="user_primary",
+            added_by_user_id="user_primary",
+        )
+    )
+
+    service = JobService(store, embedding_provider=FakeEmbeddingProvider())
+    job = service.submit(
+        EMBED_BACKFILL,
+        {
+            "knowledge_base_id": "kb_alpha_embed",
+            "owner_user_id": "user_primary",
+            "tenant_id": "tenant_default",
+            "batch_size": 8,
+        },
+    )
+
+    report = service.run_available(limit=1)
+    completed = store.get_job(job.job_id)
+
+    assert report.succeeded == 1
+    assert completed.result["scope"]["mode"] == "scoped"
+    assert completed.result["scope"]["knowledge_base_id"] == "kb_alpha_embed"
+    assert completed.result["embedded"] > 0
+    alpha_chunks = store.list_chunks_for_sources({alpha.source_item_id})
+    beta_chunks = store.list_chunks_for_sources({beta.source_item_id})
+    assert all(chunk.embedding == [1.0, 0.0, 1.0] for chunk in alpha_chunks)
+    assert all(chunk.embedding is None for chunk in beta_chunks)
 
 
 def test_extract_job_retry_does_not_duplicate_entities_hyperedges_or_review_items() -> None:

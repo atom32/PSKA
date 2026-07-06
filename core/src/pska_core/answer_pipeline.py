@@ -11,6 +11,7 @@ class AnswerPipelineContext:
     ask_intent: str
     evidence_status: str
     required_values: tuple[str, ...] = ()
+    support_terms: tuple[str, ...] = ()
     reject_raw_evidence_listing: bool = False
 
 
@@ -71,6 +72,31 @@ class RequiredValueCoverageValidator(AnswerValidator):
         )
 
 
+class SupportTermCoverageValidator(AnswerValidator):
+    name = "support_term_coverage"
+
+    def validate(self, candidate: AnswerCandidate, context: AnswerPipelineContext) -> AnswerValidation:
+        if str(candidate.answer_type or "") == "no_answer" or str(context.evidence_status or "") != "supported":
+            return AnswerValidation(self.name, True)
+        if not candidate.metadata.get("validate_support_term_coverage", False):
+            return AnswerValidation(self.name, True)
+        support_terms = tuple(
+            term
+            for term in [*context.support_terms, *tuple(candidate.metadata.get("support_terms") or ())]
+            if str(term or "").strip()
+        )
+        if not support_terms:
+            return AnswerValidation(self.name, True)
+        answer_text = str(candidate.answer or "").casefold()
+        hits = tuple(term for term in support_terms if _term_supported_in_answer(str(term), answer_text))
+        return AnswerValidation(
+            self.name,
+            bool(hits),
+            "" if hits else "missing_support_terms",
+            missing_values=tuple(dict.fromkeys(support_terms))[:8],
+        )
+
+
 class RawEvidenceListingValidator(AnswerValidator):
     name = "raw_evidence_listing"
 
@@ -119,6 +145,7 @@ class AnswerPipeline:
             RuntimeArtifactValidator(),
             TaskMismatchValidator(),
             RequiredValueCoverageValidator(),
+            SupportTermCoverageValidator(),
             RawEvidenceListingValidator(),
         ]
 
@@ -239,6 +266,15 @@ def _numeric_values(text: str) -> list[str]:
         seen.add(key)
         values.append(value)
     return values
+
+
+def _term_supported_in_answer(term: str, answer_text: str) -> bool:
+    normalized = str(term or "").strip().casefold()
+    if len(normalized) < 2:
+        return False
+    if re.search(r"[a-z0-9]", normalized):
+        return re.search(rf"(?<![a-z0-9]){re.escape(normalized)}(?![a-z0-9])", answer_text) is not None
+    return normalized in answer_text
 
 
 def _answer_looks_like_raw_evidence_listing(answer: str) -> bool:

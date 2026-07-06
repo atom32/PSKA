@@ -44,6 +44,38 @@ def test_answer_pipeline_selects_deterministic_when_agentic_misses_required_valu
     assert any(validation["reason"] == "missing_required_values" for validation in rejected["validations"])
 
 
+def test_answer_pipeline_selects_deterministic_when_agentic_misses_support_terms() -> None:
+    deterministic = "关键结论：Acme Example status is active，owner is Alice Example。"
+    decision = AnswerPipeline().decide(
+        [
+            AnswerCandidate(
+                answer="Fake external agentic answer.",
+                answer_type="kb_answer",
+                owner="fastreact_agentic_service",
+                priority=0,
+                metadata={"validate_support_term_coverage": True},
+            ),
+            AnswerCandidate(
+                answer=deterministic,
+                answer_type="kb_answer",
+                owner="deterministic_fallback",
+                priority=10,
+            ),
+        ],
+        AnswerPipelineContext(
+            query="Acme Example 的状态和负责人是什么？",
+            ask_intent="kb_search",
+            evidence_status="supported",
+            support_terms=("acme", "example", "status", "owner"),
+        ),
+    )
+
+    assert decision.owner == "deterministic_fallback"
+    rejected = decision.audit["candidates"][0]
+    assert rejected["status"] == "rejected"
+    assert any(validation["reason"] == "missing_support_terms" for validation in rejected["validations"])
+
+
 def test_answer_pipeline_records_no_answer_policy_candidate() -> None:
     decision = AnswerPipeline().decide(
         [

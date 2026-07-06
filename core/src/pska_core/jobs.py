@@ -381,12 +381,57 @@ class JobService:
         provider = self._embedding_provider(payload)
         if provider is None:
             raise ValueError("embed_backfill job requires embedding_provider")
-        report = EmbeddingService(
+        service = EmbeddingService(
             self.store,
             provider,
             batch_size=int(payload.get("batch_size") or 1),
-        ).backfill_missing(limit=int(payload["limit"]) if payload.get("limit") is not None else None)
-        return to_jsonable(report)
+        )
+        scoped_chunks = self._embed_backfill_scoped_chunks(payload, provider=provider)
+        if scoped_chunks is None:
+            report = service.backfill_missing(limit=int(payload["limit"]) if payload.get("limit") is not None else None)
+            scope = {"mode": "all_missing"}
+        else:
+            report = service.embed_chunks(scoped_chunks)
+            scope = {
+                "mode": "scoped",
+                "tenant_id": str(payload.get("tenant_id") or self.tenant_id or DEFAULT_TENANT_ID),
+                "owner_user_id": str(payload.get("owner_user_id") or ""),
+                "knowledge_base_id": str(payload.get("knowledge_base_id") or ""),
+                "source_item_ids": _string_list(payload.get("source_item_ids")),
+                "selected_chunks": len(scoped_chunks),
+            }
+        return {**to_jsonable(report), "scope": scope}
+
+    def _embed_backfill_scoped_chunks(self, payload: dict[str, Any], *, provider: EmbeddingProvider) -> list[Any] | None:
+        source_item_ids = set(_string_list(payload.get("source_item_ids")))
+        knowledge_base_id = str(payload.get("knowledge_base_id") or "").strip()
+        if not source_item_ids and not knowledge_base_id:
+            return None
+        tenant_id = str(payload.get("tenant_id") or self.tenant_id or DEFAULT_TENANT_ID)
+        owner_user_id = str(payload.get("owner_user_id") or "").strip()
+        if knowledge_base_id:
+            if not owner_user_id:
+                raise ValueError("embed_backfill knowledge_base_id scope requires owner_user_id")
+            kb_source_ids = self.store.list_knowledge_base_source_item_ids(
+                {knowledge_base_id},
+                tenant_id=tenant_id,
+                owner_user_id=owner_user_id,
+            )
+            source_item_ids = (source_item_ids & kb_source_ids) if source_item_ids else kb_source_ids
+        chunks = [
+            chunk
+            for chunk in self.store.list_chunks_for_sources(source_item_ids)
+            if getattr(chunk, "tenant_id", tenant_id) == tenant_id
+            and (not owner_user_id or getattr(chunk, "owner_user_id", "") == owner_user_id)
+            and str(getattr(chunk, "lifecycle_status", "active") or "active") == "active"
+            and (
+                getattr(chunk, "embedding", None) is None
+                or (getattr(chunk, "metadata", {}) or {}).get("embedding_provider") != provider.provider_name
+                or (getattr(chunk, "metadata", {}) or {}).get("embedding_model") != provider.model_name
+            )
+        ]
+        limit = payload.get("limit")
+        return chunks[: int(limit)] if limit is not None else chunks
 
     def _full_report(self, job: Job) -> dict[str, Any]:
         payload = job.payload
@@ -506,6 +551,16 @@ def _visible_team_ids(value: Any) -> list[str]:
     if isinstance(value, list):
         return [str(item).strip() for item in value if str(item).strip()]
     raise TypeError("visible_team_ids must be a list or comma-separated string")
+
+
+def _string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    if isinstance(value, (list, tuple, set)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return [str(value).strip()] if str(value).strip() else []
 
 
 def _fastreact_candidate_tool_errors(response: dict[str, Any]) -> list[str]:

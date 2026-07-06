@@ -735,6 +735,14 @@ class RetrievalService:
             )
             for chunk in chunks
         ]
+        fallback_results: list[RetrievalResult] = []
+        for chunk, text_terms in zip(chunks, documents):
+            item = item_by_id[chunk.source_item_id]
+            lexical = self._lexical_score(query_terms, text_terms)
+            if lexical <= 0:
+                continue
+            fallback_results.append(self._result_for_chunk(chunk, item, lexical, {"lexical": lexical, "vector": 0.0}))
+
         bm25_scores = _bm25_scores(documents, query_terms)
         if bm25_scores is not None:
             results = [
@@ -742,16 +750,11 @@ class RetrievalService:
                 for chunk, score in zip(chunks, bm25_scores)
                 if score > 0
             ]
-            return sorted(results, key=lambda result: result.score, reverse=True), "rank_bm25"
+            if results or not fallback_results:
+                return sorted(results, key=lambda result: result.score, reverse=True), "rank_bm25"
+            return sorted(fallback_results, key=lambda result: result.score, reverse=True), "rank_bm25_term_frequency_fallback"
 
-        lexical_results: list[RetrievalResult] = []
-        for chunk, text_terms in zip(chunks, documents):
-            item = item_by_id[chunk.source_item_id]
-            lexical = self._lexical_score(query_terms, text_terms)
-            if lexical <= 0:
-                continue
-            lexical_results.append(self._result_for_chunk(chunk, item, lexical, {"lexical": lexical, "vector": 0.0}))
-        return sorted(lexical_results, key=lambda result: result.score, reverse=True), "term_frequency"
+        return sorted(fallback_results, key=lambda result: result.score, reverse=True), "term_frequency"
 
     def _rrf_merge(
         self,

@@ -35,6 +35,7 @@ marketplace yet.
 | RSS/Atom source sync | Real | Real | Real | SourceAdapter v1 supports preview/create/sync for RSS/Atom feeds. |
 | URL page/sitemap sync | Real | Real | Real | SourceAdapter v1 supports preview/create/sync for URL pages and sitemaps. |
 | Processing transparency | Real | Real | Real | Source cards expose sync runs, processing spans, diagnostics, cleanup, retry, and chunk preview; KB detail also surfaces counts/readiness, embedding coverage, offline index freshness, and recent sync/digest state. |
+| Embedding job control | Real | Partial | Partial | `embed_backfill` is a durable job and supports KB/source scoped backfill with limit/batch controls; product UI controls for pause/retry/queue inspection are still pending. |
 | Twitter/X archive import | Real | Partial | Partial | `files-sync` and `digest-now` import the workspace archive inbox by content hash. |
 | Today aggregation | Real | Real | Partial | Uses real `/workspace/today/data`; empty real sections should render empty states. |
 | Discovery feed | Real | Real | Partial | Persistent discoveries and score filtering exist; quality still depends on producers and corpus. |

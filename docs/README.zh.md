@@ -28,6 +28,7 @@
 - [Evidence-driven QA Engine](PSKA_EVIDENCE_QA_ENGINE.zh.md)：Ask/RAG 的 Retrieval → Evidence → Citation → Answer 流水线、audit schema、timeline 和回归策略。
 - [Architecture Decision Records](adr/README.md)：已经接受的工程决策，用来约束后续 PSKA 改动。
 - [RFC 0002: Multi-evidence Composition](rfcs/0002-multi-evidence-composition.md)：Phase 2 Evidence Set、趋势/比较问答和 composition 边界。
+- [Embedding Job Control](EMBEDDING_JOB_CONTROL.zh.md)：按 KB/source 控制 embedding backfill job、coverage 和试点前处理约束。
 - [Reader/Ask 产品切片里程碑](MILESTONE_READER_ASK_PRODUCT_SLICE.zh.md)：citation inspection、source-focused follow-up 和 ReaderPane 工作；这是可复用产品切片，不是整体产品 Phase 2 路线。
 - [API Reference](API_REFERENCE.md)：Workspace、CLI 和 integrations 使用的 HTTP endpoint。
 - [Feature Reality Check](FEATURE_REALITY_CHECK.md)：已实现、部分实现和 design-only 能力边界。
