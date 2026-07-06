@@ -94,7 +94,8 @@ cd ..
 - 准备数据库和 migrations。
 - 创建默认 Knowledge Source：`~/PSKA_workspaces/default/notes`。
 - 尝试执行一次 `files-sync`。
-- 启动 `local-daemon --restart`，包含 `serve`、`job-worker`、`digest-scheduler`。
+- 启动 `local-daemon --restart`，默认包含 `serve` 和非 digest `job-worker`。
+- Digest 默认手动触发；只有显式传 `local-daemon --digest-scheduler` 才会启动定时 digest scheduler。
 - 启动 Vite frontend。
 
 打开：

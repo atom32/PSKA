@@ -53,9 +53,11 @@ marketplace yet.
 
 ## Digest Reality
 
-The digest scheduler is incremental, not a daily cron. The local daemon checks
-for new or changed sources every 300 seconds by default. Manual `digest-now`
-runs sync first and then processes one digest pass.
+Digest is manual by default. `./start.sh` does not start the periodic digest
+scheduler, so it will not silently spend FastReAct/LLM capacity. Manual
+`digest-now` runs sync first and then processes one digest pass; `digest-schedule`
+queues work without running the worker. Periodic scheduling is opt-in via
+`local-daemon --digest-scheduler` or the foreground `digest-scheduler` command.
 
 If FastReAct processes a digest job without calling `pska_write_candidates`,
 PSKA reports diagnostics and creates a fallback review item for the scheduled

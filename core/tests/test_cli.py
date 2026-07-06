@@ -187,6 +187,7 @@ def test_cli_accepts_search_and_smoke() -> None:
     extract = build_parser().parse_args(["extract-all", "--owner-user-id", "user_primary"])
     serve = build_parser().parse_args(["serve", "--port", "8765"])
     local_daemon = build_parser().parse_args(["local-daemon", "--no-worker", "--digest-interval-seconds", "60"])
+    local_daemon_digest_scheduler = build_parser().parse_args(["local-daemon", "--digest-scheduler"])
     local_daemon_status = build_parser().parse_args(["local-daemon", "status", "--run-dir", "run", "--log-dir", "logs"])
     local_daemon_config = build_parser().parse_args(["local-daemon", "config-check"])
     local_daemon_supervisor = build_parser().parse_args(["local-daemon", "supervisor-config", "--supervisor", "launchd", "--dry-run"])
@@ -262,7 +263,11 @@ def test_cli_accepts_search_and_smoke() -> None:
     assert local_daemon.command == "local-daemon"
     assert local_daemon.action == "run"
     assert local_daemon.no_worker is True
+    assert local_daemon.digest_scheduler is False
     assert local_daemon.digest_interval_seconds == 60
+    assert local_daemon.digest_quota_window_seconds == 3600
+    assert local_daemon.digest_max_jobs_per_window == 2
+    assert local_daemon_digest_scheduler.digest_scheduler is True
     assert local_daemon_status.action == "status"
     assert str(local_daemon_status.run_dir) == "run"
     assert str(local_daemon_status.log_dir) == "logs"

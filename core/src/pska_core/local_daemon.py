@@ -32,7 +32,7 @@ def build_process_specs(
     config: PSKAConfig,
     database_url: str,
     include_worker: bool = True,
-    include_digest_scheduler: bool = True,
+    include_digest_scheduler: bool = False,
     worker_id: str = "pska-worker-local",
     poll_interval: float = 5.0,
     lease_seconds: int = 300,
@@ -40,8 +40,10 @@ def build_process_specs(
     worker_excluded_job_types: Sequence[str] = ("digest_via_fastreact",),
     digest_interval_seconds: float = 300.0,
     digest_limit: int = 20,
-    digest_batch_size: int = 20,
+    digest_batch_size: int = 1,
     digest_max_backlog_jobs: int = 10,
+    digest_quota_window_seconds: int = 3600,
+    digest_max_jobs_per_window: int = 2,
 ) -> list[ProcessSpec]:
     base = [sys.executable, "-m", "pska_core.cli"]
     if config_path:
@@ -103,6 +105,10 @@ def build_process_specs(
                     str(digest_batch_size),
                     "--max-backlog-jobs",
                     str(digest_max_backlog_jobs),
+                    "--quota-window-seconds",
+                    str(digest_quota_window_seconds),
+                    "--max-jobs-per-window",
+                    str(digest_max_jobs_per_window),
                     "--recover-stale-seconds",
                     str(recover_stale_seconds),
                 ],

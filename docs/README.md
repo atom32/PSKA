@@ -21,8 +21,9 @@ historical planning notes.
 - `./scripts/pska --config .pska/config.json daily-status` shows deterministic readiness and backlog status.
 - `./scripts/pska --config .pska/config.json review-list --status pending --summary` shows work waiting for human review.
 
-The digest scheduler is incremental. The local daemon checks every 300 seconds
-by default; it is not a fixed once-per-day cron.
+Digest is manual by default. `./start.sh` does not start the periodic digest
+scheduler; use `digest-now` or `digest-schedule` explicitly when you want to
+spend FastReAct/LLM capacity on digest work.
 
 Directory-level material packs can opt into source collection ingest with
 `.pska-source.json`; see the [Operations Runbook](../core/docs/operations-runbook-zh.md#source-collection-marker).
@@ -35,6 +36,7 @@ Directory-level material packs can opt into source collection ingest with
 - [Architecture Decision Records](adr/README.md): accepted engineering decisions that constrain future PSKA changes.
 - [RFC 0002: Multi-evidence Composition](rfcs/0002-multi-evidence-composition.md): Phase 2 design for Evidence Sets, comparison/trend QA, and composition boundaries.
 - [Embedding Job Control](EMBEDDING_JOB_CONTROL.zh.md): Chinese operational note for scoped embedding backfill jobs, KB coverage, and Phase 2 controls.
+- [Digest Job Control](DIGEST_JOB_CONTROL.zh.md): Chinese operational note for digest scheduler quota, backlog limits, and FastReAct worker boundaries.
 - [API Reference](API_REFERENCE.md): HTTP endpoints used by the workspace, CLI, and integrations.
 - [Feature Reality Check](FEATURE_REALITY_CHECK.md): what is shipped, partial, or design-only.
 - [Phase 1 Multi-KB RAG Milestone](MILESTONE_PHASE1_MULTI_KB_RAG.zh.md): Chinese milestone and acceptance evidence for one-account-many-knowledge-bases.

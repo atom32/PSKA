@@ -136,7 +136,7 @@ isolated debugging is explicitly requested.
 
 - `pska-service`: HTTP API on `127.0.0.1:8765`
 - `pska-job-worker`: local durable job worker
-- `pska-digest-scheduler`: checks for new or changed sources and creates digest backlog jobs
+- `pska-digest-scheduler`: optional process, enabled only with `--digest-scheduler`, that checks for new or changed sources and creates digest backlog jobs
 
 `./start.sh` reads `.pska/config.json`. In the current integrated tenant setup
 `startup.frontend.mode` is `gateway`: the script builds the frontend, starts
@@ -151,11 +151,13 @@ when `startup.frontend.mode` is set away from `gateway`; it is not the default
 integrated verification path. See [Enterprise Auth Gateway](ENTERPRISE_AUTH_GATEWAY.zh.md)
 for the concrete startup and security contract.
 
-The digest scheduler is an incremental interval loop, not a fixed daily cron.
-The default local daemon interval is 300 seconds. Manual `digest-now` performs
-sync first and then processes one digest pass. If FastReAct processes a digest
-without writing candidates, PSKA exposes diagnostics and fallback review items
-instead of silently reporting an empty review queue.
+Digest is manual by default because it consumes FastReAct/LLM capacity. Manual
+`digest-now` performs sync first and then processes one digest pass, while
+`digest-schedule` only queues work. Periodic scheduling is opt-in via
+`local-daemon --digest-scheduler` or the foreground `digest-scheduler` command.
+If FastReAct processes a digest without writing candidates, PSKA exposes
+diagnostics and fallback review items instead of silently reporting an empty
+review queue.
 
 ## Main Backend Modules
 

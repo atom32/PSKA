@@ -17,7 +17,8 @@
 - `./scripts/pska --config .pska/config.json daily-status` 查看 deterministic readiness 和 backlog 状态。
 - `./scripts/pska --config .pska/config.json review-list --status pending --summary` 查看待人工处理的 review。
 
-当前 digest scheduler 是增量轮询：local daemon 默认每 300 秒检查一次有没有新 source 或改动 source；它不是每天固定一次的 cron。
+Digest 默认手动触发。`./start.sh` 不启动定时 digest scheduler；需要消耗
+FastReAct/LLM 吞吐做 digest 时，再显式运行 `digest-now` 或 `digest-schedule`。
 
 目录级资料包可通过 `.pska-source.json` 显式声明为一个 source collection；用法见 [Operations Runbook](../core/docs/operations-runbook-zh.md#source-collection-marker)。
 
@@ -29,6 +30,7 @@
 - [Architecture Decision Records](adr/README.md)：已经接受的工程决策，用来约束后续 PSKA 改动。
 - [RFC 0002: Multi-evidence Composition](rfcs/0002-multi-evidence-composition.md)：Phase 2 Evidence Set、趋势/比较问答和 composition 边界。
 - [Embedding Job Control](EMBEDDING_JOB_CONTROL.zh.md)：按 KB/source 控制 embedding backfill job、coverage 和试点前处理约束。
+- [Digest Job Control](DIGEST_JOB_CONTROL.zh.md)：digest 默认手动、定时 scheduler 显式开启、quota/backlog 和 FastReAct worker 边界。
 - [Reader/Ask 产品切片里程碑](MILESTONE_READER_ASK_PRODUCT_SLICE.zh.md)：citation inspection、source-focused follow-up 和 ReaderPane 工作；这是可复用产品切片，不是整体产品 Phase 2 路线。
 - [API Reference](API_REFERENCE.md)：Workspace、CLI 和 integrations 使用的 HTTP endpoint。
 - [Feature Reality Check](FEATURE_REALITY_CHECK.md)：已实现、部分实现和 design-only 能力边界。

@@ -220,7 +220,12 @@ def build_parser() -> argparse.ArgumentParser:
     local_daemon_parser = subparsers.add_parser("local-daemon", help="Run or inspect the local PSKA service supervisor")
     local_daemon_parser.add_argument("action", choices=["run", "status", "config-check", "supervisor-config"], nargs="?", default="run")
     local_daemon_parser.add_argument("--no-worker", action="store_true")
-    local_daemon_parser.add_argument("--no-digest-scheduler", action="store_true")
+    local_daemon_parser.add_argument(
+        "--digest-scheduler",
+        action="store_true",
+        help="Enable the periodic digest scheduler; disabled by default because it consumes FastReAct/LLM capacity",
+    )
+    local_daemon_parser.add_argument("--no-digest-scheduler", action="store_true", help="Compatibility flag; periodic digest scheduling is already disabled by default")
     local_daemon_parser.add_argument("--restart", action="store_true", help="Restart child processes if they exit")
     local_daemon_parser.add_argument("--run-dir", type=Path, default=None)
     local_daemon_parser.add_argument("--log-dir", type=Path, default=None)
@@ -234,6 +239,18 @@ def build_parser() -> argparse.ArgumentParser:
     local_daemon_parser.add_argument("--digest-limit", type=int, default=20)
     local_daemon_parser.add_argument("--digest-batch-size", type=int, default=1)
     local_daemon_parser.add_argument("--digest-max-backlog-jobs", type=int, default=10)
+    local_daemon_parser.add_argument(
+        "--digest-quota-window-seconds",
+        type=int,
+        default=3600,
+        help="Digest scheduling quota window for local-daemon; 0 disables quota",
+    )
+    local_daemon_parser.add_argument(
+        "--digest-max-jobs-per-window",
+        type=int,
+        default=2,
+        help="Max new digest jobs per quota window for local-daemon; 0 disables quota",
+    )
 
     mvp_bootstrap_parser = subparsers.add_parser("mvp-bootstrap", help="Initialize the MVP scope: DB, Twitter archive, local text roots, and digest backlog")
     mvp_bootstrap_parser.add_argument("--twitter-archive", type=Path, default=None)
@@ -1319,7 +1336,7 @@ def local_daemon(args: argparse.Namespace, config: PSKAConfig) -> int:
         config=config,
         database_url=args.database_url,
         include_worker=not args.no_worker,
-        include_digest_scheduler=not args.no_digest_scheduler,
+        include_digest_scheduler=bool(args.digest_scheduler) and not args.no_digest_scheduler,
         worker_id=args.worker_id,
         poll_interval=args.poll_interval,
         lease_seconds=args.lease_seconds,
@@ -1328,6 +1345,8 @@ def local_daemon(args: argparse.Namespace, config: PSKAConfig) -> int:
         digest_limit=args.digest_limit,
         digest_batch_size=args.digest_batch_size,
         digest_max_backlog_jobs=args.digest_max_backlog_jobs,
+        digest_quota_window_seconds=args.digest_quota_window_seconds,
+        digest_max_jobs_per_window=args.digest_max_jobs_per_window,
     )
     if args.action == "status":
         print(dumps(daemon_status(specs, run_dir=args.run_dir, log_dir=args.log_dir)))

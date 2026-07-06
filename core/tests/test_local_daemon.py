@@ -21,6 +21,7 @@ def test_build_process_specs_includes_service_worker_and_digest_scheduler() -> N
         config=config,
         database_url=config.database.url,
         worker_id="worker_test",
+        include_digest_scheduler=True,
         digest_interval_seconds=60,
     )
 
@@ -34,6 +35,19 @@ def test_build_process_specs_includes_service_worker_and_digest_scheduler() -> N
     assert "tenant_daemon" in specs[2].command
     assert "60" in specs[2].command
     assert "daemon_user" in specs[2].command
+    assert "--quota-window-seconds" in specs[2].command
+    assert "3600" in specs[2].command
+    assert "--max-jobs-per-window" in specs[2].command
+
+
+def test_build_process_specs_disables_digest_scheduler_by_default() -> None:
+    specs = build_process_specs(
+        config_path=None,
+        config=PSKAConfig(),
+        database_url="postgresql:///pska_test",
+    )
+
+    assert [spec.name for spec in specs] == ["pska-service", "pska-job-worker"]
 
 
 def test_build_process_specs_can_disable_background_processes() -> None:
