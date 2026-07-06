@@ -2137,7 +2137,7 @@ class PostgresKnowledgeStore:
             rows = conn.execute(
                 """
                 select * from chunks
-                where source_item_id = any(%s)
+                where source_item_id = any(%s::text[])
                 order by source_item_id, ordinal
                 """,
                 (list(source_item_ids),),
@@ -2151,7 +2151,7 @@ class PostgresKnowledgeStore:
             rows = conn.execute(
                 """
                 select * from documents
-                where source_item_id = any(%s)
+                where source_item_id = any(%s::text[])
                 order by source_item_id, created_at, document_id
                 """,
                 (list(source_item_ids),),
@@ -2503,14 +2503,18 @@ class PostgresKnowledgeStore:
         with self.connect() as conn:
             rows = conn.execute(
                 """
-                select *, (embedding <=> %s::vector) as distance
-                from chunks
-                where source_item_id = any(%s)
-                  and embedding is not null
-                order by embedding <=> %s::vector
+                with scoped_chunks as materialized (
+                    select *, (embedding <=> %s::vector) as distance
+                    from chunks
+                    where source_item_id = any(%s::text[])
+                      and embedding is not null
+                )
+                select *
+                from scoped_chunks
+                order by distance
                 limit %s
                 """,
-                (_vector_literal(query_embedding), list(source_item_ids), _vector_literal(query_embedding), top_k),
+                (_vector_literal(query_embedding), list(source_item_ids), top_k),
             ).fetchall()
         return [(self._chunk_from_row(row), max(0.0, 1.0 - float(row["distance"]))) for row in rows]
 

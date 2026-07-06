@@ -327,6 +327,7 @@ def test_retrieval_mode_can_isolate_lexical_and_vector_candidates() -> None:
     ingest = IngestService(store, embedding_provider=ModeEmbeddingProvider())
     ingest.ingest_channel_payload(_payload("semantic-note", "semantic-target carries the meaning only."))
     ingest.ingest_channel_payload(_payload("literal-note", "literal-token appears as a keyword only."))
+    ingest.ingest_channel_payload(_payload("background-note", "background context without the keyword."))
     user = store.get_user("user_primary")
     retrieval = RetrievalService(store, ACLService(store), embedding_provider=ModeEmbeddingProvider())
 

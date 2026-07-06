@@ -4253,6 +4253,32 @@ def test_workspace_ask_deep_uses_fastreact_readonly_tool_policy() -> None:
             "content": {"text": "Atlas reporting needs a risk summary grounded in PSKA evidence."},
         }
     )
+    IngestService(api.store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "workspace-ask-deep-background-a",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "Ask Deep Background A",
+            "content": {"text": "Background material for unrelated planning."},
+        }
+    )
+    IngestService(api.store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "workspace-ask-deep-background-b",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "Ask Deep Background B",
+            "content": {"text": "Additional unrelated context for retrieval ranking."},
+        }
+    )
 
     with _http_server(api) as base_url:
         status, payload = _http_json(
