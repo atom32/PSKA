@@ -204,6 +204,10 @@ Allowed extension patterns:
 
 Review checklist:
 
+- Can every new capability that enters the main QA pipeline be naturally
+  represented as an `EvidenceRecord` or `EvidenceSet`? If not, keep it outside
+  the main pipeline until it can answer "what evidence does this provide?"
+  rather than only "can this answer the question?"
 - Does the new logic depend on a specific industry, company, document, sample
   corpus, or benchmark question? If yes, it violates the architecture unless it
   can be re-expressed as a general scorer, validator, selector, extractor, or

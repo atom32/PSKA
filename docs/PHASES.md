@@ -101,6 +101,10 @@ enter through extension points, registries, policies, validators, or prompt
 patterns. They must not recouple Retrieval, Citation Selection, and Answer
 Pipeline.
 
+Phase 2 adopts one additional gate: any capability that cannot be naturally
+represented as an `EvidenceRecord` or `EvidenceSet` must stay outside the main
+QA pipeline until its evidence contract is clear.
+
 Phase 2 asks:
 
 - when does a question require an Evidence Set rather than a single citation?
