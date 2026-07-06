@@ -28,9 +28,10 @@ def test_pska_config_loads_json_and_keyfile_token(tmp_path: Path, monkeypatch) -
         json.dumps(
             {
                 "database": {"url": "postgresql:///pska_test"},
-                "service": {"host": "127.0.0.1", "port": 9876},
+                "service": {"host": "127.0.0.1", "port": 9876, "service_token": "pska-service-token"},
                 "llm": {"api_key_file": str(key_file)},
-                "fastreact": {"url": "http://127.0.0.1:9000"},
+                "fastreact": {"url": "http://127.0.0.1:9000", "service_token": "fastreact-token"},
+                "agentic_service": {"service_token": "agentic-token"},
                 "embedding": {"provider": "disabled"},
                 "ingest": {"chunk_size": 2048, "chunk_overlap": 256},
                 "workspace": {"root": str(tmp_path / "workspace")},
@@ -59,12 +60,12 @@ def test_pska_config_loads_json_and_keyfile_token(tmp_path: Path, monkeypatch) -
 
     assert config.database.url == "postgresql:///pska_test"
     assert config.service.port == 9876
-    assert config.service.service_token == "shared-local-token"
+    assert config.service.service_token == "pska-service-token"
     assert config.fastreact.url == "http://127.0.0.1:9000"
-    assert config.fastreact.service_token == "shared-local-token"
+    assert config.fastreact.service_token == "fastreact-token"
     assert config.agentic_service.provider == "fastreact"
     assert config.agentic_service.url == "http://127.0.0.1:9000"
-    assert config.agentic_service.service_token == "shared-local-token"
+    assert config.agentic_service.service_token == "agentic-token"
     assert config.ingest.chunk_size == 2048
     assert config.ingest.chunk_overlap == 256
     assert config.llm.api_key_file == key_file
@@ -91,8 +92,6 @@ def test_pska_config_loads_json_and_keyfile_token(tmp_path: Path, monkeypatch) -
         tenant_id="tenant/acme",
         user_id="pska:ada",
     )
-
-
 def test_pska_config_load_does_not_use_env_overrides(tmp_path: Path, monkeypatch) -> None:
     config_file = tmp_path / "config.json"
     config_file.write_text(

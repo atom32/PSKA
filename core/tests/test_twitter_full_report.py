@@ -37,7 +37,7 @@ def test_html_renderer_escapes_user_content() -> None:
 
 
 def test_scrubber_removes_secret_and_home_path(monkeypatch) -> None:
-    monkeypatch.setenv("PSKA_LLM_API_KEY", "secret-key")
+    monkeypatch.setenv("FASTRACT_API_KEY", "secret-key")
     data = {"nested": ["secret-key", str(Path.home() / "private" / "path")]}
 
     scrubbed = scrub_secrets(data)

@@ -20,13 +20,14 @@ export FASTREACT_NANO_REPO="/path/to/FastReAct/fastreact-nano"
 {
   "database": {"url": "postgresql:///pska"},
   "service": {"host": "127.0.0.1", "port": 8765},
-  "llm": {"api_key_file": "~/api_key.txt", "timeout_seconds": 60},
-  "fastreact": {"url": "http://127.0.0.1:18741", "timeout_seconds": 30},
+  "fastreact": {"url": "http://127.0.0.1:18741", "service_token": "replace-with-local-service-token", "timeout_seconds": 30},
+  "agentic_service": {"provider": "fastreact", "url": "http://127.0.0.1:18741", "service_token": "replace-with-local-service-token"},
   "embedding": {"provider": "disabled"}
 }
 ```
 
 默认启动配置路径为当前仓库 `.pska/config.json`，`./start.sh` 只读取这个文件。数据库、HTTP service、FastReAct、embedding、workspace、files roots、service token 和启动开关都应写在 config 里，不通过环境变量覆盖。
+PSKA 不直接持有生成模型 API key；Quick、Deep、Digest 和抽取类生成任务统一委托给 FastReAct/agentic service。生成模型凭证只配置在 FastReAct 侧。
 
 当前产品化约定：
 

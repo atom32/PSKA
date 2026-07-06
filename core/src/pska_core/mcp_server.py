@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from pska_core.acl import ACLService
+from pska_core.agentic_service import AgenticServiceClient, build_agentic_service_client
 from pska_core.auth import RequestContext
 from pska_core.candidates import CandidateWriteService
 from pska_core.config import DatabaseConfig, PSKAConfig
@@ -310,6 +311,7 @@ class MCPServer:
         database_url: str,
         store: Any | None = None,
         llm: Any | None = None,
+        agentic_service: AgenticServiceClient | None = None,
         config: PSKAConfig | None = None,
         embedding_provider: EmbeddingProvider | None = None,
     ) -> None:
@@ -321,7 +323,11 @@ class MCPServer:
             embedding_provider = build_embedding_provider(config.embedding_runtime_config())
         self.retrieval = RetrievalService(self.store, ACLService(self.store), embedding_provider=embedding_provider)
         self.ingest = IngestService(self.store, embedding_provider=embedding_provider, **config.ingest_kwargs())
-        self.extraction = ExtractionService(self.store, llm=llm, llm_config=config.llm)
+        self.extraction = ExtractionService(
+            self.store,
+            llm=llm,
+            agentic_service=agentic_service or build_agentic_service_client(config.agentic_service_runtime_config()),
+        )
         self.candidates = CandidateWriteService(self.store)
 
     def run(self) -> int:

@@ -282,9 +282,6 @@ def _smoke_env() -> dict[str, str]:
             env["SSL_CERT_FILE"] = certifi.where()
         except Exception:
             pass
-    api_key_file = Path.home() / "api_key.txt"
-    if api_key_file.exists():
-        env.setdefault("PSKA_LLM_API_KEY_FILE", str(api_key_file))
     return env
 
 
@@ -297,7 +294,7 @@ def _step_result(result: subprocess.CompletedProcess[str]) -> dict[str, Any]:
 
 
 def _scrub(text: str) -> str:
-    for key_name in ("PSKA_LLM_API_KEY", "OPENAI_API_KEY", "FASTRACT_API_KEY"):
+    for key_name in ("OPENAI_API_KEY", "FASTRACT_API_KEY"):
         secret = os.environ.get(key_name)
         if secret:
             text = text.replace(secret, "***")

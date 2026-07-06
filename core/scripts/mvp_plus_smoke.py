@@ -186,7 +186,7 @@ def build_smoke_report() -> dict[str, Any]:
 
     checks = {
         "limited_sources_ingested": len(store.list_source_items()) == 3,
-        "llm_extraction_created_graph": bool(extraction_report.entities_created and extraction_report.hyperedges_created),
+        "agentic_extraction_created_graph": bool(extraction_report.entities_created and extraction_report.hyperedges_created),
         "candidate_write_created_memory_profile_graph": bool(
             candidate_summary["hyperedges"]
             and candidate_summary["agent_memories"]

@@ -22,12 +22,6 @@
     "port": 8765,
     "service_token": null
   },
-  "llm": {
-    "api_key_file": "~/api_key.txt",
-    "model": "deepseek-v4-flash",
-    "base_url": "https://api.deepseek.com",
-    "timeout_seconds": 60
-  },
   "fastreact": {
     "url": "http://127.0.0.1:18741",
     "service_token": null,

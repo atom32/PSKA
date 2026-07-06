@@ -96,8 +96,12 @@ PSKA 可通过 config file 或环境变量连接 Fastreact。推荐 config file�
 
 ```json
 {
-  "llm": {"api_key_file": "~/api_key.txt"},
   "fastreact": {
+    "url": "http://127.0.0.1:18741",
+    "service_token": "replace-with-local-service-token"
+  },
+  "agentic_service": {
+    "provider": "fastreact",
     "url": "http://127.0.0.1:18741",
     "service_token": "replace-with-local-service-token"
   }

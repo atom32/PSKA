@@ -22,7 +22,7 @@ export FASTREACT_NANO_REPO="/path/to/FastReAct/fastreact-nano"
 }
 ```
 
-PSKA 和 FastReAct 仍兼容旧行格式：
+FastReAct 仍兼容旧行格式：
 
 ```text
 line 1: LLM API key
@@ -46,12 +46,12 @@ cd "$PSKA_REPO"
 
 这个配置会包含：
 
-- `llm.api_key_file = ~/api_key.txt`
+- FastReAct 的 `llm.api_key_file = ~/api_key.txt`
 - `service.host = 0.0.0.0`
 - `service.port = 18741`
 - `service.service_token` 从 `~/api_key.txt` 的 `service_token` 读取
 - `mcp.servers[0]` 指向 PSKA 的 `scripts/pska mcp-server`
-- PSKA MCP 子进程 env，包括 `PSKA_LLM_API_KEY_FILE`、`PSKA_DATABASE_URL` 和可探测到的 `SSL_CERT_FILE`
+- PSKA MCP 子进程 env 只包含运行所需配置，例如可探测到的 `SSL_CERT_FILE`；PSKA 不接收生成模型 API key。
 
 如需查看而不写入：
 
@@ -209,7 +209,6 @@ PY
 
 FASTREACT_API_URL="http://127.0.0.1:18741" \
 FASTREACT_SERVICE_TOKEN="$TOKEN" \
-PSKA_LLM_API_KEY_FILE="$HOME/api_key.txt" \
 ../.pska/venvs/pska-py312/bin/python scripts/twitter_full_report.py \
   --fastreact-mode api
 ```

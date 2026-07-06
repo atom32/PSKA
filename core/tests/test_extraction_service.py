@@ -1,11 +1,47 @@
 from __future__ import annotations
 
+import json
+
 from pska_core.adapters.conversation import conversation_to_payload
 from pska_core.extraction import ExtractionService
 from pska_core.ingest import IngestService
 from pska_core.models import User
 from pska_core.store import InMemoryKnowledgeStore
 from tests.fakes import FakeLLM, extraction_response
+
+
+class FakeAgenticExtractionService:
+    def __init__(self, response: dict) -> None:
+        self.response = response
+        self.calls = []
+
+    def ready(self) -> dict:
+        return {"ok": True, "provider": "test", "adapter": "fake"}
+
+    def search(
+        self,
+        query,
+        user,
+        *,
+        represented_user_id=None,
+        max_iterations=3,
+        skills=None,
+        tool_policy=None,
+        session_id=None,
+    ):
+        self.calls.append(
+            {
+                "query": query,
+                "user_id": user.user_id,
+                "tenant_id": user.tenant_id,
+                "represented_user_id": represented_user_id,
+                "max_iterations": max_iterations,
+                "skills": skills,
+                "tool_policy": tool_policy,
+                "session_id": session_id,
+            }
+        )
+        return {"answer": json.dumps(self.response)}
 
 
 def test_extraction_creates_entities_hyperedges_and_review_items() -> None:
@@ -41,6 +77,33 @@ def test_extraction_creates_entities_hyperedges_and_review_items() -> None:
     assert "knowledge extraction agent" in llm.prompts[0]["system"]
     assert "Chinese" in llm.prompts[0]["system"]
     assert "Prefer Chinese" in llm.prompts[0]["prompt"]
+
+
+def test_extraction_defaults_to_agentic_service_without_tools() -> None:
+    store = InMemoryKnowledgeStore()
+    store.add_user(User("user_primary", "primary"))
+    item = IngestService(store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "agentic-extract-note",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "content": {"text": "Project Atlas depends on the Twitter Archive channel."},
+        }
+    )
+    agentic = FakeAgenticExtractionService(extraction_response())
+
+    report = ExtractionService(store, agentic_service=agentic).extract_source_item(item)
+
+    assert report.hyperedges_created
+    assert agentic.calls
+    assert agentic.calls[0]["max_iterations"] == 1
+    assert agentic.calls[0]["skills"] == []
+    assert agentic.calls[0]["tool_policy"] == {"mode": "none"}
+    assert "Return exactly one strict JSON object" in agentic.calls[0]["query"]
 
 
 def test_extraction_repairs_one_member_hyperedge_schema() -> None:

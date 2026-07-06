@@ -477,14 +477,14 @@ class PSKAConfig:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "PSKAConfig":
         llm = LLMConfig.from_dict(data.get("llm"))
-        fastreact = FastreactConfig.from_dict(data.get("fastreact"), api_key_file=llm.api_key_file)
+        fastreact = FastreactConfig.from_dict(data.get("fastreact"))
         return cls(
             database=DatabaseConfig.from_dict(data.get("database")),
-            service=ServiceConfig.from_dict(data.get("service"), api_key_file=llm.api_key_file),
+            service=ServiceConfig.from_dict(data.get("service")),
             auth=AuthConfig.from_dict(data.get("auth")),
             llm=llm,
             fastreact=fastreact,
-            agentic_service=AgenticServiceConfigFile.from_dict(data.get("agentic_service"), fallback=fastreact, api_key_file=llm.api_key_file),
+            agentic_service=AgenticServiceConfigFile.from_dict(data.get("agentic_service"), fallback=fastreact),
             embedding=EmbeddingConfigFile.from_dict(data.get("embedding")),
             ingest=IngestConfig.from_dict(data.get("ingest")),
             files=FilesConfig.from_dict(data.get("files")),
@@ -539,12 +539,7 @@ class PSKAConfig:
                 service_token=os.getenv("PSKA_SERVICE_TOKEN") or base.service.service_token,
             ),
             auth=AuthConfig.from_env(base.auth),
-            llm=LLMConfig(
-                api_key_file=expand_path(os.getenv("PSKA_LLM_API_KEY_FILE")) if os.getenv("PSKA_LLM_API_KEY_FILE") else base.llm.api_key_file,
-                model=os.getenv("PSKA_LLM_MODEL") or base.llm.model,
-                base_url=os.getenv("PSKA_LLM_BASE_URL") or base.llm.base_url,
-                timeout_seconds=int(os.getenv("PSKA_LLM_TIMEOUT_SECONDS")) if os.getenv("PSKA_LLM_TIMEOUT_SECONDS") else base.llm.timeout_seconds,
-            ),
+            llm=base.llm,
             fastreact=FastreactConfig(
                 url=os.getenv("PSKA_FASTREACT_URL", base.fastreact.url).rstrip("/"),
                 service_token=os.getenv("PSKA_FASTREACT_SERVICE_TOKEN") or base.fastreact.service_token,

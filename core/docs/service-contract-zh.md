@@ -49,8 +49,8 @@ PSKA 兼容原来的环境变量方式，也支持 JSON config file。加载顺�
 {
   "database": {"url": "postgresql:///pska"},
   "service": {"host": "127.0.0.1", "port": 8765},
-  "llm": {"api_key_file": "~/api_key.txt", "timeout_seconds": 60},
-  "fastreact": {"url": "http://127.0.0.1:18741", "timeout_seconds": 30},
+  "fastreact": {"url": "http://127.0.0.1:18741", "service_token": "replace-with-local-service-token", "timeout_seconds": 30},
+  "agentic_service": {"provider": "fastreact", "url": "http://127.0.0.1:18741", "service_token": "replace-with-local-service-token"},
   "embedding": {"provider": "disabled"}
 }
 ```
@@ -156,7 +156,7 @@ X-PSKA-Scope: {"source_item_ids":["..."]}
     "schema": {"ok": true, "tables": {}, "missing": []},
     "index": {"ok": true, "counts": {}},
     "embedding": {"provider": "disabled", "configured": false},
-    "llm": {"api_key_file_configured": false},
+    "llm": {"configured": false, "deprecated": true},
     "jobs": {
       "ok": true,
       "sample_size": 0,

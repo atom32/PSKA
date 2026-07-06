@@ -143,7 +143,7 @@ class PSKAApi:
         self.retrieval = RetrievalService(self.store, ACLService(self.store), embedding_provider=embedding_provider)
         self.agentic_service = build_agentic_service_client(config.agentic_service_runtime_config())
         self.ingest = IngestService(self.store, embedding_provider=embedding_provider, **config.ingest_kwargs())
-        self.extraction = ExtractionService(self.store, llm_config=config.llm)
+        self.extraction = ExtractionService(self.store, agentic_service=self.agentic_service)
         self.jobs = JobService(self.store, workspace_root=config.workspace.root, embedding_config=config.embedding_runtime_config())
         self.reviews = ReviewService(self.store)
         self.memory = MemoryService(self.store)
@@ -175,9 +175,9 @@ class PSKAApi:
                 "configured": embedding_config.provider.strip().lower() not in {"", "disabled", "none", "off"},
             },
             "llm": {
-                "api_key_file_configured": bool(config.llm.api_key_file),
-                "model": config.llm.model,
-                "base_url": config.llm.base_url,
+                "configured": False,
+                "deprecated": True,
+                "diagnostic": "Direct PSKA LLM clients are disabled; generation is delegated to the configured agentic service.",
             },
             "jobs": self._jobs_ready(),
             "metrics": self._metrics_ready(),

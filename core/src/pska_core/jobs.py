@@ -155,7 +155,7 @@ class JobService:
         if job.job_type == IMPORT_TWITTER_ZIPS:
             return self._import_twitter_zips(job.payload)
         if job.job_type == EXTRACT_ALL:
-            return self._extract_all(job.payload)
+            return self._extract_all(job)
         if job.job_type == EXTRACT_VIA_FASTREACT:
             return self._extract_via_fastreact(job)
         if job.job_type == DIGEST_VIA_FASTREACT:
@@ -185,13 +185,25 @@ class JobService:
         result = importer.import_directory(Path(payload.get("input") or user_sources / "archives" / "twitter"))
         return to_jsonable(result)
 
-    def _extract_all(self, payload: dict[str, Any]) -> dict[str, Any]:
-        tenant_id = str(payload.get("tenant_id") or self.tenant_id or DEFAULT_TENANT_ID)
-        reports = ExtractionService(self.store, llm=self.llm).extract_all_visible(
-            owner_user_id=payload.get("owner_user_id"),
-            tenant_id=tenant_id,
-        )
-        return {"reports": to_jsonable(reports)}
+    def _extract_all(self, job: Job) -> dict[str, Any]:
+        payload = job.payload
+        tenant_id = str(payload.get("tenant_id") or job.tenant_id or self.tenant_id or DEFAULT_TENANT_ID)
+        owner_user_id = payload.get("owner_user_id")
+        source_items = [
+            item
+            for item in self.store.list_source_items(tenant_id=tenant_id)
+            if owner_user_id is None or item.owner_user_id == owner_user_id
+        ]
+        if not source_items:
+            return {"reports": []}
+        if self.llm is not None:
+            reports = ExtractionService(self.store, llm=self.llm).extract_all_visible(
+                owner_user_id=owner_user_id,
+                tenant_id=tenant_id,
+            )
+            return {"reports": to_jsonable(reports), "delegated_to_agentic_service": False}
+        response = self._extract_via_fastreact(job)
+        return {**response, "reports": [], "delegated_to_agentic_service": True, "legacy_job_type": EXTRACT_ALL}
 
     def _extract_via_fastreact(self, job: Job) -> dict[str, Any]:
         payload = job.payload

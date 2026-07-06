@@ -152,7 +152,7 @@ class ReportRunner:
                         timeout=900,
                     )
                 extracted = self.run_command(
-                    "llm_extraction",
+                    "agentic_extraction",
                     [
                         "python3",
                         "-m",
@@ -241,7 +241,7 @@ class ReportRunner:
         parse_json: bool = False,
         timeout: int = 120,
     ) -> dict[str, Any]:
-        if self.args.skip_import and name in {"db_reset", "twitter_zip_import", "embedding_backfill", "llm_extraction"}:
+        if self.args.skip_import and name in {"db_reset", "twitter_zip_import", "embedding_backfill", "agentic_extraction"}:
             step = {"name": name, "status": "skipped", "reason": "--skip-import"}
             self.pipeline_steps.append(step)
             return step
@@ -693,7 +693,6 @@ def make_env(database_url: str, recovery_log: Path) -> dict[str, str]:
     env["PSKA_LLM_RECOVERY_LOG"] = str(recovery_log)
     key_file = Path.home() / "api_key.txt"
     if key_file.exists():
-        env.setdefault("PSKA_LLM_API_KEY_FILE", str(key_file))
         key, model, base_url = read_api_key_file(key_file)
         if key:
             env.setdefault("FASTRACT_API_KEY", key)
@@ -706,7 +705,7 @@ def make_env(database_url: str, recovery_log: Path) -> dict[str, str]:
 
 
 def apply_fastreact_llm_env(env: dict[str, str]) -> None:
-    key_file = Path(env.get("PSKA_LLM_API_KEY_FILE") or Path.home() / "api_key.txt")
+    key_file = Path.home() / "api_key.txt"
     key, model, base_url = read_api_key_file(key_file)
     if key:
         env["FASTRACT_API_KEY"] = key
@@ -1300,7 +1299,7 @@ def scrub_secrets(value: Any) -> Any:
 
 def scrub_text(text: Any) -> str:
     value = "" if text is None else str(text)
-    secrets = [os.getenv("PSKA_LLM_API_KEY"), os.getenv("OPENAI_API_KEY"), os.getenv("FASTRACT_API_KEY"), read_first_line(Path.home() / "api_key.txt")]
+    secrets = [os.getenv("OPENAI_API_KEY"), os.getenv("FASTRACT_API_KEY"), read_first_line(Path.home() / "api_key.txt")]
     for secret in [item for item in secrets if item]:
         value = value.replace(secret, "***")
     value = value.replace(str(Path.home()), "~")

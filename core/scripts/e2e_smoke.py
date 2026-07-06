@@ -22,7 +22,6 @@ def main() -> int:
     env.setdefault("PSKA_DATABASE_URL", SMOKE_DATABASE_URL)
     api_key_path = Path.home() / "api_key.txt"
     if api_key_path.exists():
-        env.setdefault("PSKA_LLM_API_KEY_FILE", str(api_key_path))
         first_line = _read_api_key_first_line(api_key_path)
         if first_line:
             env.setdefault("FASTRACT_API_KEY", first_line)
@@ -229,7 +228,6 @@ def _fastreact_mcp_smoke(env: dict[str, str], query: str) -> dict[str, Any]:
     )
     api_key_path = Path.home() / "api_key.txt"
     if api_key_path.exists():
-        smoke_env.setdefault("PSKA_LLM_API_KEY_FILE", str(api_key_path))
         key = _read_api_key_first_line(api_key_path)
         if key:
             smoke_env.setdefault("FASTRACT_API_KEY", key)

@@ -212,11 +212,9 @@ def _embedding_api_key(config: EmbeddingConfig) -> str:
     if not api_key and config.api_key_file:
         api_key = read_api_key_file(config.api_key_file).api_key
     if not api_key:
-        api_key = os.getenv("OPENAI_API_KEY", "").strip()
-    if not api_key:
         raise RuntimeError(
             "API embedding is enabled but no API key is configured. "
-            "Set embedding.api_key_file, PSKA_EMBEDDING_API_KEY, or OPENAI_API_KEY."
+            "Set embedding.api_key_file or PSKA_EMBEDDING_API_KEY."
         )
     return api_key
 
