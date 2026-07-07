@@ -188,6 +188,75 @@ def test_mcp_read_evidence_context_filters_by_knowledge_base_ids() -> None:
     assert beta_source_id not in result_source_ids | citation_source_ids
 
 
+def test_mcp_tools_accept_identity_inside_scope_for_knowledge_base_access() -> None:
+    store = InMemoryKnowledgeStore()
+    store.add_user(User("analyst", "Analyst", tenant_id="tenant_acme"))
+    IngestService(store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "mcp-scope-identity-note",
+            "owner_user_id": "analyst",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "tenant_id": "tenant_acme",
+            "content": {"text": "scope identity marker revenue is 42."},
+        }
+    )
+    source_id = next(item.source_item_id for item in store.list_source_items(tenant_id="tenant_acme"))
+    knowledge_base = KnowledgeBase("kb_scope_identity", "analyst", "Scope Identity KB", tenant_id="tenant_acme")
+    store.upsert_knowledge_base(knowledge_base)
+    store.add_knowledge_base_source_item(
+        KnowledgeBaseSourceItem(
+            knowledge_base_id=knowledge_base.knowledge_base_id,
+            source_item_id=source_id,
+            owner_user_id="analyst",
+            added_by_user_id="analyst",
+            tenant_id="tenant_acme",
+        )
+    )
+    server = MCPServer("postgresql:///unused", store=store)
+    scoped_arguments = {
+        "query": "scope identity marker",
+        "scope": {
+            "tenant_id": "tenant_acme",
+            "user_id": "analyst",
+            "represented_user_id": "analyst",
+            "knowledge_base_ids": [knowledge_base.knowledge_base_id],
+            "scope_mode": "hard",
+        },
+        "top_k": 5,
+    }
+
+    search_response = server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 25,
+            "method": "tools/call",
+            "params": {"name": "pska_search", "arguments": scoped_arguments},
+        }
+    )
+    search_payload = json.loads(search_response["result"]["content"][0]["text"])
+
+    read_response = server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 26,
+            "method": "tools/call",
+            "params": {"name": "pska_read_evidence_context", "arguments": {**scoped_arguments, "max_items": 3}},
+        }
+    )
+    read_payload = json.loads(read_response["result"]["content"][0]["text"])
+
+    assert search_payload["scope_applied"]["knowledge_base_ids"] == [knowledge_base.knowledge_base_id]
+    assert search_payload["scope_applied"]["source_item_ids"] == [source_id]
+    assert {result["source_item_id"] for result in search_payload["results"]} == {source_id}
+    assert read_payload["scope_applied"]["knowledge_base_ids"] == [knowledge_base.knowledge_base_id]
+    assert read_payload["scope_applied"]["source_item_ids"] == [source_id]
+    assert {result["source_item_id"] for result in read_payload["results"]} == {source_id}
+
+
 def test_mcp_params_tenant_identity_overrides_tool_arguments() -> None:
     store = InMemoryKnowledgeStore()
     store.add_user(User("user_primary", "primary", tenant_id="tenant_default"))

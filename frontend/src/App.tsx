@@ -2756,7 +2756,7 @@ function AskResult({
           <div className="ask-scope-metrics" aria-label="Ask 范围计数">
             <span><strong>{scopeStatus.knowledgeBaseCount}</strong> KB</span>
             <span><strong>{scopeStatus.sourceItemCount}</strong> Sources</span>
-            <span><strong>{scopeStatus.readyCount}</strong> 可检索</span>
+            <span><strong>{scopeStatus.readyCount}</strong> KB 可检索</span>
             <span><strong>{scopeStatus.warningCount}</strong> Warnings</span>
           </div>
         </div>

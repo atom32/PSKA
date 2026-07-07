@@ -42,10 +42,11 @@ TOOLS = [
             "properties": {
                 "query": {"type": "string"},
                 "top_k": {"type": "integer", "default": 5},
-                "max_results": {"type": "integer", "default": 3},
+                "max_results": {"type": "integer", "default": 5},
                 "max_snippet_chars": {"type": "integer", "default": 700},
                 "knowledge_base_ids": {"type": "array", "items": {"type": "string"}},
                 "source_item_ids": {"type": "array", "items": {"type": "string"}},
+                "scope": {"type": "object"},
                 "scope_mode": {"type": "string", "enum": ["soft", "hard"], "default": "soft"},
             },
             "required": ["query"],
@@ -79,6 +80,7 @@ TOOLS = [
                 },
                 "source_item_ids": {"type": "array", "items": {"type": "string"}},
                 "knowledge_base_ids": {"type": "array", "items": {"type": "string"}},
+                "scope": {"type": "object"},
                 "document_ids": {"type": "array", "items": {"type": "string"}},
                 "chunk_ids": {"type": "array", "items": {"type": "string"}},
                 "max_items": {"type": "integer", "default": 5},
@@ -101,6 +103,7 @@ TOOLS = [
                 "entity_labels": {"type": "array", "items": {"type": "string"}},
                 "source_item_ids": {"type": "array", "items": {"type": "string"}},
                 "knowledge_base_ids": {"type": "array", "items": {"type": "string"}},
+                "scope": {"type": "object"},
                 "max_depth": {"type": "integer", "default": 2},
                 "max_paths": {"type": "integer", "default": 6},
                 "max_edges": {"type": "integer", "default": 8},
@@ -118,6 +121,7 @@ TOOLS = [
                 "query": {"type": "string"},
                 "source_item_ids": {"type": "array", "items": {"type": "string"}},
                 "knowledge_base_ids": {"type": "array", "items": {"type": "string"}},
+                "scope": {"type": "object"},
                 "job_id": {"type": "string"},
                 "max_claims": {"type": "integer", "default": 8},
                 "max_digest_notes": {"type": "integer", "default": 5},
@@ -367,7 +371,7 @@ class MCPServer:
             return self.result(request_id, {"tools": TOOLS})
         if method == "tools/call":
             params = request.get("params") or {}
-            mcp_context = _context_from_mcp_params(params)
+            mcp_context = _context_from_mcp_params(params, include_arguments=context is None)
             if context and mcp_context and not context.service_authenticated:
                 _assert_context_matches(context, mcp_context)
             return self.result(
@@ -425,7 +429,7 @@ class MCPServer:
         )
         payload = _compact_search_response(
             to_jsonable(response),
-            max_results=_bounded_int(arguments.get("max_results"), default=3, minimum=1, maximum=5),
+            max_results=_bounded_int(arguments.get("max_results"), default=5, minimum=1, maximum=12),
             max_snippet_chars=_bounded_int(arguments.get("max_snippet_chars"), default=700, minimum=120, maximum=1600),
         )
         if knowledge_base_ids:
@@ -719,9 +723,11 @@ class MCPServer:
         }
 
     def _request_scope(self, arguments: dict[str, Any]) -> tuple[str, Any, str | None]:
-        tenant_id = str(arguments.get("tenant_id") or DEFAULT_TENANT_ID)
-        user = self.store.get_user(arguments.get("user_id") or "user_primary", tenant_id=tenant_id)
-        represented_user_id = arguments.get("represented_user_id")
+        scope = arguments.get("scope") if isinstance(arguments.get("scope"), dict) else {}
+        tenant_id = str(arguments.get("tenant_id") or scope.get("tenant_id") or DEFAULT_TENANT_ID)
+        user_id = arguments.get("user_id") or scope.get("user_id") or "user_primary"
+        user = self.store.get_user(user_id, tenant_id=tenant_id)
+        represented_user_id = arguments.get("represented_user_id") or scope.get("represented_user_id") or scope.get("owner_user_id")
         return tenant_id, user, str(represented_user_id) if represented_user_id else None
 
     def _visible_source_items(self, user: Any, *, represented_user_id: str | None) -> list[Any]:
@@ -1080,10 +1086,12 @@ def _build_compact_search_response(
     }
 
 
-def _context_from_mcp_params(params: dict[str, Any]) -> RequestContext | None:
-    user_key = _clean_string(params.get("user_key") or params.get("user_id"))
-    tenant_key = _clean_string(params.get("tenant_key") or params.get("tenant_id"))
-    represented_user_id = _clean_string(params.get("represented_user_id"))
+def _context_from_mcp_params(params: dict[str, Any], *, include_arguments: bool = True) -> RequestContext | None:
+    arguments = params.get("arguments") if include_arguments and isinstance(params.get("arguments"), dict) else {}
+    scope = arguments.get("scope") if isinstance(arguments.get("scope"), dict) else {}
+    user_key = _clean_string(params.get("user_key") or params.get("user_id") or arguments.get("user_key") or arguments.get("user_id") or scope.get("user_key") or scope.get("user_id"))
+    tenant_key = _clean_string(params.get("tenant_key") or params.get("tenant_id") or arguments.get("tenant_key") or arguments.get("tenant_id") or scope.get("tenant_key") or scope.get("tenant_id"))
+    represented_user_id = _clean_string(params.get("represented_user_id") or arguments.get("represented_user_id") or scope.get("represented_user_id") or scope.get("owner_user_id"))
     if not user_key and not tenant_key and not represented_user_id:
         return None
     user_id = _pska_user_id_from_key(user_key or "user_primary")
@@ -1108,6 +1116,14 @@ def _apply_mcp_context(arguments: dict[str, Any], context: RequestContext) -> di
     merged["user_id"] = context.user_id
     if context.represented_user_id:
         merged["represented_user_id"] = context.represented_user_id
+    if isinstance(merged.get("scope"), dict):
+        scope = dict(merged["scope"])
+        scope["tenant_id"] = context.tenant_id
+        scope["user_id"] = context.user_id
+        if context.represented_user_id:
+            scope["represented_user_id"] = context.represented_user_id
+        scope["owner_user_id"] = context.represented_user_id or context.user_id
+        merged["scope"] = scope
     if isinstance(merged.get("payload"), dict):
         payload = dict(merged["payload"])
         payload["tenant_id"] = context.tenant_id
