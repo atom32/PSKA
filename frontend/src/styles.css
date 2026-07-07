@@ -1615,6 +1615,13 @@ button.context-item-main {
   font-size: 13px;
 }
 
+.source-ref-marker {
+  display: inline-block;
+  margin-right: 6px;
+  color: #235a4d;
+  font-variant-numeric: tabular-nums;
+}
+
 .source-ref span {
   color: #235a4d;
   font-size: 11px;

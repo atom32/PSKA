@@ -177,13 +177,13 @@ class FastreactAgenticServiceAdapter:
         session_id: str | None = None,
     ) -> dict[str, Any]:
         messages = _agentic_messages(query, tenant_id=user.tenant_id, user_id=user.user_id)
-        scope = {
-            "query": query,
-            "tenant_id": user.tenant_id,
-            "represented_user_id": represented_user_id,
-            "max_iterations": max_iterations,
-            "agentic_boundary": "external_service",
-        }
+        scope = _agentic_search_scope(
+            query=query,
+            user=user,
+            represented_user_id=represented_user_id,
+            max_iterations=max_iterations,
+            tool_policy=tool_policy,
+        )
         run_skills = [PSKA_QA_SKILL] if skills is None else skills
         try:
             response = self._run_agentic_search(
@@ -216,13 +216,13 @@ class FastreactAgenticServiceAdapter:
         session_id: str | None = None,
     ) -> Iterator[dict[str, Any]]:
         messages = _agentic_messages(query, tenant_id=user.tenant_id, user_id=user.user_id)
-        scope = {
-            "query": query,
-            "tenant_id": user.tenant_id,
-            "represented_user_id": represented_user_id,
-            "max_iterations": max_iterations,
-            "agentic_boundary": "external_service",
-        }
+        scope = _agentic_search_scope(
+            query=query,
+            user=user,
+            represented_user_id=represented_user_id,
+            max_iterations=max_iterations,
+            tool_policy=tool_policy,
+        )
         run_skills = [PSKA_QA_SKILL] if skills is None else skills
         try:
             yield from self._client().chat_completion_stream(
@@ -343,6 +343,45 @@ class FastreactAgenticServiceAdapter:
             }.items()
             if value is not None
         }
+
+
+def _agentic_search_scope(
+    *,
+    query: str,
+    user: User,
+    represented_user_id: str | None,
+    max_iterations: int,
+    tool_policy: dict[str, Any] | None,
+) -> dict[str, Any]:
+    scope: dict[str, Any] = {
+        "query": query,
+        "tenant_id": user.tenant_id,
+        "represented_user_id": represented_user_id,
+        "max_iterations": max_iterations,
+        "agentic_boundary": "external_service",
+    }
+    policy_scope = tool_policy.get("scope") if isinstance(tool_policy, dict) and isinstance(tool_policy.get("scope"), dict) else {}
+    mirrored_scope = _public_tool_policy_scope(policy_scope)
+    if mirrored_scope:
+        scope["tool_policy_scope"] = mirrored_scope
+        for key in ["mode", "scope_mode", "knowledge_base_ids", "source_item_ids"]:
+            value = mirrored_scope.get(key)
+            if value:
+                scope[key] = value
+    return scope
+
+
+def _public_tool_policy_scope(scope: dict[str, Any]) -> dict[str, Any]:
+    public: dict[str, Any] = {}
+    for key in ["mode", "scope_mode"]:
+        value = str(scope.get(key) or "").strip().lower()
+        if value:
+            public[key] = value
+    for key in ["knowledge_base_ids", "source_item_ids"]:
+        values = _string_list(scope.get(key))
+        if values:
+            public[key] = values
+    return public
 
 
 def _agentic_messages(query: str, *, tenant_id: str | None = None, user_id: str | None = None) -> list[dict[str, str]]:
@@ -627,6 +666,21 @@ def _dict_value(value: Any) -> dict[str, Any]:
 
 def _list_value(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
+
+
+def _string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    values = value if isinstance(value, list) else [value]
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in values:
+        text = str(item or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+    return result
 
 
 def _optional_float_env(name: str, *, fallback_name: str | None = None) -> float | None:

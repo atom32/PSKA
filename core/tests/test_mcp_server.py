@@ -392,6 +392,55 @@ def test_mcp_search_compacts_long_results_for_fastreact() -> None:
     assert payload["omitted"]["reason"] == "MCP compact output keeps FastReAct tool results parser-safe."
 
 
+def test_mcp_read_evidence_context_compacts_long_results_for_fastreact() -> None:
+    store = InMemoryKnowledgeStore()
+    store.add_user(User("user_primary", "primary"))
+    long_unbroken_cell = "A" * 12000
+    long_separated_body = "\n\n".join(f"generic evidence row {idx} value {idx}" for idx in range(1200))
+    IngestService(store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "mcp-long-evidence-context-note",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "content": {
+                "text": f"parser-safe-evidence {long_unbroken_cell}\n\n{long_separated_body}",
+            },
+        }
+    )
+    response = MCPServer("postgresql:///unused", store=store).handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 24,
+            "method": "tools/call",
+            "params": {
+                "name": "pska_read_evidence_context",
+                "arguments": {
+                    "query": "parser-safe-evidence",
+                    "user_id": "user_primary",
+                    "max_items": 12,
+                    "max_source_chars": 8000,
+                    "max_document_chars": 12000,
+                    "max_passage_chars": 8000,
+                    "max_chunk_chars": 6000,
+                },
+            },
+        }
+    )
+
+    text = response["result"]["content"][0]["text"]
+    payload = json.loads(text)
+
+    assert len(text) < 4000
+    assert payload["results"]
+    assert payload["citations"]
+    assert payload["chunks"]
+    assert payload["omitted"]["reason"] == "MCP compact output keeps FastReAct tool results parser-safe."
+
+
 def test_mcp_search_surfaces_follow_up_keys_for_agentic_research() -> None:
     store = InMemoryKnowledgeStore()
     store.add_user(User("user_primary", "primary"))

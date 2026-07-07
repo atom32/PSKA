@@ -524,7 +524,7 @@ class MCPServer:
         passage_windows = _passage_windows_for_documents(selected_documents, selected_chunks, target_chars=max_passage_chars)
         results = _evidence_results_from_context(selected_items, selected_documents, selected_chunks, max_snippet_chars=max_chunk_chars, query=query)
         citations = _citations_for_source_items(selected_items, chunks=selected_chunks, max_snippet_chars=max_chunk_chars, query=query)
-        return {
+        payload = {
             "ok": True,
             "tenant_id": tenant_id,
             "request_user_id": represented_user_id or user.user_id,
@@ -549,6 +549,14 @@ class MCPServer:
                 "chunks": max(0, len(chunks) - len(selected_chunks)),
             },
         }
+        return _compact_evidence_context_response(
+            payload,
+            max_items=max_items,
+            max_source_chars=max_source_chars,
+            max_document_chars=max_document_chars,
+            max_passage_chars=max_passage_chars,
+            max_chunk_chars=max_chunk_chars,
+        )
 
     def pska_graph_context(self, arguments: dict[str, Any]) -> dict[str, Any]:
         tenant_id, user, represented_user_id = self._request_scope(arguments)
@@ -878,6 +886,141 @@ def _compact_search_response(payload: dict[str, Any], *, max_results: int, max_s
         if len(json.dumps(candidate, ensure_ascii=False)) < 3800:
             break
     return response
+
+
+def _compact_evidence_context_response(
+    payload: dict[str, Any],
+    *,
+    max_items: int,
+    max_source_chars: int,
+    max_document_chars: int,
+    max_passage_chars: int,
+    max_chunk_chars: int,
+) -> dict[str, Any]:
+    budgets = [
+        (
+            max_items * 2,
+            max_items * 2,
+            max_items,
+            max_items * 2,
+            max_items * 4,
+            max_source_chars,
+            max_document_chars,
+            max_passage_chars,
+            max_chunk_chars,
+        ),
+        (
+            min(max_items * 2, 4),
+            min(max_items * 2, 4),
+            min(max_items, 2),
+            min(max_items * 2, 3),
+            min(max_items * 4, 4),
+            min(max_source_chars, 700),
+            min(max_document_chars, 900),
+            min(max_passage_chars, 900),
+            min(max_chunk_chars, 700),
+        ),
+        (2, 2, 1, 1, 2, 360, 500, 500, 360),
+        (1, 1, 1, 1, 1, 240, 300, 300, 240),
+        (1, 1, 0, 0, 1, 0, 0, 0, 360),
+    ]
+    response: dict[str, Any] = {}
+    for result_limit, citation_limit, source_limit, passage_limit, chunk_limit, source_chars, document_chars, passage_chars, chunk_chars in budgets:
+        candidate = _build_compact_evidence_context_response(
+            payload,
+            result_limit=result_limit,
+            citation_limit=citation_limit,
+            source_limit=source_limit,
+            passage_limit=passage_limit,
+            chunk_limit=chunk_limit,
+            source_chars=source_chars,
+            document_chars=document_chars,
+            passage_chars=passage_chars,
+            chunk_chars=chunk_chars,
+        )
+        response = candidate
+        if len(json.dumps(candidate, ensure_ascii=False)) < 3800:
+            break
+    return response
+
+
+def _build_compact_evidence_context_response(
+    payload: dict[str, Any],
+    *,
+    result_limit: int,
+    citation_limit: int,
+    source_limit: int,
+    passage_limit: int,
+    chunk_limit: int,
+    source_chars: int,
+    document_chars: int,
+    passage_chars: int,
+    chunk_chars: int,
+) -> dict[str, Any]:
+    query = _clean_string(payload.get("query"))
+    results = payload.get("results") if isinstance(payload.get("results"), list) else []
+    citations = payload.get("citations") if isinstance(payload.get("citations"), list) else []
+    source_items = payload.get("source_items") if isinstance(payload.get("source_items"), list) else []
+    documents = payload.get("documents") if isinstance(payload.get("documents"), list) else []
+    passage_windows = payload.get("passage_windows") if isinstance(payload.get("passage_windows"), list) else []
+    chunks = payload.get("chunks") if isinstance(payload.get("chunks"), list) else []
+    compact_results = [
+        _compact_search_result(item, max_snippet_chars=chunk_chars)
+        for item in results[:result_limit]
+        if isinstance(item, dict)
+    ]
+    compact_citations = [
+        _compact_citation(item, max_snippet_chars=chunk_chars)
+        for item in citations[:citation_limit]
+        if isinstance(item, dict)
+    ]
+    compact_source_items = [_compact_source_item(item, max_chars=source_chars) for item in source_items[:source_limit]]
+    compact_documents = [_compact_document(item, max_chars=document_chars, query=query) for item in documents[:source_limit]]
+    compact_passage_windows = [
+        _compact_passage_window(item, max_chars=passage_chars, query=query)
+        for item in passage_windows[:passage_limit]
+        if isinstance(item, dict)
+    ]
+    compact_chunks = [_compact_chunk(item, max_chars=chunk_chars, query=query) for item in chunks[:chunk_limit]]
+    follow_up_keys = _dedupe_follow_up_keys(
+        key
+        for item in [*compact_results, *compact_citations, *compact_chunks]
+        for key in _extract_follow_up_keys(
+            " ".join(
+                str(item.get(field) or "")
+                for field in ("source_item_id", "document_id", "chunk_id", "title", "snippet", "text")
+            )
+        )
+    )
+    omitted = dict(payload.get("omitted") if isinstance(payload.get("omitted"), dict) else {})
+    omitted.update(
+        {
+            "results": max(0, len(results) - len(compact_results)),
+            "citations": max(0, len(citations) - len(compact_citations)),
+            "context_source_items": max(0, len(source_items) - len(compact_source_items)),
+            "context_documents": max(0, len(documents) - len(compact_documents)),
+            "passage_windows": max(0, len(passage_windows) - len(compact_passage_windows)),
+            "context_chunks": max(0, len(chunks) - len(compact_chunks)),
+            "reason": "MCP compact output keeps FastReAct tool results parser-safe.",
+        }
+    )
+    return {
+        "ok": payload.get("ok", True),
+        "tenant_id": payload.get("tenant_id"),
+        "request_user_id": payload.get("request_user_id"),
+        "scope_applied": payload.get("scope_applied") if isinstance(payload.get("scope_applied"), dict) else {},
+        "query": payload.get("query"),
+        "results": compact_results,
+        "citations": compact_citations,
+        "source_items": compact_source_items,
+        "documents": compact_documents,
+        "passage_windows": compact_passage_windows,
+        "chunks": compact_chunks,
+        "follow_up_keys": follow_up_keys[:12],
+        "graph_paths": payload.get("graph_paths") if isinstance(payload.get("graph_paths"), list) else [],
+        "diagnostics": _compact_diagnostics(payload.get("diagnostics")),
+        "omitted": omitted,
+    }
 
 
 def _build_compact_search_response(

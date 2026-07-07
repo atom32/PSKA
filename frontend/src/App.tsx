@@ -2802,7 +2802,7 @@ function AskResult({
                 onFocus={() => setSelectedRefIndex(index)}
                 onClick={() => setSelectedRefIndex(index)}
               >
-                <strong>{displayText(ref.title || ref.source_item_id, "来源")}</strong>
+                <strong><span className="source-ref-marker">[{index + 1}]</span>{displayText(ref.title || ref.source_item_id, "来源")}</strong>
                 {knowledgeBaseLabel ? <span className="source-ref-kb">{knowledgeBaseLabel}</span> : null}
                 <span>{[ref.source_item_id, ref.chunk_id].filter(Boolean).join(" / ")}</span>
                 {snippet ? <p>{snippet}</p> : null}
@@ -4841,13 +4841,19 @@ function sourceRefsKnowledgeBaseSummary(values: Array<Record<string, unknown>> =
 function searchRefKey(ref: SearchEvidenceRef) {
   const sourceId = normalizeSearchRefIdentity(ref.source_item_id);
   const chunkId = normalizeSearchRefIdentity(ref.chunk_id);
+  if (sourceId && chunkId) {
+    return `source:${sourceId}:chunk:${chunkId}`;
+  }
+  const passageId = normalizeSearchRefIdentity(ref.passage_window_id);
+  if (sourceId && passageId) {
+    return `source:${sourceId}:passage:${passageId}`;
+  }
   if (sourceId) {
     return `source:${sourceId}`;
   }
   if (chunkId) {
-    return `source:${sourceId}:chunk:${chunkId}`;
+    return `chunk:${chunkId}`;
   }
-  const passageId = normalizeSearchRefIdentity(ref.passage_window_id);
   if (passageId) {
     return `passage:${passageId}`;
   }

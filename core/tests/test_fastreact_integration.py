@@ -9,12 +9,13 @@ import json
 from pathlib import Path
 import subprocess
 import threading
+from typing import Any
 
 import pytest
 from http.server import ThreadingHTTPServer
 
 from pska_core.acl import ACLService
-from pska_core.agentic_service import AgenticServiceError, _agentic_messages, normalize_agentic_event_response
+from pska_core.agentic_service import AgenticServiceError, FastreactAgenticServiceAdapter, _agentic_messages, normalize_agentic_event_response
 from pska_core.api import (
     PSKAApi,
     PSKARequestHandler,
@@ -27,6 +28,7 @@ from pska_core.api import (
     _ask_public_trace_event,
     _ask_query_terms,
     _ask_requested_fact_labels,
+    _ask_with_quality_signals,
     _ask_quick_answer,
     _ask_route_intent,
     _ask_retrieval_from_agentic_trace,
@@ -256,6 +258,79 @@ def test_fastreact_client_sends_empty_skills_to_disable_autoselection(monkeypatc
 
     assert response["run_id"] == "run_no_skills"
     assert captured["payload"]["skills"] == []
+
+
+def test_fastreact_agentic_adapter_mirrors_tool_policy_scope_to_run_metadata() -> None:
+    captured: dict[str, Any] = {}
+
+    class CapturingFastreactClient:
+        def chat_completion(
+            self,
+            *,
+            messages,
+            user_id,
+            tenant_id=None,
+            purpose,
+            stream=False,
+            scope=None,
+            session_id=None,
+            skills=None,
+            tool_policy=None,
+            **_kwargs,
+        ):
+            captured.update(
+                {
+                    "messages": messages,
+                    "user_id": user_id,
+                    "tenant_id": tenant_id,
+                    "purpose": purpose,
+                    "stream": stream,
+                    "scope": scope,
+                    "session_id": session_id,
+                    "skills": skills,
+                    "tool_policy": tool_policy,
+                }
+            )
+            return {"content": "ok"}
+
+        def create_run(self, **_kwargs):
+            raise FastreactError("POST /v1/runs failed with HTTP 404: not found")
+
+    user = User("user_primary", "Primary User", UserRole.ADMIN, tenant_id="tenant_acme")
+    adapter = FastreactAgenticServiceAdapter(
+        client=CapturingFastreactClient(),
+    )
+
+    adapter.search(
+        "Find alpha evidence",
+        user,
+        represented_user_id="user_primary",
+        max_iterations=7,
+        skills=["pska_answer_with_citations"],
+        session_id="ask-session",
+        tool_policy={
+            "mode": "allowlist",
+            "allowed_tools": ["pska_pska_search"],
+            "scope": {
+                "mode": "hard",
+                "scope_mode": "hard",
+                "knowledge_base_ids": ["kb_alpha"],
+                "source_item_ids": ["src_alpha"],
+            },
+        },
+    )
+
+    assert captured["scope"]["tool_policy_scope"] == {
+        "mode": "hard",
+        "scope_mode": "hard",
+        "knowledge_base_ids": ["kb_alpha"],
+        "source_item_ids": ["src_alpha"],
+    }
+    assert captured["scope"]["knowledge_base_ids"] == ["kb_alpha"]
+    assert captured["scope"]["source_item_ids"] == ["src_alpha"]
+    assert captured["scope"]["scope_mode"] == "hard"
+    assert captured["scope"]["represented_user_id"] == "user_primary"
+    assert captured["scope"]["max_iterations"] == 7
 
 
 def test_agentic_search_prompt_routes_pska_queries_to_pska_skill_tools() -> None:
@@ -4162,8 +4237,13 @@ def test_workspace_ask_quick_returns_report_ready_answer_and_evidence() -> None:
     assert "status is active" in payload["answer"]
     assert "Ask Quick Note" not in payload["answer"]
     assert "---" not in payload["answer"]
+    assert "[1]" in payload["answer"]
     assert payload["citations"][0]["title"] == "Ask Quick Note"
+    assert payload["citation_markers"][0]["marker"] == "[1]"
+    assert payload["citation_markers"][0]["source_item_id"] == payload["citations"][0]["source_item_id"]
     assert payload["evidence"]["source_refs"] == payload["citations"]
+    assert payload["evidence"]["citation_markers"] == payload["citation_markers"]
+    assert payload["citation_audit"]["inline_marker_policy"] in {"appended", "preserved"}
     assert payload["timing"]["time_to_first_answer_ms"] >= 0
     assert payload["quality_signals"]["schema"] == "pska.ask_quality_signals.v1"
     assert payload["quality_signals"]["quality_band"] == "grounded"
@@ -4172,6 +4252,161 @@ def test_workspace_ask_quick_returns_report_ready_answer_and_evidence() -> None:
     assert payload["quality_signals"]["evidence_result_count"] >= 1
     assert payload["quality_signals"]["retrieval_owner"] == "pska"
     assert payload["quality_signals"]["time_to_first_agent_event_ms"] >= 0
+
+
+def test_ask_quality_signals_adds_inline_citation_markers() -> None:
+    citation = {
+        "source_item_id": "src_report",
+        "chunk_id": "chk_revenue",
+        "title": "Annual Report",
+        "snippet": "Revenue was 42 and margin was 9 percent.",
+    }
+    payload = {
+        "ok": True,
+        "query": "What was revenue?",
+        "answer": "Revenue was 42 and margin was 9 percent.",
+        "route": {"selected_intent": "quick", "retrieval_owner": "pska", "surface": "ask"},
+        "evidence": {"citations": [citation], "source_refs": [citation], "results": [citation]},
+        "citations": [citation],
+        "source_refs": [citation],
+        "trace": {},
+        "timing": {"total_ms": 1, "time_to_first_answer_ms": 1},
+    }
+
+    enriched = _ask_with_quality_signals(payload)
+
+    assert enriched["answer"].endswith("[1]")
+    assert enriched["citation_markers"][0]["marker"] == "[1]"
+    assert enriched["citation_markers"][0]["source_item_id"] == "src_report"
+    assert enriched["citation_markers"][0]["chunk_id"] == "chk_revenue"
+    assert enriched["evidence"]["citation_markers"] == enriched["citation_markers"]
+    assert enriched["citation_audit"]["inline_marker_policy"] == "appended"
+    assert enriched["citation_audit"]["markers"] == enriched["citation_markers"]
+
+
+def test_ask_quality_signals_binds_claims_to_distinct_citation_markers() -> None:
+    revenue = {
+        "source_item_id": "src_revenue",
+        "chunk_id": "chk_revenue",
+        "title": "Revenue Report",
+        "snippet": "Revenue was 42.",
+    }
+    profit = {
+        "source_item_id": "src_profit",
+        "chunk_id": "chk_profit",
+        "title": "Profit Report",
+        "snippet": "Profit was 9.",
+    }
+    payload = {
+        "ok": True,
+        "query": "Compare revenue and profit.",
+        "answer": "Revenue was 42. Profit was 9.",
+        "route": {"selected_intent": "quick", "retrieval_owner": "pska", "surface": "ask"},
+        "evidence": {"citations": [revenue, profit], "source_refs": [revenue, profit], "results": [revenue, profit]},
+        "citations": [revenue, profit],
+        "source_refs": [revenue, profit],
+        "trace": {},
+        "timing": {"total_ms": 1, "time_to_first_answer_ms": 1},
+    }
+
+    enriched = _ask_with_quality_signals(payload)
+
+    assert "Revenue was 42.[1]" in enriched["answer"]
+    assert "Profit was 9.[2]" in enriched["answer"]
+    assert [marker["marker"] for marker in enriched["citation_markers"][:2]] == ["[1]", "[2]"]
+    bindings = enriched["citation_audit"]["claim_bindings"]
+    assert bindings[0]["marker"] == "[1]"
+    assert bindings[0]["citation_indexes"] == [0]
+    assert bindings[1]["marker"] == "[2]"
+    assert bindings[1]["citation_indexes"] == [1]
+    assert enriched["citation_audit"]["inline_marker_policy"] == "appended"
+
+
+def test_ask_quality_signals_repairs_misaligned_inline_citation_markers() -> None:
+    revenue = {
+        "source_item_id": "src_revenue",
+        "chunk_id": "chk_revenue",
+        "title": "Revenue Report",
+        "snippet": "Revenue was 42.",
+    }
+    profit = {
+        "source_item_id": "src_profit",
+        "chunk_id": "chk_profit",
+        "title": "Profit Report",
+        "snippet": "Profit was 9.",
+    }
+    payload = {
+        "ok": True,
+        "query": "Compare revenue and profit.",
+        "answer": "Revenue was 42.[2] Profit was 9.[1]",
+        "route": {"selected_intent": "quick", "retrieval_owner": "pska", "surface": "ask"},
+        "evidence": {"citations": [revenue, profit], "source_refs": [revenue, profit], "results": [revenue, profit]},
+        "citations": [revenue, profit],
+        "source_refs": [revenue, profit],
+        "trace": {},
+        "timing": {"total_ms": 1, "time_to_first_answer_ms": 1},
+    }
+
+    enriched = _ask_with_quality_signals(payload)
+
+    assert "Revenue was 42.[1]" in enriched["answer"]
+    assert "Profit was 9.[2]" in enriched["answer"]
+    assert enriched["citation_audit"]["inline_marker_policy"] == "repaired"
+    assert enriched["citation_audit"]["claim_bindings"][0]["previous_markers"] == ["[2]"]
+    assert enriched["citation_audit"]["claim_bindings"][1]["previous_markers"] == ["[1]"]
+
+
+def test_ask_quality_signals_binds_markdown_table_rows_to_citations() -> None:
+    revenue = {
+        "source_item_id": "src_revenue",
+        "chunk_id": "chk_revenue",
+        "title": "Revenue Report",
+        "snippet": "Revenue 42.",
+    }
+    status = {
+        "source_item_id": "src_status",
+        "chunk_id": "chk_status",
+        "title": "Status Report",
+        "snippet": "Status active.",
+    }
+    payload = {
+        "ok": True,
+        "query": "Summarize revenue and status.",
+        "answer": "| Metric | Value |\n| --- | --- |\n| Revenue | 42 |\n| Status | active |",
+        "route": {"selected_intent": "quick", "retrieval_owner": "pska", "surface": "ask"},
+        "evidence": {"citations": [revenue, status], "source_refs": [revenue, status], "results": [revenue, status]},
+        "citations": [revenue, status],
+        "source_refs": [revenue, status],
+        "trace": {},
+        "timing": {"total_ms": 1, "time_to_first_answer_ms": 1},
+    }
+
+    enriched = _ask_with_quality_signals(payload)
+
+    assert "| Revenue | 42 [1] |" in enriched["answer"]
+    assert "| Status | active [2] |" in enriched["answer"]
+    assert [binding["marker"] for binding in enriched["citation_audit"]["claim_bindings"]] == ["[1]", "[2]"]
+
+
+def test_ask_quality_signals_preserves_existing_inline_citation_markers() -> None:
+    citation = {"source_item_id": "src_report", "chunk_id": "chk_revenue", "title": "Annual Report"}
+    payload = {
+        "ok": True,
+        "query": "What was revenue?",
+        "answer": "Revenue was 42.[1]",
+        "route": {"selected_intent": "quick", "retrieval_owner": "pska", "surface": "ask"},
+        "evidence": {"citations": [citation], "source_refs": [citation], "results": [citation]},
+        "citations": [citation],
+        "source_refs": [citation],
+        "trace": {},
+        "timing": {"total_ms": 1, "time_to_first_answer_ms": 1},
+    }
+
+    enriched = _ask_with_quality_signals(payload)
+
+    assert enriched["answer"] == "Revenue was 42.[1]"
+    assert enriched["citation_audit"]["inline_marker_policy"] == "preserved"
+    assert enriched["citation_markers"][0]["marker"] == "[1]"
 
 
 def test_workspace_ask_quick_explains_no_visible_evidence() -> None:
@@ -4402,7 +4637,9 @@ def test_workspace_ask_deep_uses_fastreact_readonly_tool_policy() -> None:
         "soft_iteration_budget": 4,
         "hard_max_iterations": 12,
     }
-    assert payload["answer"] == "Fake external agentic answer."
+    assert payload["answer"] == "Fake external agentic answer.[1]"
+    assert payload["citation_markers"][0]["marker"] == "[1]"
+    assert payload["citation_markers"][0]["source_item_id"] == payload["source_refs"][0]["source_item_id"]
     assert [step["phase"] for step in payload["agent_steps"][:4]] == ["understand", "think", "search", "read"]
     assert payload["timing"]["time_to_first_agent_event_ms"] >= 0
     call = api.agentic_service.calls[0]
@@ -4499,6 +4736,140 @@ def test_workspace_ask_deep_passes_knowledge_base_scope_to_mcp_policy() -> None:
     assert policy_scope["scope_mode"] == "hard"
     assert beta_source_id not in source_ids
     assert source_ids <= {alpha_source_id}
+
+
+def test_workspace_ask_deep_scope_guard_falls_back_to_scoped_direct_retrieval() -> None:
+    api = _api()
+    IngestService(api.store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "workspace-ask-scope-guard-alpha",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "Scope Guard Alpha",
+            "content": {"text": "scopeguardtoken alpha revenue is 1234 and is the only selected evidence."},
+        }
+    )
+    IngestService(api.store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "workspace-ask-scope-guard-beta",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "Scope Guard Beta",
+            "content": {"text": "scopeguardtoken beta revenue is 9999 and should stay outside the selected KB."},
+        }
+    )
+    alpha_source_id = next(item.source_item_id for item in api.store.list_source_items() if item.source_id == "workspace-ask-scope-guard-alpha")
+    beta_source = next(item for item in api.store.list_source_items() if item.source_id == "workspace-ask-scope-guard-beta")
+    alpha_kb = KnowledgeBase("kb_scope_guard_alpha", "user_primary", "Scope Guard Alpha KB")
+    beta_kb = KnowledgeBase("kb_scope_guard_beta", "user_primary", "Scope Guard Beta KB")
+    api.store.upsert_knowledge_base(alpha_kb)
+    api.store.upsert_knowledge_base(beta_kb)
+    api.store.add_knowledge_base_source_item(
+        KnowledgeBaseSourceItem(
+            knowledge_base_id=alpha_kb.knowledge_base_id,
+            source_item_id=alpha_source_id,
+            owner_user_id="user_primary",
+            added_by_user_id="user_primary",
+        )
+    )
+    api.store.add_knowledge_base_source_item(
+        KnowledgeBaseSourceItem(
+            knowledge_base_id=beta_kb.knowledge_base_id,
+            source_item_id=beta_source.source_item_id,
+            owner_user_id="user_primary",
+            added_by_user_id="user_primary",
+        )
+    )
+
+    class OutOfScopeDeepAgenticService:
+        def ready(self):
+            return {"ok": True, "provider": "test", "adapter": "out_of_scope"}
+
+        def search(self, *_args, **_kwargs):
+            raise AgenticServiceError("quick synthesis unavailable")
+
+        def search_event_stream(
+            self,
+            query,
+            _user,
+            *,
+            represented_user_id=None,
+            max_iterations=3,
+            skills=None,
+            tool_policy=None,
+            session_id=None,
+        ):
+            beta_retrieval = {
+                "results": [
+                    {
+                        "source_item_id": beta_source.source_item_id,
+                        "title": beta_source.title,
+                        "snippet": beta_source.content_text,
+                        "citation": {"source_item_id": beta_source.source_item_id, "title": beta_source.title},
+                    }
+                ],
+                "citations": [{"source_item_id": beta_source.source_item_id, "title": beta_source.title}],
+            }
+            yield {"type": "session_start", "content": query, "session_id": session_id or "scope-guard", "event_id": "guard:0"}
+            yield {
+                "type": "tool_call",
+                "tool_name": "pska_pska_search",
+                "tool_args": {"query": "scopeguardtoken", "source_item_ids": [beta_source.source_item_id]},
+                "tool_call_id": "call-out-of-scope",
+                "session_id": session_id or "scope-guard",
+                "event_id": "guard:1",
+            }
+            yield {
+                "type": "tool_result",
+                "tool_name": "pska_pska_search",
+                "content": json.dumps(beta_retrieval, ensure_ascii=False),
+                "tool_call_id": "call-out-of-scope",
+                "session_id": session_id or "scope-guard",
+                "event_id": "guard:2",
+            }
+            yield {
+                "type": "session_end",
+                "content": json.dumps(
+                    {
+                        "answer": "Out-of-scope beta answer says revenue is 9999.",
+                        "retrieval": beta_retrieval,
+                        "source_refs": [{"source_item_id": beta_source.source_item_id}],
+                    },
+                    ensure_ascii=False,
+                ),
+                "session_id": session_id or "scope-guard",
+                "event_id": "guard:3",
+            }
+
+    api.agentic_service = OutOfScopeDeepAgenticService()
+
+    payload = api.workspace_ask(
+        {
+            "query": "请基于 scopeguardtoken 回答 alpha revenue 是多少。",
+            "intent": "deep",
+            "skip_intent_classifier": True,
+            "user_id": "user_primary",
+            "represented_user_id": "user_primary",
+            "scope": {"mode": "hard", "knowledge_base_ids": [alpha_kb.knowledge_base_id]},
+        }
+    )
+
+    assert payload["ok"] is True
+    assert payload["route"]["retrieval_owner"] == "pska"
+    assert payload["route"]["fallback_from"] == "deep"
+    assert payload["trace"]["fallback_reason"] == "deep_scope_guard_scoped_retrieval"
+    assert payload["trace"]["deep_scope_guard"]["dropped_citation_count"] >= 1
+    assert {ref["source_item_id"] for ref in payload["source_refs"]} == {alpha_source_id}
+    assert "1234" in payload["answer"]
+    assert "9999" not in payload["answer"]
 
 
 def test_ask_public_trace_event_preserves_scope_audit_fields() -> None:

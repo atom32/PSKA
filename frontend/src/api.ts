@@ -1418,7 +1418,9 @@ function applyAskSseEvent(result: WorkspaceAskResponse, event: string, data: Rec
   if (event === "evidence") {
     result.evidence = isRecord(data.evidence) ? data.evidence as WorkspaceAskResponse["evidence"] : result.evidence;
     result.citations = Array.isArray(data.citations) ? data.citations as Array<Record<string, unknown>> : result.citations;
-    result.source_refs = result.evidence?.source_refs || result.citations;
+    const evidenceSourceRefs = Array.isArray(result.evidence?.source_refs) ? result.evidence.source_refs as Array<Record<string, unknown>> : [];
+    result.source_refs = evidenceSourceRefs.length ? evidenceSourceRefs : (Array.isArray(data.source_refs) ? data.source_refs as Array<Record<string, unknown>> : result.citations);
+    result.citation_markers = Array.isArray(data.citation_markers) ? data.citation_markers as Array<Record<string, unknown>> : result.citation_markers;
     result.citation_audit = isRecord(data.citation_audit) ? data.citation_audit as WorkspaceAskResponse["citation_audit"] : result.citation_audit;
     result.evidence_check = isRecord(data.evidence_check) ? data.evidence_check : result.evidence_check;
     result.quality_signals = isRecord(data.quality_signals) ? data.quality_signals : result.quality_signals;
@@ -1459,6 +1461,9 @@ function applyAskSseEvent(result: WorkspaceAskResponse, event: string, data: Rec
     }
     if (Array.isArray(data.source_refs)) {
       result.source_refs = data.source_refs as Array<Record<string, unknown>>;
+    }
+    if (Array.isArray(data.citation_markers)) {
+      result.citation_markers = data.citation_markers as Array<Record<string, unknown>>;
     }
     if (isRecord(data.evidence)) {
       result.evidence = data.evidence as WorkspaceAskResponse["evidence"];

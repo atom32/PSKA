@@ -12,7 +12,7 @@ from pathlib import Path
 import re
 import sys
 import time
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 from urllib.parse import parse_qs, unquote, urlparse
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
@@ -2241,24 +2241,38 @@ class PSKAApi:
                     tool_policy=tool_policy,
                     session_id=session_id,
                 )
-                return _ask_with_quality_signals(
-                    _ask_deep_response(
-                        query=query,
-                        intent=intent,
-                        surface=surface,
-                        tenant_id=tenant_id,
-                        owner_user_id=owner_user_id,
-                        selected_intent=selected_intent,
-                        understand=understand,
-                        agentic=deep,
-                        started_at=started_at,
-                        allowed_tools=ASK_READ_ONLY_TOOLS,
-                        tool_policy=tool_policy,
-                        store=self.store,
-                        soft_iteration_budget=soft_iteration_budget,
-                        hard_max_iterations=hard_max_iterations,
-                    )
+                deep_payload = _ask_deep_response(
+                    query=query,
+                    intent=intent,
+                    surface=surface,
+                    tenant_id=tenant_id,
+                    owner_user_id=owner_user_id,
+                    selected_intent=selected_intent,
+                    understand=understand,
+                    agentic=deep,
+                    started_at=started_at,
+                    allowed_tools=ASK_READ_ONLY_TOOLS,
+                    tool_policy=tool_policy,
+                    store=self.store,
+                    soft_iteration_budget=soft_iteration_budget,
+                    hard_max_iterations=hard_max_iterations,
                 )
+                fallback_payload = self._workspace_ask_deep_scope_guard_fallback(
+                    deep_payload,
+                    query=query,
+                    scope=scope,
+                    intent=intent,
+                    surface=surface,
+                    tenant_id=tenant_id,
+                    owner_user_id=owner_user_id,
+                    represented_user_id=represented_user_id,
+                    user=user,
+                    top_k=top_k,
+                    started_at=started_at,
+                    understand=understand,
+                    session_id=session_id,
+                )
+                return _ask_with_quality_signals(fallback_payload or deep_payload)
             except AgenticServiceError as exc:
                 quick = self._workspace_ask_quick(
                     query=query,
@@ -2341,6 +2355,64 @@ class PSKAApi:
             tool_policy=tool_policy,
             session_id=session_id,
         )
+
+    def _workspace_ask_deep_scope_guard_fallback(
+        self,
+        deep_payload: dict[str, Any],
+        *,
+        query: str,
+        scope: dict[str, Any],
+        intent: str,
+        surface: str,
+        tenant_id: str,
+        owner_user_id: str,
+        represented_user_id: str,
+        user: Any,
+        top_k: int,
+        started_at: float,
+        understand: dict[str, Any],
+        session_id: str | None,
+        agent_steps: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any] | None:
+        if not _ask_deep_needs_scoped_direct_fallback(deep_payload):
+            return None
+        steps = list(agent_steps or _list_of_dicts(deep_payload.get("agent_steps")))
+        steps.append(
+            _ask_agent_step(
+                sequence=len(steps) + 1,
+                phase="search",
+                status="running",
+                title="使用当前范围重新检索",
+                detail="Deep Ask 返回的引用未通过当前资料库范围校验，已用相同 scope 重新检索。",
+                started_at=started_at,
+            )
+        )
+        fallback = self._workspace_ask_quick(
+            query=query,
+            scope=scope,
+            intent=intent,
+            surface=surface,
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            represented_user_id=represented_user_id,
+            user=user,
+            top_k=top_k,
+            started_at=started_at,
+            agent_steps=steps,
+            understand=understand,
+            session_id=session_id,
+        )
+        fallback["ok"] = str(fallback.get("answer_type") or "") != "no_answer"
+        route = dict(fallback.get("route") if isinstance(fallback.get("route"), dict) else {})
+        route["fallback_from"] = "deep"
+        route["fallback_reason"] = "deep_scope_guard_scoped_retrieval"
+        route["requested_selected_intent"] = "deep"
+        fallback["route"] = route
+        trace = dict(fallback.get("trace") if isinstance(fallback.get("trace"), dict) else {})
+        trace["fallback_reason"] = "deep_scope_guard_scoped_retrieval"
+        trace["deep_scope_guard"] = _ask_deep_scope_guard_payload(deep_payload)
+        fallback["trace"] = trace
+        return fallback
 
     def workspace_ask_event_stream(self, payload: dict[str, Any], context: RequestContext | None = None):
         started_at = time.perf_counter()
@@ -2596,7 +2668,25 @@ class PSKAApi:
             soft_iteration_budget=soft_iteration_budget,
             hard_max_iterations=hard_max_iterations,
         )
-        final_payload["agent_steps"] = agent_steps or _ask_agent_steps_from_events(raw_events)
+        fallback_payload = self._workspace_ask_deep_scope_guard_fallback(
+            final_payload,
+            query=query,
+            scope=scope,
+            intent=intent,
+            surface=surface,
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            represented_user_id=represented_user_id,
+            user=user,
+            top_k=top_k,
+            started_at=started_at,
+            understand=understand,
+            session_id=session_id,
+            agent_steps=agent_steps or _ask_agent_steps_from_events(raw_events),
+        )
+        final_payload = fallback_payload or final_payload
+        if not fallback_payload:
+            final_payload["agent_steps"] = agent_steps or _ask_agent_steps_from_events(raw_events)
         final_payload["timing"]["time_to_first_agent_event_ms"] = time_to_first_agent_event_ms
         final_payload = _ask_with_quality_signals(final_payload)
         for event_name, event_payload in _ask_sse_events(final_payload):
@@ -9338,7 +9428,9 @@ def _ask_deep_query(*, query: str, surface: str, scope: dict[str, Any], soft_ite
         "instead of starting another broad search.\n"
         "Return JSON with keys answer, citations, source_refs, retrieval, and trace. The answer must be "
         "Chinese by default, conclusion-first, useful as report evidence, and grounded in citations when "
-        "PSKA returns evidence. If evidence is insufficient, say what is missing.\n\n"
+        "PSKA returns evidence. Put inline citation markers such as [1] or [2] after important facts, "
+        "numbers, and claims, where the marker number corresponds to the order of source_refs/citations. "
+        "If evidence is insufficient, say what is missing.\n\n"
         f"Surface: {surface}\n"
         f"Scope: {scope_text}\n"
         f"User question: {query}"
@@ -9686,6 +9778,8 @@ def _ask_quick_synthesis_prompt(
         "Answer the user's question in natural human language, not as raw evidence snippets. Preserve exact "
         "numbers, units, entity names, dates, row identifiers, and table field values from the evidence. "
         "Every explicitly requested field/value that appears in evidence_claims must be represented in the answer. "
+        "Add inline citation markers such as [1] or [2] after important facts, numbers, and claims, where "
+        "the marker number corresponds to the order of the cited Evidence Set records. "
         "If the evidence has multiple candidate values, explain the distinction briefly instead of guessing. "
         "If the evidence is insufficient, say so clearly.\n"
         "Return ONLY JSON: {\"answer\": \"...\"}. The answer should be Chinese by default, concise, "
@@ -11432,6 +11526,61 @@ def _ask_deep_response(
     }
 
 
+def _ask_deep_needs_scoped_direct_fallback(payload: dict[str, Any]) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    route = payload.get("route") if isinstance(payload.get("route"), dict) else {}
+    if route.get("retrieval_owner") != "fastreact_pska_mcp":
+        return False
+    scope_applied = route.get("scope_applied") if isinstance(route.get("scope_applied"), dict) else {}
+    if not _ask_scope_applied_is_hard(scope_applied):
+        return False
+    evidence = payload.get("evidence") if isinstance(payload.get("evidence"), dict) else {}
+    if _list_of_dicts(payload.get("citations")) or _list_of_dicts(payload.get("source_refs")):
+        return False
+    if _list_of_dicts(evidence.get("citations")) or _list_of_dicts(evidence.get("source_refs")) or _list_of_dicts(evidence.get("results")):
+        return False
+    evidence_check = payload.get("evidence_check") if isinstance(payload.get("evidence_check"), dict) else {}
+    if evidence_check.get("status") == "supported":
+        return False
+    reasons = set(_string_list(payload.get("no_answer_reasons")) + _string_list(evidence_check.get("no_answer_reasons")))
+    dropped = _list_of_dicts(evidence_check.get("dropped_citations"))
+    trace = payload.get("trace") if isinstance(payload.get("trace"), dict) else {}
+    dropped_refs = _list_of_dicts(trace.get("dropped_source_refs"))
+    has_scope_drop = bool(dropped_refs) or any(str(item.get("drop_reason") or item.get("reason") or "") == "scope_violation" for item in dropped)
+    fallback_reasons = {
+        "all_citations_dropped",
+        "scope_violation",
+        "tenant_or_owner_mismatch",
+        "no_supporting_citations_after_evidence_check",
+        "no_retrieval_results",
+    }
+    return str(payload.get("answer_type") or "") == "no_answer" and (has_scope_drop or bool(reasons & fallback_reasons))
+
+
+def _ask_scope_applied_is_hard(scope_applied: dict[str, Any]) -> bool:
+    if not isinstance(scope_applied, dict):
+        return False
+    mode = str(scope_applied.get("mode") or scope_applied.get("scope_mode") or "").strip().lower()
+    return mode == "hard" or bool(_string_list(scope_applied.get("knowledge_base_ids")) or _string_list(scope_applied.get("source_item_ids")))
+
+
+def _ask_deep_scope_guard_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    route = payload.get("route") if isinstance(payload.get("route"), dict) else {}
+    trace = payload.get("trace") if isinstance(payload.get("trace"), dict) else {}
+    evidence_check = payload.get("evidence_check") if isinstance(payload.get("evidence_check"), dict) else {}
+    return {
+        "schema": "pska.ask_deep_scope_guard.v1",
+        "reason": "deep_scope_guard_scoped_retrieval",
+        "deep_answer_type": payload.get("answer_type"),
+        "deep_retrieval_owner": route.get("retrieval_owner"),
+        "scope_applied": route.get("scope_applied") if isinstance(route.get("scope_applied"), dict) else {},
+        "deep_no_answer_reasons": _string_list(payload.get("no_answer_reasons")) or _string_list(evidence_check.get("no_answer_reasons")),
+        "dropped_citation_count": len(_list_of_dicts(evidence_check.get("dropped_citations"))),
+        "dropped_source_ref_count": len(_list_of_dicts(trace.get("dropped_source_refs"))),
+    }
+
+
 def _ask_agent_steps_from_events(events: list[Any]) -> list[dict[str, Any]]:
     steps: list[dict[str, Any]] = []
     for event in events:
@@ -11755,6 +11904,7 @@ def _ask_with_quality_signals(payload: dict[str, Any]) -> dict[str, Any]:
         enriched["source_windows"] = _list_of_dicts(evidence.get("source_windows"))
     if "scope_applied" not in enriched:
         enriched["scope_applied"] = route.get("scope_applied") if isinstance(route.get("scope_applied"), dict) else {}
+    enriched = _ask_apply_answer_citation_markers(enriched)
     if not _list_of_dicts(enriched.get("progress")):
         progress = [_ask_progress_from_step(step) for step in _list_of_dicts(enriched.get("agent_steps"))]
         quality = enriched.get("quality_signals") if isinstance(enriched.get("quality_signals"), dict) else {}
@@ -11767,6 +11917,427 @@ def _ask_with_quality_signals(payload: dict[str, Any]) -> dict[str, Any]:
             for item in _list_of_dicts(enriched.get("progress"))
         ]
     return enriched
+
+
+def _ask_apply_answer_citation_markers(payload: dict[str, Any]) -> dict[str, Any]:
+    answer = str(payload.get("answer") or "")
+    citations = _ask_answer_marker_citations(payload)
+    markers = _ask_citation_markers(citations)
+    enriched = dict(payload)
+    enriched["citation_markers"] = markers
+    if isinstance(enriched.get("evidence"), dict):
+        enriched["evidence"] = {**enriched["evidence"], "citation_markers": markers}
+    citation_audit = dict(enriched.get("citation_audit") if isinstance(enriched.get("citation_audit"), dict) else {})
+    citation_audit["markers"] = markers
+    if not answer.strip() or not citations or str(payload.get("answer_type") or "") == "no_answer":
+        citation_audit["inline_marker_policy"] = "not_applicable"
+        enriched["citation_audit"] = citation_audit
+        return enriched
+    marked_answer, binding_audit = _ask_mark_answer_with_citations(answer, citations)
+    enriched["answer"] = marked_answer
+    citation_audit["inline_marker_policy"] = binding_audit["policy"]
+    citation_audit["binding_strategy"] = "claim_level_overlap"
+    citation_audit["claim_bindings"] = binding_audit["claim_bindings"]
+    enriched["citation_audit"] = citation_audit
+    return enriched
+
+
+def _ask_answer_marker_citations(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    evidence = payload.get("evidence") if isinstance(payload.get("evidence"), dict) else {}
+    refs = (
+        _list_of_dicts(payload.get("source_refs"))
+        or _list_of_dicts(payload.get("citations"))
+        or _list_of_dicts(evidence.get("source_refs"))
+        or _list_of_dicts(evidence.get("citations"))
+    )
+    return _dedupe_source_ref_dicts(refs)[:20]
+
+
+def _ask_citation_markers(citations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    markers: list[dict[str, Any]] = []
+    for index, citation in enumerate(citations, start=1):
+        markers.append(
+            {
+                "marker": f"[{index}]",
+                "citation_index": index - 1,
+                "citation_key": list(_ask_citation_key(citation)),
+                "source_ref": citation,
+                "title": citation.get("title"),
+                "source_item_id": citation.get("source_item_id"),
+                "document_id": citation.get("document_id"),
+                "chunk_id": citation.get("chunk_id") or citation.get("passage_window_id"),
+            }
+        )
+    return markers
+
+
+def _ask_answer_has_valid_citation_marker(answer: str, *, citation_count: int) -> bool:
+    if citation_count <= 0:
+        return False
+    for match in re.finditer(r"\[(?P<markers>\d{1,2}(?:\s*,\s*\d{1,2})*)\]", str(answer or "")):
+        for raw in re.split(r"\s*,\s*", match.group("markers")):
+            try:
+                marker = int(raw)
+            except ValueError:
+                continue
+            if 1 <= marker <= citation_count:
+                return True
+    return False
+
+
+def _ask_mark_answer_with_citations(answer: str, citations: list[dict[str, Any]]) -> tuple[str, dict[str, Any]]:
+    lines = str(answer or "").splitlines()
+    claim_bindings: list[dict[str, Any]] = []
+    actions: set[str] = set()
+    if any(line.lstrip().startswith("|") for line in lines):
+        marked_answer, table_bindings, table_actions = _ask_mark_table_answer_with_citations(answer, citations)
+        claim_bindings.extend(table_bindings)
+        actions.update(table_actions)
+        return marked_answer, {"policy": _ask_inline_marker_policy(actions), "claim_bindings": claim_bindings}
+    marked_lines: list[str] = []
+    in_code_block = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_code_block = not in_code_block
+            marked_lines.append(line)
+            continue
+        if in_code_block or not stripped or stripped.startswith("#"):
+            marked_lines.append(line)
+            continue
+        marked_line, line_bindings, action = _ask_mark_claim_line_with_citations(line, citations)
+        marked_lines.append(marked_line)
+        claim_bindings.extend(line_bindings)
+        actions.add(action)
+    marked = "\n".join(marked_lines).strip()
+    if not _ask_answer_has_valid_citation_marker(marked, citation_count=len(citations)):
+        binding = _ask_citation_binding_for_text(answer, citations)
+        marked = _ask_append_source_line(answer, binding["marker"])
+        claim_bindings.append(_ask_claim_binding_payload(answer, binding, action="appended"))
+        actions.add("appended")
+    return marked, {"policy": _ask_inline_marker_policy(actions), "claim_bindings": claim_bindings}
+
+
+def _ask_inline_marker_policy(actions: set[str]) -> str:
+    if not actions:
+        return "not_applicable"
+    if "repaired" in actions:
+        return "repaired"
+    if "appended" in actions:
+        return "appended"
+    return "preserved"
+
+
+def _ask_mark_claim_line_with_citations(line: str, citations: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]], str]:
+    spans = _ask_claim_segment_spans(line)
+    if not spans:
+        return line, [], "preserved"
+    parts: list[str] = []
+    bindings: list[dict[str, Any]] = []
+    actions: set[str] = set()
+    cursor = 0
+    for start, end in spans:
+        parts.append(line[cursor:start])
+        segment = line[start:end]
+        marked_segment, binding, action = _ask_mark_claim_segment_with_citations(segment, citations)
+        parts.append(marked_segment)
+        if binding:
+            bindings.append(binding)
+        actions.add(action)
+        cursor = end
+    parts.append(line[cursor:])
+    return "".join(parts), bindings, _ask_inline_marker_policy(actions)
+
+
+def _ask_mark_claim_segment_with_citations(segment: str, citations: list[dict[str, Any]]) -> tuple[str, dict[str, Any] | None, str]:
+    if not _ask_is_citable_claim_segment(segment):
+        return segment, None, "preserved"
+    clean_segment = _ask_strip_inline_citation_markers(segment).rstrip()
+    binding = _ask_citation_binding_for_text(clean_segment, citations)
+    existing_indexes = _ask_existing_citation_marker_indexes(segment, citation_count=len(citations))
+    if existing_indexes:
+        existing_score = max(
+            (_ask_citation_support_for_text(clean_segment, citations[index])["score"] for index in existing_indexes),
+            default=0,
+        )
+        if set(existing_indexes) == set(binding["citation_indexes"]) or existing_score >= binding["score"]:
+            return segment, _ask_claim_binding_payload(clean_segment, binding, action="preserved"), "preserved"
+        marked = _ask_append_inline_citation_marker(clean_segment, binding["marker"])
+        return marked, _ask_claim_binding_payload(clean_segment, binding, action="repaired", previous_markers=[f"[{index + 1}]" for index in existing_indexes]), "repaired"
+    marked = _ask_append_inline_citation_marker(clean_segment, binding["marker"])
+    return marked, _ask_claim_binding_payload(clean_segment, binding, action="appended"), "appended"
+
+
+def _ask_mark_table_answer_with_citations(answer: str, citations: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]], set[str]]:
+    lines = str(answer or "").splitlines()
+    marked_lines: list[str] = []
+    bindings: list[dict[str, Any]] = []
+    actions: set[str] = set()
+    seen_table_separator = False
+    for line in lines:
+        if not line.lstrip().startswith("|"):
+            seen_table_separator = False
+            marked_lines.append(line)
+            continue
+        if _ask_is_markdown_table_separator(line):
+            marked_lines.append(line)
+            seen_table_separator = True
+            continue
+        if not seen_table_separator:
+            marked_lines.append(line)
+            continue
+        clean_line = _ask_strip_inline_citation_markers(line).rstrip()
+        binding = _ask_citation_binding_for_text(clean_line, citations)
+        existing_indexes = _ask_existing_citation_marker_indexes(line, citation_count=len(citations))
+        if existing_indexes and set(existing_indexes) == set(binding["citation_indexes"]):
+            marked_lines.append(line)
+            bindings.append(_ask_claim_binding_payload(clean_line, binding, action="preserved"))
+            actions.add("preserved")
+            continue
+        marked_lines.append(_ask_append_markdown_table_row_marker(clean_line, binding["marker"]))
+        action = "repaired" if existing_indexes else "appended"
+        bindings.append(
+            _ask_claim_binding_payload(
+                clean_line,
+                binding,
+                action=action,
+                previous_markers=[f"[{index + 1}]" for index in existing_indexes] if existing_indexes else None,
+            )
+        )
+        actions.add(action)
+    marked = "\n".join(marked_lines).strip()
+    if not _ask_answer_has_valid_citation_marker(marked, citation_count=len(citations)):
+        binding = _ask_citation_binding_for_text(answer, citations)
+        marked = _ask_append_source_line(answer, binding["marker"])
+        bindings.append(_ask_claim_binding_payload(answer, binding, action="appended"))
+        actions.add("appended")
+    return marked, bindings, actions
+
+
+def _ask_claim_segment_spans(line: str) -> list[tuple[int, int]]:
+    if not str(line or "").strip():
+        return []
+    spans: list[tuple[int, int]] = []
+    start = 0
+    boundary_pattern = r"(?:\[\d{1,2}(?:\s*,\s*\d{1,2})*\]|[。！？!?；;]|\.(?=\s+[A-Z\u4e00-\u9fff]|$))(?:\s+|$)"
+    for match in re.finditer(boundary_pattern, line):
+        end = match.end()
+        if line[start:end].strip():
+            spans.append((start, end))
+        start = end
+    if start < len(line) and line[start:].strip():
+        spans.append((start, len(line)))
+    return spans or [(0, len(line))]
+
+
+def _ask_is_citable_claim_segment(segment: str) -> bool:
+    text = _ask_strip_inline_citation_markers(segment).strip()
+    if not text:
+        return False
+    if text.endswith((":", "：")) and not _ask_numeric_values(text):
+        return False
+    return bool(_ask_numeric_values(text) or _ask_evidence_terms(text))
+
+
+def _ask_is_markdown_table_separator(line: str) -> bool:
+    return bool(re.fullmatch(r"\s*\|?[\s|:.-]+\|?\s*", str(line or ""))) and "-" in str(line or "")
+
+
+def _ask_append_markdown_table_row_marker(line: str, marker: str) -> str:
+    if not marker:
+        return line
+    trailing = re.search(r"(\s*)$", line)
+    suffix = trailing.group(1) if trailing else ""
+    body = line[: len(line) - len(suffix)] if suffix else line
+    if body.rstrip().endswith("|"):
+        return f"{body.rstrip()[:-1].rstrip()} {marker} |{suffix}"
+    return _ask_append_inline_citation_marker(line, marker)
+
+
+def _ask_existing_citation_marker_indexes(text: str, *, citation_count: int) -> list[int]:
+    indexes: list[int] = []
+    seen: set[int] = set()
+    if citation_count <= 0:
+        return indexes
+    for match in re.finditer(r"\[(?P<markers>\d{1,2}(?:\s*,\s*\d{1,2})*)\]", str(text or "")):
+        for raw in re.split(r"\s*,\s*", match.group("markers")):
+            try:
+                marker = int(raw)
+            except ValueError:
+                continue
+            index = marker - 1
+            if 0 <= index < citation_count and index not in seen:
+                seen.add(index)
+                indexes.append(index)
+    return indexes
+
+
+def _ask_strip_inline_citation_markers(text: str) -> str:
+    return re.sub(r"\s*\[\d{1,2}(?:\s*,\s*\d{1,2})*\]", "", str(text or ""))
+
+
+def _ask_citation_binding_for_text(text: str, citations: list[dict[str, Any]]) -> dict[str, Any]:
+    if not citations:
+        return {"marker": "", "citation_indexes": [], "score": 0, "matches": []}
+    scored: list[dict[str, Any]] = []
+    for index, citation in enumerate(citations):
+        support = _ask_citation_support_for_text(text, citation)
+        scored.append({**support, "citation_index": index})
+    scored.sort(key=lambda item: (item["score"], bool(item["matched_numbers"]), len(item["matched_terms"])), reverse=True)
+    best = scored[0]
+    selected = [best]
+    for item in scored[1:]:
+        if len(selected) >= 3 or item["score"] <= 0:
+            continue
+        if item["matched_numbers"] and item["score"] >= max(3, best["score"] * 0.45):
+            selected.append(item)
+            continue
+        if not best["matched_numbers"] and item["score"] >= max(2, best["score"] * 0.75):
+            selected.append(item)
+    selected.sort(key=lambda item: item["citation_index"])
+    indexes = [int(item["citation_index"]) for item in selected]
+    marker = "[" + ",".join(str(index + 1) for index in indexes) + "]"
+    return {
+        "marker": marker,
+        "citation_indexes": indexes,
+        "score": int(sum(item["score"] for item in selected)),
+        "matches": selected,
+    }
+
+
+def _ask_citation_support_for_text(text: str, citation: dict[str, Any]) -> dict[str, Any]:
+    citation_text = _ask_citation_support_text(citation).casefold()
+    citation_terms = set(_ask_evidence_terms(citation_text))
+    normalized_citation_text = _ask_normalized_numeric_text(citation_text)
+    matched_numbers: list[str] = []
+    matched_terms: list[str] = []
+    score = 0
+    for value in _ask_numeric_values(text):
+        normalized_value = _ask_normalized_numeric_text(value)
+        if (value and value.casefold() in citation_text) or (normalized_value and normalized_value in normalized_citation_text):
+            matched_numbers.append(value)
+            score += 5
+    for term in _ask_evidence_terms(text):
+        if term in citation_terms or term in citation_text:
+            matched_terms.append(term)
+            score += 1
+    title = str(citation.get("title") or "").casefold()
+    if title and title in str(text or "").casefold():
+        score += 2
+    return {
+        "score": score,
+        "matched_numbers": matched_numbers[:8],
+        "matched_terms": matched_terms[:12],
+    }
+
+
+def _ask_normalized_numeric_text(text: str) -> str:
+    return re.sub(r"[\s,，]", "", str(text or "").casefold())
+
+
+def _ask_citation_support_text(citation: dict[str, Any]) -> str:
+    source_window = citation.get("source_window") if isinstance(citation.get("source_window"), dict) else {}
+    return "\n".join(
+        str(part or "")
+        for part in (
+            citation.get("title"),
+            citation.get("snippet"),
+            citation.get("text"),
+            citation.get("body"),
+            source_window.get("text"),
+        )
+        if part
+    )
+
+
+def _ask_claim_binding_payload(
+    claim: str,
+    binding: dict[str, Any],
+    *,
+    action: str,
+    previous_markers: list[str] | None = None,
+) -> dict[str, Any]:
+    matches = _list_of_dicts(binding.get("matches"))
+    citation_indexes = [int(index) for index in binding.get("citation_indexes", []) if isinstance(index, int)]
+    payload = {
+        "claim": _ask_truncate_audit_text(_ask_strip_inline_citation_markers(claim).strip(), 240),
+        "marker": binding.get("marker") or "",
+        "citation_indexes": citation_indexes,
+        "score": binding.get("score") or 0,
+        "action": action,
+        "matched_numbers": _ask_dedupe_audit_values(
+            value
+            for item in matches
+            for value in _string_list(item.get("matched_numbers"))
+        )[:12],
+        "matched_terms": _ask_dedupe_audit_values(
+            value
+            for item in matches
+            for value in _string_list(item.get("matched_terms"))
+        )[:16],
+    }
+    if previous_markers:
+        payload["previous_markers"] = previous_markers
+    return payload
+
+
+def _ask_truncate_audit_text(text: str, max_chars: int) -> str:
+    value = str(text or "")
+    if len(value) <= max_chars:
+        return value
+    return value[: max(0, max_chars - 15)].rstrip() + "...[truncated]"
+
+
+def _ask_dedupe_audit_values(values: Iterable[Any]) -> list[str]:
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        item = str(value or "").strip()
+        key = item.casefold()
+        if not item or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
+def _ask_best_citation_marker_for_text(text: str, citations: list[dict[str, Any]]) -> str:
+    return str(_ask_citation_binding_for_text(text, citations).get("marker") or "")
+
+
+def _ask_citation_marker_text(citation: dict[str, Any]) -> str:
+    source_window = citation.get("source_window") if isinstance(citation.get("source_window"), dict) else {}
+    return "\n".join(
+        str(part or "")
+        for part in (
+            citation.get("title"),
+            citation.get("snippet"),
+            source_window.get("text"),
+            citation.get("source_item_id"),
+            citation.get("document_id"),
+            citation.get("chunk_id") or citation.get("passage_window_id"),
+        )
+        if part
+    )
+
+
+def _ask_append_inline_citation_marker(line: str, marker: str) -> str:
+    if not marker:
+        return line
+    trailing = re.search(r"(\s*)$", line)
+    suffix = trailing.group(1) if trailing else ""
+    body = line[: len(line) - len(suffix)] if suffix else line
+    if re.search(r"[。！？.!?）)\]]$", body):
+        return f"{body}{marker}{suffix}"
+    return f"{body} {marker}{suffix}"
+
+
+def _ask_append_source_line(answer: str, marker: str) -> str:
+    marker = marker or "[1]"
+    text = str(answer or "").rstrip()
+    if _ask_answer_has_valid_citation_marker(text, citation_count=999):
+        return text
+    return f"{text}\n\n来源：{marker}" if text else f"来源：{marker}"
 
 
 def _ask_evidence_check_progress(quality_signals: dict[str, Any]) -> dict[str, Any]:
@@ -11837,6 +12408,12 @@ def _ask_no_answer_diagnostics(
     dimensions: list[dict[str, Any]] = []
     reasons: list[str] = []
     tool_errors = _ask_trace_tool_errors(trace)
+    evidence_check = payload.get("evidence_check") if isinstance(payload.get("evidence_check"), dict) else {}
+    dropped_citations = _list_of_dicts(evidence_check.get("dropped_citations"))
+    scope_dropped_evidence = bool(dropped_source_refs) or any(
+        str(item.get("drop_reason") or item.get("reason") or "") in {"scope_violation", "tenant_or_owner_mismatch"}
+        for item in dropped_citations
+    )
     scope_applied = route.get("scope_applied") if isinstance(route.get("scope_applied"), dict) else {}
     knowledge_base_ids = _string_list(scope_applied.get("knowledge_base_ids"))
     scoped_source_item_ids = _string_list(scope_applied.get("source_item_ids"))
@@ -11864,6 +12441,12 @@ def _ask_no_answer_diagnostics(
                 "knowledge_base_scope",
                 "selected_scope_empty",
                 "Selected knowledge base scope resolved to zero active source items after source filters.",
+            )
+        elif not citations and not results and scope_dropped_evidence:
+            add(
+                "knowledge_base_scope",
+                "agentic_scope_violation",
+                "FastReAct/MCP returned references outside the selected hard scope, and PSKA dropped them before answer use.",
             )
         elif not citations and not results:
             add(
@@ -11927,7 +12510,7 @@ def _ask_no_answer_diagnostics(
     else:
         add("mcp", "not_applicable", "PSKA direct retrieval did not use MCP.")
 
-    if dropped_source_refs:
+    if scope_dropped_evidence:
         add("permissions", "source_refs_not_visible", "Some source refs were dropped because they were outside the current tenant/user scope.")
     elif not citations and not results:
         add("permissions", "possibly_filtered_or_unindexed", "No visible evidence was available; the data may be unindexed, out of scope, or not ingested.")
@@ -12438,6 +13021,8 @@ def _ask_sse_events(payload: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]
                 {
                     "evidence": payload.get("evidence") or {},
                     "citations": payload.get("citations") or [],
+                    "source_refs": payload.get("source_refs") or [],
+                    "citation_markers": payload.get("citation_markers") or [],
                     "citation_audit": payload.get("citation_audit") or {},
                     "evidence_check": payload.get("evidence_check") or {},
                     "quality_signals": payload.get("quality_signals") or {},
@@ -12459,6 +13044,7 @@ def _ask_sse_events(payload: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]
                     "answer": str(payload.get("answer") or ""),
                     "citations": payload.get("citations") or [],
                     "source_refs": payload.get("source_refs") or [],
+                    "citation_markers": payload.get("citation_markers") or [],
                     "evidence": payload.get("evidence") or {},
                     "citation_audit": payload.get("citation_audit") or {},
                     "intent": payload.get("intent") or (payload.get("route") or {}).get("intent"),

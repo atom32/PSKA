@@ -805,6 +805,7 @@ export type WorkspaceAskResponse = {
   };
   citations?: Array<Record<string, unknown>>;
   source_refs?: Array<Record<string, unknown>>;
+  citation_markers?: Array<Record<string, unknown>>;
   source_windows?: Array<Record<string, unknown>>;
   intent?: string;
   rewrite_query?: string;
@@ -1268,6 +1269,7 @@ export type WorkspaceSearchResponse = {
   source_refs?: Array<{ title?: string; snippet?: string; source_item_id?: string; url?: string }>;
   citations?: Array<{ title?: string; snippet?: string; source_item_id?: string; url?: string }>;
   scope_applied?: Record<string, unknown>;
+  citation_markers?: Array<Record<string, unknown>>;
   trace?: {
     events?: Array<Record<string, unknown>>;
     tool_calls?: Array<Record<string, unknown>>;
