@@ -11434,23 +11434,40 @@ def _ask_deep_response(
     evidence_check = _ask_select_citations(query=rewrite_query, evidence_check=evidence_check)
     evidence_check = _ask_compose_evidence_set(query=rewrite_query, evidence_check=evidence_check, evidence=evidence)
     evidence = _ask_apply_evidence_check(evidence, evidence_check)
+    runtime_fallback_reason = ""
     answer_type = "deep_answer"
     ok = True
     if runtime_signal:
-        ok = False
-        answer = (
-            "Deep Ask 本次没有完成：FastReAct 返回了运行时停止信号，说明长链路分析没有形成可审计的最终回答。"
-            "可以缩小问题范围，或在修复 agentic loop 后重试。"
-        )
-        answer_type = "no_answer"
-        evidence_check = {
-            **evidence_check,
-            "status": "insufficient",
-            "no_answer_reasons": [
-                *_string_list(evidence_check.get("no_answer_reasons")),
-                "agentic_runtime_control_signal",
-            ],
-        }
+        if evidence_check.get("status") == "supported" and (_list_of_dicts(evidence.get("citations")) or _list_of_dicts(evidence.get("results"))):
+            runtime_fallback_reason = "agentic_runtime_control_signal_with_supported_evidence"
+            supported_retrieval = _ask_apply_evidence_check_to_retrieval(retrieval, evidence_check) if retrieval else {"results": []}
+            if not _list_of_dicts(supported_retrieval.get("results")):
+                supported_retrieval = {
+                    **supported_retrieval,
+                    "results": _list_of_dicts(evidence.get("results")),
+                    "citations": _list_of_dicts(evidence.get("citations")),
+                    "diagnostics": {"gaps": [], "conflicts": [], "sensitivity": [], "score_debug": {}},
+                }
+            answer = _ask_polish_quick_supported_answer(
+                _ask_quick_answer(query, supported_retrieval, ask_intent=ask_intent),
+                ask_intent=ask_intent,
+            )
+            answer_type = "deep_evidence_fallback"
+        else:
+            ok = False
+            answer = (
+                "Deep Ask 本次没有完成：FastReAct 返回了运行时停止信号，说明长链路分析没有形成可审计的最终回答。"
+                "可以缩小问题范围，或在修复 agentic loop 后重试。"
+            )
+            answer_type = "no_answer"
+            evidence_check = {
+                **evidence_check,
+                "status": "insufficient",
+                "no_answer_reasons": [
+                    *_string_list(evidence_check.get("no_answer_reasons")),
+                    "agentic_runtime_control_signal",
+                ],
+            }
     elif evidence_check.get("status") != "supported":
         answer = _ask_no_answer_from_evidence_check(query, evidence_check)
         answer_type = "no_answer"
@@ -11467,11 +11484,14 @@ def _ask_deep_response(
         "agentic_runtime": {
             "status": "stopped" if runtime_signal else "completed",
             "control_signal": runtime_signal,
+            "fallback_reason": runtime_fallback_reason,
         },
         "evidence_composition": evidence_check.get("evidence_composition") or {},
         "evidence_set": evidence_check.get("evidence_set") or {},
         "evidence_check": evidence_check,
     }
+    if runtime_fallback_reason:
+        trace["fallback_reason"] = runtime_fallback_reason
     agent_steps = _ask_agent_steps_from_events(trace.get("events") if isinstance(trace.get("events"), list) else [])
     if dropped_refs:
         trace["dropped_source_refs"] = dropped_refs
@@ -11493,6 +11513,8 @@ def _ask_deep_response(
             "requires_agentic_service_online": True,
             "tool_policy": tool_policy or _ask_read_tool_policy(scope_applied, allowed_tools=allowed_tools),
             "tool_profile": ASK_READ_TOOL_PROFILE,
+            "fallback_reason": runtime_fallback_reason or None,
+            "answer_owner": "pska_evidence_fallback" if runtime_fallback_reason else "fastreact_agentic_service",
             "agentic_budget": {
                 "soft_iteration_budget": soft_iteration_budget,
                 "hard_max_iterations": hard_max_iterations,
@@ -12497,7 +12519,15 @@ def _ask_no_answer_diagnostics(
         add("evidence_check", "not_enough_signal", "There was not enough evidence signal to support a confident answer.")
 
     if route.get("fallback_from") or trace.get("fallback_reason"):
-        add("fastreact", str(trace.get("fallback_reason") or "fallback"), "Deep Ask fell back to PSKA direct retrieval.")
+        fallback_reason = str(trace.get("fallback_reason") or "fallback")
+        if fallback_reason == "agentic_runtime_control_signal_with_supported_evidence":
+            add(
+                "fastreact",
+                fallback_reason,
+                "FastReAct did not fully close the loop, so PSKA answered from visible evidence collected during the run.",
+            )
+        else:
+            add("fastreact", fallback_reason, "Deep Ask fell back to PSKA direct retrieval.")
     elif tool_errors and route.get("requires_agentic_service_online"):
         add("fastreact", "tool_channel_error", "FastReAct ran, but one or more PSKA tool calls failed.")
     elif route.get("requires_agentic_service_online"):
@@ -12514,8 +12544,10 @@ def _ask_no_answer_diagnostics(
     else:
         add("mcp", "not_applicable", "PSKA direct retrieval did not use MCP.")
 
-    if scope_dropped_evidence:
+    if scope_dropped_evidence and not citations:
         add("permissions", "source_refs_not_visible", "Some source refs were dropped because they were outside the current tenant/user scope.")
+    elif scope_dropped_evidence:
+        add("permissions", "ok", "Returned evidence is visible to the represented user; out-of-scope intermediate refs were dropped before answer use.")
     elif not citations and not results:
         add("permissions", "possibly_filtered_or_unindexed", "No visible evidence was available; the data may be unindexed, out of scope, or not ingested.")
     else:
@@ -12606,8 +12638,10 @@ def _ask_quality_signals(payload: dict[str, Any]) -> dict[str, Any]:
         flags.append("evidence_conflict")
     if route.get("fallback_from") or trace.get("fallback_reason"):
         flags.append("fallback")
-    if dropped_source_refs:
+    if dropped_source_refs and not citations:
         flags.append("dropped_source_refs")
+    elif dropped_source_refs:
+        flags.append("partial_dropped_source_refs")
     scope_applied = route.get("scope_applied") if isinstance(route.get("scope_applied"), dict) else {}
     knowledge_base_ids = _string_list(scope_applied.get("knowledge_base_ids"))
     knowledge_base_source_item_count = _int_value(

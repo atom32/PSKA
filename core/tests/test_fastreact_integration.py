@@ -4412,6 +4412,30 @@ def test_ask_quality_signals_preserves_existing_inline_citation_markers() -> Non
     assert enriched["citation_markers"][0]["marker"] == "[1]"
 
 
+def test_ask_quality_signals_keeps_visible_citations_grounded_when_unused_refs_drop() -> None:
+    citation = {"source_item_id": "src_visible", "chunk_id": "chk_visible", "title": "Visible Report", "snippet": "Revenue was 42."}
+    payload = {
+        "ok": True,
+        "query": "What was revenue?",
+        "answer": "Revenue was 42.",
+        "route": {"selected_intent": "deep", "retrieval_owner": "fastreact_pska_mcp", "surface": "ask"},
+        "evidence": {"citations": [citation], "source_refs": [citation], "results": [citation]},
+        "citations": [citation],
+        "source_refs": [citation],
+        "trace": {"dropped_source_refs": [{"source_item_id": "src_other_tenant", "reason": "tenant_or_owner_mismatch"}]},
+        "timing": {"total_ms": 1, "time_to_first_answer_ms": 1},
+    }
+
+    enriched = _ask_with_quality_signals(payload)
+    diagnostics = enriched["quality_signals"]["no_answer_diagnostics"]
+
+    assert enriched["quality_signals"]["quality_band"] == "grounded"
+    assert "partial_dropped_source_refs" in enriched["quality_signals"]["flags"]
+    assert "dropped_source_refs" not in enriched["quality_signals"]["flags"]
+    assert "source_refs_not_visible" not in diagnostics["reasons"]
+    assert diagnostics["display"] is False
+
+
 def test_workspace_ask_quick_explains_no_visible_evidence() -> None:
     api = _api()
 
@@ -4541,6 +4565,90 @@ def test_workspace_ask_deep_marks_fastreact_stopped_as_incomplete() -> None:
     assert "agentic_runtime_control_signal" in payload["no_answer_reasons"]
     assert payload["trace"]["agentic_runtime"]["status"] == "stopped"
     assert payload["trace"]["agentic_runtime"]["control_signal"] == "[STOPPED]"
+
+
+def test_workspace_ask_deep_uses_visible_mcp_evidence_when_fastreact_stops() -> None:
+    api = _api()
+    source = IngestService(api.store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "workspace-ask-deep-stopped-with-evidence",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "Stopped Deep Evidence Note",
+            "content": {"text": "Atlas revenue was 42 in the annual report, and Atlas margin was 9 percent."},
+        }
+    )
+    chunk = api.store.list_chunks_for_sources({source.source_item_id})[0]
+    citation = {
+        "source_item_id": source.source_item_id,
+        "document_id": chunk.document_id,
+        "chunk_id": chunk.chunk_id,
+        "title": source.title,
+        "snippet": chunk.text,
+    }
+    tool_payload = {
+        "results": [{**citation, "score": 0.91, "citation": citation}],
+        "citations": [citation],
+    }
+
+    class StoppedAfterEvidenceAgenticService:
+        def ready(self):
+            return {"ok": True, "provider": "test", "adapter": "fake"}
+
+        def search_event_stream(
+            self,
+            query,
+            user,
+            *,
+            represented_user_id=None,
+            max_iterations=3,
+            skills=None,
+            tool_policy=None,
+            session_id=None,
+        ):
+            yield {"type": "session_start", "content": query, "session_id": session_id or "stopped-evidence", "event_id": "stop-evidence:0"}
+            yield {
+                "type": "tool_result",
+                "tool_name": "pska_pska_search",
+                "content": json.dumps(tool_payload, ensure_ascii=False),
+                "tool_call_id": "call-evidence",
+                "session_id": session_id or "stopped-evidence",
+                "event_id": "stop-evidence:1",
+            }
+            yield {
+                "type": "session_end",
+                "content": "[STOPPED] Task stopped due to maximum iteration limit (12).",
+                "session_id": session_id or "stopped-evidence",
+                "event_id": "stop-evidence:2",
+            }
+
+    api.agentic_service = StoppedAfterEvidenceAgenticService()
+
+    payload = api.workspace_ask(
+        {
+            "query": "What was Atlas revenue and margin?",
+            "intent": "deep",
+            "user_id": "user_primary",
+            "represented_user_id": "user_primary",
+        }
+    )
+
+    assert payload["ok"] is True
+    assert payload["answer_type"] == "deep_evidence_fallback"
+    assert "Atlas revenue was 42" in payload["answer"]
+    assert "[1]" in payload["answer"]
+    assert [ref["source_item_id"] for ref in payload["source_refs"]] == [source.source_item_id]
+    assert payload["trace"]["agentic_runtime"]["status"] == "stopped"
+    assert payload["trace"]["fallback_reason"] == "agentic_runtime_control_signal_with_supported_evidence"
+    assert "agentic_runtime_control_signal" not in payload["no_answer_reasons"]
+    assert payload["quality_signals"]["quality_band"] == "needs_review"
+    diagnostics = payload["quality_signals"]["no_answer_diagnostics"]
+    assert diagnostics["primary_reason"] == "agentic_runtime_control_signal_with_supported_evidence"
+    assert "source_refs_not_visible" not in diagnostics["reasons"]
 
 
 def test_workspace_ask_quick_marks_raw_dump_answers_as_needing_review() -> None:

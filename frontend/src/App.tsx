@@ -4586,7 +4586,12 @@ function askDiagnosticActions(diagnostics: AskNoAnswerDiagnostic) {
   if (statuses.has("conflicts_detected")) {
     add("resolve-conflicts", "先核对冲突来源", "证据之间存在冲突。打开引用逐条检查原文，把冲突记录到 Writing 或 Review 后再合成结论。");
   }
-  if (statuses.has("tool_channel_error") || statuses.has("tool_error") || (dimensions.has("fastreact") && statuses.has("fallback"))) {
+  if (
+    statuses.has("tool_channel_error") ||
+    statuses.has("tool_error") ||
+    statuses.has("agentic_runtime_control_signal_with_supported_evidence") ||
+    (dimensions.has("fastreact") && statuses.has("fallback"))
+  ) {
     add("retry-agentic", "检查 FastReAct / MCP 后重试", "Deep Ask 工具链路出现错误或回退。确认 FastReAct ready、PSKA MCP ready，再重试同一问题。");
   }
   if (statuses.has("tool_denied")) {
@@ -4617,6 +4622,7 @@ function askDiagnosticLabel(value: string) {
     tool_channel_error: "工具链路错误",
     tool_error: "MCP 工具错误",
     tool_denied: "工具被拒绝",
+    agentic_runtime_control_signal_with_supported_evidence: "Agentic 未完整收口",
     empty_answer: "空回答",
     uncited_answer: "回答未引用",
     agentic_service_unavailable: "FastReAct 不可用",
