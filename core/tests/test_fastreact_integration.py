@@ -49,7 +49,7 @@ from pska_core.hypergraph import HypergraphService
 from pska_core.ingest import IngestService
 from pska_core.jobs import DIGEST_VIA_FASTREACT, EXTRACT_VIA_FASTREACT, JobService
 from pska_core.mcp_server import MCPServer
-from pska_core.models import AgentMemory, Chunk, ConnectorState, DigestNote, DiscoveryItem, Document, Entity, KnowledgeBase, KnowledgeBaseSourceItem, KnowledgeClaim, ReviewItem, SourceItem, SourceRef, User, UserProfileCard, utc_now
+from pska_core.models import AgentMemory, Chunk, ConnectorState, DigestNote, DiscoveryItem, Document, Entity, KnowledgeBase, KnowledgeBaseSourceItem, KnowledgeClaim, ReviewItem, SourceItem, SourceRef, TeamMembership, User, UserProfileCard, utc_now
 from pska_core.retrieval import RetrievalService
 from pska_core.review import ReviewService
 from pska_core.serde import to_jsonable
@@ -872,6 +872,69 @@ def test_ask_validate_source_only_refs_selects_relevant_chunk() -> None:
     assert dropped == []
     assert refs[0]["chunk_id"] == "chk_report_metrics"
     assert "92,507,796,069.94" in refs[0]["snippet"]
+
+
+def test_ask_validate_source_refs_uses_acl_for_team_visible_sources() -> None:
+    store = InMemoryKnowledgeStore()
+    store.add_user(User("user_primary", "primary", UserRole.USER))
+    store.add_user(User("user_secondary", "secondary", UserRole.USER))
+    store.add_team_membership(TeamMembership("user_secondary", "team_default"))
+    source_item_id = "src_team_visible_report"
+    document_id = "doc_team_visible_report"
+    store.upsert_source_item(
+        SourceItem(
+            source_item_id=source_item_id,
+            source_channel="upload",
+            record_type="file",
+            source_id="team-visible-report.pdf",
+            owner_user_id="user_primary",
+            space_id="team_shared_default",
+            visibility=Visibility.TEAM,
+            visible_team_ids=["team_default"],
+            title="team-visible-report.pdf",
+            url=None,
+            content_text="team visible report",
+            content_hash="hash_team_visible_report",
+        )
+    )
+    store.add_document(
+        Document(
+            document_id=document_id,
+            source_item_id=source_item_id,
+            owner_user_id="user_primary",
+            space_id="team_shared_default",
+            visibility=Visibility.TEAM,
+            visible_team_ids=["team_default"],
+            title="team-visible-report.pdf",
+            body="team visible report body",
+        )
+    )
+    store.add_chunk(
+        Chunk(
+            chunk_id="chk_team_visible_metric",
+            document_id=document_id,
+            source_item_id=source_item_id,
+            owner_user_id="user_primary",
+            space_id="team_shared_default",
+            visibility=Visibility.TEAM,
+            visible_team_ids=["team_default"],
+            text="Team visible metric evidence: renewal revenue is 123.",
+            ordinal=0,
+        )
+    )
+
+    refs, dropped = _ask_validate_source_refs(
+        [{"source_item_id": source_item_id, "title": "team-visible-report.pdf"}],
+        store=store,
+        tenant_id="tenant_default",
+        owner_user_id="user_secondary",
+        query="renewal revenue 123",
+    )
+
+    assert dropped == []
+    assert refs[0]["source_item_id"] == source_item_id
+    assert refs[0]["chunk_id"] == "chk_team_visible_metric"
+    assert "renewal revenue is 123" in refs[0]["snippet"]
 
 
 def test_retrieval_prioritizes_exact_table_identifiers() -> None:
@@ -4681,6 +4744,63 @@ def test_workspace_ask_deep_returns_agentic_answer_when_evidence_check_is_insuff
     assert "agentic_answer_needs_review" in payload["quality_signals"]["flags"]
 
 
+def test_workspace_ask_deep_returns_agentic_feedback_when_refs_are_not_visible() -> None:
+    api = _api()
+    invisible_source_item_id = "src_other_tenant_private_note"
+
+    class InvisibleRefsAgenticService:
+        def ready(self):
+            return {"ok": True, "provider": "test", "adapter": "fake"}
+
+        def search_event_stream(
+            self,
+            query,
+            user,
+            *,
+            represented_user_id=None,
+            max_iterations=3,
+            skills=None,
+            tool_policy=None,
+            session_id=None,
+        ):
+            yield {"type": "session_start", "content": query, "session_id": session_id or "invisible-refs", "event_id": "invisible:0"}
+            yield {
+                "type": "session_end",
+                "content": json.dumps(
+                        {
+                            "answer": "Agentic feedback should still be returned even when citations need review.",
+                            "source_refs": [{"source_item_id": invisible_source_item_id, "title": "Other Private Note"}],
+                        },
+                        ensure_ascii=False,
+                    ),
+                "session_id": session_id or "invisible-refs",
+                "event_id": "invisible:1",
+            }
+
+    api.agentic_service = InvisibleRefsAgenticService()
+
+    payload = api.workspace_ask(
+        {
+            "query": "请深入分析当前资料。",
+            "intent": "deep",
+            "user_id": "user_primary",
+            "represented_user_id": "user_primary",
+        }
+    )
+
+    assert payload["ok"] is True
+    assert payload["answer_type"] == "deep_answer_needs_review"
+    assert payload["answer"].startswith("Agentic feedback should still be returned")
+    assert payload["source_refs"] == []
+    assert payload["trace"]["dropped_source_refs"] == [
+        {"source_item_id": invisible_source_item_id, "reason": "tenant_or_owner_mismatch"}
+    ]
+    assert payload["evidence_check"]["answer_feedback_returned"] is True
+    assert "agentic_answer_needs_review" in payload["quality_signals"]["flags"]
+    diagnostics = payload["quality_signals"]["no_answer_diagnostics"]
+    assert "source_refs_not_visible" in diagnostics["reasons"]
+
+
 def test_workspace_ask_deep_uses_visible_mcp_evidence_when_fastreact_stops() -> None:
     api = _api()
     source = IngestService(api.store).ingest_channel_payload(
@@ -5192,6 +5312,9 @@ def test_workspace_ask_deep_scope_guard_falls_back_to_scoped_direct_retrieval() 
     assert payload["route"]["fallback_from"] == "deep"
     assert payload["trace"]["fallback_reason"] == "deep_scope_guard_scoped_retrieval"
     assert payload["trace"]["deep_scope_guard"]["dropped_citation_count"] >= 1
+    assert payload["agentic_feedback"]["answer"].startswith("Out-of-scope beta answer")
+    assert payload["agentic_feedback"]["status"] == "needs_review"
+    assert payload["trace"]["agentic_feedback"]["answer"].startswith("Out-of-scope beta answer")
     assert {ref["source_item_id"] for ref in payload["source_refs"]} == {alpha_source_id}
     assert "1234" in payload["answer"]
     assert "9999" not in payload["answer"]

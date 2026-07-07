@@ -2408,9 +2408,14 @@ class PSKAApi:
         route["fallback_reason"] = "deep_scope_guard_scoped_retrieval"
         route["requested_selected_intent"] = "deep"
         fallback["route"] = route
+        agentic_feedback = _ask_deep_agentic_feedback_payload(deep_payload)
+        if agentic_feedback:
+            fallback["agentic_feedback"] = agentic_feedback
         trace = dict(fallback.get("trace") if isinstance(fallback.get("trace"), dict) else {})
         trace["fallback_reason"] = "deep_scope_guard_scoped_retrieval"
         trace["deep_scope_guard"] = _ask_deep_scope_guard_payload(deep_payload)
+        if agentic_feedback:
+            trace["agentic_feedback"] = agentic_feedback
         fallback["trace"] = trace
         return fallback
 
@@ -11551,8 +11556,13 @@ def _ask_deep_response(
                 ],
             }
     elif evidence_check.get("status") != "supported":
-        if _ask_agentic_answer_is_returnable(answer) and not _ask_evidence_check_has_hard_block(evidence_check):
+        if _ask_agentic_answer_is_returnable(answer):
             answer_type = "deep_answer_needs_review"
+            evidence_check = {
+                **evidence_check,
+                "answer_feedback_returned": True,
+                "answer_feedback_reason": "evidence_validation_not_fully_supported",
+            }
         else:
             answer = _ask_no_answer_from_evidence_check(query, evidence_check)
             answer_type = "no_answer"
@@ -11666,7 +11676,8 @@ def _ask_deep_needs_scoped_direct_fallback(payload: dict[str, Any]) -> bool:
         "no_supporting_citations_after_evidence_check",
         "no_retrieval_results",
     }
-    return str(payload.get("answer_type") or "") == "no_answer" and (has_scope_drop or bool(reasons & fallback_reasons))
+    answer_type = str(payload.get("answer_type") or "")
+    return answer_type in {"no_answer", "deep_answer_needs_review"} and (has_scope_drop or bool(reasons & fallback_reasons))
 
 
 def _ask_scope_applied_is_hard(scope_applied: dict[str, Any]) -> bool:
@@ -11689,6 +11700,24 @@ def _ask_deep_scope_guard_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "deep_no_answer_reasons": _string_list(payload.get("no_answer_reasons")) or _string_list(evidence_check.get("no_answer_reasons")),
         "dropped_citation_count": len(_list_of_dicts(evidence_check.get("dropped_citations"))),
         "dropped_source_ref_count": len(_list_of_dicts(trace.get("dropped_source_refs"))),
+    }
+
+
+def _ask_deep_agentic_feedback_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    answer = str(payload.get("answer") or "").strip()
+    if not _ask_agentic_answer_is_returnable(answer):
+        return {}
+    trace = payload.get("trace") if isinstance(payload.get("trace"), dict) else {}
+    evidence_check = payload.get("evidence_check") if isinstance(payload.get("evidence_check"), dict) else {}
+    return {
+        "answer": answer,
+        "answer_type": payload.get("answer_type"),
+        "status": "needs_review",
+        "reason": "agentic_feedback_preserved_after_evidence_validation",
+        "no_answer_reasons": _string_list(payload.get("no_answer_reasons"))
+        or _string_list(evidence_check.get("no_answer_reasons")),
+        "dropped_source_refs": _list_of_dicts(trace.get("dropped_source_refs")),
+        "dropped_citations": _list_of_dicts(evidence_check.get("dropped_citations")),
     }
 
 
@@ -12974,10 +13003,12 @@ def _ask_validate_source_refs(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     if not refs:
         return [], []
+    user = store.get_user(owner_user_id, tenant_id=tenant_id)
+    acl = ACLService(store)
     allowed_items = {
         item.source_item_id: item
         for item in store.list_source_items(tenant_id=tenant_id)
-        if getattr(item, "owner_user_id", "") == owner_user_id
+        if acl.can_read_item(user, item)
     }
     items_by_title = {
         str(getattr(item, "title", "") or "").strip().lower(): item
