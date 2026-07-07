@@ -33,6 +33,7 @@ from pska_core.api import (
     _ask_route_intent,
     _ask_retrieval_from_agentic_trace,
     _ask_structural_evidence_hits,
+    _text_has_negated_label,
     _ask_validate_source_refs,
     _ask_verify_evidence,
 )
@@ -1469,6 +1470,69 @@ def test_ask_evidence_check_accepts_split_cjk_compound_anchor_without_cross_subj
     assert check["query_anchors"] == ["星辰科技营业收入"]
     assert [item["source_item_id"] for item in check["used_citations"]] == ["src_target_report"]
     assert {item["source_item_id"]: item["drop_reason"] for item in check["dropped_citations"]} == {"src_other_report": "missing_query_anchor"}
+
+
+def test_ask_evidence_check_keeps_multiple_citations_for_recall_first_report_queries() -> None:
+    evidence = {
+        "results": [
+            {
+                "source_item_id": "src_atlas_financials",
+                "chunk_id": "chk_atlas_financials",
+                "title": "Atlas 2025 annual report.pdf",
+                "snippet": "Atlas 2025 annual report revenue was 42 and margin was 9 percent.",
+                "source_window": {
+                    "source_item_id": "src_atlas_financials",
+                    "document_id": "doc_atlas_financials",
+                    "chunk_id": "chk_atlas_financials",
+                    "title": "Atlas 2025 annual report.pdf",
+                    "text": "Atlas 2025 annual report revenue was 42 and margin was 9 percent.",
+                },
+            },
+            {
+                "source_item_id": "src_market_context",
+                "chunk_id": "chk_market_context",
+                "title": "Market context.pdf",
+                "snippet": "Market context says comparable peers expanded overseas sales.",
+                "source_window": {
+                    "source_item_id": "src_market_context",
+                    "document_id": "doc_market_context",
+                    "chunk_id": "chk_market_context",
+                    "title": "Market context.pdf",
+                    "text": "Market context says comparable peers expanded overseas sales.",
+                },
+            },
+        ],
+        "citations": [
+            {"source_item_id": "src_atlas_financials", "document_id": "doc_atlas_financials", "chunk_id": "chk_atlas_financials", "title": "Atlas 2025 annual report.pdf"},
+            {"source_item_id": "src_market_context", "document_id": "doc_market_context", "chunk_id": "chk_market_context", "title": "Market context.pdf"},
+        ],
+        "source_windows": [],
+    }
+
+    check = _ask_verify_evidence(
+        query="生成一份 Atlas 2025 年报分析报告。",
+        evidence=evidence,
+        scope={},
+        ask_intent="kb_search",
+    )
+
+    assert check["status"] == "supported"
+    assert check["recall_first"] is True
+    assert {item["source_item_id"] for item in check["used_citations"]} == {"src_atlas_financials", "src_market_context"}
+    assert check["used_citations"][1]["validation_warnings"][0]["reason"] == "missing_query_anchor"
+    assert check["dropped_citations"] == []
+
+
+def test_ask_negated_context_requires_direct_anchor_negation() -> None:
+    assert _text_has_negated_label("This note does not mention revenue.", "revenue") is True
+    assert _text_has_negated_label("本段未提及营业收入。", "营业收入") is True
+    assert (
+        _text_has_negated_label(
+            "营业收入 42。公司报告期不涉及境外会计准则差异，相关表格仍披露净利润和净资产。",
+            "营业收入",
+        )
+        is False
+    )
 
 
 def test_ask_quick_answer_prioritizes_structured_contact_values() -> None:
@@ -4567,6 +4631,56 @@ def test_workspace_ask_deep_marks_fastreact_stopped_as_incomplete() -> None:
     assert payload["trace"]["agentic_runtime"]["control_signal"] == "[STOPPED]"
 
 
+def test_workspace_ask_deep_returns_agentic_answer_when_evidence_check_is_insufficient() -> None:
+    class WeakEvidenceAgenticService:
+        def ready(self):
+            return {"ok": True, "provider": "test", "adapter": "fake"}
+
+        def search_event_stream(
+            self,
+            query,
+            user,
+            *,
+            represented_user_id=None,
+            max_iterations=3,
+            skills=None,
+            tool_policy=None,
+            session_id=None,
+        ):
+            yield {"type": "session_start", "content": query, "session_id": session_id or "weak-evidence", "event_id": "weak:0"}
+            yield {
+                "type": "session_end",
+                "content": json.dumps(
+                    {
+                        "answer": "Agentic analysis reached a tentative conclusion, but no citeable evidence was returned.",
+                        "source_refs": [],
+                    },
+                    ensure_ascii=False,
+                ),
+                "session_id": session_id or "weak-evidence",
+                "event_id": "weak:1",
+            }
+
+    api = _api()
+    api.agentic_service = WeakEvidenceAgenticService()
+
+    payload = api.workspace_ask(
+        {
+            "query": "请生成一份 Atlas 2025 综合分析报告。",
+            "intent": "deep",
+            "user_id": "user_primary",
+            "represented_user_id": "user_primary",
+        }
+    )
+
+    assert payload["ok"] is True
+    assert payload["answer_type"] == "deep_answer_needs_review"
+    assert payload["answer"].startswith("Agentic analysis reached")
+    assert payload["evidence_check"]["status"] == "insufficient"
+    assert payload["quality_signals"]["quality_band"] == "needs_review"
+    assert "agentic_answer_needs_review" in payload["quality_signals"]["flags"]
+
+
 def test_workspace_ask_deep_uses_visible_mcp_evidence_when_fastreact_stops() -> None:
     api = _api()
     source = IngestService(api.store).ingest_channel_payload(
@@ -4649,6 +4763,106 @@ def test_workspace_ask_deep_uses_visible_mcp_evidence_when_fastreact_stops() -> 
     diagnostics = payload["quality_signals"]["no_answer_diagnostics"]
     assert diagnostics["primary_reason"] == "agentic_runtime_control_signal_with_supported_evidence"
     assert "source_refs_not_visible" not in diagnostics["reasons"]
+
+
+def test_workspace_ask_deep_stopped_report_fallback_preserves_multiple_visible_chunks() -> None:
+    api = _api()
+    ingest = IngestService(api.store)
+    financials = ingest.ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "workspace-ask-deep-report-financials",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "Atlas 2025 annual report.pdf",
+            "content": {"text": "Atlas 2025 annual report revenue was 42 and margin was 9 percent."},
+        }
+    )
+    strategy = ingest.ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "workspace-ask-deep-report-strategy",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "Atlas strategy note.pdf",
+            "content": {"text": "Atlas strategy note says overseas expansion and product mix are key risks."},
+        }
+    )
+    chunks = {
+        chunk.source_item_id: chunk
+        for chunk in api.store.list_chunks_for_sources({financials.source_item_id, strategy.source_item_id})
+    }
+
+    def citation(source):
+        chunk = chunks[source.source_item_id]
+        return {
+            "source_item_id": source.source_item_id,
+            "document_id": chunk.document_id,
+            "chunk_id": chunk.chunk_id,
+            "title": source.title,
+            "snippet": chunk.text,
+        }
+
+    citations = [citation(financials), citation(strategy)]
+    tool_payload = {
+        "results": [{**item, "score": 0.9 - index * 0.1, "citation": item} for index, item in enumerate(citations)],
+        "citations": citations,
+    }
+
+    class StoppedReportAgenticService:
+        def ready(self):
+            return {"ok": True, "provider": "test", "adapter": "fake"}
+
+        def search_event_stream(
+            self,
+            query,
+            user,
+            *,
+            represented_user_id=None,
+            max_iterations=3,
+            skills=None,
+            tool_policy=None,
+            session_id=None,
+        ):
+            yield {"type": "session_start", "content": query, "session_id": session_id or "stopped-report", "event_id": "stopped-report:0"}
+            yield {
+                "type": "tool_result",
+                "tool_name": "pska_pska_search",
+                "content": json.dumps(tool_payload, ensure_ascii=False),
+                "tool_call_id": "call-report",
+                "session_id": session_id or "stopped-report",
+                "event_id": "stopped-report:1",
+            }
+            yield {
+                "type": "session_end",
+                "content": "[STOPPED] Task stopped due to maximum iteration limit (12).",
+                "session_id": session_id or "stopped-report",
+                "event_id": "stopped-report:2",
+            }
+
+    api.agentic_service = StoppedReportAgenticService()
+
+    payload = api.workspace_ask(
+        {
+            "query": "生成一份 Atlas 2025 年报分析报告。",
+            "intent": "deep",
+            "user_id": "user_primary",
+            "represented_user_id": "user_primary",
+        }
+    )
+
+    assert payload["ok"] is True
+    assert payload["answer_type"] == "deep_evidence_fallback"
+    assert len(payload["source_refs"]) == 2
+    assert len(payload["evidence_check"]["used_citations"]) == 2
+    assert {ref["source_item_id"] for ref in payload["source_refs"]} == {financials.source_item_id, strategy.source_item_id}
+    assert payload["trace"]["fallback_reason"] == "agentic_runtime_control_signal_with_supported_evidence"
 
 
 def test_workspace_ask_quick_marks_raw_dump_answers_as_needing_review() -> None:

@@ -8595,6 +8595,34 @@ def _ask_required_query_anchor_terms(query: str, anchor_terms: list[str]) -> lis
     return []
 
 
+def _ask_recall_first_evidence_query(query: str, *, ask_intent: str) -> bool:
+    text = str(query or "").casefold()
+    if ask_intent in {"writing"}:
+        return True
+    markers = (
+        "生成",
+        "写一份",
+        "整理",
+        "总结",
+        "综述",
+        "分析",
+        "报告",
+        "比较",
+        "对比",
+        "综合",
+        "归纳",
+        "brief",
+        "report",
+        "analysis",
+        "analyze",
+        "summarize",
+        "summary",
+        "compare",
+        "synthesize",
+    )
+    return any(marker in text for marker in markers)
+
+
 def _ask_comparison_subject_anchor_terms(query: str) -> list[str]:
     text = str(query or "")
     first_year = re.search(r"(?<!\d)20\d{2}(?!\d)", text)
@@ -8736,16 +8764,23 @@ def _text_has_negated_label(text: str, label: str) -> bool:
     haystack = str(text or "").casefold()
     if not haystack:
         return False
-    patterns = [re.escape(normalized_label)]
+    label_pattern = re.escape(normalized_label)
     if re.fullmatch(r"[a-z0-9_-]+", normalized_label):
-        patterns.append(r"\b" + re.escape(normalized_label) + r"\b")
-    for pattern in patterns:
-        for match in re.finditer(pattern, haystack):
-            start = max(0, match.start() - 90)
-            end = min(len(haystack), match.end() + 90)
-            window = haystack[start:end]
-            if _negation_window_matches(window):
-                return True
+        label_pattern = r"\b" + label_pattern + r"\b"
+    direct_patterns = [
+        rf"(?:does not|do not|did not|doesn't|don't)\s+(?:mention|involve|cite|reference|include)\s+(?:\w+\s+){{0,4}}{label_pattern}",
+        rf"(?:not|never)\s+(?:mentioned|cited|referenced|included)\s+(?:\w+\s+){{0,4}}{label_pattern}",
+        rf"(?:no mention of|no reference to|unrelated to|not related to)\s+(?:\w+\s+){{0,4}}{label_pattern}",
+        rf"{label_pattern}(?:\W+\w+){{0,4}}\W+(?:is|are|was|were)?\s*(?:not mentioned|not cited|not referenced|not included|unrelated)",
+        rf"(?:没有|未|不)(?:提到|提及|涉及|引用|包含|包括).{{0,24}}{label_pattern}",
+        rf"{label_pattern}.{{0,8}}(?:没有|未)(?:被)?(?:提到|提及|涉及|引用|包含|包括)",
+        rf"{label_pattern}.{{0,8}}不(?:被)?(?:提到|提及|引用|包含|包括)",
+        rf"{label_pattern}.{{0,12}}(?:无关|没有关系)",
+        rf"(?:并非|不是).{{0,12}}{label_pattern}",
+    ]
+    for pattern in direct_patterns:
+        if re.search(pattern, haystack, flags=re.IGNORECASE):
+            return True
     return False
 
 
@@ -8790,10 +8825,20 @@ def _ask_verify_evidence(
     query_terms = _ask_evidence_terms(query)
     anchor_terms = _ask_query_anchor_terms(query, query_terms)
     required_anchor_terms = _ask_required_query_anchor_terms(query, anchor_terms)
+    recall_first = _ask_recall_first_evidence_query(query, ask_intent=ask_intent)
     text_by_key: dict[tuple[str, str], str] = {}
     window_by_key: dict[tuple[str, str], dict[str, Any]] = {}
     windows_by_source: dict[str, list[dict[str, Any]]] = {}
     result_by_source: dict[str, list[dict[str, Any]]] = {}
+    validation_warnings: list[dict[str, Any]] = []
+
+    def soft_or_drop(citation: dict[str, Any], reason: str, **extra: Any) -> bool:
+        payload = {**citation, "drop_reason": reason, **extra}
+        if recall_first and reason not in {"scope_violation", "missing_source_window", "missing_required_query_anchor"}:
+            validation_warnings.append(payload)
+            return False
+        dropped.append(payload)
+        return True
 
     def remember_window(window: dict[str, Any]) -> None:
         source_id = str(window.get("source_item_id") or "")
@@ -8825,6 +8870,7 @@ def _ask_verify_evidence(
         if hard_scope and (not source_id or source_id not in allowed_source_ids):
             dropped.append({**citation, "drop_reason": "scope_violation"})
             continue
+        citation_warnings_start = len(validation_warnings)
         source_window = citation.get("source_window") if isinstance(citation.get("source_window"), dict) else {}
         if not source_window.get("text"):
             source_window = window_by_key.get((source_id, chunk_id)) or window_by_key.get((source_id, str(citation.get("passage_window_id") or ""))) or {}
@@ -8862,31 +8908,39 @@ def _ask_verify_evidence(
             anchor_hits.extend(hit for hit in structural_hits if hit not in anchor_hits)
         if ask_intent != "doc_only":
             if required_anchor_terms and not required_anchor_hits:
-                dropped.append({**citation, "drop_reason": "missing_required_query_anchor", "query_anchors": required_anchor_terms[:8]})
-                continue
+                if soft_or_drop(citation, "missing_required_query_anchor", query_anchors=required_anchor_terms[:8]):
+                    continue
             if anchor_terms and not anchor_hits:
-                dropped.append({**citation, "drop_reason": "missing_query_anchor", "query_anchors": anchor_terms[:8]})
-                continue
+                if soft_or_drop(citation, "missing_query_anchor", query_anchors=anchor_terms[:8]):
+                    continue
             if anchor_hits and any(_text_has_negated_label(evidence_text, term) for term in anchor_hits):
-                dropped.append({**citation, "drop_reason": "negated_context", "query_anchors": anchor_hits[:8]})
-                continue
+                if soft_or_drop(citation, "negated_context", query_anchors=anchor_hits[:8]):
+                    continue
             if query_terms and not support_hits:
-                dropped.append({**citation, "drop_reason": "lexically_unsupported"})
-                continue
-        used.append(
-            {
-                **citation,
-                "source_item_id": source_id,
-                "document_id": citation.get("document_id") or source_window.get("document_id"),
-                "chunk_id": citation.get("chunk_id") or source_window.get("chunk_id"),
-                "passage_window_id": citation.get("passage_window_id") or source_window.get("passage_window_id"),
-                "title": citation.get("title") or source_window.get("title"),
-                "url": citation.get("url") or source_window.get("url"),
-                "snippet": citation.get("snippet") or _ask_clean_evidence_text(evidence_text)[:600],
-                "source_window": source_window,
-                "support_hits": support_hits[:8],
-            }
-        )
+                if soft_or_drop(citation, "lexically_unsupported"):
+                    continue
+        used_payload = {
+            **citation,
+            "source_item_id": source_id,
+            "document_id": citation.get("document_id") or source_window.get("document_id"),
+            "chunk_id": citation.get("chunk_id") or source_window.get("chunk_id"),
+            "passage_window_id": citation.get("passage_window_id") or source_window.get("passage_window_id"),
+            "title": citation.get("title") or source_window.get("title"),
+            "url": citation.get("url") or source_window.get("url"),
+            "snippet": citation.get("snippet") or _ask_clean_evidence_text(evidence_text)[:600],
+            "source_window": source_window,
+            "support_hits": support_hits[:8],
+        }
+        citation_warnings = validation_warnings[citation_warnings_start:]
+        if citation_warnings:
+            used_payload["validation_warnings"] = [
+                {
+                    "reason": warning.get("drop_reason"),
+                    "query_anchors": warning.get("query_anchors"),
+                }
+                for warning in citation_warnings
+            ]
+        used.append(used_payload)
 
     no_answer_reasons: list[str] = []
     if hard_scope and not allowed_source_ids:
@@ -8916,6 +8970,8 @@ def _ask_verify_evidence(
         "no_answer_reasons": list(dict.fromkeys(no_answer_reasons)),
         "supporting_citation_count": len(used),
         "dropped_citation_count": len(dropped),
+        "validation_warnings": validation_warnings,
+        "recall_first": recall_first,
     }
 
 
@@ -9422,6 +9478,9 @@ def _ask_deep_query(*, query: str, surface: str, scope: dict[str, Any], soft_ite
         "when relationships or conflicts matter, inspect pska_digest_context for prior digests, claims, "
         "risks, and open questions when useful, and only then decide whether a targeted follow-up search "
         "is needed. Stop when evidence is sufficient, no new evidence appears, or the iteration budget is reached.\n"
+        "Tool query arguments must be concise semantic search strings derived from the User question and the "
+        "current evidence gap. Never pass these instructions, the JSON response schema, Scope text, or the full "
+        "prompt wrapper as a PSKA tool query.\n"
         "PSKA read tools may return a compact evidence_set. Treat that evidence_set as the working evidence "
         "collection for reasoning, including record selected_span, slots, and citation identities. Do not return "
         "the evidence_set object itself in final JSON; PSKA already keeps and audits tool evidence. Return only "
@@ -9893,6 +9952,26 @@ def _ask_plain_agentic_synthesis_answer(text: str) -> str:
     if answer.lower().startswith(("error:", "invalid json")):
         return ""
     return answer
+
+
+def _ask_agentic_answer_is_returnable(answer: str) -> bool:
+    text = str(answer or "").strip()
+    return bool(text) and not _ask_runtime_control_signal(text) and not _ask_runtime_artifact_signal(text) and not _ask_task_mismatch_signal(text)
+
+
+def _ask_evidence_check_has_hard_block(evidence_check: dict[str, Any]) -> bool:
+    if not isinstance(evidence_check, dict):
+        return False
+    hard_reasons = {
+        "scope_violation",
+        "tenant_or_owner_mismatch",
+        "missing_source_window",
+        "missing_required_query_anchor",
+    }
+    reasons = set(_string_list(evidence_check.get("no_answer_reasons")))
+    dropped = _list_of_dicts(evidence_check.get("dropped_citations"))
+    reasons.update(str(item.get("drop_reason") or item.get("reason") or "").strip() for item in dropped)
+    return bool(reasons & hard_reasons)
 
 
 def _ask_runtime_control_signal(answer: str) -> str:
@@ -11469,8 +11548,11 @@ def _ask_deep_response(
                 ],
             }
     elif evidence_check.get("status") != "supported":
-        answer = _ask_no_answer_from_evidence_check(query, evidence_check)
-        answer_type = "no_answer"
+        if _ask_agentic_answer_is_returnable(answer) and not _ask_evidence_check_has_hard_block(evidence_check):
+            answer_type = "deep_answer_needs_review"
+        else:
+            answer = _ask_no_answer_from_evidence_check(query, evidence_check)
+            answer_type = "no_answer"
     trace = {
         **trace,
         "mode": "deep",
@@ -12577,6 +12659,7 @@ def _ask_quality_signals(payload: dict[str, Any]) -> dict[str, Any]:
     trace = payload.get("trace") if isinstance(payload.get("trace"), dict) else {}
     timing = payload.get("timing") if isinstance(payload.get("timing"), dict) else {}
     evidence_check = payload.get("evidence_check") if isinstance(payload.get("evidence_check"), dict) else {}
+    answer_type = str(payload.get("answer_type") or "")
     citations = _list_of_dicts(payload.get("citations")) or _list_of_dicts(evidence.get("citations"))
     source_refs = _list_of_dicts(payload.get("source_refs")) or _list_of_dicts(evidence.get("source_refs"))
     results = _list_of_dicts(evidence.get("results"))
@@ -12638,6 +12721,8 @@ def _ask_quality_signals(payload: dict[str, Any]) -> dict[str, Any]:
         flags.append("evidence_conflict")
     if route.get("fallback_from") or trace.get("fallback_reason"):
         flags.append("fallback")
+    if answer_type == "deep_answer_needs_review":
+        flags.append("agentic_answer_needs_review")
     if dropped_source_refs and not citations:
         flags.append("dropped_source_refs")
     elif dropped_source_refs:
@@ -12671,6 +12756,8 @@ def _ask_quality_signals(payload: dict[str, Any]) -> dict[str, Any]:
         evidence_status = "insufficient_evidence"
     if "empty_answer" in flags:
         quality_band = "failed"
+    elif "agentic_answer_needs_review" in flags:
+        quality_band = "needs_review"
     elif evidence_status in {"no_evidence", "insufficient_evidence"}:
         quality_band = "no_answerable_evidence"
     elif any(flag in flags for flag in ["evidence_conflict", "fallback", "dropped_source_refs", "raw_evidence_dump", "answer_needs_rewrite"]):
