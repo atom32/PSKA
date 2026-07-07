@@ -344,6 +344,9 @@ def test_agentic_search_prompt_routes_pska_queries_to_pska_skill_tools() -> None
     assert "do not call read_file" in joined
     assert "exec" in joined
     assert "retrieve source evidence through PSKA tools" in joined
+    assert "compact evidence_set" in joined
+    assert "do not copy or return the full evidence_set" in joined
+    assert "do not emit the evidence_set object itself" in joined
     assert "4-8 concrete bullets" in joined
 
 

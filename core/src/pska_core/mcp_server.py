@@ -12,6 +12,7 @@ from pska_core.auth import RequestContext
 from pska_core.candidates import CandidateWriteService
 from pska_core.config import DatabaseConfig, PSKAConfig
 from pska_core.embeddings import EmbeddingProvider, build_embedding_provider
+from pska_core.evidence_composition import EvidenceCompositionContext, EvidenceCompositionPipeline, evidence_set_to_dict
 from pska_core.extraction import ExtractionService
 from pska_core.ingest import IngestService
 from pska_core.models import DEFAULT_TENANT_ID, ChannelIngestPayload, SourceRef
@@ -882,6 +883,7 @@ def _compact_search_response(payload: dict[str, Any], *, max_results: int, max_s
             result_limit=result_limit,
             snippet_limit=snippet_limit,
         )
+        candidate = _fit_mcp_payload_budget(candidate)
         response = candidate
         if len(json.dumps(candidate, ensure_ascii=False)) < 3800:
             break
@@ -938,6 +940,7 @@ def _compact_evidence_context_response(
             passage_chars=passage_chars,
             chunk_chars=chunk_chars,
         )
+        candidate = _fit_mcp_payload_budget(candidate)
         response = candidate
         if len(json.dumps(candidate, ensure_ascii=False)) < 3800:
             break
@@ -982,6 +985,12 @@ def _build_compact_evidence_context_response(
         if isinstance(item, dict)
     ]
     compact_chunks = [_compact_chunk(item, max_chars=chunk_chars, query=query) for item in chunks[:chunk_limit]]
+    evidence_set = _compact_mcp_evidence_set(
+        query=query,
+        citations=compact_citations,
+        graph_paths=payload.get("graph_paths") if isinstance(payload.get("graph_paths"), list) else [],
+        max_records=max(1, min(6, citation_limit or result_limit or chunk_limit or 1)),
+    )
     follow_up_keys = _dedupe_follow_up_keys(
         key
         for item in [*compact_results, *compact_citations, *compact_chunks]
@@ -1016,6 +1025,7 @@ def _build_compact_evidence_context_response(
         "documents": compact_documents,
         "passage_windows": compact_passage_windows,
         "chunks": compact_chunks,
+        "evidence_set": evidence_set,
         "follow_up_keys": follow_up_keys[:12],
         "graph_paths": payload.get("graph_paths") if isinstance(payload.get("graph_paths"), list) else [],
         "diagnostics": _compact_diagnostics(payload.get("diagnostics")),
@@ -1034,6 +1044,13 @@ def _build_compact_search_response(
 ) -> dict[str, Any]:
     compact_results = [_compact_search_result(item, max_snippet_chars=snippet_limit) for item in results[:result_limit] if isinstance(item, dict)]
     compact_citations = [_compact_citation(item, max_snippet_chars=snippet_limit) for item in citations[:result_limit] if isinstance(item, dict)]
+    compact_graph_paths = [_compact_graph_path(item, max_snippet_chars=snippet_limit) for item in graph_paths[:5] if isinstance(item, dict)]
+    evidence_set = _compact_mcp_evidence_set(
+        query=_clean_string(payload.get("query")),
+        citations=compact_citations,
+        graph_paths=compact_graph_paths,
+        max_records=max(1, min(6, result_limit or 1)),
+    )
     follow_up_keys = _dedupe_follow_up_keys(
         key
         for item in [*compact_results, *compact_citations]
@@ -1050,8 +1067,9 @@ def _build_compact_search_response(
         "visible_spaces": payload.get("visible_spaces") if isinstance(payload.get("visible_spaces"), list) else [],
         "results": compact_results,
         "citations": compact_citations,
+        "evidence_set": evidence_set,
         "follow_up_keys": follow_up_keys[:12],
-        "graph_paths": [_compact_graph_path(item, max_snippet_chars=snippet_limit) for item in graph_paths[:5] if isinstance(item, dict)],
+        "graph_paths": compact_graph_paths,
         "diagnostics": _compact_diagnostics(payload.get("diagnostics")),
         "omitted": {
             "results": max(0, len(results) - len(compact_results)),
@@ -1153,6 +1171,190 @@ def _compact_citation(item: Any, *, max_snippet_chars: int) -> dict[str, Any]:
     if follow_up_keys:
         compact["follow_up_keys"] = follow_up_keys[:8]
     return compact
+
+
+def _compact_mcp_evidence_set(
+    *,
+    query: str | None,
+    citations: list[dict[str, Any]],
+    graph_paths: list[dict[str, Any]] | None = None,
+    max_records: int = 6,
+) -> dict[str, Any]:
+    usable_citations = [citation for citation in citations if isinstance(citation, dict) and citation.get("source_item_id")]
+    graph_context = graph_paths or []
+    if not usable_citations and not graph_context:
+        return {
+            "schema": "pska.evidence_set.v1",
+            "status": "empty",
+            "records": [],
+            "slots": [],
+            "missing_slots": [],
+            "conflicts": [],
+            "audit": {"record_count": 0, "slot_count": 0, "source_type_counts": {}},
+        }
+    composed = EvidenceCompositionPipeline().compose(
+        usable_citations,
+        EvidenceCompositionContext(query=str(query or ""), max_records=max(1, min(int(max_records or 1), 8))),
+        graph_paths=graph_context,
+    )
+    return _compact_evidence_set_payload(evidence_set_to_dict(composed.evidence_set))
+
+
+def _compact_evidence_set_payload(evidence_set: dict[str, Any]) -> dict[str, Any]:
+    records: list[dict[str, Any]] = []
+    for record in evidence_set.get("records") if isinstance(evidence_set.get("records"), list) else []:
+        if not isinstance(record, dict):
+            continue
+        citation = record.get("citation") if isinstance(record.get("citation"), dict) else {}
+        metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
+        records.append(
+            {
+                "record_id": record.get("record_id"),
+                "source_type": record.get("source_type"),
+                "rank": record.get("rank"),
+                "score": record.get("score"),
+                "selected_span": _truncate(str(record.get("selected_span") or record.get("text") or ""), 360),
+                "citation": _compact_citation(citation, max_snippet_chars=260),
+                "metadata": {
+                    key: metadata.get(key)
+                    for key in ["title", "source_item_id", "document_id", "chunk_id", "passage_window_id"]
+                    if metadata.get(key) is not None
+                },
+            }
+        )
+    audit = evidence_set.get("audit") if isinstance(evidence_set.get("audit"), dict) else {}
+    return {
+        "schema": evidence_set.get("schema") or "pska.evidence_set.v1",
+        "evidence_set_id": evidence_set.get("evidence_set_id"),
+        "status": evidence_set.get("status"),
+        "records": records,
+        "slots": _list_of_dicts(evidence_set.get("slots"))[:12],
+        "missing_slots": list(evidence_set.get("missing_slots") or [])[:12],
+        "conflicts": list(evidence_set.get("conflicts") or [])[:6],
+        "audit": {
+            "record_count": audit.get("record_count", len(records)),
+            "slot_count": audit.get("slot_count"),
+            "source_type_counts": audit.get("source_type_counts") if isinstance(audit.get("source_type_counts"), dict) else {},
+            "missing_slots": audit.get("missing_slots") if isinstance(audit.get("missing_slots"), list) else [],
+        },
+    }
+
+
+def _fit_mcp_payload_budget(payload: dict[str, Any], *, max_chars: int = 3800) -> dict[str, Any]:
+    if len(json.dumps(payload, ensure_ascii=False)) < max_chars:
+        return payload
+    evidence_set = payload.get("evidence_set") if isinstance(payload.get("evidence_set"), dict) else {}
+    if not evidence_set:
+        return payload
+    compact = {**payload, "evidence_set": _handle_only_evidence_set(evidence_set, include_titles=True)}
+    compact = _drop_context_sections_for_budget(compact, max_chars=max_chars)
+    if len(json.dumps(compact, ensure_ascii=False)) < max_chars:
+        return compact
+    compact = {**payload, "evidence_set": _handle_only_evidence_set(evidence_set, include_titles=False)}
+    compact = _drop_context_sections_for_budget(compact, max_chars=max_chars)
+    if len(json.dumps(compact, ensure_ascii=False)) < max_chars:
+        return compact
+    compact = dict(payload)
+    compact.pop("evidence_set", None)
+    return compact
+
+
+def _drop_context_sections_for_budget(payload: dict[str, Any], *, max_chars: int) -> dict[str, Any]:
+    if len(json.dumps(payload, ensure_ascii=False)) < max_chars:
+        return payload
+    compact = dict(payload)
+    omitted = dict(compact.get("omitted") if isinstance(compact.get("omitted"), dict) else {})
+    for section in ["source_items", "documents", "passage_windows"]:
+        values = compact.get(section)
+        if isinstance(values, list) and values:
+            omitted[section] = omitted.get(section, 0) + len(values)
+            compact[section] = []
+            compact["omitted"] = omitted
+            if len(json.dumps(compact, ensure_ascii=False)) < max_chars:
+                return compact
+    compact = _shrink_repeated_evidence_text(compact)
+    if len(json.dumps(compact, ensure_ascii=False)) < max_chars:
+        return compact
+    values = compact.get("chunks")
+    if isinstance(values, list) and values:
+        omitted["chunks"] = omitted.get("chunks", 0) + len(values)
+        compact["chunks"] = []
+        compact["omitted"] = omitted
+    return compact
+
+
+def _shrink_repeated_evidence_text(payload: dict[str, Any]) -> dict[str, Any]:
+    compact = dict(payload)
+    for section in ["results", "citations", "chunks"]:
+        compact[section] = [
+            _truncate_evidence_item_text(item, max_chars=160)
+            for item in _list_of_dicts(compact.get(section))
+        ]
+    evidence_set = compact.get("evidence_set") if isinstance(compact.get("evidence_set"), dict) else {}
+    if evidence_set:
+        records = []
+        for record in _list_of_dicts(evidence_set.get("records")):
+            citation = record.get("citation") if isinstance(record.get("citation"), dict) else {}
+            records.append(
+                {
+                    **record,
+                    "selected_span": _truncate(str(record.get("selected_span") or ""), 120) if record.get("selected_span") else record.get("selected_span"),
+                    "citation": _truncate_evidence_item_text(citation, max_chars=120),
+                }
+            )
+        compact["evidence_set"] = {**evidence_set, "records": records}
+    return compact
+
+
+def _truncate_evidence_item_text(item: dict[str, Any], *, max_chars: int) -> dict[str, Any]:
+    compact = dict(item)
+    for key in ["snippet", "text", "title"]:
+        if compact.get(key):
+            compact[key] = _truncate(str(compact.get(key) or ""), max_chars)
+    citation = compact.get("citation") if isinstance(compact.get("citation"), dict) else {}
+    if citation:
+        compact["citation"] = _truncate_evidence_item_text(citation, max_chars=max_chars)
+    return compact
+
+
+def _handle_only_evidence_set(evidence_set: dict[str, Any], *, include_titles: bool) -> dict[str, Any]:
+    records: list[dict[str, Any]] = []
+    for record in _list_of_dicts(evidence_set.get("records"))[:8]:
+        citation = record.get("citation") if isinstance(record.get("citation"), dict) else {}
+        compact_citation = {
+            key: citation.get(key)
+            for key in ["source_item_id", "document_id", "chunk_id", "passage_window_id"]
+            if citation.get(key) is not None
+        }
+        if include_titles and citation.get("title"):
+            compact_citation["title"] = _truncate(str(citation.get("title") or ""), 80)
+        records.append(
+            {
+                "record_id": record.get("record_id"),
+                "source_type": record.get("source_type"),
+                "rank": record.get("rank"),
+                "citation": compact_citation,
+            }
+        )
+    audit = evidence_set.get("audit") if isinstance(evidence_set.get("audit"), dict) else {}
+    return {
+        "schema": evidence_set.get("schema") or "pska.evidence_set.v1",
+        "evidence_set_id": evidence_set.get("evidence_set_id"),
+        "status": evidence_set.get("status"),
+        "records": records,
+        "slots": _list_of_dicts(evidence_set.get("slots"))[:6],
+        "missing_slots": list(evidence_set.get("missing_slots") or [])[:6],
+        "conflicts": list(evidence_set.get("conflicts") or [])[:3],
+        "audit": {
+            "record_count": audit.get("record_count", len(records)),
+            "slot_count": audit.get("slot_count"),
+            "source_type_counts": audit.get("source_type_counts") if isinstance(audit.get("source_type_counts"), dict) else {},
+        },
+    }
+
+
+def _list_of_dicts(value: Any) -> list[dict[str, Any]]:
+    return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
 
 
 def _extract_follow_up_keys(text: str) -> list[str]:

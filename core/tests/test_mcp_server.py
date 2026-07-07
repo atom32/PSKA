@@ -115,6 +115,9 @@ def test_mcp_calls_pska_search() -> None:
     payload = json.loads(text)
     assert payload["citations"]
     assert payload["results"][0]["source_item_id"]
+    assert payload["evidence_set"]["schema"] == "pska.evidence_set.v1"
+    assert payload["evidence_set"]["records"]
+    assert payload["evidence_set"]["records"][0]["citation"]["source_item_id"] == payload["citations"][0]["source_item_id"]
     assert "score_debug" not in payload["results"][0]
 
 
@@ -146,6 +149,8 @@ def test_mcp_search_filters_by_knowledge_base_ids() -> None:
     assert payload["scope_applied"]["source_item_ids"] == [alpha_source_id]
     assert result_source_ids == {alpha_source_id}
     assert citation_source_ids == {alpha_source_id}
+    assert payload["evidence_set"]["status"] in {"composed", "incomplete", "needs_review"}
+    assert {record["citation"]["source_item_id"] for record in payload["evidence_set"]["records"]} == {alpha_source_id}
     assert beta_kb_id not in payload["scope_applied"]["knowledge_base_ids"]
     assert beta_source_id not in result_source_ids | citation_source_ids
 
@@ -178,6 +183,8 @@ def test_mcp_read_evidence_context_filters_by_knowledge_base_ids() -> None:
     assert payload["scope_applied"]["source_item_ids"] == [alpha_source_id]
     assert result_source_ids == {alpha_source_id}
     assert citation_source_ids == {alpha_source_id}
+    assert payload["evidence_set"]["records"]
+    assert {record["citation"]["source_item_id"] for record in payload["evidence_set"]["records"]} == {alpha_source_id}
     assert beta_source_id not in result_source_ids | citation_source_ids
 
 
