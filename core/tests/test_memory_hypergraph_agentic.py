@@ -887,30 +887,25 @@ def test_external_agentic_adapter_returns_trace_and_citations() -> None:
     assert service.client.captured_kwargs["scope"]["tenant_id"] == "tenant_default"
 
 
-def test_external_agentic_adapter_prefers_background_run_events() -> None:
+def test_external_agentic_adapter_reads_chat_completion_events() -> None:
     store = make_store()
 
     class FakeFastreactClient:
         def create_run(self, **kwargs):
-            return {"run_id": "run_background", "session_id": "session_background"}
+            raise AssertionError("PSKA agentic adapter should use /v1/chat/completions, not /v1/runs")
 
-        def wait_for_run(self, run_id):
-            return {"run_id": run_id, "session_id": "session_background", "status": "completed", "metadata": {"snapshot": True}}
-
-        def run_events(self, run_id):
+        def chat_completion(self, **kwargs):
             return {
-                "run_id": run_id,
-                "total_event_count": 4,
+                "run_id": "chat_background",
+                "session_id": "session_background",
                 "events": [
                     {"type": "session_start", "content": "summarize"},
                     {"type": "tool_call", "tool_call_id": "call_1", "tool_name": "exec", "tool_args": {"command": "date"}},
                     {"type": "tool_result", "tool_call_id": "call_1", "tool_name": "exec", "content": "Fri Jun 19"},
                     {"type": "session_end", "content": "完整回答\\n第二行"},
                 ],
+                "metadata": {"event_count": 4, "run_protocol": "chat_completion"},
             }
-
-        def chat_completion(self, **kwargs):
-            raise AssertionError("background run protocol should be used first")
 
     service = FastreactAgenticServiceAdapter(
         AgenticServiceConfig(provider="fastreact", url="http://agentic.test"),
@@ -923,7 +918,7 @@ def test_external_agentic_adapter_prefers_background_run_events() -> None:
     assert response["trace"]["event_count"] == 4
     assert response["trace"]["events"][-1]["type"] == "session_end"
     assert response["trace"]["tool_calls"][0]["tool_name"] == "exec"
-    assert response["agentic_service"]["run_id"] == "run_background"
+    assert response["agentic_service"]["run_id"] == "chat_background"
 
 
 def test_external_agentic_adapter_reads_final_content_not_preview() -> None:
@@ -932,14 +927,11 @@ def test_external_agentic_adapter_reads_final_content_not_preview() -> None:
 
     class FakeFastreactClient:
         def create_run(self, **kwargs):
-            return {"run_id": "run_full_content"}
+            raise AssertionError("PSKA agentic adapter should use /v1/chat/completions, not /v1/runs")
 
-        def wait_for_run(self, run_id):
-            return {"run_id": run_id, "status": "completed"}
-
-        def run_events(self, run_id):
+        def chat_completion(self, **kwargs):
             return {
-                "run_id": run_id,
+                "run_id": "chat_full_content",
                 "events": [
                     {
                         "type": "session_end",
@@ -949,9 +941,6 @@ def test_external_agentic_adapter_reads_final_content_not_preview() -> None:
                     }
                 ],
             }
-
-        def chat_completion(self, **kwargs):
-            raise AssertionError("background run protocol should be used first")
 
     service = FastreactAgenticServiceAdapter(
         AgenticServiceConfig(provider="fastreact", url="http://agentic.test"),
@@ -1021,13 +1010,11 @@ def test_external_agentic_adapter_extracts_jsonish_background_answer() -> None:
 
     class FakeFastreactClient:
         def create_run(self, **kwargs):
-            return {"run_id": "run_jsonish", "session_id": "session_jsonish"}
+            raise AssertionError("PSKA agentic adapter should use /v1/chat/completions, not /v1/runs")
 
-        def wait_for_run(self, run_id):
-            return {"run_id": run_id, "status": "completed"}
-
-        def run_events(self, run_id):
+        def chat_completion(self, **kwargs):
             return {
+                "run_id": "chat_jsonish",
                 "events": [
                     {
                         "type": "session_end",
@@ -1046,9 +1033,6 @@ def test_external_agentic_adapter_extracts_jsonish_background_answer() -> None:
                 ],
             }
 
-        def chat_completion(self, **kwargs):
-            raise AssertionError("background run protocol should be used first")
-
     service = FastreactAgenticServiceAdapter(
         AgenticServiceConfig(provider="fastreact", url="http://agentic.test"),
         client=FakeFastreactClient(),
@@ -1058,4 +1042,4 @@ def test_external_agentic_adapter_extracts_jsonish_background_answer() -> None:
 
     assert response["answer"] == '大模型"0幻觉"要求包括边界约束、RAG证据链和人工兜底。'
     assert "```json" not in response["answer"]
-    assert response["agentic_service"]["run_id"] == "run_jsonish"
+    assert response["agentic_service"]["run_id"] == "chat_jsonish"

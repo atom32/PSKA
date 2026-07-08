@@ -140,8 +140,9 @@ curl -s http://127.0.0.1:18741/health
 ./scripts/pska --config .pska/config.json service-check
 ```
 
-If `.pska/config.json` sets `service.service_token`, direct API calls need
-either `Authorization: Bearer <token>` or `X-PSKA-Service-Token: <token>`.
+PSKA tenant APIs should be called with an AuthNode/IdP JWT or through a trusted
+gateway that injects verified identity headers. `service_token` auth is legacy
+and is rejected for tenant-bearing requests.
 
 ## Tenant Data Layout
 
@@ -208,10 +209,14 @@ lineage, and review status. PSKA does not auto-publish unreviewed wiki pages.
 
 ## API Cheatsheet
 
-For API/CLI tests inside a trusted local boundary, send identity explicitly:
+For API/CLI tests, request a JWT from AuthNode and send that verified identity:
 
 ```bash
-TOKEN='<service.service_token>'
+TOKEN="$(curl -s http://127.0.0.1:8788/v1/token \
+  -H 'X-AuthNode-Admin-Token: <authnode-admin-token>' \
+  -H 'Content-Type: application/json' \
+  -d '{"tenant_id":"tenant_default","user_key":"pska:user_primary","audience":"pska"}' \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')"
 curl -s http://127.0.0.1:8765/workspace/readiness \
   -H "Authorization: Bearer $TOKEN" \
   -H "X-PSKA-Tenant-Id: tenant_default" \
@@ -219,8 +224,6 @@ curl -s http://127.0.0.1:8765/workspace/readiness \
   -H "X-PSKA-Represented-User-Id: user_primary" \
   -H "X-PSKA-Subject: pska:user_primary"
 ```
-
-Omit `Authorization` when local service auth is disabled.
 
 Common workspace endpoints:
 

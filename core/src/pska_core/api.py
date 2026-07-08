@@ -22,7 +22,7 @@ from pska_core.acl import ACLService
 from pska_core.agent_capture import capture_agent_conversation
 from pska_core.agentic_service import PSKA_QA_SKILL, AgenticServiceError, build_agentic_service_client, normalize_agentic_event_response
 from pska_core.answer_pipeline import AnswerCandidate, AnswerPipeline, AnswerPipelineContext, required_answer_values
-from pska_core.auth import AuthError, RequestContext, authenticate_headers, context_from_headers, service_token_required
+from pska_core.auth import AuthError, RequestContext, context_from_headers
 from pska_core.candidates import CandidateWriteService
 from pska_core.citation_pipeline import CitationSelectionContext, CitationSelectionPipeline
 from pska_core.config import (
@@ -104,10 +104,12 @@ ASK_INTENTS = {
 }
 ASK_RETRIEVAL_INTENTS = {"kb_search", "doc_only", "follow_up", "graph_research", "writing"}
 ASK_NON_RETRIEVAL_INTENTS = {"greeting", "chitchat", "product_help", "clarification"}
-ASK_DEEP_DEFAULT_SOFT_ITERATION_BUDGET = 4
-ASK_DEEP_MAX_SOFT_ITERATION_BUDGET = 8
-ASK_DEEP_DEFAULT_HARD_MAX_ITERATIONS = 12
-ASK_DEEP_MAX_HARD_ITERATIONS = 24
+ASK_DEEP_DEFAULT_SOFT_ITERATION_BUDGET = 10
+ASK_DEEP_MAX_SOFT_ITERATION_BUDGET = 24
+ASK_COMPACT_CONTEXT_MESSAGE_LIMIT = 6
+ASK_COMPACT_CONTEXT_RUN_LIMIT = 4
+ASK_COMPACT_CONTEXT_REF_LIMIT = 12
+ASK_COMPACT_CONTEXT_QUERY_LIMIT = 8
 
 PROMPT_PROFILE_TYPES = {"ask", "digest", "review", "writing"}
 DEFAULT_PROMPT_PROFILE_CONFIGS: dict[str, dict[str, Any]] = {
@@ -672,7 +674,7 @@ class PSKAApi:
             str(payload["query"]),
             user,
             represented_user_id=payload.get("represented_user_id"),
-            max_iterations=int(payload.get("max_iterations") or 3),
+            max_iterations=_positive_int_from_any(payload.get("max_iterations")),
         )
 
     def _agentic_service_search(
@@ -681,15 +683,16 @@ class PSKAApi:
         user: Any,
         *,
         represented_user_id: str | None = None,
-        max_iterations: int = 3,
+        max_iterations: int | None = None,
         skills: list[str] | None = None,
         tool_policy: dict[str, Any] | None = None,
         session_id: str | None = None,
     ) -> dict[str, Any]:
         kwargs: dict[str, Any] = {
             "represented_user_id": represented_user_id,
-            "max_iterations": max_iterations,
         }
+        if max_iterations is not None:
+            kwargs["max_iterations"] = max_iterations
         if skills is not None:
             kwargs["skills"] = skills
         if tool_policy is not None:
@@ -718,6 +721,47 @@ class PSKAApi:
         return {
             "ok": True,
             "mode": "agentic",
+            "requires_agentic_service_online": True,
+            "query": query,
+            "answer": str(response.get("answer") or ""),
+            "retrieval": retrieval,
+            "trace": trace,
+            "source_refs": response.get("source_refs") if isinstance(response.get("source_refs"), list) else [],
+            "agentic_service": response.get("agentic_service") if isinstance(response.get("agentic_service"), dict) else {},
+        }
+
+    def _agentic_service_synthesis(
+        self,
+        query: str,
+        user: Any,
+        *,
+        represented_user_id: str | None = None,
+        skills: list[str] | None = None,
+        tool_policy: dict[str, Any] | None = None,
+        session_id: str | None = None,
+        purpose: str = "agentic_synthesis",
+    ) -> dict[str, Any]:
+        if not hasattr(self.agentic_service, "synthesize"):
+            raise AgenticServiceError("agentic synthesis boundary unavailable")
+        kwargs: dict[str, Any] = {
+            "represented_user_id": represented_user_id,
+            "purpose": purpose,
+        }
+        if skills is not None:
+            kwargs["skills"] = skills
+        if tool_policy is not None:
+            kwargs["tool_policy"] = tool_policy
+        if session_id:
+            kwargs["session_id"] = session_id
+        response = self.agentic_service.synthesize(query, user, **kwargs)
+        retrieval = response.get("retrieval") if isinstance(response.get("retrieval"), dict) else {}
+        trace = response.get("trace") if isinstance(response.get("trace"), dict) else {}
+        if str(trace.get("status") or "").lower() == "error":
+            detail = str(trace.get("error") or response.get("answer") or "agentic service returned an error trace")
+            raise AgenticServiceError(detail)
+        return {
+            "ok": True,
+            "mode": "agentic_synthesis",
             "requires_agentic_service_online": True,
             "query": query,
             "answer": str(response.get("answer") or ""),
@@ -1855,7 +1899,7 @@ class PSKAApi:
                     query,
                     user,
                     represented_user_id=represented_user_id,
-                    max_iterations=int(payload.get("max_iterations") or 3),
+                max_iterations=_positive_int_from_any(payload.get("max_iterations")),
                 )
             except AgenticServiceError as exc:
                 fallback = self.retrieval.search(
@@ -2157,7 +2201,6 @@ class PSKAApi:
                 prompt,
                 user,
                 represented_user_id=represented_user_id,
-                max_iterations=1,
                 skills=[],
                 tool_policy={"mode": "none"},
                 session_id=session_id,
@@ -2224,7 +2267,7 @@ class PSKAApi:
         selected_intent = str(understand.get("selected_intent") or "quick")
         if selected_intent == "deep":
             tool_policy = _ask_read_tool_policy(understand.get("scope_applied") if isinstance(understand.get("scope_applied"), dict) else {})
-            soft_iteration_budget, hard_max_iterations = _ask_deep_iteration_limits(payload)
+            soft_iteration_budget = _ask_deep_soft_iteration_budget(payload)
             try:
                 deep_query = _ask_deep_query(
                     query=query,
@@ -2236,7 +2279,6 @@ class PSKAApi:
                     deep_query,
                     user,
                     represented_user_id=represented_user_id,
-                    max_iterations=hard_max_iterations,
                     skills=[PSKA_QA_SKILL],
                     tool_policy=tool_policy,
                     session_id=session_id,
@@ -2255,7 +2297,15 @@ class PSKAApi:
                     tool_policy=tool_policy,
                     store=self.store,
                     soft_iteration_budget=soft_iteration_budget,
-                    hard_max_iterations=hard_max_iterations,
+                )
+                deep_payload = self._workspace_ask_deep_agentic_fallback_synthesis(
+                    deep_payload,
+                    query=query,
+                    rewrite_query=str(understand.get("rewrite_query") or query),
+                    ask_intent=ask_intent,
+                    user=user,
+                    represented_user_id=represented_user_id,
+                    session_id=session_id,
                 )
                 fallback_payload = self._workspace_ask_deep_scope_guard_fallback(
                     deep_payload,
@@ -2317,22 +2367,19 @@ class PSKAApi:
         user: Any,
         *,
         represented_user_id: str | None,
-        max_iterations: int,
         skills: list[str],
         tool_policy: dict[str, Any],
         session_id: str | None,
     ) -> dict[str, Any]:
         if hasattr(self.agentic_service, "search_event_stream"):
             raw_events: list[dict[str, Any]] = []
-            event_stream = self.agentic_service.search_event_stream(
-                query,
-                user,
-                represented_user_id=represented_user_id,
-                max_iterations=max_iterations,
-                skills=skills,
-                tool_policy=tool_policy,
-                session_id=session_id,
-            )
+            kwargs: dict[str, Any] = {
+                "represented_user_id": represented_user_id,
+                "skills": skills,
+                "tool_policy": tool_policy,
+                "session_id": session_id,
+            }
+            event_stream = self.agentic_service.search_event_stream(query, user, **kwargs)
             for raw_event in event_stream:
                 if not isinstance(raw_event, dict):
                     continue
@@ -2350,7 +2397,6 @@ class PSKAApi:
             query,
             user,
             represented_user_id=represented_user_id,
-            max_iterations=max_iterations,
             skills=skills,
             tool_policy=tool_policy,
             session_id=session_id,
@@ -2535,7 +2581,7 @@ class PSKAApi:
             return
 
         tool_policy = _ask_read_tool_policy(understand.get("scope_applied") if isinstance(understand.get("scope_applied"), dict) else {})
-        soft_iteration_budget, hard_max_iterations = _ask_deep_iteration_limits(payload)
+        soft_iteration_budget = _ask_deep_soft_iteration_budget(payload)
         route = {
             "intent": str(understand.get("intent") or "kb_search"),
             "requested_intent": intent,
@@ -2553,7 +2599,7 @@ class PSKAApi:
             "intent_contract": understand.get("intent_contract") if isinstance(understand.get("intent_contract"), dict) else {},
             "agentic_budget": {
                 "soft_iteration_budget": soft_iteration_budget,
-                "hard_max_iterations": hard_max_iterations,
+                "runtime_circuit_breaker": "fastreact_default",
             },
         }
         yield ("route", {"route": route, "timing": {}})
@@ -2584,7 +2630,6 @@ class PSKAApi:
                 ),
                 user,
                 represented_user_id=represented_user_id,
-                max_iterations=hard_max_iterations,
                 skills=[PSKA_QA_SKILL],
                 tool_policy=tool_policy,
                 session_id=session_id,
@@ -2671,7 +2716,15 @@ class PSKAApi:
             tool_policy=tool_policy,
             store=self.store,
             soft_iteration_budget=soft_iteration_budget,
-            hard_max_iterations=hard_max_iterations,
+        )
+        final_payload = self._workspace_ask_deep_agentic_fallback_synthesis(
+            final_payload,
+            query=query,
+            rewrite_query=str(understand.get("rewrite_query") or query),
+            ask_intent=str(understand.get("intent") or "kb_search"),
+            user=user,
+            represented_user_id=represented_user_id,
+            session_id=session_id,
         )
         fallback_payload = self._workspace_ask_deep_scope_guard_fallback(
             final_payload,
@@ -2803,6 +2856,13 @@ class PSKAApi:
             )
         )
         history = self.store.list_ask_messages(conversation.conversation_id, tenant_id=tenant_id, owner_user_id=owner_user_id, limit=12)
+        previous_runs = [
+            previous_run
+            for previous_run in self.store.list_ask_runs(conversation.conversation_id, tenant_id=tenant_id, owner_user_id=owner_user_id, limit=8)
+            if previous_run.run_id != run.run_id and previous_run.status != "running"
+        ]
+        conversation_context = _ask_compact_conversation_context(conversation, messages=history, runs=previous_runs)
+        retrieval_context = _ask_compact_retrieval_context(messages=history, runs=previous_runs)
         self.store.add_ask_message(
             AskMessage(
                 message_id=str(payload.get("message_id") or f"askmsg_{uuid4().hex}"),
@@ -2826,6 +2886,8 @@ class PSKAApi:
                 "conversation_summary": conversation.summary,
                 "recent_messages": [_ask_message_scope(message) for message in history[-8:]],
                 "prompt_profile": prompt_lineage,
+                **({"conversation_context": conversation_context} if conversation_context else {}),
+                **({"retrieval_context": retrieval_context} if retrieval_context else {}),
             },
         }
         result = _empty_ask_stream_result(query=query, conversation_id=conversation.conversation_id, run_id=run.run_id, prompt_lineage=prompt_lineage)
@@ -3247,8 +3309,9 @@ class PSKAApi:
         user: Any,
         represented_user_id: str,
         session_id: str | None,
+        synthesis_mode: str = "quick",
     ) -> dict[str, Any] | None:
-        if not hasattr(self.agentic_service, "search"):
+        if not hasattr(self.agentic_service, "synthesize"):
             return {"status": "fallback", "owner": "deterministic_fallback", "reason": "agentic_service_unavailable"}
         prompt = _ask_quick_synthesis_prompt(
             query=query,
@@ -3257,16 +3320,18 @@ class PSKAApi:
             evidence=evidence,
             evidence_check=evidence_check,
             evidence_set=evidence_set,
+            synthesis_mode=synthesis_mode,
         )
         try:
-            agentic = self._agentic_service_search(
+            purpose = "deep_fallback_synthesis" if synthesis_mode == "deep_fallback" else "quick_synthesis"
+            agentic = self._agentic_service_synthesis(
                 prompt,
                 user,
                 represented_user_id=represented_user_id,
-                max_iterations=1,
                 skills=[],
                 tool_policy={"mode": "none"},
                 session_id=session_id,
+                purpose=purpose,
             )
         except Exception as exc:
             return {"status": "fallback", "owner": "deterministic_fallback", "reason": f"{type(exc).__name__}: {exc}"}
@@ -3284,10 +3349,104 @@ class PSKAApi:
             "answer": answer,
             "provider": (agentic.get("agentic_service") or {}).get("provider") if isinstance(agentic.get("agentic_service"), dict) else None,
             "adapter": (agentic.get("agentic_service") or {}).get("adapter") if isinstance(agentic.get("agentic_service"), dict) else None,
+            "purpose": purpose,
+            "tool_policy": {"mode": "none"},
             "evidence_count": len(_list_of_dicts(evidence.get("results"))),
             "citation_count": len(_list_of_dicts(evidence.get("citations"))),
             "evidence_status": evidence_check.get("status"),
         }
+
+    def _workspace_ask_deep_agentic_fallback_synthesis(
+        self,
+        payload: dict[str, Any],
+        *,
+        query: str,
+        rewrite_query: str,
+        ask_intent: str,
+        user: Any,
+        represented_user_id: str,
+        session_id: str | None,
+    ) -> dict[str, Any]:
+        if str(payload.get("answer_type") or "") != "deep_evidence_fallback":
+            return payload
+        trace = payload.get("trace") if isinstance(payload.get("trace"), dict) else {}
+        if str(trace.get("fallback_reason") or "") != "agentic_runtime_control_signal_with_supported_evidence":
+            return payload
+        evidence = payload.get("evidence") if isinstance(payload.get("evidence"), dict) else {}
+        evidence_check = payload.get("evidence_check") if isinstance(payload.get("evidence_check"), dict) else {}
+        if evidence_check.get("status") != "supported":
+            return payload
+        deterministic_answer = str(payload.get("answer") or "").strip()
+        synthesis = self._workspace_ask_quick_agentic_synthesis(
+            query=query,
+            rewrite_query=rewrite_query,
+            ask_intent=ask_intent,
+            evidence=evidence,
+            evidence_check=evidence_check,
+            evidence_set=evidence_check.get("evidence_set") if isinstance(evidence_check.get("evidence_set"), dict) else {},
+            user=user,
+            represented_user_id=represented_user_id,
+            session_id=session_id,
+            synthesis_mode="deep_fallback",
+        )
+        enriched = dict(payload)
+        trace = dict(trace)
+        runtime = dict(trace.get("agentic_runtime") if isinstance(trace.get("agentic_runtime"), dict) else {})
+        trace["fallback_synthesis"] = synthesis or {"status": "not_attempted"}
+        route = dict(enriched.get("route") if isinstance(enriched.get("route"), dict) else {})
+        agentic_answer = str((synthesis or {}).get("answer") or "").strip()
+        answer_pipeline_audit: dict[str, Any] | None = None
+        if (synthesis or {}).get("status") == "succeeded" and agentic_answer:
+            support_terms = _ask_answer_support_terms(
+                query=query,
+                evidence_check=evidence_check,
+                deterministic_answer=deterministic_answer,
+            )
+            decision = AnswerPipeline().decide(
+                [
+                    AnswerCandidate(
+                        answer=agentic_answer,
+                        answer_type="deep_evidence_fallback",
+                        owner="agentic_evidence_synthesis",
+                        priority=0,
+                        metadata={
+                            "source": "agentic_evidence_synthesis",
+                            "validate_support_term_coverage": True,
+                            "support_terms": list(support_terms),
+                        },
+                    ),
+                    AnswerCandidate(
+                        answer=deterministic_answer,
+                        answer_type="deep_evidence_fallback",
+                        owner="deterministic_evidence_synthesis",
+                        priority=10,
+                        metadata={"source": "deterministic_evidence_synthesis", "validate_raw_evidence_listing": False},
+                    ),
+                ],
+                AnswerPipelineContext(
+                    query=query,
+                    ask_intent=ask_intent,
+                    evidence_status=str(evidence_check.get("status") or ""),
+                    required_values=required_answer_values(query, deterministic_answer, ask_intent=ask_intent),
+                    support_terms=support_terms,
+                    reject_raw_evidence_listing=True,
+                ),
+            )
+            answer_pipeline_audit = decision.audit
+            enriched["answer"] = decision.answer
+            route["answer_owner"] = decision.owner
+            runtime["fallback_mode"] = (
+                "agentic_evidence_synthesis" if decision.owner == "agentic_evidence_synthesis" else "deterministic_evidence_synthesis"
+            )
+        else:
+            route["answer_owner"] = "deterministic_evidence_synthesis"
+            runtime["fallback_mode"] = "deterministic_evidence_synthesis"
+        if answer_pipeline_audit:
+            trace["fallback_answer_pipeline"] = answer_pipeline_audit
+        trace["agentic_runtime"] = runtime
+        enriched["trace"] = trace
+        enriched["route"] = route
+        return enriched
 
     def workspace_today(
         self,
@@ -4331,7 +4490,7 @@ class PSKAApi:
         owner_user_id: str | None = None,
         top_k: int = 5,
         mode: str = "agentic",
-        max_iterations: int = 3,
+        max_iterations: int | None = None,
         context: RequestContext | None = None,
     ) -> dict[str, Any]:
         owner_user_id = _workspace_owner_user_id(context, owner_user_id)
@@ -4364,7 +4523,7 @@ class PSKAApi:
                 _graph_agentic_query(query, deterministic),
                 user,
                 represented_user_id=owner_user_id,
-                max_iterations=max(1, min(int(max_iterations or 3), 8)),
+                max_iterations=_positive_int_from_any(max_iterations),
                 skills=[],
                 tool_policy={"mode": "none"},
             )
@@ -4407,7 +4566,7 @@ class PSKAApi:
                     _graph_agentic_repair_query(query, deterministic, agentic),
                     user,
                     represented_user_id=owner_user_id,
-                    max_iterations=max(1, min(int(max_iterations or 3), 8)),
+                    max_iterations=_positive_int_from_any(max_iterations),
                     skills=[],
                     tool_policy={"mode": "none"},
                 )
@@ -6300,7 +6459,7 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
                     owner_user_id=_first(query.get("owner_user_id")),
                     top_k=_int_first(query.get("top_k")) or 5,
                     mode=_first(query.get("mode")) or "agentic",
-                    max_iterations=_int_first(query.get("max_iterations")) or 3,
+                    max_iterations=_int_first(query.get("max_iterations")),
                     context=context,
                 ),
             )
@@ -6657,16 +6816,10 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
         config = getattr(self.api, "config", None)
         service_token = getattr(getattr(config, "service", ServiceConfig()), "service_token", None)
         auth_config = getattr(config, "auth", None)
-        auth_mode = str(getattr(auth_config, "mode", "service_token") or "service_token").strip().lower()
+        auth_mode = str(getattr(auth_config, "mode", "jwt") or "jwt").strip().lower()
         authenticated = False
         if auth_mode == "service_token":
-            try:
-                authenticated = authenticate_headers(self.headers, service_token)
-            except AuthError as exc:
-                self._json(401, {"error": str(exc)})
-                return None
-        if auth_mode == "service_token" and service_token_required(service_token) and not authenticated:
-            self._json(401, {"error": "PSKA service token required"})
+            self._json(401, {"error": "PSKA service_token auth is deprecated; use AuthNode JWT or trusted headers"})
             return None
         try:
             context = context_from_headers(self.headers, payload, service_authenticated=authenticated, auth_config=auth_config)
@@ -6785,8 +6938,13 @@ class PSKARequestHandler(BaseHTTPRequestHandler):
             "status": status,
             "duration_ms": duration_ms,
             "caller": getattr(context, "caller", None),
+            "tenant_id": getattr(context, "tenant_id", None),
             "user_id": getattr(context, "effective_user_id", None),
+            "actor_user_id": getattr(context, "user_id", None),
+            "effective_user_id": getattr(context, "effective_user_id", None),
             "represented_user_id": getattr(context, "represented_user_id", None),
+            "auth_provider": getattr(context, "auth_provider", None),
+            "subject": getattr(context, "subject", None),
             "job_id": meta.get("job_id"),
             "source_item_ids_count": meta.get("source_item_ids_count", 0),
             "response_answer_chars": meta.get("response_answer_chars"),
@@ -8309,6 +8467,12 @@ def _ask_rewrite_query(query: str, *, scope: dict[str, Any], ask_intent: str) ->
     if ask_intent == "follow_up":
         recent_messages = _list_of_dicts(scope.get("recent_messages"))
         previous = " ".join(str(message.get("content") or "") for message in recent_messages[-4:])
+        if not previous.strip():
+            conversation_context = scope.get("conversation_context") if isinstance(scope.get("conversation_context"), dict) else {}
+            previous = " ".join(
+                str(message.get("content") or "")
+                for message in _list_of_dicts(conversation_context.get("recent_messages"))[-4:]
+            )
         if previous.strip():
             return f"{query}\n\nConversation context:\n{_trim_words(previous, 160)}"
     return query
@@ -8319,6 +8483,10 @@ def _ask_scope_for_intent(scope: dict[str, Any], *, ask_intent: str) -> dict[str
     if ask_intent != "follow_up":
         scoped.pop("recent_messages", None)
         scoped.pop("conversation_summary", None)
+        for key in ("conversation_context", "retrieval_context"):
+            value = scoped.get(key)
+            if isinstance(value, dict) and value.get("origin") == "pska_conversation_history":
+                scoped.pop(key, None)
     return scoped
 
 
@@ -9489,10 +9657,26 @@ def _ask_deep_query(*, query: str, surface: str, scope: dict[str, Any], soft_ite
         "For report, synthesis, comparison, or multi-document questions, start with one or two broad coverage "
         "PSKA searches over the selected scope before issuing narrow follow-up searches, and request enough "
         "compact results to cover the relevant documents when the tool allows it.\n"
+        "For year-by-year comparison questions, keep a simple coverage ledger for requested years and requested "
+        "metrics. Once the main years or metrics have citeable evidence, stop retrieval and write the answer with "
+        "explicit gaps for missing years; do not keep searching merely to make the report look more exhaustive. "
+        "When a retrieved source_window or selected_span contains a table row for a requested metric and the row "
+        "already includes values for the requested years, extract those values directly from that cited row. Do not "
+        "mark a value as a gap merely because a UI snippet, card preview, or earlier compact summary was truncated; "
+        "only mark a gap when the source_window/selected_span itself lacks the value or is ambiguous. "
+        "As a rule of thumb, more than 8 read/search/graph/digest tool calls in one Ask should be exceptional and "
+        "requires a concrete missing-evidence reason in trace.\n"
         "PSKA read tools may return a compact evidence_set. Treat that evidence_set as the working evidence "
         "collection for reasoning, including record selected_span, slots, and citation identities. Do not return "
         "the evidence_set object itself in final JSON; PSKA already keeps and audits tool evidence. Return only "
         "the answer, source_refs/citations actually used, and compact trace diagnostics.\n"
+        "Use Scope.conversation_context and Scope.retrieval_context as compact memory when present. They may "
+        "contain previous answer summaries, searched_queries, source_refs, and read_source_item_ids from the "
+        "same Ask conversation. Treat searched_queries/source_refs/read_source_item_ids as already explored "
+        "starting points: do not repeat equivalent broad searches unless a specific new evidence gap requires "
+        "it. Prefer reading, graphing, or digesting existing source_refs before launching another generic search. "
+        "Within this run, keep a retrieval ledger from prior tool results and continue from new source_refs "
+        "instead of issuing the same pska_search again.\n"
         f"Soft iteration budget: aim to finish within {soft_iteration_budget} reasoning/tool iterations. "
         "This is a planning budget, not an instruction to withhold an answer. If evidence is already sufficient, "
         "answer immediately; if the budget is almost exhausted, summarize the best supported conclusion and explicit gaps "
@@ -9508,7 +9692,7 @@ def _ask_deep_query(*, query: str, surface: str, scope: dict[str, Any], soft_ite
     )
 
 
-def _ask_deep_iteration_limits(payload: Mapping[str, Any]) -> tuple[int, int]:
+def _ask_deep_soft_iteration_budget(payload: Mapping[str, Any]) -> int:
     soft = _positive_int_from_any(payload.get("soft_iteration_budget"))
     if soft is None:
         soft = _positive_int_from_any(payload.get("iteration_budget"))
@@ -9517,12 +9701,7 @@ def _ask_deep_iteration_limits(payload: Mapping[str, Any]) -> tuple[int, int]:
     if soft is None:
         soft = ASK_DEEP_DEFAULT_SOFT_ITERATION_BUDGET
     soft = max(1, min(soft, ASK_DEEP_MAX_SOFT_ITERATION_BUDGET))
-
-    hard = _positive_int_from_any(payload.get("hard_max_iterations"))
-    if hard is None:
-        hard = max(soft + 4, ASK_DEEP_DEFAULT_HARD_MAX_ITERATIONS)
-    hard = max(soft + 1, min(hard, ASK_DEEP_MAX_HARD_ITERATIONS))
-    return soft, hard
+    return soft
 
 
 def _positive_int_from_any(value: Any) -> int | None:
@@ -9705,6 +9884,168 @@ def _ask_quick_answer(query: str, retrieval: dict[str, Any], *, ask_intent: str 
     return "\n".join(lines)
 
 
+def _ask_deep_evidence_fallback_answer(
+    *,
+    query: str,
+    retrieval: dict[str, Any],
+    evidence: dict[str, Any],
+    evidence_check: dict[str, Any],
+    ask_intent: str,
+) -> str:
+    citations = _dedupe_source_ref_dicts(
+        _list_of_dicts(evidence.get("citations")) or _list_of_dicts(retrieval.get("citations"))
+    )[:6]
+    results = _list_of_dicts(evidence.get("results")) or _list_of_dicts(retrieval.get("results"))
+    facts = _ask_deep_evidence_fallback_facts(query=query, citations=citations, results=results, limit=8)
+    if not facts:
+        return _ask_polish_quick_supported_answer(
+            _ask_quick_answer(query, retrieval, ask_intent=ask_intent),
+            ask_intent=ask_intent,
+        )
+
+    report_like = _ask_query_requests_synthesis(query)
+    heading = "## 阶段性证据综合" if report_like else "## 可引用结论"
+    lines = [heading]
+    if citations:
+        titles = _ask_join_source_titles(citations, limit=5)
+        source_note = f"本次回答基于 {len(citations)} 个已通过校验的可见来源"
+        if titles:
+            source_note += f"：{titles}"
+        lines.extend([source_note + "。", ""])
+
+    lines.append("## 关键发现" if report_like else "## 主要依据")
+    for fact in facts[:6]:
+        marker = fact.get("marker") or ""
+        text = _ask_trim_sentence_punctuation(str(fact.get("text") or ""))
+        if not text:
+            continue
+        lines.append(f"- {text}。{marker}")
+
+    if len(facts) > 6:
+        lines.extend(["", "## 可继续展开的证据"])
+        for fact in facts[6:8]:
+            marker = fact.get("marker") or ""
+            text = _ask_trim_sentence_punctuation(str(fact.get("text") or ""))
+            if text:
+                lines.append(f"- {text}。{marker}")
+
+    gaps = _string_list(evidence_check.get("no_answer_reasons"))
+    if gaps:
+        lines.extend(["", "## 限定"])
+        lines.append("当前综合只使用本轮已通过证据校验的内容；未通过校验或不可见的来源没有进入回答。")
+    return "\n".join(lines).strip()
+
+
+def _ask_query_requests_synthesis(query: str) -> bool:
+    text = str(query or "").casefold()
+    markers = (
+        "报告",
+        "分析",
+        "总结",
+        "综述",
+        "简报",
+        "梳理",
+        "review",
+        "report",
+        "analysis",
+        "brief",
+        "summary",
+    )
+    return any(marker in text for marker in markers)
+
+
+def _ask_join_source_titles(citations: list[dict[str, Any]], *, limit: int) -> str:
+    titles: list[str] = []
+    seen: set[str] = set()
+    for citation in citations:
+        title = _ask_clean_source_title(citation)
+        key = title.casefold()
+        if not title or key in seen:
+            continue
+        seen.add(key)
+        titles.append(title)
+        if len(titles) >= limit:
+            break
+    suffix = "等" if len(citations) > len(titles) else ""
+    return "、".join(titles) + suffix if titles else ""
+
+
+def _ask_clean_source_title(citation: dict[str, Any]) -> str:
+    title = str(citation.get("title") or citation.get("source_id") or citation.get("source_item_id") or "").strip()
+    title = re.sub(r"\s+", " ", title)
+    return _trim_words(title, 18) if title else ""
+
+
+def _ask_deep_evidence_fallback_facts(
+    *,
+    query: str,
+    citations: list[dict[str, Any]],
+    results: list[dict[str, Any]],
+    limit: int,
+) -> list[dict[str, str]]:
+    results_by_source: dict[str, list[dict[str, Any]]] = {}
+    for result in results:
+        source_item_id = str(
+            result.get("source_item_id")
+            or (result.get("citation") if isinstance(result.get("citation"), dict) else {}).get("source_item_id")
+            or ""
+        )
+        if source_item_id:
+            results_by_source.setdefault(source_item_id, []).append(result)
+
+    facts: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for index, citation in enumerate(citations, start=1):
+        source_item_id = str(citation.get("source_item_id") or "")
+        marker = f"[{index}]"
+        text = _ask_deep_evidence_fallback_text(citation, results_by_source.get(source_item_id, []))
+        candidates = _ask_rank_fallback_fact_sentences(query=query, text=text)
+        if not candidates:
+            candidates = [_trim_words(_ask_clean_evidence_text(text), 42)] if text else []
+        for candidate in candidates:
+            fact = _ask_trim_sentence_punctuation(candidate)
+            key = re.sub(r"\s+", " ", fact).casefold()
+            if len(fact) < 8 or key in seen:
+                continue
+            seen.add(key)
+            facts.append({"text": fact, "marker": marker})
+            if len(facts) >= limit:
+                return facts
+    return facts
+
+
+def _ask_deep_evidence_fallback_text(citation: dict[str, Any], results: list[dict[str, Any]]) -> str:
+    parts: list[str] = []
+    for item in [citation, *results]:
+        source_window = item.get("source_window") if isinstance(item.get("source_window"), dict) else {}
+        citation_payload = item.get("citation") if isinstance(item.get("citation"), dict) else {}
+        for value in (
+            item.get("snippet"),
+            item.get("text"),
+            item.get("body"),
+            source_window.get("text"),
+            citation_payload.get("snippet"),
+            citation_payload.get("text"),
+        ):
+            if value:
+                parts.append(str(value))
+    return "\n".join(parts)
+
+
+def _ask_rank_fallback_fact_sentences(*, query: str, text: str) -> list[str]:
+    sentences = _ask_fact_sentences(_ask_clean_evidence_text(text))
+    query_terms = set(_ask_evidence_terms(query))
+
+    def score(sentence: str) -> tuple[int, int, int]:
+        lower = sentence.casefold()
+        term_hits = sum(1 for term in query_terms if term and term in lower)
+        numeric_hits = len(_ask_numeric_values(sentence))
+        return (term_hits * 3 + numeric_hits * 2, numeric_hits, -len(sentence))
+
+    sentences.sort(key=score, reverse=True)
+    return sentences[:2]
+
+
 def _ask_polish_quick_supported_answer(answer: str, *, ask_intent: str) -> str:
     text = str(answer or "").strip()
     if not text:
@@ -9814,6 +10155,7 @@ def _ask_quick_synthesis_prompt(
     evidence: dict[str, Any],
     evidence_check: dict[str, Any],
     evidence_set: dict[str, Any] | None = None,
+    synthesis_mode: str = "quick",
 ) -> str:
     evidence_set = evidence_set if isinstance(evidence_set, dict) else {}
     evidence_items = _ask_quick_synthesis_evidence_items_from_evidence_set(evidence_set)
@@ -9838,12 +10180,30 @@ def _ask_quick_synthesis_prompt(
             "respect requested length and format; preserve exact numbers and named entities from evidence. "
             "Do not merely list raw evidence snippets unless the user asked for a list.\n"
         )
+    deep_instruction = ""
+    if synthesis_mode == "deep_fallback":
+        deep_instruction = (
+            "This is a Deep Ask fallback synthesis after the retrieval loop stopped. The evidence below is already "
+            "filtered and validated; synthesize the richest grounded answer possible from it. For report, synthesis, "
+            "comparison, or multi-document requests, use short sections or bullets and cover every cited source that "
+            "adds a distinct supported point. Do not say the agent stopped or mention tool/runtime details in the "
+            "answer body. If the evidence is partial, state the evidence gap as a content limitation, not as a "
+            "system failure.\n"
+        )
+    length_instruction = (
+        "The answer can be 400-900 Chinese characters for report-like requests, otherwise concise. "
+        "Use compact sections or up to eight bullets when needed."
+        if synthesis_mode == "deep_fallback"
+        else "Use one sentence when the question asks for a single value or fact; otherwise use at most three short "
+        "sentences or three bullets."
+    )
     return (
         "You are PSKA's quick-answer final synthesizer. You are called through the agentic service, "
         "but this is not a research loop. Do not call tools, do not retrieve, and do not use outside knowledge.\n"
         "Tools are disabled for this request. Never emit tool calls, XML/tool tags, MCP calls, function-call markup, "
         "or descriptions of searching/retrieving; produce only the final answer JSON.\n"
         f"{writing_instruction}"
+        f"{deep_instruction}"
         "Use only the Evidence Set JSON below, which PSKA already filtered by ACL, scope, citation support, "
         "and evidence composition. "
         "Answer the user's question in natural human language, not as raw evidence snippets. Preserve exact "
@@ -9854,9 +10214,8 @@ def _ask_quick_synthesis_prompt(
         "If the evidence has multiple candidate values, explain the distinction briefly instead of guessing. "
         "If the evidence is insufficient, say so clearly.\n"
         "Return ONLY JSON: {\"answer\": \"...\"}. The answer should be Chinese by default, concise, "
-        "conclusion-first, and suitable for a financial institution user to paste into a note. Use one "
-        "sentence when the question asks for a single value or fact; otherwise use at most three short "
-        "sentences or three bullets. Do not repeat the user's question, explain PSKA internals, or add "
+        f"conclusion-first, and suitable for a financial institution user to paste into a note. {length_instruction} "
+        "Do not repeat the user's question, explain PSKA internals, or add "
         "generic caveats when the evidence check is supported.\n\n"
         f"Evidence Set JSON: {json.dumps(payload, ensure_ascii=False)}"
     )
@@ -11451,7 +11810,6 @@ def _ask_deep_response(
     tool_policy: dict[str, Any] | None = None,
     store: Any,
     soft_iteration_budget: int | None = None,
-    hard_max_iterations: int | None = None,
 ) -> dict[str, Any]:
     understand = understand or _ask_understand_payload(
         query=query,
@@ -11521,6 +11879,12 @@ def _ask_deep_response(
     evidence_check = _ask_select_citations(query=rewrite_query, evidence_check=evidence_check)
     evidence_check = _ask_compose_evidence_set(query=rewrite_query, evidence_check=evidence_check, evidence=evidence)
     evidence = _ask_apply_evidence_check(evidence, evidence_check)
+    answer_table_supplement: dict[str, Any] = {}
+    answer, answer_table_supplement = _ask_apply_table_value_supplement(
+        query=rewrite_query,
+        answer=answer,
+        evidence=evidence,
+    )
     runtime_fallback_reason = ""
     answer_type = "deep_answer"
     ok = True
@@ -11535,8 +11899,11 @@ def _ask_deep_response(
                     "citations": _list_of_dicts(evidence.get("citations")),
                     "diagnostics": {"gaps": [], "conflicts": [], "sensitivity": [], "score_debug": {}},
                 }
-            answer = _ask_polish_quick_supported_answer(
-                _ask_quick_answer(query, supported_retrieval, ask_intent=ask_intent),
+            answer = _ask_deep_evidence_fallback_answer(
+                query=query,
+                retrieval=supported_retrieval,
+                evidence=evidence,
+                evidence_check=evidence_check,
                 ask_intent=ask_intent,
             )
             answer_type = "deep_evidence_fallback"
@@ -11574,17 +11941,20 @@ def _ask_deep_response(
         "tool_profile": ASK_READ_TOOL_PROFILE,
         "agentic_budget": {
             "soft_iteration_budget": soft_iteration_budget,
-            "hard_max_iterations": hard_max_iterations,
+            "runtime_circuit_breaker": "fastreact_default",
         },
         "agentic_runtime": {
             "status": "stopped" if runtime_signal else "completed",
             "control_signal": runtime_signal,
             "fallback_reason": runtime_fallback_reason,
+            "fallback_mode": "deterministic_evidence_synthesis" if runtime_fallback_reason else None,
         },
         "evidence_composition": evidence_check.get("evidence_composition") or {},
         "evidence_set": evidence_check.get("evidence_set") or {},
         "evidence_check": evidence_check,
     }
+    if answer_table_supplement:
+        trace["answer_table_supplement"] = answer_table_supplement
     if runtime_fallback_reason:
         trace["fallback_reason"] = runtime_fallback_reason
     agent_steps = _ask_agent_steps_from_events(trace.get("events") if isinstance(trace.get("events"), list) else [])
@@ -11609,10 +11979,10 @@ def _ask_deep_response(
             "tool_policy": tool_policy or _ask_read_tool_policy(scope_applied, allowed_tools=allowed_tools),
             "tool_profile": ASK_READ_TOOL_PROFILE,
             "fallback_reason": runtime_fallback_reason or None,
-            "answer_owner": "pska_evidence_fallback" if runtime_fallback_reason else "fastreact_agentic_service",
+            "answer_owner": "deterministic_evidence_synthesis" if runtime_fallback_reason else "fastreact_agentic_service",
             "agentic_budget": {
                 "soft_iteration_budget": soft_iteration_budget,
-                "hard_max_iterations": hard_max_iterations,
+                "runtime_circuit_breaker": "fastreact_default",
             },
             "routing_owner": "pska_planner",
             "query_terms": _ask_query_terms(rewrite_query),
@@ -11678,6 +12048,181 @@ def _ask_deep_needs_scoped_direct_fallback(payload: dict[str, Any]) -> bool:
     }
     answer_type = str(payload.get("answer_type") or "")
     return answer_type in {"no_answer", "deep_answer_needs_review"} and (has_scope_drop or bool(reasons & fallback_reasons))
+
+
+TABLE_VALUE_METRICS: tuple[dict[str, Any], ...] = (
+    {
+        "key": "revenue",
+        "label": "营业收入",
+        "query_terms": ("营业收入", "营收"),
+        "row_terms": ("营业收入",),
+    },
+    {
+        "key": "net_profit_parent",
+        "label": "归母净利润",
+        "query_terms": ("归属于上市公司股东的净利润", "归母净利润", "净利润"),
+        "row_terms": ("归属于上市公司股东的净利润", "归母净利润"),
+    },
+    {
+        "key": "r_and_d",
+        "label": "研发投入",
+        "query_terms": ("研发投入", "研发费用"),
+        "row_terms": ("研发投入金额", "研发投入"),
+    },
+)
+
+
+def _ask_apply_table_value_supplement(*, query: str, answer: str, evidence: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    years = _ask_requested_years(query)
+    if not years:
+        return answer, {}
+    metrics = _ask_requested_table_metrics(query)
+    if not metrics:
+        return answer, {}
+    extracted = _ask_extract_table_values_from_evidence(evidence, years=years, metrics=metrics)
+    if not extracted:
+        return answer, {}
+    missing = [
+        (year, metric)
+        for year in years
+        for metric in metrics
+        if extracted.get(year, {}).get(metric["key"])
+        and extracted[year][metric["key"]]["value"] not in answer
+    ]
+    if not missing:
+        return answer, {"status": "not_needed", "extracted_value_count": _ask_extracted_value_count(extracted)}
+
+    supplement = _ask_table_value_supplement_markdown(years=years, metrics=metrics, extracted=extracted)
+    if not supplement:
+        return answer, {}
+    updated_answer = f"{answer.rstrip()}\n\n{supplement}" if answer.strip() else supplement
+    return updated_answer, {
+        "status": "applied",
+        "reason": "answer_missing_values_present_in_validated_source_windows",
+        "requested_years": years,
+        "metric_keys": [metric["key"] for metric in metrics],
+        "extracted_value_count": _ask_extracted_value_count(extracted),
+        "missing_value_count": len(missing),
+    }
+
+
+def _ask_requested_years(query: str) -> list[str]:
+    years = list(dict.fromkeys(re.findall(r"20\d{2}", str(query or ""))))
+    return years[:8]
+
+
+def _ask_requested_table_metrics(query: str) -> list[dict[str, Any]]:
+    text = str(query or "")
+    metrics: list[dict[str, Any]] = []
+    for metric in TABLE_VALUE_METRICS:
+        terms = metric["query_terms"]
+        if any(str(term) in text for term in terms):
+            metrics.append(metric)
+    return metrics
+
+
+def _ask_extract_table_values_from_evidence(
+    evidence: dict[str, Any],
+    *,
+    years: list[str],
+    metrics: list[dict[str, Any]],
+) -> dict[str, dict[str, dict[str, Any]]]:
+    refs = _list_of_dicts(evidence.get("source_refs")) or _list_of_dicts(evidence.get("citations"))
+    extracted: dict[str, dict[str, dict[str, Any]]] = {year: {} for year in years}
+    for ref_index, ref in enumerate(refs, start=1):
+        source_window = ref.get("source_window") if isinstance(ref.get("source_window"), dict) else {}
+        text = str(source_window.get("text") or ref.get("snippet") or "").strip()
+        if not text:
+            continue
+        for metric in metrics:
+            rows = _ask_metric_rows_from_text(text, metric)
+            for row_index, row in rows:
+                header_years = _ask_header_years_before_row(text, row_index)
+                if not header_years:
+                    continue
+                amounts = _ask_amounts_from_table_row(row)
+                if not amounts:
+                    continue
+                for year, value in zip(header_years, amounts):
+                    if year not in extracted or metric["key"] in extracted[year]:
+                        continue
+                    extracted[year][metric["key"]] = {
+                        "value": value,
+                        "citation": f"[{ref_index}]",
+                        "title": ref.get("title") or source_window.get("title") or "",
+                        "source_item_id": ref.get("source_item_id") or source_window.get("source_item_id") or "",
+                        "chunk_id": ref.get("chunk_id") or source_window.get("chunk_id") or "",
+                    }
+    return {year: values for year, values in extracted.items() if values}
+
+
+def _ask_metric_rows_from_text(text: str, metric: dict[str, Any]) -> list[tuple[int, str]]:
+    rows: list[tuple[int, str]] = []
+    lines = text.splitlines()
+    offset = 0
+    for index, line in enumerate(lines):
+        stripped = re.sub(r"\s+", " ", line).strip()
+        if not stripped:
+            offset += len(line) + 1
+            continue
+        if any(str(term) in stripped for term in metric["row_terms"]):
+            combined = stripped
+            if len(_ask_amounts_from_table_row(combined)) < 2 and index + 1 < len(lines):
+                next_line = re.sub(r"\s+", " ", lines[index + 1]).strip()
+                combined = f"{combined} {next_line}"
+            rows.append((offset, combined))
+        offset += len(line) + 1
+    return rows
+
+
+def _ask_header_years_before_row(text: str, row_index: int) -> list[str]:
+    prefix = text[max(0, row_index - 360) : row_index]
+    years = re.findall(r"20\d{2}", prefix)
+    return list(dict.fromkeys(years[-6:]))
+
+
+def _ask_amounts_from_table_row(row: str) -> list[str]:
+    values: list[str] = []
+    pattern = re.compile(r"[-+]?\d{1,3}(?:,\d{3})+(?:\.\d+)?|[-+]?\d+\.\d+")
+    for match in pattern.finditer(row):
+        end = match.end()
+        if row[end : end + 1] == "%":
+            continue
+        value = match.group(0)
+        numeric = float(value.replace(",", ""))
+        if abs(numeric) < 1000:
+            continue
+        values.append(value)
+    return values
+
+
+def _ask_table_value_supplement_markdown(
+    *,
+    years: list[str],
+    metrics: list[dict[str, Any]],
+    extracted: dict[str, dict[str, dict[str, Any]]],
+) -> str:
+    rows: list[str] = []
+    header = "| 年份 | " + " | ".join(metric["label"] for metric in metrics) + " |"
+    separator = "|---|" + "|".join("---" for _ in metrics) + "|"
+    rows.extend(["### 证据表格抽取补正", "以下数值直接来自已通过校验的引用 source_window 表格行，用于补足上文未展开或误标为缺口的字段。", "", header, separator])
+    has_value = False
+    for year in years:
+        values = extracted.get(year, {})
+        cells = []
+        for metric in metrics:
+            item = values.get(metric["key"])
+            if item:
+                has_value = True
+                cells.append(f"{item['value']} {item['citation']}")
+            else:
+                cells.append("未在已选证据表格中定位")
+        rows.append(f"| {year} | " + " | ".join(cells) + " |")
+    return "\n".join(rows) if has_value else ""
+
+
+def _ask_extracted_value_count(extracted: dict[str, dict[str, dict[str, Any]]]) -> int:
+    return sum(len(values) for values in extracted.values())
 
 
 def _ask_scope_applied_is_hard(scope_applied: dict[str, Any]) -> bool:
@@ -11792,6 +12337,18 @@ def _ask_agent_step_from_event(event: dict[str, Any], *, sequence: int, started_
             source_ref_count=counts.get("source_ref_count"),
         )
     if event_type == "session_end":
+        content = str(event.get("content") or event.get("final_content") or event.get("answer") or "").strip()
+        runtime_signal = _ask_runtime_control_signal(content)
+        if runtime_signal:
+            return _ask_agent_step(
+                sequence=sequence,
+                phase="answer",
+                status="warning",
+                title="长链路未收口",
+                detail="FastReAct 未返回最终综合，已切换为基于已校验证据的回答。",
+                raw_event_id=event.get("event_id"),
+                elapsed_ms=elapsed_ms,
+            )
         return _ask_agent_step(
             sequence=sequence,
             phase="answer",
@@ -12549,6 +13106,13 @@ def _ask_no_answer_diagnostics(
     reasons: list[str] = []
     tool_errors = _ask_trace_tool_errors(trace)
     evidence_check = payload.get("evidence_check") if isinstance(payload.get("evidence_check"), dict) else {}
+    supported_runtime_fallback = (
+        str(trace.get("fallback_reason") or "") == "agentic_runtime_control_signal_with_supported_evidence"
+        and str(payload.get("answer_type") or "") == "deep_evidence_fallback"
+        and evidence_check.get("status") == "supported"
+        and bool(citations)
+        and bool(answer_chars)
+    )
     dropped_citations = _list_of_dicts(evidence_check.get("dropped_citations"))
     scope_dropped_evidence = bool(dropped_source_refs) or any(
         str(item.get("drop_reason") or item.get("reason") or "") in {"scope_violation", "tenant_or_owner_mismatch"}
@@ -12635,11 +13199,18 @@ def _ask_no_answer_diagnostics(
     if route.get("fallback_from") or trace.get("fallback_reason"):
         fallback_reason = str(trace.get("fallback_reason") or "fallback")
         if fallback_reason == "agentic_runtime_control_signal_with_supported_evidence":
-            add(
-                "fastreact",
-                fallback_reason,
-                "FastReAct did not fully close the loop, so PSKA answered from visible evidence collected during the run.",
-            )
+            if supported_runtime_fallback:
+                add(
+                    "fastreact",
+                    "ok",
+                    "FastReAct did not return its own final synthesis; PSKA returned a cited answer from evidence that passed validation.",
+                )
+            else:
+                add(
+                    "fastreact",
+                    fallback_reason,
+                    "FastReAct did not fully close the loop, so PSKA answered from visible evidence collected during the run.",
+                )
         else:
             add("fastreact", fallback_reason, "Deep Ask fell back to PSKA direct retrieval.")
     elif tool_errors and route.get("requires_agentic_service_online"):
@@ -12651,6 +13222,12 @@ def _ask_no_answer_diagnostics(
 
     if denied_tool_calls:
         add("mcp", "tool_denied", f"{len(denied_tool_calls)} tool calls were denied by policy.")
+    elif tool_errors and supported_runtime_fallback:
+        add(
+            "mcp",
+            "ok",
+            "One or more PSKA MCP tool calls reported recoverable issues, but later evidence passed validation and the final answer used visible citations.",
+        )
     elif tool_errors:
         add("mcp", "tool_error", "; ".join(tool_errors[:2]))
     elif route.get("retrieval_owner") == "fastreact_pska_mcp":
@@ -12675,13 +13252,60 @@ def _ask_no_answer_diagnostics(
         add("answer", "ok", "Answer includes citeable evidence.")
 
     primary = next((reason for reason in reasons if reason not in {"missing_citations", "uncited_answer"}), reasons[0] if reasons else "ok")
+    display = bool(reasons) or not answer_chars or not citations
+    if supported_runtime_fallback and not reasons:
+        display = False
     return {
         "schema": "pska.ask_no_answer_diagnostics.v1",
         "primary_reason": primary,
         "reasons": list(dict.fromkeys(reasons)),
         "dimensions": dimensions,
-        "display": bool(reasons) or not answer_chars or not citations,
+        "display": display,
         "query": payload.get("query"),
+    }
+
+
+def _ask_weak_citation_support_diagnostics(
+    *,
+    citations: list[dict[str, Any]],
+    citation_audit: dict[str, Any],
+) -> dict[str, Any]:
+    claim_bindings = _list_of_dicts(citation_audit.get("claim_bindings"))
+    weak_bindings: list[dict[str, Any]] = []
+    for binding in claim_bindings:
+        score = _int_value(binding.get("score"))
+        matched_numbers = _string_list(binding.get("matched_numbers"))
+        matched_terms = _string_list(binding.get("matched_terms"))
+        action = str(binding.get("action") or "")
+        if score <= 1:
+            weak_bindings.append(binding)
+            continue
+        if action in {"appended", "repaired"} and not matched_numbers and len(matched_terms) <= 1:
+            weak_bindings.append(binding)
+
+    warning_reasons: list[str] = []
+    for citation in citations:
+        for warning in _list_of_dicts(citation.get("validation_warnings")):
+            reason = str(warning.get("reason") or "").strip()
+            if reason:
+                warning_reasons.append(reason)
+
+    return {
+        "weak_claim_binding_count": len(weak_bindings),
+        "claim_binding_count": len(claim_bindings),
+        "citation_validation_warning_count": len(warning_reasons),
+        "citation_validation_warning_reasons": list(dict.fromkeys(warning_reasons))[:8],
+        "weak_claims": [
+            {
+                "claim": item.get("claim"),
+                "marker": item.get("marker"),
+                "score": item.get("score"),
+                "action": item.get("action"),
+                "matched_terms": _string_list(item.get("matched_terms"))[:8],
+                "matched_numbers": _string_list(item.get("matched_numbers"))[:8],
+            }
+            for item in weak_bindings[:8]
+        ],
     }
 
 
@@ -12691,6 +13315,7 @@ def _ask_quality_signals(payload: dict[str, Any]) -> dict[str, Any]:
     trace = payload.get("trace") if isinstance(payload.get("trace"), dict) else {}
     timing = payload.get("timing") if isinstance(payload.get("timing"), dict) else {}
     evidence_check = payload.get("evidence_check") if isinstance(payload.get("evidence_check"), dict) else {}
+    citation_audit = payload.get("citation_audit") if isinstance(payload.get("citation_audit"), dict) else {}
     answer_type = str(payload.get("answer_type") or "")
     citations = _list_of_dicts(payload.get("citations")) or _list_of_dicts(evidence.get("citations"))
     source_refs = _list_of_dicts(payload.get("source_refs")) or _list_of_dicts(evidence.get("source_refs"))
@@ -12751,7 +13376,14 @@ def _ask_quality_signals(payload: dict[str, Any]) -> dict[str, Any]:
         flags.append("insufficient_evidence")
     if conflicts:
         flags.append("evidence_conflict")
-    if route.get("fallback_from") or trace.get("fallback_reason"):
+    supported_runtime_fallback = (
+        str(trace.get("fallback_reason") or "") == "agentic_runtime_control_signal_with_supported_evidence"
+        and answer_type == "deep_evidence_fallback"
+        and evidence_check.get("status") == "supported"
+        and bool(citations)
+        and bool(answer_chars)
+    )
+    if route.get("fallback_from") or (trace.get("fallback_reason") and not supported_runtime_fallback):
         flags.append("fallback")
     if answer_type == "deep_answer_needs_review":
         flags.append("agentic_answer_needs_review")
@@ -12782,10 +13414,17 @@ def _ask_quality_signals(payload: dict[str, Any]) -> dict[str, Any]:
             if flag not in flags:
                 flags.append(flag)
     flags.extend(flag for flag in _ask_answer_quality_flags(answer) if flag not in flags)
+    weak_citation_support = _ask_weak_citation_support_diagnostics(citations=citations, citation_audit=citation_audit)
+    if weak_citation_support["weak_claim_binding_count"] and "weak_citation_support" not in flags:
+        flags.append("weak_citation_support")
+    if weak_citation_support["citation_validation_warning_count"] and "citation_validation_warnings" not in flags:
+        flags.append("citation_validation_warnings")
 
     evidence_status = "grounded" if citations else "retrieved_without_citations" if results else "no_evidence"
     if "insufficient_evidence" in flags:
         evidence_status = "insufficient_evidence"
+    elif any(flag in flags for flag in ["weak_citation_support", "citation_validation_warnings"]):
+        evidence_status = "weak_citation_support"
     if "empty_answer" in flags:
         quality_band = "failed"
     elif "agentic_answer_needs_review" in flags:
@@ -12794,6 +13433,8 @@ def _ask_quality_signals(payload: dict[str, Any]) -> dict[str, Any]:
         quality_band = "no_answerable_evidence"
     elif any(flag in flags for flag in ["evidence_conflict", "fallback", "dropped_source_refs", "raw_evidence_dump", "answer_needs_rewrite"]):
         quality_band = "needs_review"
+    elif any(flag in flags for flag in ["weak_citation_support", "citation_validation_warnings"]):
+        quality_band = "needs_citation_review"
     elif citations:
         quality_band = "grounded"
     else:
@@ -12827,6 +13468,7 @@ def _ask_quality_signals(payload: dict[str, Any]) -> dict[str, Any]:
         "profile_context_count": len(profile_context),
         "gap_count": len(gaps),
         "conflict_count": len(conflicts),
+        "weak_citation_support": weak_citation_support,
         "tool_call_count": len(tool_calls),
         "denied_tool_call_count": len(denied_tool_calls),
         "retrieval_owner": route.get("retrieval_owner"),
@@ -13149,7 +13791,14 @@ def _ask_public_trace_event(event: dict[str, Any]) -> dict[str, Any]:
     elif event_type == "think":
         public["content"] = _ask_think_step_detail(event)
     elif event_type == "session_end":
-        public["content"] = "Final answer returned."
+        content = str(event.get("content") or event.get("final_content") or event.get("answer") or "").strip()
+        runtime_signal = _ask_runtime_control_signal(content)
+        if runtime_signal:
+            public["status"] = "stopped"
+            public["control_signal"] = runtime_signal
+            public["content"] = "长链路未返回最终综合，PSKA 已使用通过校验的证据生成回答。"
+        else:
+            public["content"] = "Final answer returned."
     elif event_type == "error":
         public["content"] = "Agentic analysis failed."
     return public
@@ -13361,6 +14010,222 @@ def _add_ask_failure_message(
             tenant_id=tenant_id,
         )
     )
+
+
+def _ask_compact_conversation_context(conversation: Any, *, messages: list[Any], runs: list[Any]) -> dict[str, Any]:
+    recent_messages: list[dict[str, Any]] = []
+    for message in list(messages)[-ASK_COMPACT_CONTEXT_MESSAGE_LIMIT:]:
+        item = _ask_message_scope(message)
+        refs = _ask_compact_refs_from_values(getattr(message, "source_refs", []), getattr(message, "citations", []), limit=4)
+        if refs:
+            item["source_refs"] = refs
+        recent_messages.append(item)
+
+    recent_runs: list[dict[str, Any]] = []
+    for run in _ask_recent_runs_chronological(runs, limit=ASK_COMPACT_CONTEXT_RUN_LIMIT):
+        result = _ask_run_result(run)
+        item: dict[str, Any] = {
+            "run_id": getattr(run, "run_id", ""),
+            "status": getattr(run, "status", ""),
+            "query": _trim_words(str(getattr(run, "query", "") or ""), 48),
+        }
+        answer = str(result.get("answer") or "").strip()
+        if answer:
+            item["answer_summary"] = _trim_words(answer, 80)
+        refs = _ask_compact_refs_from_values(result, limit=4)
+        if refs:
+            item["source_refs"] = refs
+        if result.get("answer_type"):
+            item["answer_type"] = result["answer_type"]
+        no_answer_reasons = _string_list(result.get("no_answer_reasons"))
+        if no_answer_reasons:
+            item["no_answer_reasons"] = no_answer_reasons[:4]
+        recent_runs.append({key: value for key, value in item.items() if value is not None and value != "" and value != []})
+
+    summary = _trim_words(str(getattr(conversation, "summary", "") or ""), 120)
+    context = {
+        "schema": "pska.ask.conversation_context.v1",
+        "origin": "pska_conversation_history",
+        "summary": summary,
+        "recent_messages": recent_messages,
+        "recent_runs": recent_runs,
+    }
+    if not summary and not recent_messages and not recent_runs:
+        return {}
+    return {key: value for key, value in context.items() if value not in ("", [], {})}
+
+
+def _ask_compact_retrieval_context(*, messages: list[Any], runs: list[Any]) -> dict[str, Any]:
+    searched_queries: list[str] = []
+    source_refs: list[dict[str, Any]] = []
+    read_source_item_ids: list[str] = []
+    recent_runs: list[dict[str, Any]] = []
+
+    for message in list(messages)[-ASK_COMPACT_CONTEXT_MESSAGE_LIMIT:]:
+        source_refs.extend(_ask_compact_refs_from_values(getattr(message, "source_refs", []), getattr(message, "citations", []), limit=6))
+
+    for run in _ask_recent_runs_chronological(runs, limit=ASK_COMPACT_CONTEXT_RUN_LIMIT):
+        result = _ask_run_result(run)
+        route = dict(getattr(run, "route", {}) or result.get("route") or {})
+        run_queries: list[str] = []
+        _ask_append_context_query(run_queries, getattr(run, "query", ""), limit=3)
+        _ask_append_context_query(run_queries, result.get("rewrite_query") or route.get("rewrite_query"), limit=3)
+        for query_text in run_queries:
+            _ask_append_context_query(searched_queries, query_text, limit=ASK_COMPACT_CONTEXT_QUERY_LIMIT)
+
+        source_refs.extend(_ask_compact_refs_from_values(result, limit=ASK_COMPACT_CONTEXT_REF_LIMIT))
+        trace = result.get("trace") if isinstance(result.get("trace"), dict) else {}
+        _ask_collect_trace_tool_context(
+            trace,
+            searched_queries=searched_queries,
+            read_source_item_ids=read_source_item_ids,
+        )
+        if trace:
+            _ask_collect_trace_tool_context(
+                compact_trace_for_context(trace, max_events=16),
+                searched_queries=searched_queries,
+                read_source_item_ids=read_source_item_ids,
+            )
+
+        run_item: dict[str, Any] = {
+            "run_id": getattr(run, "run_id", ""),
+            "status": getattr(run, "status", ""),
+            "queries": run_queries,
+        }
+        refs = _ask_compact_refs_from_values(result, limit=4)
+        if refs:
+            run_item["source_refs"] = refs
+        quality_signals = result.get("quality_signals") if isinstance(result.get("quality_signals"), dict) else {}
+        evidence_check = result.get("evidence_check") or quality_signals.get("evidence_check")
+        if evidence_check:
+            run_item["evidence_check"] = evidence_check
+        recent_runs.append({key: value for key, value in run_item.items() if value is not None and value != "" and value != []})
+
+    compact_refs = _ask_compact_source_refs(source_refs, limit=ASK_COMPACT_CONTEXT_REF_LIMIT)
+    context = {
+        "schema": "pska.ask.retrieval_context.v1",
+        "origin": "pska_conversation_history",
+        "searched_queries": searched_queries[:ASK_COMPACT_CONTEXT_QUERY_LIMIT],
+        "source_refs": compact_refs,
+        "read_source_item_ids": read_source_item_ids[:ASK_COMPACT_CONTEXT_REF_LIMIT],
+        "recent_runs": recent_runs,
+    }
+    if not searched_queries and not compact_refs and not read_source_item_ids and not recent_runs:
+        return {}
+    return {key: value for key, value in context.items() if value not in ("", [], {})}
+
+
+def _ask_recent_runs_chronological(runs: list[Any], *, limit: int) -> list[Any]:
+    return list(reversed(list(runs)[: max(1, limit)]))
+
+
+def _ask_run_result(run: Any) -> dict[str, Any]:
+    result = getattr(run, "result", {}) or {}
+    return dict(result) if isinstance(result, dict) else {}
+
+
+def _ask_append_context_query(values: list[str], value: Any, *, limit: int) -> None:
+    text = str(value or "").strip()
+    if not text:
+        return
+    if len(text) > 500 or "Answer this PSKA knowledge question" in text or "Return JSON with keys answer" in text:
+        return
+    text = _trim_words(text, 48)
+    if text and text not in values and len(values) < max(1, limit):
+        values.append(text)
+
+
+def _ask_collect_trace_tool_context(
+    trace: dict[str, Any],
+    *,
+    searched_queries: list[str],
+    read_source_item_ids: list[str],
+) -> None:
+    if not isinstance(trace, dict):
+        return
+    for call in _list_of_dicts(trace.get("tool_calls")):
+        _ask_collect_tool_call_context(call, searched_queries=searched_queries, read_source_item_ids=read_source_item_ids)
+    for event_key in ("events", "events_kept"):
+        for event in _list_of_dicts(trace.get(event_key)):
+            event_type = str(event.get("type") or event.get("kind") or "").lower()
+            if "tool_call" not in event_type and event.get("kind") != "tool_call":
+                continue
+            _ask_collect_tool_call_context(event, searched_queries=searched_queries, read_source_item_ids=read_source_item_ids)
+
+
+def _ask_collect_tool_call_context(
+    call: dict[str, Any],
+    *,
+    searched_queries: list[str],
+    read_source_item_ids: list[str],
+) -> None:
+    tool_name = str(call.get("tool_name") or call.get("name") or "").lower()
+    args = _ask_tool_args_dict(call.get("tool_args") or call.get("arguments") or call.get("args"))
+    _ask_append_context_query(searched_queries, args.get("query"), limit=ASK_COMPACT_CONTEXT_QUERY_LIMIT)
+    if any(marker in tool_name for marker in ("read", "graph", "digest")):
+        for source_item_id in _ask_source_item_ids_from_args(args):
+            if source_item_id not in read_source_item_ids and len(read_source_item_ids) < ASK_COMPACT_CONTEXT_REF_LIMIT:
+                read_source_item_ids.append(source_item_id)
+
+
+def _ask_tool_args_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip().startswith("{"):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _ask_source_item_ids_from_args(args: dict[str, Any]) -> list[str]:
+    ids = _string_list(args.get("source_item_ids"))
+    for ref in _list_of_dicts(args.get("source_refs")):
+        source_item_id = str(ref.get("source_item_id") or "").strip()
+        if source_item_id:
+            ids.append(source_item_id)
+    return list(dict.fromkeys(ids))
+
+
+def _ask_compact_refs_from_values(*values: Any, limit: int) -> list[dict[str, Any]]:
+    raw_refs: list[Any] = []
+    for value in values:
+        if isinstance(value, dict):
+            raw_refs.append(value)
+            for key in ("source_refs", "citations", "results"):
+                raw_refs.extend(_list_of_dicts(value.get(key)))
+            for nested_key in ("evidence", "retrieval"):
+                nested = value.get(nested_key)
+                if isinstance(nested, dict):
+                    for key in ("source_refs", "citations", "results"):
+                        raw_refs.extend(_list_of_dicts(nested.get(key)))
+        elif isinstance(value, list):
+            raw_refs.extend(value)
+    return _ask_compact_source_refs(raw_refs, limit=limit)
+
+
+def _ask_compact_source_refs(values: list[Any], *, limit: int) -> list[dict[str, Any]]:
+    refs = _ask_source_ref_dicts(values, string_field="source_item_id")
+    compacted: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for ref in refs:
+        compact_ref: dict[str, Any] = {}
+        for key in ["source_item_id", "document_id", "chunk_id", "passage_window_id", "message_id", "title", "path", "url"]:
+            value = ref.get(key)
+            if value:
+                compact_ref[key] = value
+        if ref.get("snippet"):
+            compact_ref["snippet"] = _trim_words(str(ref.get("snippet") or ""), 24)
+        key = "|".join(str(compact_ref.get(part) or "") for part in ["source_item_id", "document_id", "chunk_id", "passage_window_id", "title", "url"])
+        if not key.strip("|") or key in seen:
+            continue
+        seen.add(key)
+        compacted.append(compact_ref)
+        if len(compacted) >= max(1, limit):
+            break
+    return compacted
 
 
 def _ask_message_scope(message: Any) -> dict[str, Any]:

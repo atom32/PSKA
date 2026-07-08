@@ -394,14 +394,11 @@ def authnode_token(
 
 
 def fastreact_identity_headers(*, user_key: str, tenant_id: str, service_token: str | None) -> dict[str, str]:
-    headers = {
+    return {
         "X-FastReAct-User-Key": user_key,
         "X-FastReAct-Tenant-Key": tenant_id,
         "X-FastReAct-Auth-Provider": "pska-smoke",
     }
-    if service_token:
-        headers["X-FastReAct-Service-Token"] = service_token
-    return headers
 
 
 def marker_visible(payload: dict[str, Any], marker: str) -> bool:

@@ -98,7 +98,12 @@ def test_mcp_lists_pska_tools() -> None:
     assert "tenant_id" not in search_properties
     assert "user_id" not in search_properties
     assert "knowledge_base_ids" in search_properties
-    assert tools_by_name["pska_index_status"]["inputSchema"]["properties"] == {}
+    assert set(tools_by_name["pska_index_status"]["inputSchema"]["properties"]) == {
+        "knowledge_base_ids",
+        "source_item_ids",
+        "scope",
+        "scope_mode",
+    }
 
 
 def test_mcp_calls_pska_search() -> None:
@@ -255,6 +260,64 @@ def test_mcp_tools_accept_identity_inside_scope_for_knowledge_base_access() -> N
     assert read_payload["scope_applied"]["knowledge_base_ids"] == [knowledge_base.knowledge_base_id]
     assert read_payload["scope_applied"]["source_item_ids"] == [source_id]
     assert {result["source_item_id"] for result in read_payload["results"]} == {source_id}
+
+
+def test_mcp_scope_owner_alias_is_normalized_to_user_id_for_kb_access() -> None:
+    store = InMemoryKnowledgeStore()
+    store.add_user(User("analyst", "Analyst", tenant_id="tenant_acme"))
+    IngestService(store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "mcp-owner-alias-note",
+            "owner_user_id": "analyst",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "tenant_id": "tenant_acme",
+            "content": {"text": "owner alias marker should remain visible."},
+        }
+    )
+    source_id = next(item.source_item_id for item in store.list_source_items(tenant_id="tenant_acme"))
+    knowledge_base = KnowledgeBase("kb_owner_alias", "analyst", "Owner Alias KB", tenant_id="tenant_acme")
+    store.upsert_knowledge_base(knowledge_base)
+    store.add_knowledge_base_source_item(
+        KnowledgeBaseSourceItem(
+            knowledge_base_id=knowledge_base.knowledge_base_id,
+            source_item_id=source_id,
+            owner_user_id="analyst",
+            added_by_user_id="analyst",
+            tenant_id="tenant_acme",
+        )
+    )
+
+    response = MCPServer("postgresql:///unused", store=store).handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 27,
+            "method": "tools/call",
+            "params": {
+                "name": "pska_search",
+                "arguments": {
+                    "query": "owner alias marker",
+                    "scope": {
+                        "tenant_id": "tenant_acme",
+                        "owner_user_id": "analyst",
+                        "knowledge_base_ids": [knowledge_base.knowledge_base_id],
+                        "scope_mode": "hard",
+                    },
+                    "top_k": 5,
+                },
+            },
+        }
+    )
+
+    payload = json.loads(response["result"]["content"][0]["text"])
+
+    assert payload["request_user_id"] == "analyst"
+    assert payload["scope_applied"]["knowledge_base_ids"] == [knowledge_base.knowledge_base_id]
+    assert payload["scope_applied"]["source_item_ids"] == [source_id]
+    assert {result["source_item_id"] for result in payload["results"]} == {source_id}
 
 
 def test_mcp_params_tenant_identity_overrides_tool_arguments() -> None:
@@ -431,6 +494,71 @@ def test_mcp_index_status_and_digest_context_use_represented_user_scope() -> Non
     assert digest_payload["request_user_id"] == "alice"
     assert digest_payload["knowledge_claims"][0]["knowledge_claim_id"] == "claim_alice"
     assert digest_payload["digest_notes"][0]["digest_note_id"] == "note_alice"
+
+
+def test_mcp_index_status_accepts_hard_knowledge_base_scope() -> None:
+    store = InMemoryKnowledgeStore()
+    store.add_user(User("alice", "alice", tenant_id="tenant_acme"))
+    ingested = IngestService(store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "alice-kb-source",
+            "owner_user_id": "alice",
+            "tenant_id": "tenant_acme",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "content": {"text": "knowledge base scoped status marker"},
+        }
+    )
+    store.upsert_knowledge_base(
+        KnowledgeBase(
+            "kb_alice",
+            "alice",
+            "Alice KB",
+            tenant_id="tenant_acme",
+        )
+    )
+    store.add_knowledge_base_source_item(
+        KnowledgeBaseSourceItem(
+            "kb_alice",
+            ingested.source_item_id,
+            "alice",
+            "alice",
+            tenant_id="tenant_acme",
+        )
+    )
+    server = MCPServer("postgresql:///unused", store=store)
+
+    response = server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 28,
+            "method": "tools/call",
+            "params": {
+                "name": "pska_index_status",
+                "user_key": "pska:alice",
+                "tenant_key": "tenant_acme",
+                "arguments": {
+                    "scope_mode": "hard",
+                    "knowledge_base_ids": ["kb_alice"],
+                    "source_item_ids": [ingested.source_item_id],
+                },
+            },
+        }
+    )
+
+    payload = json.loads(response["result"]["content"][0]["text"])
+    assert payload["tenant_id"] == "tenant_acme"
+    assert payload["request_user_id"] == "alice"
+    assert payload["source_items"] == 1
+    assert payload["scope_applied"] == {
+        "mode": "hard",
+        "scope_mode": "hard",
+        "knowledge_base_ids": ["kb_alice"],
+        "source_item_ids": [ingested.source_item_id],
+    }
 
 
 def test_mcp_search_compacts_long_results_for_fastreact() -> None:

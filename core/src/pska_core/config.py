@@ -70,7 +70,7 @@ class ServiceConfig:
 
 @dataclass(frozen=True, slots=True)
 class AuthConfig:
-    mode: str = "service_token"
+    mode: str = "jwt"
     trusted_header_user_id: str = DEFAULT_TRUSTED_HEADER_USER_ID
     trusted_header_tenant_id: str = DEFAULT_TRUSTED_HEADER_TENANT_ID
     trusted_header_represented_user_id: str = DEFAULT_TRUSTED_HEADER_REPRESENTED_USER_ID
@@ -100,7 +100,7 @@ class AuthConfig:
         if isinstance(tenant_claims, str):
             tenant_claims = tuple(item.strip() for item in tenant_claims.split(",") if item.strip())
         return cls(
-            mode=str(data.get("mode") or "service_token"),
+            mode=str(data.get("mode") or "jwt"),
             trusted_header_user_id=str(data.get("trusted_header_user_id") or DEFAULT_TRUSTED_HEADER_USER_ID),
             trusted_header_tenant_id=str(data.get("trusted_header_tenant_id") or DEFAULT_TRUSTED_HEADER_TENANT_ID),
             trusted_header_represented_user_id=str(data.get("trusted_header_represented_user_id") or DEFAULT_TRUSTED_HEADER_REPRESENTED_USER_ID),
@@ -190,10 +190,9 @@ class FastreactConfig:
     def from_dict(cls, data: dict[str, Any] | None, *, api_key_file: Path | None = None) -> "FastreactConfig":
         data = data or {}
         authnode = data.get("authnode") if isinstance(data.get("authnode"), dict) else {}
-        token = data.get("service_token") or data.get("token") or _fastreact_token_from_key_file(api_key_file)
         return cls(
             url=str(data.get("url") or "http://127.0.0.1:18741").rstrip("/"),
-            service_token=str(token).strip() if token else None,
+            service_token=None,
             timeout_seconds=float(data["timeout_seconds"]) if data.get("timeout_seconds") else None,
             model=str(data["model"]).strip() if data.get("model") else None,
             temperature=float(data["temperature"]) if data.get("temperature") is not None else None,
@@ -231,11 +230,10 @@ class AgenticServiceConfigFile:
     ) -> "AgenticServiceConfigFile":
         data = data or {}
         authnode = data.get("authnode") if isinstance(data.get("authnode"), dict) else {}
-        token = data.get("service_token") or data.get("token") or fallback.service_token or _fastreact_token_from_key_file(api_key_file)
         return cls(
             provider=str(data.get("provider") or "fastreact"),
             url=str(data.get("url") or fallback.url or "http://127.0.0.1:18741").rstrip("/"),
-            service_token=str(token).strip() if token else None,
+            service_token=None,
             timeout_seconds=float(data["timeout_seconds"]) if data.get("timeout_seconds") else fallback.timeout_seconds,
             model=str(data["model"]).strip() if data.get("model") else fallback.model,
             temperature=float(data["temperature"]) if data.get("temperature") is not None else fallback.temperature,
@@ -500,9 +498,6 @@ class PSKAConfig:
         agentic_url = os.getenv("PSKA_AGENTIC_SERVICE_URL")
         if not agentic_url and base.agentic_service.url == default_agentic.url:
             agentic_url = os.getenv("PSKA_FASTREACT_URL")
-        agentic_token = os.getenv("PSKA_AGENTIC_SERVICE_TOKEN")
-        if not agentic_token and base.agentic_service.service_token == default_agentic.service_token:
-            agentic_token = os.getenv("PSKA_FASTREACT_SERVICE_TOKEN")
         agentic_timeout = os.getenv("PSKA_AGENTIC_SERVICE_TIMEOUT_SECONDS")
         if not agentic_timeout and base.agentic_service.timeout_seconds == default_agentic.timeout_seconds:
             agentic_timeout = os.getenv("PSKA_FASTREACT_TIMEOUT_SECONDS")
@@ -542,7 +537,7 @@ class PSKAConfig:
             llm=base.llm,
             fastreact=FastreactConfig(
                 url=os.getenv("PSKA_FASTREACT_URL", base.fastreact.url).rstrip("/"),
-                service_token=os.getenv("PSKA_FASTREACT_SERVICE_TOKEN") or base.fastreact.service_token,
+                service_token=None,
                 timeout_seconds=float(os.getenv("PSKA_FASTREACT_TIMEOUT_SECONDS")) if os.getenv("PSKA_FASTREACT_TIMEOUT_SECONDS") else base.fastreact.timeout_seconds,
                 model=os.getenv("PSKA_FASTREACT_MODEL") or base.fastreact.model,
                 temperature=float(os.getenv("PSKA_FASTREACT_TEMPERATURE")) if os.getenv("PSKA_FASTREACT_TEMPERATURE") else base.fastreact.temperature,
@@ -557,7 +552,7 @@ class PSKAConfig:
             agentic_service=AgenticServiceConfigFile(
                 provider=os.getenv("PSKA_AGENTIC_SERVICE_PROVIDER") or os.getenv("PSKA_AGENTIC_PROVIDER") or base.agentic_service.provider,
                 url=(agentic_url or base.agentic_service.url).rstrip("/"),
-                service_token=agentic_token or base.agentic_service.service_token,
+                service_token=None,
                 timeout_seconds=float(agentic_timeout)
                 if agentic_timeout
                 else base.agentic_service.timeout_seconds,

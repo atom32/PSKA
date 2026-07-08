@@ -444,7 +444,6 @@ class AgenticExtractionJSONClient:
             _agentic_json_completion_prompt(system=system, prompt=prompt),
             self.user,
             represented_user_id=self.user.user_id,
-            max_iterations=1,
             skills=[],
             tool_policy={"mode": "none"},
         )

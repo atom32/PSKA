@@ -24,7 +24,7 @@ class FakeAgenticExtractionService:
         user,
         *,
         represented_user_id=None,
-        max_iterations=3,
+        max_iterations=None,
         skills=None,
         tool_policy=None,
         session_id=None,
@@ -100,7 +100,7 @@ def test_extraction_defaults_to_agentic_service_without_tools() -> None:
 
     assert report.hyperedges_created
     assert agentic.calls
-    assert agentic.calls[0]["max_iterations"] == 1
+    assert agentic.calls[0]["max_iterations"] is None
     assert agentic.calls[0]["skills"] == []
     assert agentic.calls[0]["tool_policy"] == {"mode": "none"}
     assert "Return exactly one strict JSON object" in agentic.calls[0]["query"]

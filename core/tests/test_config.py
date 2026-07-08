@@ -62,10 +62,10 @@ def test_pska_config_loads_json_and_keyfile_token(tmp_path: Path, monkeypatch) -
     assert config.service.port == 9876
     assert config.service.service_token == "pska-service-token"
     assert config.fastreact.url == "http://127.0.0.1:9000"
-    assert config.fastreact.service_token == "fastreact-token"
+    assert config.fastreact.service_token is None
     assert config.agentic_service.provider == "fastreact"
     assert config.agentic_service.url == "http://127.0.0.1:9000"
-    assert config.agentic_service.service_token == "agentic-token"
+    assert config.agentic_service.service_token is None
     assert config.ingest.chunk_size == 2048
     assert config.ingest.chunk_overlap == 256
     assert config.llm.api_key_file == key_file
@@ -158,7 +158,7 @@ def test_pska_config_loads_generic_agentic_service(tmp_path: Path, monkeypatch) 
 
     assert config.agentic_service.provider == "fastreact"
     assert config.agentic_service.url == "http://127.0.0.1:9010"
-    assert config.agentic_service.service_token == "agent-token"
+    assert config.agentic_service.service_token is None
     assert config.agentic_service.timeout_seconds == 12
     assert config.agentic_service.authnode_url == "http://127.0.0.1:8788"
     assert config.agentic_service.authnode_admin_token == "admin-token"
@@ -260,7 +260,7 @@ def test_pska_config_builds_runtime_configs(tmp_path: Path) -> None:
     embedding = config.embedding_runtime_config()
 
     assert fastreact.url == "http://127.0.0.1:9000"
-    assert fastreact.service_token == "fast-token"
+    assert fastreact.service_token is None
     assert fastreact.timeout_seconds == 9
     assert fastreact.model == "deepseek-v4-flash"
     assert fastreact.temperature == 0.3
@@ -271,7 +271,7 @@ def test_pska_config_builds_runtime_configs(tmp_path: Path) -> None:
     assert fastreact.authnode_audience == "fastreact"
     assert fastreact.authnode_token_ttl_seconds == 300
     assert agentic.url == "http://127.0.0.1:9010"
-    assert agentic.service_token == "agent-token"
+    assert agentic.service_token is None
     assert agentic.timeout_seconds == 12
     assert agentic.model == "deepseek-v4-flash"
     assert agentic.temperature == 0.3

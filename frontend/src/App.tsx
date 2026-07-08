@@ -197,7 +197,6 @@ export default function App() {
     serviceToken,
     tenantId,
     userId,
-    representedUserId,
     currentKnowledgeBaseId,
     selectedKnowledgeBaseIds,
     knowledgeBaseScopeMode,
@@ -209,7 +208,6 @@ export default function App() {
     setServiceToken,
     setTenantId,
     setUserId,
-    setRepresentedUserId,
     setCurrentKnowledgeBaseId,
     setSelectedKnowledgeBaseIds,
     setKnowledgeBaseScopeMode,
@@ -220,10 +218,9 @@ export default function App() {
     () => ({
       serviceToken,
       tenantId,
-      userId,
-      representedUserId: representedUserId || userId
+      userId
     }),
-    [serviceToken, tenantId, userId, representedUserId]
+    [serviceToken, tenantId, userId]
   );
   const knowledgeBasesQuery = useQuery({
     queryKey: ["knowledge-bases", pskaIdentity],
@@ -272,13 +269,12 @@ export default function App() {
       if (session.user_id) {
         setUserId(session.user_id);
       }
-      setRepresentedUserId(session.represented_user_id || session.user_id || "");
       setServiceToken("");
     });
     return () => {
       cancelled = true;
     };
-  }, [setRepresentedUserId, setServiceToken, setTenantId, setUserId]);
+  }, [setServiceToken, setTenantId, setUserId]);
 
   const corpusQuery = useQuery({
     queryKey: ["corpus-context", pskaIdentity],
@@ -475,7 +471,6 @@ export default function App() {
           serviceToken={serviceToken}
           tenantId={tenantId}
           userId={userId}
-          representedUserId={representedUserId}
           gatewayAuthenticated={gatewayAuthenticated}
           knowledgeBases={knowledgeBases}
           currentKnowledgeBaseId={currentKnowledgeBase?.knowledge_base_id || currentKnowledgeBaseId}
@@ -488,7 +483,6 @@ export default function App() {
           onTokenChange={setServiceToken}
           onTenantChange={setTenantId}
           onUserChange={setUserId}
-          onRepresentedUserChange={setRepresentedUserId}
           onLogout={logoutGatewaySession}
           onRefresh={refreshCurrentSurface}
         />
@@ -864,7 +858,6 @@ function TopBar({
   serviceToken,
   tenantId,
   userId,
-  representedUserId,
   gatewayAuthenticated,
   knowledgeBases,
   currentKnowledgeBaseId,
@@ -877,7 +870,6 @@ function TopBar({
   onTokenChange,
   onTenantChange,
   onUserChange,
-  onRepresentedUserChange,
   onLogout,
   onRefresh
 }: {
@@ -885,7 +877,6 @@ function TopBar({
   serviceToken: string;
   tenantId: string;
   userId: string;
-  representedUserId: string;
   gatewayAuthenticated: boolean | null;
   knowledgeBases: KnowledgeBase[];
   currentKnowledgeBaseId: string;
@@ -898,7 +889,6 @@ function TopBar({
   onTokenChange: (serviceToken: string) => void;
   onTenantChange: (tenantId: string) => void;
   onUserChange: (userId: string) => void;
-  onRepresentedUserChange: (representedUserId: string) => void;
   onLogout: () => void;
   onRefresh: () => void;
 }) {
@@ -945,10 +935,6 @@ function TopBar({
             <span>User</span>
             <input value={userId} onChange={(event) => onUserChange(event.target.value)} placeholder="user_primary" />
           </label>
-          <label className="token-field compact">
-            <span>As</span>
-            <input value={representedUserId} onChange={(event) => onRepresentedUserChange(event.target.value)} placeholder={userId || "user_primary"} />
-          </label>
           <label className="token-field">
             <span>令牌/JWT</span>
             <input
@@ -961,7 +947,7 @@ function TopBar({
         </div>
       ) : gatewayAuthenticated === true ? (
         <div className="gateway-session" aria-label="当前登录身份" data-testid="gateway-session">
-          <span>{representedUserId || userId || "user_primary"}</span>
+          <span>{userId || "user_primary"}</span>
           <small>{tenantId || "tenant_default"}</small>
           <button className="icon-button logout-button" type="button" onClick={onLogout} title="退出登录" data-testid="logout-button">
             <LogOut size={17} />
@@ -3320,10 +3306,12 @@ function AskProcessTimeline({
   const visibleHead = steps.slice(0, 6);
   const visibleTail = steps.length > 12 ? steps.slice(-6) : steps.slice(6, 12);
   const omittedCount = Math.max(0, steps.length - visibleHead.length - visibleTail.length);
+  const visibleStepCount = visibleHead.length + visibleTail.length;
   const eventSummaries = rawEvents
     .slice(0, 40)
     .map((event) => summarizeAgenticEvent(event))
     .filter((event): event is AgenticEventSummary => Boolean(event));
+  const eventSummaryLimit = Math.min(rawEvents.length, 40);
   return (
     <div className="ask-process">
       <div className="ask-stage-rail" data-testid="ask-processing-timeline" aria-label="Ask processing timeline">
@@ -3348,8 +3336,9 @@ function AskProcessTimeline({
         <details open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
           <summary>
             <span>检索过程</span>
-            <small>{steps.length} 步</small>
+            <small>{steps.length} 步 · 显示 {visibleStepCount}</small>
           </summary>
+          <p className="ask-process-note">仅显示前 6 步和后 6 步，完整事件保留在本次 Ask 结果与 trace 中。</p>
           <ol className="ask-process-list">
             {visibleHead.map((step) => (
               <li key={step.id} data-phase={step.phase} data-status={step.status}>
@@ -3378,8 +3367,9 @@ function AskProcessTimeline({
         <details className="ask-raw-events">
           <summary>
             <span>事件摘要</span>
-            <small>{rawEvents.length}</small>
+            <small>{rawEvents.length} 条 · 仅显示前 {eventSummaryLimit} 条</small>
           </summary>
+          <p className="ask-process-note">仅显示前 40 条事件摘要；完整事件用于调试、审计和证据校验。</p>
           <ol className="ask-process-list">
             {eventSummaries.map((event, index) => (
               <li key={`${event.type}-${index}`} data-phase={event.type} data-status="complete">
@@ -4622,7 +4612,7 @@ function askDiagnosticLabel(value: string) {
     tool_channel_error: "工具链路错误",
     tool_error: "MCP 工具错误",
     tool_denied: "工具被拒绝",
-    agentic_runtime_control_signal_with_supported_evidence: "Agentic 未完整收口",
+    agentic_runtime_control_signal_with_supported_evidence: "长链路未完整收口",
     empty_answer: "空回答",
     uncited_answer: "回答未引用",
     agentic_service_unavailable: "FastReAct 不可用",
@@ -5070,6 +5060,8 @@ function askAnswerTypeLabel(answerType?: string) {
       return "证据回答";
     case "deep_answer":
       return "深入回答";
+    case "deep_evidence_fallback":
+      return "证据综合回答";
     case "no_answer":
       return "证据不足";
     case "clarification":
@@ -5340,9 +5332,14 @@ function summarizeAgenticEvent(event: Record<string, unknown>): AgenticEventSumm
     };
   }
   if (type === "session_end") {
+    const metadata = isRecord(event.metadata) ? event.metadata : {};
+    const status = displayText(event.status, "").toLowerCase();
+    const message = firstString(event.message, event.content, event.final_content, event.answer, metadata.message);
     return {
       type: "session_end",
-      message: "已形成最终回答。"
+      message: status === "stopped"
+        ? message || "长链路未返回最终综合，已切换为证据综合回答。"
+        : message || "已形成最终回答。"
     };
   }
   const metadata = isRecord(event.metadata) ? event.metadata : {};

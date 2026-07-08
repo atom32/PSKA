@@ -15,6 +15,7 @@ if str(ROOT) not in sys.path:
 from pska_core.acl import ACLService
 from pska_core.api import PSKAApi, PSKARequestHandler
 from pska_core.candidates import CandidateWriteService
+from pska_core.config import AuthConfig, PSKAConfig
 from pska_core.enums import UserRole
 from pska_core.extraction import ExtractionService
 from pska_core.ingest import IngestService
@@ -159,6 +160,7 @@ def _api() -> PSKAApi:
     store.add_user(User("agent_service", "agent_service", UserRole.AGENT_SERVICE))
     llm = FakeLLM([_extraction_response()])
     api = object.__new__(PSKAApi)
+    api.config = PSKAConfig(auth=AuthConfig(mode="trusted_headers"))
     api.store = store
     api.retrieval = RetrievalService(store, ACLService(store))
     api.agentic_service = _FakeAgenticService(api.retrieval)
@@ -192,7 +194,13 @@ class _FakeAgenticService:
 def _http_json(base_url: str, method: str, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
     body = json.dumps(payload or {}).encode("utf-8") if method != "GET" else None
     conn = HTTPConnection(base_url, timeout=10)
-    headers = {"content-type": "application/json"}
+    headers = {
+        "content-type": "application/json",
+        "X-PSKA-Tenant-Id": "tenant_default",
+        "X-PSKA-User-Id": "user_primary",
+        "X-PSKA-Subject": "pska:user_primary",
+        "X-PSKA-Auth-Provider": "test_trusted_headers",
+    }
     conn.request(method, path, body=body, headers=headers)
     response = conn.getresponse()
     data = response.read().decode("utf-8")

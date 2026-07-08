@@ -581,15 +581,10 @@ def safe_id(value: str) -> str:
 
 
 def _pska_ready_headers(config: PSKAConfig) -> dict[str, str]:
-    if config.service.service_token:
-        return {"X-PSKA-Service-Token": config.service.service_token}
     return {}
 
 
 def _fastreact_ready_headers(config: PSKAConfig) -> dict[str, str]:
-    token = config.fastreact.service_token or config.agentic_service.service_token
-    if token:
-        return {"X-FastReAct-Service-Token": token}
     return {}
 
 

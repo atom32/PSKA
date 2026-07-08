@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 
@@ -55,7 +56,16 @@ TOOLS = [
     {
         "name": "pska_index_status",
         "description": "Return basic PSKA index counts for the current tenant/user scope.",
-        "inputSchema": {"type": "object", "properties": {}, "required": []},
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "knowledge_base_ids": {"type": "array", "items": {"type": "string"}},
+                "source_item_ids": {"type": "array", "items": {"type": "string"}},
+                "scope": {"type": "object"},
+                "scope_mode": {"type": "string", "enum": ["soft", "hard"], "default": "soft"},
+            },
+            "required": [],
+        },
     },
     {
         "name": "pska_read_evidence_context",
@@ -372,6 +382,14 @@ class MCPServer:
         if method == "tools/call":
             params = request.get("params") or {}
             mcp_context = _context_from_mcp_params(params, include_arguments=context is None)
+            _emit_mcp_identity_log(
+                "pska.mcp_tools_call_received",
+                tool_name=params.get("name"),
+                params=params,
+                authenticated_context=context,
+                mcp_context=mcp_context,
+                arguments=params.get("arguments") if isinstance(params.get("arguments"), dict) else {},
+            )
             if context and mcp_context and not context.service_authenticated:
                 _assert_context_matches(context, mcp_context)
             return self.result(
@@ -381,7 +399,21 @@ class MCPServer:
         return self.error(request_id, -32601, f"Unknown method: {method}")
 
     def call_tool(self, name: str, arguments: dict[str, Any], *, context: RequestContext | None = None) -> dict[str, Any]:
-        arguments = _apply_mcp_context(arguments, context) if context else arguments
+        raw_arguments = dict(arguments or {})
+        if context and name == "pska_job_context" and not _mcp_arguments_have_tenant(raw_arguments):
+            job_tenant_id = _tenant_id_for_job(self.store, raw_arguments.get("job_id"))
+            if job_tenant_id:
+                context = replace(context, tenant_id=job_tenant_id)
+        arguments = _apply_mcp_context(raw_arguments, context) if context else raw_arguments
+        _emit_mcp_identity_log(
+            "pska.mcp_tool_context_applied",
+            tool_name=name,
+            params={},
+            authenticated_context=context,
+            mcp_context=context,
+            arguments=arguments,
+            raw_arguments=raw_arguments,
+        )
         if name == "pska_search":
             payload = self.pska_search(arguments)
         elif name == "pska_index_status":
@@ -442,24 +474,61 @@ class MCPServer:
         return payload
 
     def pska_index_status(self, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
-        tenant_id = str((arguments or {}).get("tenant_id") or DEFAULT_TENANT_ID)
-        owner_user_id = str((arguments or {}).get("represented_user_id") or (arguments or {}).get("user_id") or "user_primary")
-        source_items = self.store.list_source_items(tenant_id=tenant_id)
-        owned_source_items = [item for item in source_items if item.owner_user_id == owner_user_id]
-        source_ids = {item.source_item_id for item in source_items}
+        arguments = dict(arguments or {})
+        tenant_id, user, represented_user_id = self._request_scope(arguments)
+        owner_user_id = represented_user_id or user.user_id
+        requested_source_ids = set(_source_item_ids_from_mcp_arguments(arguments))
+        kb_source_item_ids, knowledge_base_ids = self._knowledge_base_scope_source_ids(
+            arguments,
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+        )
+        visible_items = self._visible_source_items(user, represented_user_id=represented_user_id)
+        if knowledge_base_ids:
+            requested_source_ids = requested_source_ids & kb_source_item_ids if requested_source_ids else set(kb_source_item_ids)
+        if requested_source_ids:
+            visible_items = [item for item in visible_items if item.source_item_id in requested_source_ids]
+        source_ids = {item.source_item_id for item in visible_items}
+        source_scope_constrained = bool(knowledge_base_ids or requested_source_ids)
+        if source_scope_constrained and not source_ids:
+            knowledge_claim_count = 0
+            digest_note_count = 0
+        else:
+            knowledge_claim_count = len(
+                self.store.list_knowledge_claims(
+                    owner_user_id=owner_user_id,
+                    tenant_id=tenant_id,
+                    source_item_ids=source_ids if source_scope_constrained else None,
+                    limit=10_000,
+                )
+            )
+            digest_note_count = len(
+                self.store.list_digest_notes(
+                    owner_user_id=owner_user_id,
+                    tenant_id=tenant_id,
+                    source_item_ids=source_ids if source_scope_constrained else None,
+                    limit=10_000,
+                )
+            )
         return {
             "ok": True,
             "tenant_id": tenant_id,
             "request_user_id": owner_user_id,
-            "source_items": len(source_items),
-            "user_source_items": len(owned_source_items),
+            "source_items": len(visible_items),
+            "user_source_items": len([item for item in visible_items if item.owner_user_id == owner_user_id]),
             "documents": len(self.store.list_documents_for_sources(source_ids)),
             "chunks": len(self.store.list_chunks_for_sources(source_ids)),
             "entities": len(self.store.list_entities(tenant_id=tenant_id)),
             "hyperedges": len(self.store.list_hyperedges_for_entities({entity.entity_id for entity in self.store.list_entities(tenant_id=tenant_id)})),
-            "knowledge_claims": len(self.store.list_knowledge_claims(owner_user_id=owner_user_id, tenant_id=tenant_id, limit=10_000)),
-            "digest_notes": len(self.store.list_digest_notes(owner_user_id=owner_user_id, tenant_id=tenant_id, limit=10_000)),
+            "knowledge_claims": knowledge_claim_count,
+            "digest_notes": digest_note_count,
             "review_items": len(self.store.list_review_items(tenant_id=tenant_id)),
+            "scope_applied": {
+                "mode": "hard",
+                "scope_mode": "hard",
+                "knowledge_base_ids": knowledge_base_ids,
+                "source_item_ids": sorted(kb_source_item_ids),
+            } if knowledge_base_ids else {},
         }
 
     def pska_read_evidence_context(self, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -724,11 +793,15 @@ class MCPServer:
 
     def _request_scope(self, arguments: dict[str, Any]) -> tuple[str, Any, str | None]:
         scope = arguments.get("scope") if isinstance(arguments.get("scope"), dict) else {}
-        tenant_id = str(arguments.get("tenant_id") or scope.get("tenant_id") or DEFAULT_TENANT_ID)
-        user_id = arguments.get("user_id") or scope.get("user_id") or "user_primary"
+        tenant_id = str(arguments.get("tenant_id") or arguments.get("tenant_key") or scope.get("tenant_id") or scope.get("tenant_key") or DEFAULT_TENANT_ID)
+        legacy_user = arguments.get("represented_user_id") or arguments.get("owner_user_id") or scope.get("represented_user_id") or scope.get("owner_user_id")
+        user_id = _pska_user_id_from_key(
+            str(arguments.get("user_key") or arguments.get("user_id") or scope.get("user_key") or scope.get("user_id") or legacy_user or "user_primary")
+        )
+        if user_id == "agent_service" and legacy_user:
+            user_id = _pska_user_id_from_key(str(legacy_user))
         user = self.store.get_user(user_id, tenant_id=tenant_id)
-        represented_user_id = arguments.get("represented_user_id") or scope.get("represented_user_id") or scope.get("owner_user_id")
-        return tenant_id, user, str(represented_user_id) if represented_user_id else None
+        return tenant_id, user, None
 
     def _visible_source_items(self, user: Any, *, represented_user_id: str | None) -> list[Any]:
         return [
@@ -742,17 +815,59 @@ class MCPServer:
         knowledge_base_ids = _knowledge_base_ids_from_mcp_arguments(arguments)
         if not knowledge_base_ids:
             return set(), []
+        fallback_source_item_ids: set[str] = set()
+        requested_source_item_ids = set(_source_item_ids_from_mcp_arguments(arguments))
         for knowledge_base_id in knowledge_base_ids:
             try:
                 self.store.get_knowledge_base(knowledge_base_id, tenant_id=tenant_id, owner_user_id=owner_user_id)
             except KeyError as exc:
-                raise PermissionError("knowledge base is not accessible") from exc
+                scoped_fallback_ids = self._hard_scoped_source_fallback_ids(
+                    knowledge_base_id,
+                    requested_source_item_ids=requested_source_item_ids,
+                    tenant_id=tenant_id,
+                    owner_user_id=owner_user_id,
+                )
+                if not scoped_fallback_ids:
+                    raise PermissionError("knowledge base is not accessible") from exc
+                fallback_source_item_ids.update(scoped_fallback_ids)
         source_item_ids = self.store.list_knowledge_base_source_item_ids(
             set(knowledge_base_ids),
             tenant_id=tenant_id,
             owner_user_id=owner_user_id,
         )
+        source_item_ids.update(fallback_source_item_ids)
         return source_item_ids, knowledge_base_ids
+
+    def _hard_scoped_source_fallback_ids(
+        self,
+        knowledge_base_id: str,
+        *,
+        requested_source_item_ids: set[str],
+        tenant_id: str,
+        owner_user_id: str,
+    ) -> set[str]:
+        if not requested_source_item_ids:
+            return set()
+        kb_source_item_ids = self.store.list_knowledge_base_source_item_ids(
+            {knowledge_base_id},
+            tenant_id=tenant_id,
+            owner_user_id=None,
+        )
+        if not kb_source_item_ids or not requested_source_item_ids.issubset(kb_source_item_ids):
+            return set()
+        source_items = {
+            item.source_item_id: item
+            for item in self.store.list_source_items(tenant_id=tenant_id)
+            if item.source_item_id in requested_source_item_ids
+        }
+        if set(source_items) != requested_source_item_ids:
+            return set()
+        for item in source_items.values():
+            if item.owner_user_id != owner_user_id:
+                return set()
+            if str(getattr(item, "lifecycle_status", "active") or "active") != "active":
+                return set()
+        return set(requested_source_item_ids)
 
     def pska_ingest_channel_payload(self, arguments: dict[str, Any]) -> Any:
         payload = dict(arguments["payload"])
@@ -1089,49 +1204,110 @@ def _build_compact_search_response(
 def _context_from_mcp_params(params: dict[str, Any], *, include_arguments: bool = True) -> RequestContext | None:
     arguments = params.get("arguments") if include_arguments and isinstance(params.get("arguments"), dict) else {}
     scope = arguments.get("scope") if isinstance(arguments.get("scope"), dict) else {}
-    user_key = _clean_string(params.get("user_key") or params.get("user_id") or arguments.get("user_key") or arguments.get("user_id") or scope.get("user_key") or scope.get("user_id"))
+    legacy_user = _clean_string(
+        params.get("represented_user_id")
+        or params.get("owner_user_id")
+        or arguments.get("represented_user_id")
+        or arguments.get("owner_user_id")
+        or scope.get("represented_user_id")
+        or scope.get("owner_user_id")
+    )
+    user_key = _clean_string(
+        params.get("user_key")
+        or params.get("user_id")
+        or arguments.get("user_key")
+        or arguments.get("user_id")
+        or scope.get("user_key")
+        or scope.get("user_id")
+        or legacy_user
+    )
     tenant_key = _clean_string(params.get("tenant_key") or params.get("tenant_id") or arguments.get("tenant_key") or arguments.get("tenant_id") or scope.get("tenant_key") or scope.get("tenant_id"))
-    represented_user_id = _clean_string(params.get("represented_user_id") or arguments.get("represented_user_id") or scope.get("represented_user_id") or scope.get("owner_user_id"))
-    if not user_key and not tenant_key and not represented_user_id:
+    if _pska_user_id_from_key(user_key) == "agent_service" and legacy_user:
+        user_key = legacy_user
+    if not user_key and not tenant_key:
         return None
     user_id = _pska_user_id_from_key(user_key or "user_primary")
     return RequestContext(
         tenant_id=tenant_key or DEFAULT_TENANT_ID,
         user_id=user_id,
-        represented_user_id=_pska_user_id_from_key(represented_user_id) if represented_user_id else None,
+        represented_user_id=None,
         caller="user",
         subject=user_key or user_id,
         auth_provider="mcp_params",
     )
 
 
+def _mcp_arguments_have_tenant(arguments: dict[str, Any]) -> bool:
+    if arguments.get("tenant_id") or arguments.get("tenant_key"):
+        return True
+    scope = arguments.get("scope") if isinstance(arguments.get("scope"), dict) else {}
+    return bool(scope.get("tenant_id") or scope.get("tenant_key"))
+
+
 def _assert_context_matches(authenticated: RequestContext, mcp_context: RequestContext) -> None:
-    if authenticated.tenant_id != mcp_context.tenant_id or authenticated.user_id != mcp_context.user_id:
+    target_user_id = authenticated.represented_user_id or authenticated.user_id
+    if authenticated.tenant_id != mcp_context.tenant_id or target_user_id != mcp_context.user_id:
         raise PermissionError("MCP identity params do not match authenticated context")
 
 
 def _apply_mcp_context(arguments: dict[str, Any], context: RequestContext) -> dict[str, Any]:
     merged = dict(arguments)
+    target_user_id = context.represented_user_id or context.user_id
     merged["tenant_id"] = context.tenant_id
-    merged["user_id"] = context.user_id
-    if context.represented_user_id:
-        merged["represented_user_id"] = context.represented_user_id
+    merged["user_id"] = target_user_id
     if isinstance(merged.get("scope"), dict):
         scope = dict(merged["scope"])
         scope["tenant_id"] = context.tenant_id
-        scope["user_id"] = context.user_id
-        if context.represented_user_id:
-            scope["represented_user_id"] = context.represented_user_id
-        scope["owner_user_id"] = context.represented_user_id or context.user_id
+        scope["user_id"] = target_user_id
+        scope["owner_user_id"] = target_user_id
+        scope.pop("represented_user_id", None)
         merged["scope"] = scope
     if isinstance(merged.get("payload"), dict):
         payload = dict(merged["payload"])
         payload["tenant_id"] = context.tenant_id
-        payload["owner_user_id"] = context.represented_user_id or context.user_id
+        payload["owner_user_id"] = target_user_id
         merged["payload"] = payload
-    if "owner_user_id" in merged or context.user_id:
-        merged["owner_user_id"] = context.represented_user_id or context.user_id
+    merged["owner_user_id"] = target_user_id
+    merged.pop("represented_user_id", None)
     return merged
+
+
+def _emit_mcp_identity_log(
+    event: str,
+    *,
+    tool_name: Any,
+    params: dict[str, Any],
+    authenticated_context: RequestContext | None,
+    mcp_context: RequestContext | None,
+    arguments: dict[str, Any],
+    raw_arguments: dict[str, Any] | None = None,
+) -> None:
+    raw_scope = raw_arguments.get("scope") if isinstance(raw_arguments, dict) and isinstance(raw_arguments.get("scope"), dict) else {}
+    scope = arguments.get("scope") if isinstance(arguments.get("scope"), dict) else {}
+    source_item_ids = _string_list(arguments.get("source_item_ids") or scope.get("source_item_ids"))
+    record = {
+        "event": event,
+        "tool_name": tool_name,
+        "param_user_key": params.get("user_key") or params.get("user_id"),
+        "param_tenant_key": params.get("tenant_key") or params.get("tenant_id"),
+        "auth_tenant_id": getattr(authenticated_context, "tenant_id", None),
+        "auth_user_id": getattr(authenticated_context, "user_id", None),
+        "auth_caller": getattr(authenticated_context, "caller", None),
+        "auth_provider": getattr(authenticated_context, "auth_provider", None),
+        "mcp_tenant_id": getattr(mcp_context, "tenant_id", None),
+        "mcp_user_id": getattr(mcp_context, "user_id", None),
+        "arg_tenant_id": arguments.get("tenant_id"),
+        "arg_user_id": arguments.get("user_id"),
+        "raw_scope_tenant_id": raw_scope.get("tenant_id"),
+        "raw_scope_user_id": raw_scope.get("user_id"),
+        "scope_tenant_id": scope.get("tenant_id"),
+        "scope_user_id": scope.get("user_id"),
+        "scope_mode": arguments.get("scope_mode") or scope.get("scope_mode") or scope.get("mode"),
+        "knowledge_base_ids": _knowledge_base_ids_from_mcp_arguments(arguments),
+        "source_item_count": len(source_item_ids),
+        "source_item_ids_preview": source_item_ids[:8],
+    }
+    print(json.dumps(to_jsonable(record), ensure_ascii=False, sort_keys=True), file=sys.stderr, flush=True)
 
 
 def _pska_user_id_from_key(value: str) -> str:
@@ -1458,6 +1634,16 @@ def _knowledge_base_ids_from_mcp_arguments(arguments: dict[str, Any]) -> list[st
     scope = arguments.get("scope") if isinstance(arguments.get("scope"), dict) else {}
     ids.extend(_string_list(scope.get("knowledge_base_id")))
     ids.extend(_string_list(scope.get("knowledge_base_ids")))
+    return list(dict.fromkeys(item for item in ids if item))
+
+
+def _source_item_ids_from_mcp_arguments(arguments: dict[str, Any]) -> list[str]:
+    ids: list[str] = []
+    ids.extend(_string_list(arguments.get("source_item_id")))
+    ids.extend(_string_list(arguments.get("source_item_ids")))
+    scope = arguments.get("scope") if isinstance(arguments.get("scope"), dict) else {}
+    ids.extend(_string_list(scope.get("source_item_id")))
+    ids.extend(_string_list(scope.get("source_item_ids")))
     return list(dict.fromkeys(item for item in ids if item))
 
 

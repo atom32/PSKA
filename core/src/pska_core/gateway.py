@@ -454,8 +454,6 @@ def proxy_request_headers(incoming: Mapping[str, str], session: Mapping[str, Any
     token = str(session.get("token") or "")
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    if config.pska_service_token:
-        headers["X-PSKA-Service-Token"] = config.pska_service_token
     headers["X-PSKA-Tenant-Id"] = str(session.get("tenant_id") or "")
     headers["X-PSKA-User-Id"] = str(session.get("user_id") or "")
     headers["X-PSKA-Represented-User-Id"] = str(session.get("represented_user_id") or session.get("user_id") or "")

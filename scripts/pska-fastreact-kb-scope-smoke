@@ -515,13 +515,11 @@ def pska_identity_headers(token: str | None, *, tenant_id: str, user_id: str, ow
         "X-PSKA-Represented-User-Id": owner_user_id,
         "X-PSKA-Caller": "pska-fastreact-kb-scope-smoke",
     }
-    if token:
-        headers["X-PSKA-Service-Token"] = token
     return headers
 
 
 def fastreact_identity_headers(token: str | None) -> dict[str, str]:
-    return {"X-FastReAct-Service-Token": token} if token else {}
+    return {}
 
 
 def request_json(

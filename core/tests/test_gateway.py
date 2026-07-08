@@ -281,7 +281,7 @@ def test_gateway_proxy_headers_strip_caller_identity_and_inject_session() -> Non
     )
 
     assert headers["Authorization"] == "Bearer jwt-pska"
-    assert headers["X-PSKA-Service-Token"] == "service-token"
+    assert "X-PSKA-Service-Token" not in headers
     assert headers["X-PSKA-Tenant-Id"] == "tenant_acme"
     assert headers["X-PSKA-User-Id"] == "ada"
     assert headers["X-PSKA-Auth-Provider"] == "authnode-gateway"

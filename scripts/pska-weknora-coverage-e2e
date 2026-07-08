@@ -811,21 +811,14 @@ def pska_headers(config: Any, *, tenant_id: str, user_id: str, represented_user_
         "X-PSKA-Represented-User-Id": represented_user_id,
         "X-PSKA-Subject": f"pska:{user_id}",
     }
-    if config.service.service_token:
-        headers["Authorization"] = f"Bearer {config.service.service_token}"
     return headers
 
 
 def pska_ready_headers(config: Any) -> dict[str, str]:
-    if config.service.service_token:
-        return {"X-PSKA-Service-Token": config.service.service_token}
     return {}
 
 
 def fastreact_ready_headers(config: Any) -> dict[str, str]:
-    token = config.fastreact.service_token or config.agentic_service.service_token
-    if token:
-        return {"X-FastReAct-Service-Token": token}
     return {}
 
 

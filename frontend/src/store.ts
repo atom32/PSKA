@@ -10,7 +10,6 @@ type WorkspaceStore = {
   serviceToken: string;
   tenantId: string;
   userId: string;
-  representedUserId: string;
   currentKnowledgeBaseId: string;
   selectedKnowledgeBaseIds: string[];
   knowledgeBaseScopeMode: "current" | "all" | "selected" | "attachments";
@@ -22,7 +21,6 @@ type WorkspaceStore = {
   setServiceToken: (serviceToken: string) => void;
   setTenantId: (tenantId: string) => void;
   setUserId: (userId: string) => void;
-  setRepresentedUserId: (representedUserId: string) => void;
   setCurrentKnowledgeBaseId: (knowledgeBaseId: string) => void;
   setSelectedKnowledgeBaseIds: (knowledgeBaseIds: string[]) => void;
   setKnowledgeBaseScopeMode: (mode: "current" | "all" | "selected" | "attachments") => void;
@@ -59,7 +57,6 @@ export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
   serviceToken: window.sessionStorage.getItem("pska_service_token") || "",
   tenantId: window.sessionStorage.getItem("pska_tenant_id") || "tenant_default",
   userId: window.sessionStorage.getItem("pska_user_id") || "user_primary",
-  representedUserId: window.sessionStorage.getItem("pska_represented_user_id") || "",
   currentKnowledgeBaseId: window.sessionStorage.getItem("pska_current_knowledge_base_id") || "",
   selectedKnowledgeBaseIds: storedStringArray("pska_selected_knowledge_base_ids"),
   knowledgeBaseScopeMode: (window.sessionStorage.getItem("pska_knowledge_base_scope_mode") as "current" | "all" | "selected" | "attachments" | null) || "current",
@@ -78,11 +75,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
   },
   setUserId: (userId) => {
     window.sessionStorage.setItem("pska_user_id", userId);
-    set((state) => ({ userId, representedUserId: state.representedUserId || userId }));
-  },
-  setRepresentedUserId: (representedUserId) => {
-    window.sessionStorage.setItem("pska_represented_user_id", representedUserId);
-    set({ representedUserId });
+    set({ userId });
   },
   setCurrentKnowledgeBaseId: (currentKnowledgeBaseId) => {
     window.sessionStorage.setItem("pska_current_knowledge_base_id", currentKnowledgeBaseId);
@@ -107,7 +100,6 @@ export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
       serviceToken: "",
       tenantId: "tenant_default",
       userId: "user_primary",
-      representedUserId: "",
       currentKnowledgeBaseId: "",
       selectedKnowledgeBaseIds: [],
       knowledgeBaseScopeMode: "current"

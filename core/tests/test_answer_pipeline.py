@@ -103,7 +103,7 @@ def test_answer_pipeline_rejects_runtime_control_signal_answers() -> None:
     decision = AnswerPipeline().decide(
         [
             AnswerCandidate(
-                answer="[STOPPED] Task stopped due to maximum iteration limit (20).",
+                answer="[STOPPED] Runtime circuit breaker reached (128) before a final answer.",
                 answer_type="deep_answer",
                 owner="fastreact_agentic_service",
                 priority=0,

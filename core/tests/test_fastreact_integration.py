@@ -19,10 +19,12 @@ from pska_core.agentic_service import AgenticServiceError, FastreactAgenticServi
 from pska_core.api import (
     PSKAApi,
     PSKARequestHandler,
+    _ask_apply_table_value_supplement,
     _ask_agent_steps_from_events,
     _ask_answer_quality_flags,
     _ask_answer_from_agentic_synthesis,
     _ask_clean_evidence_text,
+    _ask_deep_query,
     _ask_hydrate_retrieval_source_windows,
     _ask_is_stream_done_event,
     _ask_public_trace_event,
@@ -71,17 +73,19 @@ class FakeResponse:
 
 
 def test_fastreact_client_builds_pska_metadata(monkeypatch) -> None:
-    captured = {}
+    calls = []
 
     def fake_urlopen(request, timeout):
-        captured["url"] = request.full_url
-        captured["headers"] = dict(request.header_items())
-        captured["timeout"] = timeout
-        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        payload = json.loads(request.data.decode("utf-8")) if request.data else None
+        calls.append({"url": request.full_url, "headers": dict(request.header_items()), "timeout": timeout, "payload": payload})
+        if request.full_url == "http://authnode.test/v1/token":
+            return FakeResponse({"access_token": "jwt-fastreact"})
         return FakeResponse({"type": "chat.completion", "run_id": "run_123", "content": "ok"})
 
     monkeypatch.setattr(fastreact_module, "urlopen", fake_urlopen)
-    client = HttpFastreactClient(FastreactConfig(url="http://fastreact.test", service_token="token", timeout_seconds=7))
+    client = HttpFastreactClient(
+        FastreactConfig(url="http://fastreact.test", service_token="token", timeout_seconds=7, authnode_url="http://authnode.test")
+    )
 
     response = client.chat_completion(
         messages=[{"role": "user", "content": "hello"}],
@@ -96,36 +100,41 @@ def test_fastreact_client_builds_pska_metadata(monkeypatch) -> None:
     )
 
     assert response["run_id"] == "run_123"
-    assert captured["url"] == "http://fastreact.test/v1/chat/completions"
-    assert captured["timeout"] == 7
-    assert captured["headers"]["X-fastreact-service-token"] == "token"
-    assert captured["payload"]["user_key"] == "pska:user_primary"
-    assert captured["payload"]["model"] == "deepseek-v4-flash"
-    assert captured["payload"]["temperature"] == 0.3
-    assert captured["payload"]["top_p"] == 0.9
-    assert captured["payload"]["max_tokens"] == 4096
-    assert captured["payload"]["metadata"] == {
+    token_call, fastreact_call = calls
+    assert token_call["url"] == "http://authnode.test/v1/token"
+    assert fastreact_call["url"] == "http://fastreact.test/v1/chat/completions"
+    assert fastreact_call["timeout"] == 7
+    assert fastreact_call["headers"]["Authorization"] == "Bearer jwt-fastreact"
+    assert "X-fastreact-service-token" not in fastreact_call["headers"]
+    assert fastreact_call["payload"]["user_key"] == "pska:user_primary"
+    assert fastreact_call["payload"]["model"] == "deepseek-v4-flash"
+    assert fastreact_call["payload"]["temperature"] == 0.3
+    assert fastreact_call["payload"]["top_p"] == 0.9
+    assert fastreact_call["payload"]["max_tokens"] == 4096
+    assert fastreact_call["payload"]["metadata"] == {
         "caller": "pska",
         "purpose": "extract",
         "pska_user_id": "user_primary",
         "pska_job_id": "job_123",
         "scope": {"source_item_ids": ["src_1"]},
     }
-    assert "max_tokens" not in captured["payload"]["metadata"]
-    assert "temperature" not in captured["payload"]["metadata"]
-    assert "top_p" not in captured["payload"]["metadata"]
+    assert "max_tokens" not in fastreact_call["payload"]["metadata"]
+    assert "temperature" not in fastreact_call["payload"]["metadata"]
+    assert "top_p" not in fastreact_call["payload"]["metadata"]
 
 
 def test_fastreact_client_forwards_pska_tenant_identity(monkeypatch) -> None:
-    captured = {}
+    calls = []
 
     def fake_urlopen(request, timeout):
-        captured["headers"] = dict(request.header_items())
-        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        payload = json.loads(request.data.decode("utf-8")) if request.data else None
+        calls.append({"url": request.full_url, "headers": dict(request.header_items()), "payload": payload})
+        if request.full_url == "http://authnode.test/v1/token":
+            return FakeResponse({"access_token": "jwt-fastreact"})
         return FakeResponse({"run_id": "run_456"})
 
     monkeypatch.setattr(fastreact_module, "urlopen", fake_urlopen)
-    client = HttpFastreactClient(FastreactConfig(url="http://fastreact.test", service_token="token"))
+    client = HttpFastreactClient(FastreactConfig(url="http://fastreact.test", service_token="token", authnode_url="http://authnode.test"))
 
     client.create_run(
         messages=[{"role": "user", "content": "hello"}],
@@ -135,13 +144,33 @@ def test_fastreact_client_forwards_pska_tenant_identity(monkeypatch) -> None:
         tool_policy={"mode": "allowlist", "allowed_tools": ["pska_pska_search"]},
     )
 
-    assert captured["payload"]["user_key"] == "pska:user_primary"
-    assert captured["payload"]["metadata"]["tenant_key"] == "tenant_acme"
-    assert captured["payload"]["metadata"]["pska_tenant_id"] == "tenant_acme"
-    assert captured["payload"]["tool_policy"] == {"mode": "allowlist", "allowed_tools": ["pska_pska_search"]}
-    assert captured["headers"]["X-fastreact-user-key"] == "pska:user_primary"
-    assert captured["headers"]["X-fastreact-tenant-key"] == "tenant_acme"
-    assert captured["headers"]["X-fastreact-auth-provider"] == "pska"
+    token_call, fastreact_call = calls
+    assert token_call["payload"]["tenant_id"] == "tenant_acme"
+    assert fastreact_call["payload"]["user_key"] == "pska:user_primary"
+    assert fastreact_call["payload"]["metadata"]["tenant_key"] == "tenant_acme"
+    assert fastreact_call["payload"]["metadata"]["pska_tenant_id"] == "tenant_acme"
+    assert fastreact_call["payload"]["tool_policy"] == {"mode": "allowlist", "allowed_tools": ["pska_pska_search"]}
+    assert fastreact_call["headers"]["Authorization"] == "Bearer jwt-fastreact"
+    assert "X-fastreact-service-token" not in fastreact_call["headers"]
+    assert fastreact_call["headers"]["X-fastreact-user-key"] == "pska:user_primary"
+    assert fastreact_call["headers"]["X-fastreact-tenant-key"] == "tenant_acme"
+    assert fastreact_call["headers"]["X-fastreact-auth-provider"] == "pska"
+
+
+def test_fastreact_client_requires_authnode_identity_for_tenant_requests(monkeypatch) -> None:
+    def fake_urlopen(request, timeout):
+        raise AssertionError("FastReAct should not be called without AuthNode identity")
+
+    monkeypatch.setattr(fastreact_module, "urlopen", fake_urlopen)
+    client = HttpFastreactClient(FastreactConfig(url="http://fastreact.test", service_token="legacy-token"))
+
+    with pytest.raises(FastreactError, match="requires AuthNode"):
+        client.chat_completion(
+            messages=[{"role": "user", "content": "hello"}],
+            user_id="user_primary",
+            tenant_id="tenant_acme",
+            purpose="agentic_search",
+        )
 
 
 def test_fastreact_client_uses_authnode_jwt_for_tenant_identity(monkeypatch) -> None:
@@ -201,21 +230,24 @@ def test_fastreact_client_uses_authnode_jwt_for_tenant_identity(monkeypatch) -> 
     ]
     for call in fastreact_calls:
         assert call["headers"]["Authorization"] == "Bearer jwt-fastreact"
-        assert call["headers"]["X-fastreact-service-token"] == "service-token"
+        assert "X-fastreact-service-token" not in call["headers"]
 
 
 def test_fastreact_client_applies_config_generation_options_to_runs(monkeypatch) -> None:
-    captured = {}
+    calls = []
 
     def fake_urlopen(request, timeout):
-        captured["url"] = request.full_url
-        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        payload = json.loads(request.data.decode("utf-8")) if request.data else None
+        calls.append({"url": request.full_url, "payload": payload})
+        if request.full_url == "http://authnode.test/v1/token":
+            return FakeResponse({"access_token": "jwt-fastreact"})
         return FakeResponse({"run_id": "run_456"})
 
     monkeypatch.setattr(fastreact_module, "urlopen", fake_urlopen)
     client = HttpFastreactClient(
         FastreactConfig(
             url="http://fastreact.test",
+            authnode_url="http://authnode.test",
             model="deepseek-v4-flash",
             temperature=0.2,
             top_p=0.8,
@@ -231,24 +263,28 @@ def test_fastreact_client_applies_config_generation_options_to_runs(monkeypatch)
     )
 
     assert response["run_id"] == "run_456"
-    assert captured["url"] == "http://fastreact.test/v1/runs"
-    assert captured["payload"]["model"] == "deepseek-v4-flash"
-    assert captured["payload"]["temperature"] == 0.2
-    assert captured["payload"]["top_p"] == 0.8
-    assert captured["payload"]["max_tokens"] == 2048
-    assert captured["payload"]["skills"] == ["pska_answer_with_citations"]
-    assert captured["payload"]["metadata"]["purpose"] == "agentic_search"
+    fastreact_call = calls[-1]
+    assert fastreact_call["url"] == "http://fastreact.test/v1/runs"
+    assert fastreact_call["payload"]["model"] == "deepseek-v4-flash"
+    assert fastreact_call["payload"]["temperature"] == 0.2
+    assert fastreact_call["payload"]["top_p"] == 0.8
+    assert fastreact_call["payload"]["max_tokens"] == 2048
+    assert fastreact_call["payload"]["skills"] == ["pska_answer_with_citations"]
+    assert fastreact_call["payload"]["metadata"]["purpose"] == "agentic_search"
 
 
 def test_fastreact_client_sends_empty_skills_to_disable_autoselection(monkeypatch) -> None:
-    captured = {}
+    calls = []
 
     def fake_urlopen(request, timeout):
-        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        payload = json.loads(request.data.decode("utf-8")) if request.data else None
+        calls.append({"url": request.full_url, "payload": payload})
+        if request.full_url == "http://authnode.test/v1/token":
+            return FakeResponse({"access_token": "jwt-fastreact"})
         return FakeResponse({"run_id": "run_no_skills"})
 
     monkeypatch.setattr(fastreact_module, "urlopen", fake_urlopen)
-    client = HttpFastreactClient(FastreactConfig(url="http://fastreact.test"))
+    client = HttpFastreactClient(FastreactConfig(url="http://fastreact.test", authnode_url="http://authnode.test"))
 
     response = client.create_run(
         messages=[{"role": "user", "content": "hello"}],
@@ -258,7 +294,7 @@ def test_fastreact_client_sends_empty_skills_to_disable_autoselection(monkeypatc
     )
 
     assert response["run_id"] == "run_no_skills"
-    assert captured["payload"]["skills"] == []
+    assert calls[-1]["payload"]["skills"] == []
 
 
 def test_fastreact_agentic_adapter_mirrors_tool_policy_scope_to_run_metadata() -> None:
@@ -295,7 +331,7 @@ def test_fastreact_agentic_adapter_mirrors_tool_policy_scope_to_run_metadata() -
             return {"content": "ok"}
 
         def create_run(self, **_kwargs):
-            raise FastreactError("POST /v1/runs failed with HTTP 404: not found")
+            raise AssertionError("PSKA agentic adapter should use /v1/chat/completions, not /v1/runs")
 
     user = User("user_primary", "Primary User", UserRole.ADMIN, tenant_id="tenant_acme")
     adapter = FastreactAgenticServiceAdapter(
@@ -329,8 +365,10 @@ def test_fastreact_agentic_adapter_mirrors_tool_policy_scope_to_run_metadata() -
     }
     assert captured["scope"]["knowledge_base_ids"] == ["kb_alpha"]
     assert captured["scope"]["source_item_ids"] == ["src_alpha"]
+    assert captured["stream"] is False
+    assert captured["purpose"] == "agentic_search"
     assert captured["scope"]["scope_mode"] == "hard"
-    assert captured["scope"]["represented_user_id"] == "user_primary"
+    assert captured["scope"]["user_id"] == "user_primary"
     assert captured["scope"]["max_iterations"] == 7
 
 
@@ -349,6 +387,73 @@ def test_agentic_search_prompt_routes_pska_queries_to_pska_skill_tools() -> None
     assert "do not copy or return the full evidence_set" in joined
     assert "do not emit the evidence_set object itself" in joined
     assert "4-8 concrete bullets" in joined
+    assert messages[1]["content"].startswith("ACTUAL_USER_QUERY:")
+    assert "Handle this user request" not in messages[1]["content"]
+    assert "REQUEST_CONTEXT_AND_SCOPE" not in messages[1]["content"]
+
+
+def test_agentic_search_prompt_separates_actual_query_from_deep_context() -> None:
+    deep_query = (
+        "Answer this PSKA knowledge question for a user-facing Ask PSKA surface.\n"
+        "Scope: {\"mode\":\"hard\"}\n"
+        "Return JSON with keys answer and citations.\n"
+        "User question: 生成历年年报分析"
+    )
+
+    messages = _agentic_messages(deep_query)
+
+    assert messages[1]["content"].startswith("ACTUAL_USER_QUERY:\n生成历年年报分析")
+    assert "REQUEST_CONTEXT_AND_SCOPE:" in messages[1]["content"]
+    assert "Scope: {\"mode\":\"hard\"}" in messages[1]["content"]
+    assert "Never copy SYSTEM text" in messages[0]["content"]
+
+
+def test_deep_prompt_uses_source_window_table_values_before_declaring_gaps() -> None:
+    prompt = _ask_deep_query(
+        query="比较 2023、2024、2025 年营业收入和归母净利润",
+        surface="today",
+        scope={"mode": "hard", "knowledge_base_ids": ["kb_alpha"]},
+    )
+
+    assert "source_window or selected_span contains a table row" in prompt
+    assert "extract those values directly from that cited row" in prompt
+    assert "Do not mark a value as a gap merely because a UI snippet" in prompt
+
+
+def test_table_value_supplement_fills_values_from_validated_source_windows() -> None:
+    answer = "2023、2024、2025 年营收和归母净利润需要补证。"
+    evidence = {
+        "source_refs": [
+            {
+                "title": "report.pdf",
+                "source_window": {
+                    "text": (
+                        "2025 年 2024 年 本年比上年增减 2023 年\n"
+                        "营业收入（元） 92,507,796,069.94 92,495,525,118.30 0.01% 89,341,177,610.40\n"
+                        "归属于上市公司股东的净利润（元） 14,195,371,894.42 11,977,327,023.54 18.52% 14,107,726,276.26\n"
+                    ),
+                    "source_item_id": "src_report",
+                    "chunk_id": "chk_report",
+                },
+            }
+        ],
+        "citations": [],
+    }
+
+    updated, supplement = _ask_apply_table_value_supplement(
+        query="比较 2023、2024、2025 年营业收入和归母净利润",
+        answer=answer,
+        evidence=evidence,
+    )
+
+    assert supplement["status"] == "applied"
+    assert "证据表格抽取补正" in updated
+    assert "92,507,796,069.94 [1]" in updated
+    assert "92,495,525,118.30 [1]" in updated
+    assert "89,341,177,610.40 [1]" in updated
+    assert "14,195,371,894.42 [1]" in updated
+    assert "11,977,327,023.54 [1]" in updated
+    assert "14,107,726,276.26 [1]" in updated
 
 
 def test_agentic_search_prompt_includes_pska_tenant_identity() -> None:
@@ -359,6 +464,82 @@ def test_agentic_search_prompt_includes_pska_tenant_identity() -> None:
     assert "user_id='alice'" in system
     assert "PSKA MCP identity is forwarded by the runtime" in system
     assert "do not invent or override tenant/user arguments" in system
+
+
+def test_agentic_event_response_prefers_effective_tool_args_in_trace() -> None:
+    events = [
+        {
+            "type": "tool_call",
+            "event_id": "evt_1",
+            "tool_call_id": "call_1",
+            "tool_name": "pska_pska_search",
+            "tool_args": {"query": "Handle this user request. Return JSON with keys answer. User question: x"},
+            "metadata": {
+                "tool_arg_validation": {
+                    "tool_name": "pska_pska_search",
+                    "original_tool_args": {
+                        "query": "Handle this user request. Return JSON with keys answer. User question: x"
+                    },
+                    "effective_tool_args": {"query": "x", "scope_mode": "hard"},
+                    "validation_error": "Invalid search query",
+                    "tool_args_repaired": True,
+                    "invalid_tool_args": False,
+                    "repair_reason": "replaced_prompt_wrapper_query",
+                },
+                "scope_injected_tool_args": {"query": "x", "scope_mode": "hard"},
+            },
+        },
+        {"type": "session_end", "content": "done"},
+    ]
+
+    normalized = normalize_agentic_event_response(events)
+    call = normalized["trace"]["tool_calls"][0]
+
+    assert call["tool_args"] == {"query": "x", "scope_mode": "hard"}
+    assert call["repair_reason"] == "replaced_prompt_wrapper_query"
+    assert call["raw_tool_args_summary"]["query_looks_like_prompt_wrapper"] is True
+
+
+def test_agentic_event_response_preserves_tool_governance_in_trace() -> None:
+    events = [
+        {
+            "type": "tool_call",
+            "event_id": "evt_budget",
+            "tool_call_id": "call_budget",
+            "tool_name": "pska_pska_search",
+            "tool_args": {"query": "海康威视 2023 营业收入 归母净利润 研发投入"},
+            "metadata": {
+                "tool_budget_denied": True,
+                "tool_budget_governance": {
+                    "error_code": "tool_budget_exceeded",
+                    "tool_name": "pska_pska_search",
+                    "canonical_tool_name": "pska_pska_search",
+                    "profile": "pska_ask_read",
+                    "observed_count": 6,
+                    "configured_budget": 6,
+                    "retry": {"recommended": False, "hint": "synthesize from existing evidence"},
+                },
+                "repeated_search_query": True,
+                "tool_query_governance": {
+                    "error_code": "repeated_search_query",
+                    "tool_name": "pska_pska_search",
+                    "query": "海康威视 2023 营业收入 归母净利润 研发投入",
+                    "similar_query_count": 2,
+                    "configured_budget": 2,
+                },
+            },
+        },
+        {"type": "session_end", "content": "done"},
+    ]
+
+    normalized = normalize_agentic_event_response(events)
+    call = normalized["trace"]["tool_calls"][0]
+
+    assert call["tool_budget_denied"] is True
+    assert call["tool_budget_governance"]["error_code"] == "tool_budget_exceeded"
+    assert call["tool_budget_governance"]["configured_budget"] == 6
+    assert call["repeated_search_query"] is True
+    assert call["tool_query_governance"]["similar_query_count"] == 2
 
 
 def test_ask_agent_steps_ignore_sse_done_frames() -> None:
@@ -1633,7 +1814,7 @@ def test_ask_auto_understanding_uses_agentic_classifier_for_table_lookup_route()
         def ready(self):
             return {"ok": True, "provider": "test", "adapter": "classifier"}
 
-        def search(self, query, user, *, represented_user_id=None, max_iterations=3, skills=None, tool_policy=None, session_id=None):
+        def search(self, query, user, *, represented_user_id=None, max_iterations=None, skills=None, tool_policy=None, session_id=None):
             self.calls.append(
                 {
                     "query": query,
@@ -1677,14 +1858,14 @@ def test_ask_auto_understanding_uses_agentic_classifier_for_table_lookup_route()
     assert understand["intent_contract"]["execution_depth"] == "quick"
     assert understand["routing_owner"] == "agentic_intent_classifier"
     assert understand["intent_classifier"]["status"] == "classified"
-    assert service.calls[0]["max_iterations"] == 1
+    assert service.calls[0]["max_iterations"] is None
     assert service.calls[0]["skills"] == []
     assert service.calls[0]["tool_policy"] == {"mode": "none"}
 
 
 def test_ask_auto_understanding_honors_agentic_classifier_deep_route() -> None:
     class IntentClassifierService:
-        def search(self, query, user, *, represented_user_id=None, max_iterations=3, skills=None, tool_policy=None, session_id=None):
+        def search(self, query, user, *, represented_user_id=None, max_iterations=None, skills=None, tool_policy=None, session_id=None):
             return {
                 "answer": json.dumps(
                     {
@@ -1726,7 +1907,7 @@ def test_ask_explicit_deep_can_skip_intent_classifier_with_history() -> None:
         def ready(self):
             return {"ok": True}
 
-        def search(self, query, user, *, represented_user_id=None, max_iterations=3, skills=None, tool_policy=None, session_id=None):
+        def search(self, query, user, *, represented_user_id=None, max_iterations=None, skills=None, tool_policy=None, session_id=None):
             self.calls.append(query)
             raise AssertionError("intent classifier should not run for a forced deep route")
 
@@ -1904,14 +2085,24 @@ def test_workspace_ask_quick_uses_agentic_final_synthesis_without_tools() -> Non
         def ready(self):
             return {"ok": True, "provider": "test", "adapter": "synthesis"}
 
-        def search(self, query, user, *, represented_user_id=None, max_iterations=3, skills=None, tool_policy=None, session_id=None):
+        def synthesize(
+            self,
+            query,
+            user,
+            *,
+            represented_user_id=None,
+            skills=None,
+            tool_policy=None,
+            session_id=None,
+            purpose="agentic_synthesis",
+        ):
             self.calls.append(
                 {
                     "query": query,
-                    "max_iterations": max_iterations,
                     "skills": skills,
                     "tool_policy": tool_policy,
                     "session_id": session_id,
+                    "purpose": purpose,
                 }
             )
             return {
@@ -1959,15 +2150,25 @@ def test_workspace_ask_quick_uses_agentic_final_synthesis_without_tools() -> Non
     assert "背景指标 4" not in response["answer"]
     assert response["route"]["final_synthesis_owner"] == "fastreact_agentic_service"
     assert response["trace"]["final_synthesis"]["status"] == "succeeded"
-    assert service.calls[0]["max_iterations"] == 1
     assert service.calls[0]["skills"] == []
     assert service.calls[0]["tool_policy"] == {"mode": "none"}
     assert service.calls[0]["session_id"] == "quick-synthesis-session"
+    assert service.calls[0]["purpose"] == "quick_synthesis"
 
 
 def test_workspace_ask_quick_accepts_plain_text_agentic_synthesis() -> None:
     class PlainTextQuickSynthesisService:
-        def search(self, query, user, *, represented_user_id=None, max_iterations=3, skills=None, tool_policy=None, session_id=None):
+        def synthesize(
+            self,
+            query,
+            user,
+            *,
+            represented_user_id=None,
+            skills=None,
+            tool_policy=None,
+            session_id=None,
+            purpose="agentic_synthesis",
+        ):
             return {
                 "answer": "星辰项目 2024 年可用率为 99.95%。",
                 "trace": {},
@@ -2109,6 +2310,8 @@ def test_workspace_ask_conversation_deep_omits_history_for_independent_question(
     deep_query = api.agentic_service.calls[-1]["query"]
     assert "recent_messages" not in deep_query
     assert "conversation_summary" not in deep_query
+    assert '"conversation_context"' not in deep_query
+    assert '"retrieval_context"' not in deep_query
     assert "reusablehistorykeyword" not in deep_query
 
 
@@ -2160,7 +2363,78 @@ def test_workspace_ask_conversation_deep_keeps_history_for_follow_up_question() 
 
     deep_query = api.agentic_service.calls[-1]["query"]
     assert "recent_messages" in deep_query
+    assert "conversation_context" in deep_query
+    assert "retrieval_context" in deep_query
+    assert "searched_queries" in deep_query
+    assert "do not repeat equivalent broad searches" in deep_query
     assert "reusablehistorykeyword" in deep_query
+
+
+def test_workspace_ask_conversation_deep_follow_up_includes_compact_retrieval_context() -> None:
+    class ConversationIntentService(FakeAgenticService):
+        def search(self, query, user, *, represented_user_id=None, max_iterations=None, skills=None, tool_policy=None, session_id=None):
+            if str(query).startswith("You are PSKA's agentic Ask intent classifier"):
+                return {
+                    "answer": json.dumps(
+                        {
+                            "ask_intent": "follow_up",
+                            "selected_intent": "deep",
+                            "requires_retrieval": True,
+                            "confidence": 0.91,
+                            "reasons": ["continues prior sourced answer"],
+                        },
+                        ensure_ascii=False,
+                    ),
+                    "trace": {},
+                    "agentic_service": {"provider": "test", "adapter": "classifier"},
+                }
+            return super().search(
+                query,
+                user,
+                represented_user_id=represented_user_id,
+                max_iterations=max_iterations,
+                skills=skills,
+                tool_policy=tool_policy,
+                session_id=session_id,
+            )
+
+    api = _api()
+    api.agentic_service = ConversationIntentService(api.retrieval)
+    IngestService(api.store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "retrieval-ledger-note",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "Retrieval Ledger Note",
+            "content": {"text": "retrievalledgerkeyword shows the launch risk is vendor concentration."},
+        }
+    )
+    conversation_id = api.create_workspace_ask_conversation({"title": "Ledger thread"})["conversation"]["conversation_id"]
+    list(
+        api.workspace_ask_conversation_event_stream(
+            conversation_id,
+            {"query": "What does retrievalledgerkeyword say?", "intent": "quick"},
+        )
+    )
+
+    api.agentic_service.calls.clear()
+    list(
+        api.workspace_ask_conversation_event_stream(
+            conversation_id,
+            {"query": "继续展开上一次来源里的风险", "intent": "deep"},
+        )
+    )
+
+    deep_query = api.agentic_service.calls[-1]["query"]
+    assert "retrieval_context" in deep_query
+    assert "source_refs" in deep_query
+    assert "searched_queries" in deep_query
+    assert "What does retrievalledgerkeyword say?" in deep_query
+    assert "Retrieval Ledger Note" in deep_query
 
 
 def test_ask_query_terms_splits_mixed_english_chinese() -> None:
@@ -2698,7 +2972,7 @@ def test_http_request_logs_include_request_job_and_source_refs(capsys) -> None:
 
     with _http_server(api) as base_url:
         conn = HTTPConnection(base_url, timeout=5)
-        conn.request("GET", f"/jobs/{job.job_id}", headers={"X-PSKA-Request-Id": "req-test-123"})
+        conn.request("GET", f"/jobs/{job.job_id}", headers=_test_identity_headers({"X-PSKA-Request-Id": "req-test-123"}))
         response = conn.getresponse()
         response.read()
         request_id = response.getheader("x-pska-request-id")
@@ -2734,7 +3008,7 @@ def test_http_request_logs_include_request_job_and_source_refs(capsys) -> None:
 
 def test_metrics_report_embedding_coverage_and_connector_freshness() -> None:
     api = _api()
-    api.config = PSKAConfig.from_dict({"embedding": {"provider": "fake-bge", "model": "fake-model"}})
+    api.config = PSKAConfig.from_dict({"auth": {"mode": "trusted_headers"}, "embedding": {"provider": "fake-bge", "model": "fake-model"}})
     first = IngestService(api.store).ingest_channel_payload(
         {
             "schema_version": "pska.channel_ingest.v1",
@@ -3017,7 +3291,11 @@ def test_http_route_covers_files_sync_with_empty_twitter_archive(tmp_path: Path)
     (workspace_root / "tenants" / "tenant_default" / "users" / "user_primary" / "sources" / "archives" / "twitter").mkdir(parents=True)
     (notes_root / "note.md").write_text("PSKA should sync this file and check twitter archive.", encoding="utf-8")
     api = _api()
-    api.config = PSKAConfig(files=FilesConfig(roots=(notes_root,)), workspace=WorkspaceConfig(root=workspace_root))
+    api.config = PSKAConfig(
+        files=FilesConfig(roots=(notes_root,)),
+        workspace=WorkspaceConfig(root=workspace_root),
+        auth=AuthConfig(mode="trusted_headers"),
+    )
 
     with _http_server(api) as base_url:
         status, payload = _http_json(
@@ -3104,32 +3382,34 @@ def test_digest_schedule_agent_service_requires_represented_user_for_private_own
     assert rep["scheduled_source_item_ids"] == [source.source_item_id]
 
 
-def test_service_token_protects_non_health_routes() -> None:
-    api = _api(service_token="secret")
+def test_service_token_is_rejected_for_non_health_routes() -> None:
+    api = _api(service_token="secret", auth=AuthConfig(mode="jwt"))
     with _http_server(api) as base_url:
-        health_status, health = _http_json(base_url, "GET", "/health")
-        ready_status, ready = _http_json(base_url, "GET", "/ready")
+        health_status, health = _http_json(base_url, "GET", "/health", authenticated=False)
+        ready_status, ready = _http_json(base_url, "GET", "/ready", authenticated=False)
         authed_status, authed = _http_json(
             base_url,
             "GET",
             "/ready",
             headers={"X-PSKA-Service-Token": "secret"},
+            authenticated=False,
         )
         bearer_status, bearer = _http_json(
             base_url,
             "GET",
             "/ready",
             headers={"Authorization": "Bearer secret"},
+            authenticated=False,
         )
 
     assert health_status == 200
     assert health["ok"] is True
     assert ready_status == 401
-    assert "service token" in ready["error"]
-    assert authed_status == 200
-    assert authed["ok"] is True
-    assert bearer_status == 200
-    assert bearer["ok"] is True
+    assert "Bearer JWT required" in ready["error"]
+    assert authed_status == 401
+    assert "Bearer JWT required" in authed["error"]
+    assert bearer_status == 401
+    assert "JWT auth requires jwt_secret" in bearer["error"]
 
 
 def test_trusted_headers_auth_uses_fastreact_identity_aliases() -> None:
@@ -3157,7 +3437,7 @@ def test_trusted_headers_auth_uses_fastreact_identity_aliases() -> None:
 def test_trusted_headers_auth_requires_identity_header() -> None:
     api = _api(auth=AuthConfig(mode="trusted_headers"))
     with _http_server(api) as base_url:
-        status, payload = _http_json(base_url, "GET", "/ready")
+        status, payload = _http_json(base_url, "GET", "/ready", authenticated=False)
 
     assert status == 401
     assert "trusted identity" in payload["error"]
@@ -3211,7 +3491,7 @@ def test_jwt_auth_maps_claims_to_request_context() -> None:
 def test_jwt_auth_requires_bearer_token() -> None:
     api = _api(auth=AuthConfig(mode="jwt", jwt_secret="jwt-secret"))
     with _http_server(api) as base_url:
-        status, payload = _http_json(base_url, "GET", "/ready")
+        status, payload = _http_json(base_url, "GET", "/ready", authenticated=False)
 
     assert status == 401
     assert "Bearer JWT required" in payload["error"]
@@ -3257,16 +3537,17 @@ def test_jwt_auth_rejects_expired_token() -> None:
     assert "expired" in payload["error"]
 
 
-def test_local_console_serves_dashboard_assets_when_service_token_enabled() -> None:
-    api = _api(service_token="secret")
+def test_local_console_serves_dashboard_assets_but_rejects_service_token_data_auth() -> None:
+    api = _api(service_token="secret", auth=AuthConfig(mode="jwt"))
     with _http_server(api) as base_url:
         status, headers, body = _http_text(base_url, "GET", "/console")
-        data_status, data = _http_json(base_url, "GET", "/console/data")
+        data_status, data = _http_json(base_url, "GET", "/console/data", authenticated=False)
         authed_status, authed = _http_json(
             base_url,
             "GET",
             "/console/data?limit=3",
             headers={"X-PSKA-Service-Token": "secret"},
+            authenticated=False,
         )
 
     assert status == 200
@@ -3274,11 +3555,9 @@ def test_local_console_serves_dashboard_assets_when_service_token_enabled() -> N
     assert "PSKA" in body
     assert "/console/app.js" in body
     assert data_status == 401
-    assert "service token" in data["error"]
-    assert authed_status == 200
-    assert authed["requires_agentic_service_online"] is False
-    assert "source_counts" in authed
-    assert "recommended_commands" in authed
+    assert "Bearer JWT required" in data["error"]
+    assert authed_status == 401
+    assert "Bearer JWT required" in authed["error"]
 
 
 def test_local_console_data_shows_home_dashboard_with_agentic_service_offline() -> None:
@@ -3679,7 +3958,7 @@ def test_local_console_agentic_search_planning_error_falls_back_to_direct() -> N
     assert "retrieval" in payload["fallback"]
 
 
-def test_user_workspace_serves_assets_and_keeps_data_routes_token_protected() -> None:
+def test_user_workspace_serves_assets_and_keeps_data_routes_identity_protected() -> None:
     api = _api(service_token="secret")
     IngestService(api.store).ingest_channel_payload(
         {
@@ -3704,20 +3983,34 @@ def test_user_workspace_serves_assets_and_keeps_data_routes_token_protected() ->
             "POST",
             "/workspace/search/query",
             {"query": "workspace token", "mode": "direct", "user_id": "user_primary", "represented_user_id": "user_primary"},
+            authenticated=False,
+        )
+        legacy_token_status, legacy_token = _http_json(
+            base_url,
+            "POST",
+            "/workspace/search/query",
+            {"query": "workspace token", "mode": "direct", "user_id": "user_primary", "represented_user_id": "user_primary"},
+            headers={"X-PSKA-Service-Token": "secret"},
+            authenticated=False,
         )
         authed_status, authed = _http_json(
             base_url,
             "POST",
             "/workspace/search/query",
             {"query": "workspace token", "mode": "direct", "user_id": "user_primary", "represented_user_id": "user_primary"},
-            headers={"X-PSKA-Service-Token": "secret"},
         )
-        corpus_blocked_status, corpus_blocked = _http_json(base_url, "GET", "/workspace/corpus/data?owner_user_id=user_primary")
+        corpus_blocked_status, corpus_blocked = _http_json(
+            base_url,
+            "GET",
+            "/workspace/corpus/data?owner_user_id=user_primary",
+            authenticated=False,
+        )
         writer_blocked_status, writer_blocked = _http_json(
             base_url,
             "POST",
             "/workspace/writer/suggest",
             {"selected_text": "workspace token", "user_id": "user_primary", "represented_user_id": "user_primary"},
+            authenticated=False,
         )
 
     assert page_status == 200
@@ -3733,11 +4026,13 @@ def test_user_workspace_serves_assets_and_keeps_data_routes_token_protected() ->
     assert app_alias_status == 200
     assert "User Workspace" in app_alias_body
     assert blocked_status == 401
-    assert "service token" in blocked["error"]
+    assert "trusted identity" in blocked["error"]
+    assert legacy_token_status == 401
+    assert "trusted identity" in legacy_token["error"]
     assert corpus_blocked_status == 401
-    assert "service token" in corpus_blocked["error"]
+    assert "trusted identity" in corpus_blocked["error"]
     assert writer_blocked_status == 401
-    assert "service token" in writer_blocked["error"]
+    assert "trusted identity" in writer_blocked["error"]
     assert authed_status == 200
     assert authed["workspace"]["surface"] == "user_workspace"
     assert authed["workspace"]["evidence"]["citations"][0]["source_item_id"]
@@ -3793,7 +4088,7 @@ def test_workspace_activity_drives_continue_working() -> None:
     assert today["continue_working"][1]["activity_type"] == "edited"
 
 
-def test_workspace_activity_http_endpoint_is_token_protected() -> None:
+def test_workspace_activity_http_endpoint_is_identity_protected() -> None:
     api = _api(service_token="secret")
     payload = {
         "owner_user_id": "user_primary",
@@ -3805,23 +4100,31 @@ def test_workspace_activity_http_endpoint_is_token_protected() -> None:
     }
 
     with _http_server(api) as base_url:
-        blocked_status, blocked = _http_json(base_url, "POST", "/workspace/activity", payload)
-        authed_status, authed = _http_json(
+        blocked_status, blocked = _http_json(base_url, "POST", "/workspace/activity", payload, authenticated=False)
+        legacy_token_status, legacy_token = _http_json(
             base_url,
             "POST",
             "/workspace/activity",
             payload,
             headers={"X-PSKA-Service-Token": "secret"},
+            authenticated=False,
+        )
+        authed_status, authed = _http_json(
+            base_url,
+            "POST",
+            "/workspace/activity",
+            payload,
         )
         data_status, data = _http_json(
             base_url,
             "GET",
             "/workspace/activity/data?owner_user_id=user_primary",
-            headers={"X-PSKA-Service-Token": "secret"},
         )
 
     assert blocked_status == 401
-    assert "service token" in blocked["error"]
+    assert "trusted identity" in blocked["error"]
+    assert legacy_token_status == 401
+    assert "trusted identity" in legacy_token["error"]
     assert authed_status == 200
     assert authed["activity"]["activity_type"] == "viewed"
     assert data_status == 200
@@ -3830,8 +4133,16 @@ def test_workspace_activity_http_endpoint_is_token_protected() -> None:
 
 def test_writing_workspace_is_tenant_scoped_and_composes_selected_answers() -> None:
     api = _api()
-    tenant_a = context_from_headers({"X-PSKA-Tenant-Id": "tenant_a", "X-PSKA-User-Id": "user_primary"}, {})
-    tenant_b = context_from_headers({"X-PSKA-Tenant-Id": "tenant_b", "X-PSKA-User-Id": "user_primary"}, {})
+    tenant_a = context_from_headers(
+        {"X-PSKA-Tenant-Id": "tenant_a", "X-PSKA-User-Id": "user_primary"},
+        {},
+        auth_config=AuthConfig(mode="trusted_headers"),
+    )
+    tenant_b = context_from_headers(
+        {"X-PSKA-Tenant-Id": "tenant_b", "X-PSKA-User-Id": "user_primary"},
+        {},
+        auth_config=AuthConfig(mode="trusted_headers"),
+    )
 
     board_a = api.workspace_writing_create_board({"title": "Reserve memo", "goal": "Decide the memo structure"}, context=tenant_a)["board"]
     board_b = api.workspace_writing_create_board({"title": "Reserve memo", "goal": "Different tenant"}, context=tenant_b)["board"]
@@ -3903,7 +4214,11 @@ def test_writing_workspace_is_tenant_scoped_and_composes_selected_answers() -> N
 
 def test_writing_suggest_questions_does_not_persist_nodes() -> None:
     api = _api()
-    context = context_from_headers({"X-PSKA-Tenant-Id": "tenant_a", "X-PSKA-User-Id": "user_primary"}, {})
+    context = context_from_headers(
+        {"X-PSKA-Tenant-Id": "tenant_a", "X-PSKA-User-Id": "user_primary"},
+        {},
+        auth_config=AuthConfig(mode="trusted_headers"),
+    )
     board = api.workspace_writing_create_board({"title": "Inquiry", "goal": "Write a supported memo"}, context=context)["board"]
     question = api.workspace_writing_create_node(
         board["board_id"],
@@ -3926,7 +4241,11 @@ def test_writing_suggest_questions_does_not_persist_nodes() -> None:
 
 def test_evidence_brief_creates_writing_draft_with_lineage_and_refs() -> None:
     api = _api()
-    context = context_from_headers({"X-PSKA-Tenant-Id": "tenant_a", "X-PSKA-User-Id": "user_primary"}, {})
+    context = context_from_headers(
+        {"X-PSKA-Tenant-Id": "tenant_a", "X-PSKA-User-Id": "user_primary"},
+        {},
+        auth_config=AuthConfig(mode="trusted_headers"),
+    )
     source = api.ingest.ingest_channel_payload(
         {
             **_minimal_ingest_payload("brief-source"),
@@ -4159,7 +4478,11 @@ def test_evidence_brief_creates_writing_draft_with_lineage_and_refs() -> None:
 
 def test_writing_ask_scope_uses_connected_node_context_in_quick_trace() -> None:
     api = _api()
-    context = context_from_headers({"X-PSKA-Tenant-Id": "tenant_default", "X-PSKA-User-Id": "user_primary"}, {})
+    context = context_from_headers(
+        {"X-PSKA-Tenant-Id": "tenant_default", "X-PSKA-User-Id": "user_primary"},
+        {},
+        auth_config=AuthConfig(mode="trusted_headers"),
+    )
     IngestService(api.store).ingest_channel_payload(
         {
             "schema_version": "pska.channel_ingest.v1",
@@ -4412,6 +4735,34 @@ def test_ask_quality_signals_adds_inline_citation_markers() -> None:
     assert enriched["evidence"]["citation_markers"] == enriched["citation_markers"]
     assert enriched["citation_audit"]["inline_marker_policy"] == "appended"
     assert enriched["citation_audit"]["markers"] == enriched["citation_markers"]
+
+
+def test_ask_quality_signals_downgrades_weak_citation_bindings() -> None:
+    citation = {
+        "source_item_id": "src_report",
+        "chunk_id": "chk_board",
+        "title": "海康威视2025年报",
+        "snippet": "董事会成员及高级管理人员任职情况。",
+    }
+    payload = {
+        "ok": True,
+        "query": "生成海康威视年报分析",
+        "answer": "营收持续增长，研发投入保持高位。",
+        "route": {"selected_intent": "deep", "retrieval_owner": "fastreact_pska_mcp", "surface": "ask"},
+        "evidence": {"citations": [citation], "source_refs": [citation], "results": [citation]},
+        "citations": [citation],
+        "source_refs": [citation],
+        "trace": {},
+        "timing": {"total_ms": 1, "time_to_first_answer_ms": 1},
+    }
+
+    enriched = _ask_with_quality_signals(payload)
+
+    assert enriched["quality_signals"]["quality_band"] == "needs_citation_review"
+    assert enriched["quality_signals"]["evidence_status"] == "weak_citation_support"
+    assert "weak_citation_support" in enriched["quality_signals"]["flags"]
+    assert enriched["quality_signals"]["weak_citation_support"]["weak_claim_binding_count"] >= 1
+    assert enriched["quality_signals"]["report_readiness"] == "needs_citation_review"
 
 
 def test_ask_quality_signals_binds_claims_to_distinct_citation_markers() -> None:
@@ -4669,7 +5020,7 @@ def test_workspace_ask_deep_marks_fastreact_stopped_as_incomplete() -> None:
             yield {"type": "session_start", "content": query, "session_id": session_id or "stopped", "event_id": "stop:0"}
             yield {
                 "type": "session_end",
-                "content": "[STOPPED] Task stopped due to maximum iteration limit (12).",
+                "content": "[STOPPED] Runtime circuit breaker reached (128) before a final answer.",
                 "session_id": session_id or "stopped",
                 "event_id": "stop:1",
             }
@@ -4848,16 +5199,24 @@ def test_workspace_ask_deep_uses_visible_mcp_evidence_when_fastreact_stops() -> 
             yield {
                 "type": "tool_result",
                 "tool_name": "pska_pska_search",
-                "content": json.dumps(tool_payload, ensure_ascii=False),
-                "tool_call_id": "call-evidence",
+                "content": "[MCP_ERROR] PermissionError: knowledge base is not accessible",
+                "tool_call_id": "call-recovered-error",
                 "session_id": session_id or "stopped-evidence",
                 "event_id": "stop-evidence:1",
             }
             yield {
-                "type": "session_end",
-                "content": "[STOPPED] Task stopped due to maximum iteration limit (12).",
+                "type": "tool_result",
+                "tool_name": "pska_pska_search",
+                "content": json.dumps(tool_payload, ensure_ascii=False),
+                "tool_call_id": "call-evidence",
                 "session_id": session_id or "stopped-evidence",
                 "event_id": "stop-evidence:2",
+            }
+            yield {
+                "type": "session_end",
+                "content": "[STOPPED] Runtime circuit breaker reached (128) before a final answer.",
+                "session_id": session_id or "stopped-evidence",
+                "event_id": "stop-evidence:3",
             }
 
     api.agentic_service = StoppedAfterEvidenceAgenticService()
@@ -4873,16 +5232,141 @@ def test_workspace_ask_deep_uses_visible_mcp_evidence_when_fastreact_stops() -> 
 
     assert payload["ok"] is True
     assert payload["answer_type"] == "deep_evidence_fallback"
-    assert "Atlas revenue was 42" in payload["answer"]
+    assert "revenue was 42" in payload["answer"]
     assert "[1]" in payload["answer"]
     assert [ref["source_item_id"] for ref in payload["source_refs"]] == [source.source_item_id]
     assert payload["trace"]["agentic_runtime"]["status"] == "stopped"
     assert payload["trace"]["fallback_reason"] == "agentic_runtime_control_signal_with_supported_evidence"
+    assert payload["trace"]["agentic_runtime"]["fallback_mode"] == "deterministic_evidence_synthesis"
     assert "agentic_runtime_control_signal" not in payload["no_answer_reasons"]
-    assert payload["quality_signals"]["quality_band"] == "needs_review"
+    assert payload["quality_signals"]["quality_band"] == "grounded"
+    assert payload["quality_signals"]["report_readiness"] == "ready_with_citations"
     diagnostics = payload["quality_signals"]["no_answer_diagnostics"]
-    assert diagnostics["primary_reason"] == "agentic_runtime_control_signal_with_supported_evidence"
+    assert diagnostics["display"] is False
+    assert diagnostics["primary_reason"] == "ok"
+    assert "tool_error" not in diagnostics["reasons"]
     assert "source_refs_not_visible" not in diagnostics["reasons"]
+
+
+def test_workspace_ask_deep_stopped_evidence_uses_agentic_synthesis_before_deterministic_fallback() -> None:
+    api = _api()
+    source = IngestService(api.store).ingest_channel_payload(
+        {
+            "schema_version": "pska.channel_ingest.v1",
+            "source_channel": "manual",
+            "record_type": "note",
+            "source_id": "workspace-ask-deep-agentic-fallback-evidence",
+            "owner_user_id": "user_primary",
+            "space_id": "private_primary",
+            "visibility": "private",
+            "title": "Stopped Agentic Synthesis Note",
+            "content": {"text": "Atlas revenue was 42 in the annual report, and Atlas margin was 9 percent."},
+        }
+    )
+    chunk = api.store.list_chunks_for_sources({source.source_item_id})[0]
+    citation = {
+        "source_item_id": source.source_item_id,
+        "document_id": chunk.document_id,
+        "chunk_id": chunk.chunk_id,
+        "title": source.title,
+        "snippet": chunk.text,
+    }
+    tool_payload = {
+        "results": [{**citation, "score": 0.91, "citation": citation}],
+        "citations": [citation],
+    }
+
+    class StoppedWithAgenticSynthesisService:
+        def __init__(self):
+            self.synthesis_calls = []
+
+        def ready(self):
+            return {"ok": True, "provider": "test", "adapter": "fake"}
+
+        def search_event_stream(
+            self,
+            query,
+            user,
+            *,
+            represented_user_id=None,
+            max_iterations=None,
+            skills=None,
+            tool_policy=None,
+            session_id=None,
+        ):
+            yield {"type": "session_start", "content": query, "session_id": session_id or "stopped-agentic", "event_id": "stop-agentic:0"}
+            yield {
+                "type": "tool_result",
+                "tool_name": "pska_pska_search",
+                "content": json.dumps(tool_payload, ensure_ascii=False),
+                "tool_call_id": "call-agentic-evidence",
+                "session_id": session_id or "stopped-agentic",
+                "event_id": "stop-agentic:1",
+            }
+            yield {
+                "type": "session_end",
+                "content": "[STOPPED] Runtime circuit breaker reached (128) before a final answer.",
+                "session_id": session_id or "stopped-agentic",
+                "event_id": "stop-agentic:2",
+            }
+
+        def search(self, *_args, **_kwargs):
+            raise AssertionError("fallback synthesis must not use agentic search")
+
+        def synthesize(
+            self,
+            query,
+            user,
+            *,
+            represented_user_id=None,
+            skills=None,
+            tool_policy=None,
+            session_id=None,
+            purpose="agentic_synthesis",
+        ):
+            self.synthesis_calls.append(
+                {
+                    "query": query,
+                    "skills": skills,
+                    "tool_policy": tool_policy,
+                    "session_id": session_id,
+                    "purpose": purpose,
+                }
+            )
+            return {
+                "answer": json.dumps(
+                    {
+                        "answer": "Agentic synthesis: Atlas revenue was 42 and Atlas margin was 9 percent.[1]",
+                    },
+                    ensure_ascii=False,
+                ),
+                "trace": {},
+                "agentic_service": {"provider": "test", "adapter": "fake"},
+            }
+
+    service = StoppedWithAgenticSynthesisService()
+    api.agentic_service = service
+
+    payload = api.workspace_ask(
+        {
+            "query": "What was Atlas revenue and margin?",
+            "intent": "deep",
+            "user_id": "user_primary",
+            "represented_user_id": "user_primary",
+            "session_id": "stopped-agentic-synthesis",
+        }
+    )
+
+    assert payload["ok"] is True
+    assert payload["answer_type"] == "deep_evidence_fallback"
+    assert payload["answer"].startswith("Agentic synthesis")
+    assert payload["route"]["answer_owner"] == "agentic_evidence_synthesis"
+    assert payload["trace"]["agentic_runtime"]["fallback_mode"] == "agentic_evidence_synthesis"
+    assert payload["trace"]["fallback_synthesis"]["status"] == "succeeded"
+    assert payload["trace"]["fallback_synthesis"]["purpose"] == "deep_fallback_synthesis"
+    assert service.synthesis_calls[0]["skills"] == []
+    assert service.synthesis_calls[0]["tool_policy"] == {"mode": "none"}
+    assert service.synthesis_calls[0]["purpose"] == "deep_fallback_synthesis"
 
 
 def test_workspace_ask_deep_stopped_report_fallback_preserves_multiple_visible_chunks() -> None:
@@ -4961,7 +5445,7 @@ def test_workspace_ask_deep_stopped_report_fallback_preserves_multiple_visible_c
             }
             yield {
                 "type": "session_end",
-                "content": "[STOPPED] Task stopped due to maximum iteration limit (12).",
+                "content": "[STOPPED] Runtime circuit breaker reached (128) before a final answer.",
                 "session_id": session_id or "stopped-report",
                 "event_id": "stopped-report:2",
             }
@@ -4983,6 +5467,11 @@ def test_workspace_ask_deep_stopped_report_fallback_preserves_multiple_visible_c
     assert len(payload["evidence_check"]["used_citations"]) == 2
     assert {ref["source_item_id"] for ref in payload["source_refs"]} == {financials.source_item_id, strategy.source_item_id}
     assert payload["trace"]["fallback_reason"] == "agentic_runtime_control_signal_with_supported_evidence"
+    assert "## 阶段性证据综合" in payload["answer"]
+    assert "## 关键发现" in payload["answer"]
+    assert "revenue was 42" in payload["answer"]
+    assert "overseas expansion and product mix are key risks" in payload["answer"]
+    assert "关键结论：" not in payload["answer"]
 
 
 def test_workspace_ask_quick_marks_raw_dump_answers_as_needing_review() -> None:
@@ -5079,8 +5568,8 @@ def test_workspace_ask_deep_uses_fastreact_readonly_tool_policy() -> None:
     }
     assert payload["route"]["tool_profile"] == "ask_read"
     assert payload["route"]["agentic_budget"] == {
-        "soft_iteration_budget": 4,
-        "hard_max_iterations": 12,
+        "soft_iteration_budget": 10,
+        "runtime_circuit_breaker": "fastreact_default",
     }
     assert payload["answer"] == "Fake external agentic answer.[1]"
     assert payload["citation_markers"][0]["marker"] == "[1]"
@@ -5089,10 +5578,10 @@ def test_workspace_ask_deep_uses_fastreact_readonly_tool_policy() -> None:
     assert payload["timing"]["time_to_first_agent_event_ms"] >= 0
     call = api.agentic_service.calls[0]
     assert call["skills"] == ["pska_answer_with_citations"]
-    assert call["max_iterations"] == 12
+    assert call["max_iterations"] is None
     assert call["tool_policy"] == payload["route"]["tool_policy"]
     assert call["session_id"] == "ask-session-1"
-    assert "Soft iteration budget: aim to finish within 4" in call["query"]
+    assert "Soft iteration budget: aim to finish within 10" in call["query"]
     assert "User question: 请分析 Atlas reporting" in call["query"]
 
 
@@ -6755,7 +7244,7 @@ def test_cli_service_check_fails_on_database_mismatch(monkeypatch, capsys) -> No
     }
 
 
-def test_cli_service_check_uses_service_token(capsys) -> None:
+def test_cli_service_check_does_not_use_service_token(capsys) -> None:
     class DownAgenticService:
         def ready(self):
             return {"ok": False, "provider": "test", "adapter": "fake", "error": "not reachable"}
@@ -6768,10 +7257,12 @@ def test_cli_service_check_uses_service_token(capsys) -> None:
         allowed = service_check(_namespace(url=f"http://{base_url}", service_token="secret", timeout_seconds=2))
         allowed_output = json.loads(capsys.readouterr().out)
 
-    assert blocked == 1
+    assert blocked == 0
     assert allowed == 0
-    assert blocked_output["checks"]["ready"]["status"] == 401
-    assert allowed_output["ok"] is True
+    assert blocked_output["checks"]["ready"]["status"] == 200
+    assert allowed_output["checks"]["ready"]["status"] == 200
+    assert blocked_output["checks"]["ready"]["payload"]["ok"] is True
+    assert allowed_output["checks"]["ready"]["payload"]["ok"] is True
 
 
 def test_http_api_agent_service_needs_represented_user_for_private_search() -> None:
@@ -6918,7 +7409,7 @@ class FakeAgenticService:
         user,
         *,
         represented_user_id=None,
-        max_iterations=3,
+        max_iterations=None,
         skills=None,
         tool_policy=None,
         session_id=None,
@@ -6956,7 +7447,7 @@ class FakeAgenticService:
         user,
         *,
         represented_user_id=None,
-        max_iterations=3,
+        max_iterations=None,
         skills=None,
         tool_policy=None,
         session_id=None,
@@ -7015,7 +7506,7 @@ def _store() -> InMemoryKnowledgeStore:
 
 def _api(*, service_token: str | None = None, auth: AuthConfig | None = None) -> PSKAApi:
     api = object.__new__(PSKAApi)
-    api.config = PSKAConfig(service=ServiceConfig(service_token=service_token), auth=auth or AuthConfig())
+    api.config = PSKAConfig(service=ServiceConfig(service_token=service_token), auth=auth or AuthConfig(mode="trusted_headers"))
     api.store = _store()
     api.retrieval = RetrievalService(api.store, ACLService(api.store))
     api.agentic_service = FakeAgenticService(api.retrieval)
@@ -7103,10 +7594,42 @@ class _http_server:
         self.thread.join(timeout=2)
 
 
-def _http_json(base_url: str, method: str, path: str, payload: dict | None = None, headers: dict | None = None):
+def _test_identity_headers(headers: dict | None = None, *, authenticated: bool = True) -> dict:
+    merged = dict(headers or {})
+    if not authenticated:
+        return merged
+    lower_keys = {str(key).lower() for key in merged}
+    identity_keys = {
+        "authorization",
+        "x-pska-user-id",
+        "x-fastreact-user-key",
+        "x-pska-subject",
+        "x-fastreact-subject",
+    }
+    if lower_keys & identity_keys:
+        return merged
+    default_user_id = "agent_service" if str(merged.get("X-PSKA-Caller") or "").strip() == "agent_service" else "user_primary"
+    defaults = {
+        "X-PSKA-User-Id": default_user_id,
+        "X-PSKA-Tenant-Id": "tenant_default",
+        "X-PSKA-Subject": f"pska:{default_user_id}",
+        "X-PSKA-Auth-Provider": "test_trusted_headers",
+    }
+    return {**defaults, **merged}
+
+
+def _http_json(
+    base_url: str,
+    method: str,
+    path: str,
+    payload: dict | None = None,
+    headers: dict | None = None,
+    *,
+    authenticated: bool = True,
+):
     conn = HTTPConnection(base_url, timeout=5)
     body = None if payload is None else json.dumps(payload).encode("utf-8")
-    request_headers = dict(headers or {})
+    request_headers = _test_identity_headers(headers, authenticated=authenticated)
     if body:
         request_headers.setdefault("content-type", "application/json")
     conn.request(method, path, body=body, headers=request_headers)
@@ -7118,10 +7641,18 @@ def _http_json(base_url: str, method: str, path: str, payload: dict | None = Non
     return response.status, json.loads(data.decode("utf-8"))
 
 
-def _http_text(base_url: str, method: str, path: str, headers: dict | None = None, payload: dict | None = None):
+def _http_text(
+    base_url: str,
+    method: str,
+    path: str,
+    headers: dict | None = None,
+    payload: dict | None = None,
+    *,
+    authenticated: bool = True,
+):
     conn = HTTPConnection(base_url, timeout=5)
     body = None if payload is None else json.dumps(payload).encode("utf-8")
-    request_headers = dict(headers or {})
+    request_headers = _test_identity_headers(headers, authenticated=authenticated)
     if body:
         request_headers.setdefault("content-type", "application/json")
     conn.request(method, path, body=body, headers=request_headers)

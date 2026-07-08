@@ -4841,10 +4841,14 @@ def _digest_schedule_payload(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def _service_check_headers(service_token: str | None) -> dict[str, str]:
-    headers = {"accept": "application/json"}
-    if service_token:
-        headers["X-PSKA-Service-Token"] = service_token
-    return headers
+    del service_token
+    return {
+        "accept": "application/json",
+        "X-PSKA-User-Id": "user_primary",
+        "X-PSKA-Tenant-Id": DEFAULT_TENANT_ID,
+        "X-PSKA-Subject": "pska:user_primary",
+        "X-PSKA-Auth-Provider": "service_check",
+    }
 
 
 def _service_check_url(host: str, port: int) -> str:

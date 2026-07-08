@@ -50,6 +50,7 @@ export type PSKAIdentity = {
   serviceToken?: string;
   tenantId?: string;
   userId?: string;
+  /** @deprecated Use userId. Kept only for older saved browser sessions. */
   representedUserId?: string;
 };
 
@@ -105,7 +106,6 @@ const headers = (auth: PSKAAuth) => {
   }
   result["X-PSKA-Tenant-Id"] = identity.tenantId;
   result["X-PSKA-User-Id"] = identity.userId;
-  result["X-PSKA-Represented-User-Id"] = identity.representedUserId;
   result["X-PSKA-Subject"] = identity.userId.includes(":") ? identity.userId : `pska:${identity.userId}`;
   return result;
 };
@@ -120,12 +120,11 @@ const requestUserPayload = (auth: PSKAAuth) => {
   const identity = resolveIdentity(auth);
   return {
     tenant_id: identity.tenantId,
-    user_id: identity.userId,
-    represented_user_id: identity.representedUserId
+    user_id: identity.userId
   };
 };
 
-const ownerUserId = (auth: PSKAAuth) => resolveIdentity(auth).representedUserId;
+const ownerUserId = (auth: PSKAAuth) => resolveIdentity(auth).userId;
 const actorUserId = (auth: PSKAAuth) => resolveIdentity(auth).userId;
 const clean = (value?: string) => (value || "").trim();
 
@@ -566,7 +565,6 @@ export async function uploadWorkspaceSource(
   const identity = resolveIdentity(serviceToken);
   form.set("tenant_id", identity.tenantId);
   form.set("user_id", identity.userId);
-  form.set("represented_user_id", identity.representedUserId);
   if (!onProgress) {
     const response = await fetch("/workspace/sources/upload", {
       method: "POST",
@@ -1053,7 +1051,7 @@ export async function updatePromptProfiles(
 
 export async function listWritingBoards(serviceToken: PSKAAuth): Promise<WritingBoardsResponse> {
   const identity = resolveIdentity(serviceToken);
-  const params = new URLSearchParams({ owner_user_id: identity.representedUserId, limit: "50" });
+  const params = new URLSearchParams({ owner_user_id: identity.userId, limit: "50" });
   const response = await fetch(`/workspace/writing/boards?${params.toString()}`, { headers: headers(serviceToken) });
   if (!response.ok) {
     throw new Error(await responseError(response, "写作工作区加载失败"));

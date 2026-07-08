@@ -28,7 +28,7 @@ class RequestContext:
     email: str = ""
     groups: list[str] = field(default_factory=list)
     roles: list[str] = field(default_factory=list)
-    auth_provider: str = "service_token"
+    auth_provider: str = "jwt"
 
     @property
     def effective_user_id(self) -> str:
@@ -55,13 +55,7 @@ def service_token_required(service_token: str | None = None) -> bool:
 
 
 def authenticate_headers(headers: Mapping[str, str], service_token: str | None = None) -> bool:
-    expected = service_token
-    if not expected:
-        return False
-    provided = headers.get("X-PSKA-Service-Token") or _bearer_token(headers.get("Authorization"))
-    if not provided or not hmac.compare_digest(provided, expected):
-        raise AuthError("PSKA service token required")
-    return True
+    raise AuthError("PSKA service_token auth is deprecated; use AuthNode JWT or trusted headers")
 
 
 def context_from_headers(
@@ -76,9 +70,9 @@ def context_from_headers(
         return context_from_trusted_headers(headers, payload, service_authenticated=service_authenticated, auth_config=auth_config)
     if mode == "jwt":
         return context_from_jwt(headers, payload, service_authenticated=service_authenticated, auth_config=auth_config)
-    if mode != "service_token":
-        raise AuthError(f"unsupported PSKA auth mode: {mode}")
-    return context_from_service_token(headers, payload, service_authenticated=service_authenticated, auth_provider="service_token")
+    if mode == "service_token":
+        raise AuthError("PSKA service_token auth is deprecated; use AuthNode JWT or trusted headers")
+    raise AuthError(f"unsupported PSKA auth mode: {mode}")
 
 
 def context_from_service_token(
@@ -226,7 +220,7 @@ def _required_bearer_token(headers: Mapping[str, str]) -> str:
 
 
 def _auth_mode(auth_config: Any | None) -> str:
-    return str(getattr(auth_config, "mode", "service_token") or "service_token").strip().lower()
+    return str(getattr(auth_config, "mode", "jwt") or "jwt").strip().lower()
 
 
 def _trusted_header(headers: Mapping[str, str], auth_config: Any | None, attr: str, default: str, alias: str | None = None) -> str:

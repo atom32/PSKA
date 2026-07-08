@@ -132,7 +132,7 @@ def test_cli_applies_env_overrides_to_served_config(tmp_path: Path, monkeypatch)
     served_config = captured["config"]
     assert isinstance(served_config, PSKAConfig)
     runtime = served_config.agentic_service_runtime_config()
-    assert runtime.service_token == "file-token"
+    assert runtime.service_token is None
     assert runtime.authnode_url == "http://authnode.test"
     assert runtime.authnode_admin_token == "admin-token"
     assert runtime.authnode_audience == "fastreact"

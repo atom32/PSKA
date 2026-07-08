@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import json
 import os
+import sys
 import time
 from typing import Any, Iterator, Protocol
 from urllib.error import HTTPError, URLError
@@ -79,6 +80,7 @@ class FastreactClient(Protocol):
 @dataclass(frozen=True, slots=True)
 class FastreactConfig:
     url: str = "http://127.0.0.1:18741"
+    # Deprecated: FastReAct requires AuthNode/JWT identity for tenant-bearing requests.
     service_token: str | None = None
     timeout_seconds: float = 30.0
     model: str | None = None
@@ -94,7 +96,7 @@ class FastreactConfig:
     def from_env(cls) -> "FastreactConfig":
         return cls(
             url=os.getenv("PSKA_FASTREACT_URL", "http://127.0.0.1:18741").rstrip("/"),
-            service_token=os.getenv("PSKA_FASTREACT_SERVICE_TOKEN") or None,
+            service_token=None,
             timeout_seconds=float(os.getenv("PSKA_FASTREACT_TIMEOUT_SECONDS", "30")),
             model=os.getenv("PSKA_FASTREACT_MODEL") or None,
             temperature=_optional_float_env("PSKA_FASTREACT_TEMPERATURE"),
@@ -114,7 +116,15 @@ class HttpFastreactClient:
 
     def ready(self) -> dict[str, Any]:
         health = self._request_json("GET", "/health")
-        ready = self._request_json("GET", "/ready")
+        try:
+            ready = self._request_json("GET", "/ready")
+        except FastreactError as exc:
+            ready = {
+                "ok": False,
+                "skipped": True,
+                "reason": "FastReAct /ready requires authenticated operator identity; PSKA checks /health and /v1/tools here.",
+                "error": str(exc),
+            }
         tools: dict[str, Any]
         try:
             tools = self._request_json("GET", "/v1/tools")
@@ -315,6 +325,7 @@ class HttpFastreactClient:
         headers = self._headers(payload is not None, payload=payload)
         if authorization and "Authorization" not in headers:
             headers["Authorization"] = authorization
+        _emit_identity_log("pska.fastreact_request", method=method, path=path, payload=payload, headers=headers)
         request = Request(
             f"{self.config.url}{path}",
             data=data,
@@ -342,15 +353,18 @@ class HttpFastreactClient:
             bearer = headers.get("Authorization")
             if run_id and bearer:
                 self._run_authorizations[run_id] = bearer
+        _emit_identity_response_log("pska.fastreact_response", method=method, path=path, payload=payload, response=parsed)
         return parsed
 
     def _request_sse(self, method: str, path: str, payload: dict[str, Any]) -> Iterator[dict[str, Any]]:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers = self._headers(True, payload=payload)
+        _emit_identity_log("pska.fastreact_sse_request", method=method, path=path, payload=payload, headers=headers)
         request = Request(
             f"{self.config.url}{path}",
             data=data,
             method=method,
-            headers=self._headers(True, payload=payload),
+            headers=headers,
         )
         try:
             with urlopen(request, timeout=self.config.timeout_seconds) as response:
@@ -384,8 +398,6 @@ class HttpFastreactClient:
         headers: dict[str, str] = {"accept": "application/json"}
         if has_body:
             headers["content-type"] = "application/json; charset=utf-8"
-        if self.config.service_token:
-            headers["X-FastReAct-Service-Token"] = self.config.service_token
         authnode_token = self._authnode_token(payload)
         if authnode_token:
             headers["Authorization"] = f"Bearer {authnode_token}"
@@ -403,8 +415,10 @@ class HttpFastreactClient:
 
     def _authnode_token(self, payload: dict[str, Any] | None) -> str | None:
         authnode_url = (self.config.authnode_url or "").rstrip("/")
-        if not authnode_url or not payload:
+        if not payload:
             return None
+        if not authnode_url:
+            raise FastreactError("FastReact tenant identity requires AuthNode; configure fastreact.authnode_url or agentic_service.authnode_url")
         user_key, tenant_key = _payload_identity(payload)
         if not user_key:
             raise FastreactError("Fastreact AuthNode token request requires payload.user_key")
@@ -487,6 +501,74 @@ def _payload_identity(payload: dict[str, Any]) -> tuple[str | None, str | None]:
     tenant_key = metadata.get("tenant_key") or metadata.get("pska_tenant_id")
     tenant = tenant_key.strip() if isinstance(tenant_key, str) and tenant_key.strip() else None
     return user, tenant
+
+
+def _emit_identity_log(
+    event: str,
+    *,
+    method: str,
+    path: str,
+    payload: dict[str, Any] | None,
+    headers: dict[str, str],
+) -> None:
+    if not payload:
+        return
+    user_key, tenant_key = _payload_identity(payload)
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    scope = metadata.get("scope") if isinstance(metadata.get("scope"), dict) else {}
+    tool_policy = payload.get("tool_policy") if isinstance(payload.get("tool_policy"), dict) else {}
+    policy_scope = tool_policy.get("scope") if isinstance(tool_policy.get("scope"), dict) else {}
+    record = {
+        "event": event,
+        "method": method,
+        "path": path,
+        "user_key": user_key,
+        "tenant_key": tenant_key,
+        "metadata_pska_user_id": metadata.get("pska_user_id"),
+        "metadata_pska_tenant_id": metadata.get("pska_tenant_id"),
+        "purpose": metadata.get("purpose"),
+        "skills": payload.get("skills") if isinstance(payload.get("skills"), list) else [],
+        "tool_policy_mode": tool_policy.get("mode"),
+        "scope_tenant_id": scope.get("tenant_id"),
+        "scope_user_id": scope.get("user_id"),
+        "scope_mode": scope.get("scope_mode") or scope.get("mode"),
+        "tool_policy_scope_mode": policy_scope.get("scope_mode") or policy_scope.get("mode"),
+        "tool_policy_knowledge_base_ids": policy_scope.get("knowledge_base_ids") if isinstance(policy_scope.get("knowledge_base_ids"), list) else [],
+        "tool_policy_source_item_count": len(policy_scope.get("source_item_ids") or []) if isinstance(policy_scope.get("source_item_ids"), list) else 0,
+        "header_user_key": headers.get("X-FastReAct-User-Key"),
+        "header_tenant_key": headers.get("X-FastReAct-Tenant-Key"),
+        "authnode_bearer_configured": bool(headers.get("Authorization")),
+    }
+    print(json.dumps(record, ensure_ascii=False, sort_keys=True), file=sys.stderr, flush=True)
+
+
+def _emit_identity_response_log(
+    event: str,
+    *,
+    method: str,
+    path: str,
+    payload: dict[str, Any] | None,
+    response: dict[str, Any],
+) -> None:
+    if not payload:
+        return
+    user_key, tenant_key = _payload_identity(payload)
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    response_metadata = response.get("metadata") if isinstance(response.get("metadata"), dict) else {}
+    record = {
+        "event": event,
+        "method": method,
+        "path": path,
+        "user_key": user_key,
+        "tenant_key": tenant_key,
+        "purpose": metadata.get("purpose"),
+        "session_id": response.get("session_id") or payload.get("session_id"),
+        "run_id": response.get("run_id"),
+        "response_status": response.get("status"),
+        "response_run_protocol": response_metadata.get("run_protocol"),
+        "response_event_count": response_metadata.get("event_count") or response.get("event_count"),
+    }
+    print(json.dumps(record, ensure_ascii=False, sort_keys=True), file=sys.stderr, flush=True)
 
 
 def _authnode_audience_payload(value: str | None) -> str | list[str]:
